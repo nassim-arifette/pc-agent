@@ -1,0 +1,12 @@
+[package]
+name = "pcagent-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pcagent-shared.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

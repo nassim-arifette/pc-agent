@@ -1,0 +1,26 @@
+[workspace]
+members = ["apps/cli", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+thiserror = "=2.0.17"
+uuid = { version = "=1.18.1", features = ["v4"] }
+clap = { version = "=4.5.50", features = ["derive"] }
+reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_SystemInformation"] }
+pcagent-shared = { path = "crates/shared" }
+pcagent-telemetry = { path = "crates/telemetry" }
+pcagent-diagnostics = { path = "crates/diagnostics" }
+pcagent-agent = { path = "crates/agent" }
+
+[profile.release]
+lto = "thin"
+strip = true
