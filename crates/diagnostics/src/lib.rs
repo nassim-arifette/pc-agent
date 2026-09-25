@@ -5,10 +5,18 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Classification { LowAvailableMemory, HighCommitRatio, HighCpuSample, InsufficientEvidence }
+pub enum Classification {
+    LowAvailableMemory,
+    HighCommitRatio,
+    HighCpuSample,
+    InsufficientEvidence,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Support { Plausible, Insufficient }
+pub enum Support {
+    Plausible,
+    Insufficient,
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
     pub id: String,
@@ -19,7 +27,12 @@ pub struct Finding {
     pub next_step: String,
     pub limitations: Vec<String>,
 }
-fn finding(snapshot: &Snapshot, class: Classification, refs: Vec<String>, summary: &str) -> Finding {
+fn finding(
+    snapshot: &Snapshot,
+    class: Classification,
+    refs: Vec<String>,
+    summary: &str,
+) -> Finding {
     Finding {
         id: format!("{}-{class:?}", snapshot.id), classification: class,
         support: if class == Classification::InsufficientEvidence { Support::Insufficient } else { Support::Plausible },
@@ -33,14 +46,18 @@ fn finding(snapshot: &Snapshot, class: Classification, refs: Vec<String>, summar
 pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings = Vec::new();
     if let (Some((a, available)), Some((t, total))) = (
-        snapshot.system_value(Metric::PhysicalAvailableBytes), snapshot.system_value(Metric::PhysicalTotalBytes)) {
+        snapshot.system_value(Metric::PhysicalAvailableBytes),
+        snapshot.system_value(Metric::PhysicalTotalBytes),
+    ) {
         if available <= total && ratio_basis_points(available, total).is_some_and(|p| p < 1_000) {
             findings.push(finding(snapshot, Classification::LowAvailableMemory, vec![a.id.clone(), t.id.clone()],
                 "Available physical memory is low in this sample. Memory contention remains unproven."));
         }
     }
     if let (Some((used_e, used)), Some((limit_e, limit))) = (
-        snapshot.system_value(Metric::SystemCommitBytes), snapshot.system_value(Metric::SystemCommitLimitBytes)) {
+        snapshot.system_value(Metric::SystemCommitBytes),
+        snapshot.system_value(Metric::SystemCommitLimitBytes),
+    ) {
         if used <= limit && ratio_basis_points(used, limit).is_some_and(|p| p >= 9_000) {
             findings.push(finding(snapshot, Classification::HighCommitRatio, vec![used_e.id.clone(), limit_e.id.clone()],
                 "System commit is close to its current limit. This does not measure physical RAM occupancy or page-file activity."));
@@ -63,11 +80,18 @@ mod tests {
     use super::*;
     use pcagent_shared::{Evidence, Origin, Status, Window};
     fn sample(values: &[(Metric, u64)]) -> Snapshot {
-        let mut s = Snapshot::empty("synthetic-test"); s.origin = Origin::SyntheticFixture;
-        s.evidence = values.iter().map(|(m, v)| {
-            let mut e = Evidence::measured(*m, "system", *v, "fixture:diagnostics", Window::instant());
-            e.origin = Origin::SyntheticFixture; e
-        }).collect(); s
+        let mut s = Snapshot::empty("synthetic-test");
+        s.origin = Origin::SyntheticFixture;
+        s.evidence = values
+            .iter()
+            .map(|(m, v)| {
+                let mut e =
+                    Evidence::measured(*m, "system", *v, "fixture:diagnostics", Window::instant());
+                e.origin = Origin::SyntheticFixture;
+                e
+            })
+            .collect();
+        s
     }
     #[test]
     fn absent_metrics_do_not_become_a_healthy_verdict() {
@@ -77,26 +101,47 @@ mod tests {
     }
     #[test]
     fn high_commit_is_not_a_ram_diagnosis() {
-        let f = analyze(&sample(&[(Metric::SystemCommitBytes, 95), (Metric::SystemCommitLimitBytes, 100),
-            (Metric::PhysicalAvailableBytes, 80), (Metric::PhysicalTotalBytes, 100)]));
-        assert!(f.iter().any(|f| f.classification == Classification::HighCommitRatio));
-        assert!(!f.iter().any(|f| f.classification == Classification::LowAvailableMemory));
+        let f = analyze(&sample(&[
+            (Metric::SystemCommitBytes, 95),
+            (Metric::SystemCommitLimitBytes, 100),
+            (Metric::PhysicalAvailableBytes, 80),
+            (Metric::PhysicalTotalBytes, 100),
+        ]));
+        assert!(f
+            .iter()
+            .any(|f| f.classification == Classification::HighCommitRatio));
+        assert!(!f
+            .iter()
+            .any(|f| f.classification == Classification::LowAvailableMemory));
     }
     #[test]
     fn a_single_memory_sample_is_not_a_proven_cause() {
-        let f = analyze(&sample(&[(Metric::PhysicalAvailableBytes, 1), (Metric::PhysicalTotalBytes, 100)]));
+        let f = analyze(&sample(&[
+            (Metric::PhysicalAvailableBytes, 1),
+            (Metric::PhysicalTotalBytes, 100),
+        ]));
         assert_eq!(f[0].support, Support::Plausible);
         assert!(!f[0].limitations.is_empty());
     }
     #[test]
     fn zero_denominators_and_inconsistent_counters_are_ignored() {
         for (available, total) in [(0, 0), (200, 100)] {
-            assert_eq!(analyze(&sample(&[(Metric::PhysicalAvailableBytes, available), (Metric::PhysicalTotalBytes, total)])).len(), 1);
+            assert_eq!(
+                analyze(&sample(&[
+                    (Metric::PhysicalAvailableBytes, available),
+                    (Metric::PhysicalTotalBytes, total)
+                ]))
+                .len(),
+                1
+            );
         }
     }
     #[test]
     fn stale_values_cannot_trigger_a_finding() {
-        let mut s = sample(&[(Metric::PhysicalAvailableBytes, 1), (Metric::PhysicalTotalBytes, 100)]);
+        let mut s = sample(&[
+            (Metric::PhysicalAvailableBytes, 1),
+            (Metric::PhysicalTotalBytes, 100),
+        ]);
         s.evidence[0].status = Status::Stale;
         assert_eq!(analyze(&s).len(), 1);
     }
@@ -104,7 +149,9 @@ mod tests {
     fn every_finding_refers_to_real_evidence() {
         let s = sample(&[(Metric::CpuBusyBasisPoints, 9_900)]);
         for f in analyze(&s) {
-            for id in f.evidence_refs { assert!(s.evidence.iter().any(|e| e.id == id)); }
+            for id in f.evidence_refs {
+                assert!(s.evidence.iter().any(|e| e.id == id));
+            }
         }
     }
 }
