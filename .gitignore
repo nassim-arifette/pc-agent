@@ -1,0 +1,15 @@
+/target/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.sqlite
+*.sqlite-*
+*.db
+*.log
+/telemetry/
+/recordings/
+/local-data/
+.DS_Store
