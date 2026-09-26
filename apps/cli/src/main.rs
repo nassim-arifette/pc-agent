@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 use clap::{Parser, Subcommand};
 use pcagent_agent::{
-    cloud_observation, investigate, local_report, Config, Investigation, Nebius, Tool,
+    cloud_observation, investigate, local_report, Config, Investigation, Nebius, SnapshotTools,
     MAX_QUESTION_BYTES,
 };
 use pcagent_shared::{Evidence, Metric, Snapshot, Status};
@@ -134,11 +134,32 @@ fn print_report(report: &Investigation) -> Result<()> {
         "Mode: {} | status: {:?} | support: {:?}",
         report.mode, report.status, report.selected.support
     )?;
-    writeln!(out, "{}", report.selected.summary)?;
-    for id in &report.selected.evidence_refs {
-        if let Some(e) = report.evidence.iter().find(|e| &e.id == id) {
-            print_evidence(e, &mut out)?;
-        }
+    let f = &report.selected;
+    writeln!(out, "{}", f.summary)?;
+    writeln!(out, "Support: {:?} ({})", f.support, f.support_reason)?;
+    for fact in &f.facts {
+        writeln!(
+            out,
+            "Fact: {} [{}]",
+            fact.text,
+            fact.evidence_refs.join(", ")
+        )?;
+    }
+    if let Some(h) = &f.hypothesis {
+        writeln!(out, "Hypothesis: {h}")?;
+    }
+    for c in &f.counter_evidence {
+        writeln!(out, "Counter-evidence: {c}")?;
+    }
+    if !f.missing.is_empty() {
+        writeln!(out, "Missing: {}", f.missing.join("; "))?;
+    }
+    for alt in &report.alternatives {
+        writeln!(
+            out,
+            "Alternative: {:?} - {}",
+            alt.classification, alt.summary
+        )?;
     }
     writeln!(out, "Next: {}", report.selected.next_step)?;
     for limit in report
@@ -230,14 +251,14 @@ fn run(args: Args) -> Result<u8> {
                     model,
                     &question,
                     &initial,
-                    |tool| collector.snapshot(tool == Tool::GetProcesses, 10),
+                    &mut SnapshotTools::new(|processes, limit| {
+                        collector.snapshot(processes, limit)
+                    }),
                     |event| {
                         if verbose {
                             eprintln!(
                                 "Completed {} [{:?}] in {} ms",
-                                event.tool.name(),
-                                event.status,
-                                event.duration_ms
+                                event.tool, event.status, event.duration_ms
                             );
                         }
                     },
