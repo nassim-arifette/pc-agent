@@ -289,6 +289,9 @@ fn run(args: Args) -> Result<u8> {
                 Some(path) => Preferences::from_json(&fs::read_to_string(path)?)?,
                 None => Preferences::default(),
             };
+            if allow_cloud && preferences.is_some() && !prefs.permissions.cloud_allowed {
+                return Err("The preferences file does not allow cloud requests (permissions.cloud_allowed is false).".into());
+            }
             let storage = Arc::new(StorageService::new());
             for root in &scan_root {
                 storage.authorize(root)?;

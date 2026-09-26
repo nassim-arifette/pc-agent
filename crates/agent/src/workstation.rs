@@ -308,7 +308,12 @@ impl Workstation<'_> {
                 })
             })
             .collect();
-        let view = self.policy.cleanup_candidates(&inputs, self.prefs);
+        let mut view = self.policy.cleanup_candidates(&inputs, self.prefs);
+        if page.scan_status != Status::Ok && view.status == Status::Ok {
+            view.status = Status::Partial;
+            view.limitations
+                .push("The underlying scan is incomplete; larger items may be missing.");
+        }
         output(view.status, to_value(&view))
     }
 }

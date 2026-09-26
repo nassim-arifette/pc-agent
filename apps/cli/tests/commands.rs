@@ -79,3 +79,18 @@ fn preview_lists_tools_and_counts_scopes_without_paths() {
         .any(|t| t == "get_largest_items"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+#[test]
+fn stored_cloud_prohibition_overrides_allow_cloud() {
+    let file = std::env::temp_dir().join(format!("pcagent-prefs-{}.json", std::process::id()));
+    std::fs::write(&file, r#"{"schema_version":1}"#).unwrap();
+    let out = cli(&[
+        "diagnose",
+        "test",
+        "--allow-cloud",
+        "--preferences",
+        file.to_str().unwrap(),
+    ]);
+    std::fs::remove_file(&file).unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cloud_allowed"));
+}
