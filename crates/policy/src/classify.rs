@@ -30,6 +30,9 @@ pub struct CandidateInput {
     #[serde(default)]
     pub attributes: Attributes,
     pub origin: Origin,
+    /// Set by the local caller after observing the adapter marker file inside the target.
+    #[serde(default)]
+    pub marker_verified: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -318,7 +321,10 @@ impl Policy {
             (_, CleanupClass::Temporary) => Some(OfficialTool::StorageSense),
             _ => None,
         };
-        out.preselectable = verdict.is_allowed() && adapter.is_some_and(|a| a.is_executable());
+        out.preselectable = verdict.is_allowed()
+            && adapter.is_some_and(|a| {
+                a.is_executable() && (a.marker.is_none() || input.marker_verified)
+            });
         out.adapter_id = adapter.map(|a| a.id);
         out.path = Some(path);
         out.class = class;
@@ -348,6 +354,7 @@ mod tests {
             modified_unix_ms: None,
             attributes: Attributes::default(),
             origin: Origin::SyntheticFixture,
+            marker_verified: true,
         }
     }
     fn c(path: &str, is_dir: bool) -> Classification {
@@ -461,6 +468,15 @@ mod tests {
             )
         );
         assert!(r.preselectable);
+        let mut lookalike = input(
+            r"C:\Users\bob\AppData\Local\pcagent\synthetic-demo-cache",
+            true,
+            Some(10),
+        );
+        lookalike.marker_verified = false;
+        let r = Policy::default().classify(&lookalike, &Preferences::default());
+        assert_eq!(r.verdict, Verdict::Allowed);
+        assert!(!r.preselectable);
         let r = c(
             r"C:\Users\bob\AppData\Local\Google\Chrome\User Data\Default\Cache",
             true,

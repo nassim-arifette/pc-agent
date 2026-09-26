@@ -50,3 +50,7 @@ Exactly one executable adapter: `pcagent.synthetic_demo_cache`, targeting `%LOCA
 - Known-folder detection reads environment variables, not `SHGetKnownFolderPath`; redirected folders (e.g. OneDrive-backed Documents) are not detected.
 - Adapter targets and cache layouts (Chrome, Edge, npm, Cargo, pip) are based on default documented layouts, not observed on a test PC.
 - Attribute flags are trusted from the caller; no native attribute reading or reparse-point resolution exists here.
+
+## Adapter markers
+
+An adapter may declare a `marker` file. A matching candidate is `preselectable` only when the local caller sets `CandidateInput::marker_verified` after observing that file directly inside the target (without following links). A path match alone never preselects. The action broker still revalidates the marker before execution.

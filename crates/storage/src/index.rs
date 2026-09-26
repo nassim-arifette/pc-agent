@@ -176,6 +176,13 @@ impl LargestItemsPage {
         self.items.iter_mut().for_each(|i| i.path = None);
         self
     }
+    /// Replaces non-generic names in `redacted_path`; see [`redact_names`].
+    pub fn redact_names(mut self) -> Self {
+        self.items
+            .iter_mut()
+            .for_each(|i| i.redacted_path = redact_names(&i.redacted_path));
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +289,13 @@ impl StorageOverview {
     }
     pub fn without_paths(mut self) -> Self {
         self.denied.iter_mut().for_each(|i| i.path = None);
+        self
+    }
+    /// Replaces non-generic names in `redacted_path`; see [`redact_names`].
+    pub fn redact_names(mut self) -> Self {
+        self.denied
+            .iter_mut()
+            .for_each(|i| i.redacted_path = redact_names(&i.redacted_path));
         self
     }
 }
@@ -615,6 +629,72 @@ fn join_redacted(prefix: &str, rest: &Path, user: Option<&std::ffi::OsStr>) -> S
 
 /// Path relative to the authorized root, e.g. `<scope>/Games/big.bin`; any component equal to
 /// the user profile name becomes `<user>`. Paths outside the root become `<outside-scope>`.
+/// Well-known, non-personal directory names that may stay visible in cloud-bound paths.
+pub const GENERIC_NAMES: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "out",
+    "bin",
+    "obj",
+    ".git",
+    ".cache",
+    "cache",
+    "caches",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".gradle",
+    ".m2",
+    ".npm",
+    ".nuget",
+    ".cargo",
+    ".rustup",
+    "packages",
+    "temp",
+    "tmp",
+    "logs",
+    "crashdumps",
+    "downloads",
+    "appdata",
+    "local",
+    "locallow",
+    "roaming",
+    "programdata",
+    "windows",
+    "$recycle.bin",
+];
+
+/// Keeps placeholders (`<scope>`, `<user>`…) and [`GENERIC_NAMES`]; every other component
+/// becomes `*`, keeping a short alphanumeric extension on the last one (`<scope>/*/*.pdf`).
+pub fn redact_names(redacted: &str) -> String {
+    let parts: Vec<&str> = redacted.split('/').collect();
+    let last = parts.len().saturating_sub(1);
+    parts
+        .iter()
+        .enumerate()
+        .map(|(n, part)| {
+            let generic = GENERIC_NAMES.iter().any(|g| g.eq_ignore_ascii_case(part));
+            if (part.starts_with('<') && part.ends_with('>')) || generic || part.is_empty() {
+                return (*part).to_string();
+            }
+            match part.rsplit_once('.') {
+                Some((stem, ext))
+                    if n == last
+                        && !stem.is_empty()
+                        && (1..=8).contains(&ext.len())
+                        && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+                {
+                    format!("*.{}", ext.to_ascii_lowercase())
+                }
+                _ => "*".into(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 pub fn redact_path(root: &Path, path: &Path, profile: Option<&Path>) -> String {
     match path.strip_prefix(root) {
         Ok(rel) => join_redacted("<scope>", rel, user_name(profile)),

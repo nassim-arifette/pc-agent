@@ -89,3 +89,7 @@ attributed totals.
 Not implemented: MFT/USN backend, persistent (SQLite) index, incremental tracking, reclaim
 estimation, VHD/VHDX rules, and treating fully-hydrated cloud files (which are reparse points)
 as attributed; they currently count as `reparse_skipped`.
+
+## Cloud-bound names
+
+Agent tools apply `redact_names` on top of `without_paths`: only placeholders (`<scope>`, `<user>`) and generic directory names from `GENERIC_NAMES` (e.g. `node_modules`, `target`, `.cache`) stay visible. Every other component becomes `*`, keeping a short extension on the last one (`<scope>/*/*.pdf`).
