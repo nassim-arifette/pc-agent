@@ -1,14 +1,24 @@
 //! Read-only investigation tools backed by the real collectors, storage index and policy.
 //! Every cloud payload is built from an explicit allowlist: PIDs, executable names, full paths,
 //! boot IDs and collector session IDs stay local.
+use crate::proposals::{
+    self, ActionDesk, PendingPlan, PolicyProtection, Proposal, CLEANUP_TARGET_REF,
+    PREPARE_ACTION_PLAN,
+};
 use crate::tools::{Args, Param, ParamKind, ToolOutput, ToolSpec, Toolbox, MAX_PROCESSES};
-use pcagent_policy::{Attributes, CandidateInput, Policy, Preferences};
+use pcagent_actions::{ActionKind, FileTarget, ResolvedTarget, SyntheticDemoCache};
+use pcagent_policy::{Attributes, CandidateInput, Policy, Preferences, SYNTHETIC_CACHE_ID};
 use pcagent_shared::{Metric, Origin, Status};
 use pcagent_storage::{ItemKind, ScanJob, ScanOptions, StorageError, StorageService};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 const SCOPE: Param = Param {
     name: "scope_id",
@@ -138,6 +148,8 @@ pub struct Workstation<'a> {
     pub prefs: &'a Preferences,
     pub scan_options: ScanOptions,
     jobs: Vec<ScanJob>,
+    specs: Vec<ToolSpec>,
+    actions: Option<ActionDesk>,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -153,7 +165,24 @@ impl<'a> Workstation<'a> {
             prefs,
             scan_options: ScanOptions::default(),
             jobs: Vec::new(),
+            specs: WORKSTATION_TOOLS.to_vec(),
+            actions: None,
         }
+    }
+    /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
+    /// here; the caller reviews [`Workstation::take_actions`] locally.
+    pub fn enable_action_proposals(&mut self, desk: ActionDesk) {
+        if self.actions.is_none() {
+            self.specs.push(PREPARE_ACTION_PLAN);
+        }
+        self.actions = Some(desk);
+    }
+    /// The action desk and the plans proposed during the investigation, for local review.
+    pub fn take_actions(&mut self) -> Option<(ActionDesk, Vec<PendingPlan>)> {
+        self.actions.take().map(|mut desk| {
+            let pending = desk.take_pending();
+            (desk, pending)
+        })
     }
     /// Background scans started by the model, so the caller can wait for or cancel them.
     pub fn take_jobs(&mut self) -> Vec<ScanJob> {
@@ -235,6 +264,93 @@ impl Workstation<'_> {
             json!({"status": t.status, "origin": t.origin, "window": t.window, "nodes": t.nodes.len(),
                 "edges": edges, "truncated": t.truncated, "limitations": t.limitations}),
         )
+    }
+    fn local_item(&self, args: &Args) -> Result<(PathBuf, ItemKind, String), String> {
+        let (Some(scope), Some(item_ref)) = (args.text("scope_id"), args.text("item_ref")) else {
+            return Err("scope_id and item_ref are required for this action".into());
+        };
+        let index = self.storage.index(scope).map_err(|e| e.to_string())?;
+        let item = index.item(item_ref).map_err(|e| e.to_string())?;
+        let path = index.local_path(item_ref).ok_or("unknown item")?;
+        Ok((path, item.kind, item_ref.into()))
+    }
+    fn propose(&mut self, args: &Args) -> Result<Value, String> {
+        let Some(desk) = self.actions.as_ref() else {
+            return Err("action proposals are disabled".into());
+        };
+        let kind = args
+            .text("action_kind")
+            .and_then(proposals::parse_kind)
+            .ok_or("unsupported action_kind")?;
+        let proposal = match kind {
+            ActionKind::OpenSettingsPage => Proposal {
+                kind,
+                target_ref: args
+                    .text("settings_page")
+                    .ok_or("settings_page is required")?
+                    .into(),
+                target: None,
+                synthetic_cache: None,
+            },
+            ActionKind::OpenInExplorer => {
+                let (path, _, item_ref) = self.local_item(args)?;
+                let identity = match desk.guard.observe_file(&path) {
+                    Ok(Some(identity)) => identity,
+                    Ok(None) => return Err("item no longer exists".into()),
+                    Err(status) => return Err(format!("item identity unavailable ({status:?})")),
+                };
+                Proposal {
+                    kind,
+                    target_ref: item_ref,
+                    target: Some(ResolvedTarget::File(FileTarget { path, identity })),
+                    synthetic_cache: None,
+                }
+            }
+            ActionKind::RunCleanupAdapter => {
+                if self.prefs.permissions.reversible_only {
+                    return Err("user preferences allow reversible actions only".into());
+                }
+                let (path, item_kind, item_ref) = self.local_item(args)?;
+                let input = CandidateInput {
+                    item_ref,
+                    path: path.to_string_lossy().into_owned(),
+                    is_dir: item_kind == ItemKind::Dirs,
+                    logical_bytes: 0,
+                    allocated_bytes: None,
+                    modified_unix_ms: None,
+                    attributes: Attributes::default(),
+                    origin: Origin::Live,
+                    marker_verified: item_kind == ItemKind::Dirs && self.has_adapter_marker(&path),
+                };
+                let c = self.policy.classify(&input, self.prefs);
+                if c.adapter_id != Some(SYNTHETIC_CACHE_ID) || !c.preselectable {
+                    return Err("item is not a validated cleanup adapter target".into());
+                }
+                let cache =
+                    SyntheticDemoCache::open(&path).map_err(|_| "adapter marker check failed")?;
+                Proposal {
+                    kind,
+                    target_ref: CLEANUP_TARGET_REF.into(),
+                    target: None,
+                    synthetic_cache: Some(cache),
+                }
+            }
+            _ => return Err("unsupported action_kind".into()),
+        };
+        let protection = PolicyProtection {
+            policy: self.policy,
+            prefs: self.prefs,
+        };
+        let desk = self
+            .actions
+            .as_mut()
+            .ok_or("action proposals are disabled")?;
+        let view = proposals::prepare(desk, proposal, &protection)?;
+        Ok(json!({
+            "plan": view,
+            "note": "Prepared for local review only. The user decides after the investigation; \
+                do not claim it was applied."
+        }))
     }
     fn has_adapter_marker(&self, dir: &Path) -> bool {
         self.policy
@@ -330,7 +446,7 @@ impl Workstation<'_> {
 
 impl Toolbox for Workstation<'_> {
     fn specs(&self) -> &[ToolSpec] {
-        WORKSTATION_TOOLS
+        &self.specs
     }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         let scope = args.text("scope_id").unwrap_or_default();
@@ -393,6 +509,10 @@ impl Toolbox for Workstation<'_> {
                 }
             }
             "get_cleanup_candidates" => self.cleanup_candidates(scope, args),
+            "prepare_action_plan" => match self.propose(args) {
+                Ok(v) => output(Status::Ok, v),
+                Err(e) => output(Status::Error, json!({ "error": e })),
+            },
             "get_user_preferences" => output(
                 Status::Ok,
                 to_value(&self.policy.user_preferences_view(self.prefs)),
@@ -408,9 +528,9 @@ mod tests {
     use std::fs;
 
     fn run(ws: &mut Workstation<'_>, name: &str, args: &str) -> ToolOutput {
-        let spec = WORKSTATION_TOOLS.iter().find(|s| s.name == name).unwrap();
+        let spec = *ws.specs().iter().find(|s| s.name == name).unwrap();
         let args = spec.validate(args).unwrap();
-        ws.run(spec, &args)
+        ws.run(&spec, &args)
     }
     #[test]
     fn every_tool_is_dispatched_and_definitions_are_unique() {
@@ -497,5 +617,198 @@ mod tests {
         );
         assert_eq!(out.status, Status::Error);
         assert!(ws.take_jobs().is_empty());
+    }
+    mod proposals {
+        use super::*;
+        use pcagent_actions::{
+            approve_locally, Capability, EffectError, EffectOutcome, Effects, FileIdentity, Guard,
+            Journal, LocalSession, OverallOutcome, Permit, PlanState, ProcessIdentity,
+            ProcessTarget, SettingsPage, MAX_APPROVAL_TTL,
+        };
+        use std::{cell::Cell, path::Path, rc::Rc, sync::atomic::AtomicBool};
+
+        struct FakeGuard;
+        impl Guard for FakeGuard {
+            fn observe_file(&self, _: &Path) -> Result<Option<FileIdentity>, Status> {
+                Ok(Some(FileIdentity {
+                    volume_serial: 1,
+                    file_id: 2,
+                    size_bytes: 3,
+                    modified_filetime: 4,
+                    is_directory: false,
+                    is_reparse_point: false,
+                }))
+            }
+            fn observe_process(&self, _: u32) -> Result<Option<ProcessIdentity>, Status> {
+                Err(Status::Unsupported)
+            }
+        }
+        struct FakeEffects(Rc<Cell<u32>>);
+        impl Effects for FakeEffects {
+            fn capability(&self, _: ActionKind) -> Capability {
+                Capability::Executable
+            }
+            fn open_in_explorer(
+                &self,
+                _: &Permit,
+                _: &FileTarget,
+            ) -> Result<EffectOutcome, EffectError> {
+                self.0.set(self.0.get() + 1);
+                Ok(EffectOutcome::Done(None))
+            }
+            fn open_settings_page(
+                &self,
+                _: &Permit,
+                _: SettingsPage,
+            ) -> Result<EffectOutcome, EffectError> {
+                self.0.set(self.0.get() + 1);
+                Ok(EffectOutcome::Done(None))
+            }
+            fn request_normal_close(
+                &self,
+                _: &Permit,
+                _: &ProcessTarget,
+            ) -> Result<EffectOutcome, EffectError> {
+                unreachable!("not proposable")
+            }
+            fn recycle_file(
+                &self,
+                _: &Permit,
+                _: &FileTarget,
+            ) -> Result<EffectOutcome, EffectError> {
+                unreachable!("not proposable")
+            }
+        }
+        fn desk(tag: &str, calls: &Rc<Cell<u32>>) -> ActionDesk {
+            let dir =
+                std::env::temp_dir().join(format!("pcagent-journal-{tag}-{}", std::process::id()));
+            ActionDesk::new(
+                Journal::open(dir).unwrap(),
+                Box::new(FakeGuard),
+                Box::new(FakeEffects(calls.clone())),
+            )
+        }
+
+        #[test]
+        fn proposal_tool_is_opt_in_and_never_executes() {
+            let (mut c, policy, prefs) =
+                (Collector::new(), Policy::default(), Preferences::default());
+            let mut ws = Workstation::new(&mut c, Arc::new(StorageService::new()), &policy, &prefs);
+            assert!(!ws.specs().iter().any(|s| s.name == "prepare_action_plan"));
+            assert!(ws
+                .specs()
+                .iter()
+                .all(|s| !s.name.contains("execute") && !s.name.contains("approve")));
+            let calls = Rc::new(Cell::new(0));
+            ws.enable_action_proposals(desk("settings", &calls));
+            ws.enable_action_proposals(desk("settings", &calls));
+            assert_eq!(
+                ws.specs()
+                    .iter()
+                    .filter(|s| s.name == "prepare_action_plan")
+                    .count(),
+                1
+            );
+            let out = run(
+                &mut ws,
+                "prepare_action_plan",
+                r#"{"action_kind":"open_settings_page","settings_page":"storagesense"}"#,
+            );
+            assert_eq!(out.status, Status::Ok, "{}", out.cloud);
+            assert_eq!(out.cloud["plan"]["state"], "awaiting_approval");
+            assert_eq!(out.cloud["plan"]["approval_granted"], false);
+            assert!(out.cloud["plan"].get("fingerprint").is_none());
+            assert_eq!(calls.get(), 0);
+
+            let (desk, mut pending) = ws.take_actions().unwrap();
+            assert_eq!(pending.len(), 1);
+            let p = &mut pending[0];
+            let session = LocalSession::new();
+            let token = approve_locally(&mut p.plan, &session, MAX_APPROVAL_TTL).unwrap();
+            let mut plan = p.plan.clone();
+            let protection = PolicyProtection {
+                policy: &policy,
+                prefs: &prefs,
+            };
+            let result = desk
+                .broker(p, &protection)
+                .execute(&mut plan, &token, &session, &AtomicBool::new(false), None)
+                .unwrap();
+            assert_eq!(result.overall, OverallOutcome::Completed);
+            assert_eq!(plan.state(), PlanState::Completed);
+            assert_eq!(calls.get(), 1);
+            assert!(desk
+                .broker(p, &protection)
+                .execute(&mut plan, &token, &session, &AtomicBool::new(false), None)
+                .is_err());
+            assert_eq!(calls.get(), 1);
+        }
+
+        #[test]
+        fn proposals_are_bounded_validated_and_fail_closed() {
+            let dir = std::env::temp_dir().join(format!("pcagent-prop-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("PRIVATE_NAME.bin"), vec![0u8; 4096]).unwrap();
+            let storage = Arc::new(StorageService::new());
+            let scope = storage.authorize(&dir).unwrap().scope_id;
+            storage
+                .scan_blocking(&scope, &ScanOptions::default(), &mut |_| {})
+                .unwrap();
+            let item = storage
+                .get_largest_items(&scope, ItemKind::Files, 0, 1)
+                .unwrap()
+                .items[0]
+                .item_ref
+                .clone();
+            let (mut c, policy, prefs) =
+                (Collector::new(), Policy::default(), Preferences::default());
+            let mut ws = Workstation::new(&mut c, storage, &policy, &prefs);
+            let calls = Rc::new(Cell::new(0));
+            ws.enable_action_proposals(desk("bounds", &calls));
+
+            let args = json!({"action_kind":"open_in_explorer","scope_id":scope,"item_ref":item})
+                .to_string();
+            let out = run(&mut ws, "prepare_action_plan", &args);
+            assert_eq!(
+                out.status,
+                Status::Error,
+                "non-Windows paths must be refused as protected"
+            );
+            assert!(
+                !out.cloud.to_string().contains("PRIVATE_NAME"),
+                "{}",
+                out.cloud
+            );
+            let args =
+                json!({"action_kind":"run_cleanup_adapter","scope_id":scope,"item_ref":item})
+                    .to_string();
+            assert_eq!(
+                run(&mut ws, "prepare_action_plan", &args).status,
+                Status::Error
+            );
+            for missing in [
+                r#"{"action_kind":"open_settings_page"}"#,
+                r#"{"action_kind":"open_in_explorer"}"#,
+            ] {
+                assert_eq!(
+                    run(&mut ws, "prepare_action_plan", missing).status,
+                    Status::Error
+                );
+            }
+            let settings = r#"{"action_kind":"open_settings_page","settings_page":"startupapps"}"#;
+            for _ in 0..crate::MAX_PENDING_PLANS {
+                assert_eq!(
+                    run(&mut ws, "prepare_action_plan", settings).status,
+                    Status::Ok
+                );
+            }
+            assert_eq!(
+                run(&mut ws, "prepare_action_plan", settings).status,
+                Status::Error
+            );
+            assert_eq!(ws.take_actions().unwrap().1.len(), crate::MAX_PENDING_PLANS);
+            assert_eq!(calls.get(), 0);
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }
