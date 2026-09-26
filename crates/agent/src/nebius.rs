@@ -1,4 +1,4 @@
-use super::{tool_definitions, AgentError, Model, Reply, ToolCall};
+use super::{AgentError, Model, Reply, ToolCall};
 use reqwest::{
     blocking::{Client, RequestBuilder},
     redirect::Policy,
@@ -164,7 +164,12 @@ fn parse_reply(envelope: Envelope) -> Result<Reply, AgentError> {
     })
 }
 impl Model for Nebius {
-    fn complete(&mut self, messages: &[Value], timeout: Duration) -> Result<Reply, AgentError> {
+    fn complete(
+        &mut self,
+        messages: &[Value],
+        tools: &Value,
+        timeout: Duration,
+    ) -> Result<Reply, AgentError> {
         let started = Instant::now();
         if !self.catalog_checked {
             self.check_catalog(timeout.min(Duration::from_secs(10)))?;
@@ -172,7 +177,7 @@ impl Model for Nebius {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .ok_or(AgentError::Budget)?;
-        let body = json!({"model":self.config.model_id,"messages":messages,"tools":tool_definitions(),
+        let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
             "tool_choice":"auto","max_tokens":4096,"temperature":0.0,"stream":false});
         let response = self.read_json(
             self.client
