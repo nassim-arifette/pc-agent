@@ -59,6 +59,8 @@ pub struct Adapter {
     pub side_effects: &'static [&'static str],
     pub tests: &'static [&'static str],
     pub validated: bool,
+    /// File that must exist directly inside the target before it may be preselected.
+    pub marker: Option<&'static str>,
 }
 impl Adapter {
     pub fn is_executable(&self) -> bool {
@@ -135,6 +137,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
             "plan::tests::synthetic_cache_reaches_goal",
         ],
         validated: true,
+        marker: Some(SYNTHETIC_CACHE_MARKER),
     },
     Adapter {
         id: "chrome.cache",
@@ -151,6 +154,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
         side_effects: &["Slower first loads", "Some sites may need to re-download assets"],
         tests: &["adapters::tests::known_caches_are_recommendation_only"],
         validated: false,
+        marker: None,
     },
     Adapter {
         id: "edge.cache",
@@ -167,6 +171,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
         side_effects: &["Slower first loads"],
         tests: &["adapters::tests::known_caches_are_recommendation_only"],
         validated: false,
+        marker: None,
     },
     Adapter {
         id: "npm.cache",
@@ -183,6 +188,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
         side_effects: &["Offline installs no longer possible until re-downloaded"],
         tests: &["adapters::tests::known_caches_are_recommendation_only"],
         validated: false,
+        marker: None,
     },
     Adapter {
         id: "cargo.registry_cache",
@@ -199,6 +205,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
         side_effects: &["Offline builds no longer possible until re-downloaded"],
         tests: &["adapters::tests::known_caches_are_recommendation_only"],
         validated: false,
+        marker: None,
     },
     Adapter {
         id: "pip.cache",
@@ -215,6 +222,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
         side_effects: &["Slower next install"],
         tests: &["adapters::tests::known_caches_are_recommendation_only"],
         validated: false,
+        marker: None,
     },
 ];
 
@@ -242,6 +250,9 @@ impl AdapterRegistry {
             }
         }
         Self { adapters: unique }
+    }
+    pub fn markers(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.adapters.iter().filter_map(|a| a.marker)
     }
     pub fn adapters(&self) -> &[Adapter] {
         &self.adapters

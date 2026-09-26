@@ -531,3 +531,18 @@ fn authorization_rejects_files_and_missing_paths() {
         StorageError::Io(_)
     ));
 }
+
+#[test]
+fn redact_names_keeps_only_generic_components() {
+    use crate::index::redact_names;
+    assert_eq!(redact_names("<scope>/CV Nassim.pdf"), "<scope>/*.pdf");
+    assert_eq!(
+        redact_names("<scope>/client-x/app/node_modules"),
+        "<scope>/*/*/node_modules"
+    );
+    assert_eq!(
+        redact_names("<scope>/<user>/Temp/日本語 🦀.bin"),
+        "<scope>/<user>/Temp/*.bin"
+    );
+    assert_eq!(redact_names("<scope>/secret.folder/x"), "<scope>/*/*");
+}

@@ -8,7 +8,7 @@ use pcagent_storage::{ItemKind, ScanJob, ScanOptions, StorageError, StorageServi
 use pcagent_telemetry::Collector;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::{sync::Arc, time::Duration};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 
 const SCOPE: Param = Param {
     name: "scope_id",
@@ -236,6 +236,12 @@ impl Workstation<'_> {
                 "edges": edges, "truncated": t.truncated, "limitations": t.limitations}),
         )
     }
+    fn has_adapter_marker(&self, dir: &Path) -> bool {
+        self.policy
+            .adapters
+            .markers()
+            .any(|m| fs::symlink_metadata(dir.join(m)).is_ok_and(|md| md.is_file()))
+    }
     fn metric_history(&self, args: &Args) -> ToolOutput {
         let Some(metric) = args
             .text("metric")
@@ -305,6 +311,10 @@ impl Workstation<'_> {
                     modified_unix_ms: i.modified_unix_ms,
                     attributes: Attributes::default(),
                     origin: Origin::Live,
+                    marker_verified: i.kind == ItemKind::Dirs
+                        && i.path
+                            .as_deref()
+                            .is_some_and(|p| self.has_adapter_marker(Path::new(p))),
                 })
             })
             .collect();
@@ -347,7 +357,7 @@ impl Toolbox for Workstation<'_> {
             }
             "get_storage_overview" => match self.storage.get_storage_overview(scope) {
                 Ok(o) => {
-                    let o = o.without_paths();
+                    let o = o.without_paths().redact_names();
                     let status = o.scan.as_ref().map_or(Status::Partial, |s| s.status);
                     let mut cloud = to_value(&o);
                     if let Some(map) = cloud.as_object_mut() {
@@ -376,7 +386,7 @@ impl Toolbox for Workstation<'_> {
                     .get_largest_items(scope, kind(args), offset, limit)
                 {
                     Ok(p) => {
-                        let p = p.without_paths();
+                        let p = p.without_paths().redact_names();
                         output(p.scan_status, to_value(&p))
                     }
                     Err(e) => storage_error(e),
@@ -435,6 +445,7 @@ mod tests {
             vec![0u8; 64 * 1024],
         )
         .unwrap();
+        fs::write(secret.join("CV_PRIVATE_NAME.pdf"), vec![0u8; 128 * 1024]).unwrap();
         let storage = Arc::new(StorageService::new());
         let scope = storage.authorize(&secret).unwrap().scope_id;
         storage
@@ -453,12 +464,19 @@ mod tests {
         for out in &outputs {
             let encoded = out.cloud.to_string();
             assert!(!encoded.contains("PRIVATE_ROOT_MARKER"), "{encoded}");
+            assert!(!encoded.contains("CV_PRIVATE_NAME"), "{encoded}");
             assert!(!encoded.contains(&*dir.to_string_lossy()), "{encoded}");
         }
-        assert_eq!(outputs[2].cloud["items"].as_array().map(Vec::len), Some(1));
+        let paths: Vec<&str> = outputs[2].cloud["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["redacted_path"].as_str())
+            .collect();
+        assert_eq!(paths, ["<scope>/*.pdf", "<scope>/node_modules/*.bin"]);
         assert_eq!(
             outputs[3].cloud["candidates"].as_array().map(Vec::len),
-            Some(1)
+            Some(2)
         );
         fs::remove_dir_all(&dir).unwrap();
     }

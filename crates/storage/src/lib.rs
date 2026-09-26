@@ -15,8 +15,8 @@ use portable as platform;
 use windows as platform;
 
 pub use index::{
-    dedup_parent_child, redact_path, ItemKind, ItemView, LargestItemsPage, LastUse, StorageIndex,
-    StorageOverview, Totals, VolumeSpace,
+    dedup_parent_child, redact_names, redact_path, ItemKind, ItemView, LargestItemsPage, LastUse,
+    StorageIndex, StorageOverview, Totals, VolumeSpace, GENERIC_NAMES,
 };
 pub use scan::{
     classify_attributes, AttributeClass, ClassicBackend, ATTR_COMPRESSED, ATTR_DIRECTORY,

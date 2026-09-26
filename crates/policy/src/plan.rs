@@ -519,6 +519,7 @@ mod tests {
             modified_unix_ms: None,
             attributes: Attributes::default(),
             origin: Origin::SyntheticFixture,
+            marker_verified: true,
         }
     }
     fn corpus() -> Vec<CandidateInput> {
