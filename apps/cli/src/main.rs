@@ -87,10 +87,10 @@ enum Command {
         #[arg(long)]
         preferences: Option<PathBuf>,
         /// Let the model propose action plans; each one is shown here for explicit approval.
-        #[arg(long, requires = "allow_cloud")]
+        #[arg(long)]
         propose_actions: bool,
         /// Directory for the local action journal (default: %LOCALAPPDATA%\pcagent\journal).
-        #[arg(long, requires = "propose_actions")]
+        #[arg(long)]
         journal_dir: Option<PathBuf>,
     },
     /// Create the clearly labelled synthetic cache used to demonstrate the cleanup adapter.
@@ -416,6 +416,15 @@ fn run(args: Args) -> Result<u8> {
                 Some(path) => Preferences::from_json(&fs::read_to_string(path)?)?,
                 None => Preferences::default(),
             };
+            if propose_actions && !allow_cloud {
+                return Err(
+                    "--propose-actions requires --allow-cloud: only the model proposes plans."
+                        .into(),
+                );
+            }
+            if journal_dir.is_some() && !propose_actions {
+                return Err("--journal-dir requires --propose-actions.".into());
+            }
             if allow_cloud && preferences.is_some() && !prefs.permissions.cloud_allowed {
                 return Err("The preferences file does not allow cloud requests (permissions.cloud_allowed is false).".into());
             }

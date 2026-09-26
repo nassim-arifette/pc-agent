@@ -96,8 +96,18 @@ fn stored_cloud_prohibition_overrides_allow_cloud() {
 }
 #[test]
 fn action_proposals_require_cloud_and_demo_cache_is_bounded() {
-    let out = cli(&["diagnose", "test", "--offline", "--propose-actions"]);
-    assert!(!out.status.success());
+    for args in [
+        &["diagnose", "test", "--propose-actions"][..],
+        &["diagnose", "test", "--offline", "--propose-actions"],
+        &["diagnose", "test", "--journal-dir", "x"],
+    ] {
+        let out = cli(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("requires"),
+            "{args:?}"
+        );
+    }
     assert!(!cli(&["demo-cache", "--mb", "0"]).status.success());
     assert!(!cli(&["demo-cache", "--mb", "257"]).status.success());
 }
