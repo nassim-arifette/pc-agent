@@ -94,3 +94,10 @@ fn stored_cloud_prohibition_overrides_allow_cloud() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("cloud_allowed"));
 }
+#[test]
+fn action_proposals_require_cloud_and_demo_cache_is_bounded() {
+    let out = cli(&["diagnose", "test", "--offline", "--propose-actions"]);
+    assert!(!out.status.success());
+    assert!(!cli(&["demo-cache", "--mb", "0"]).status.success());
+    assert!(!cli(&["demo-cache", "--mb", "257"]).status.success());
+}

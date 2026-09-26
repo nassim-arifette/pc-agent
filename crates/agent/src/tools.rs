@@ -65,7 +65,7 @@ impl ToolSpec {
                 }
                 ParamKind::OneOf(values) => json!({"type":"string","enum":values}),
                 ParamKind::OpaqueRef { prefix } => {
-                    json!({"type":"string","pattern":format!("^{prefix}[A-Za-z0-9-]+$"),"maxLength":MAX_REF_BYTES})
+                    json!({"type":"string","pattern":format!("^{prefix}[A-Za-z0-9:-]+$"),"maxLength":MAX_REF_BYTES})
                 }
             };
             let mut schema = schema;
@@ -113,7 +113,9 @@ impl ToolSpec {
                         s.len() <= MAX_REF_BYTES
                             && s.strip_prefix(prefix).is_some_and(|rest| {
                                 !rest.is_empty()
-                                    && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                                    && rest.bytes().all(|b| {
+                                        b.is_ascii_alphanumeric() || b == b'-' || b == b':'
+                                    })
                             })
                     })
                     .map(|s| ArgValue::Text(s.into())),

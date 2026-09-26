@@ -9,7 +9,10 @@ pub mod plan;
 pub mod prefs;
 pub mod protect;
 
-pub use adapters::{Adapter, AdapterRegistry, ExecutionMode, RecoveryStatus};
+pub use adapters::{
+    Adapter, AdapterRegistry, ExecutionMode, RecoveryStatus, SYNTHETIC_CACHE_ID,
+    SYNTHETIC_CACHE_MARKER,
+};
 pub use classify::{Attributes, CandidateInput, Classification, CleanupClass, PersonalKind};
 pub use path::{NormalizedPath, PathRefusal};
 pub use plan::{
