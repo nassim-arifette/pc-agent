@@ -1,17 +1,22 @@
 #![forbid(unsafe_code)]
 use clap::{Parser, Subcommand};
 use pcagent_agent::{
-    cloud_observation, investigate, local_report, Config, Investigation, Nebius, SnapshotTools,
-    MAX_QUESTION_BYTES,
+    cloud_observation, investigate, local_report, Config, Investigation, Nebius, Workstation,
+    MAX_QUESTION_BYTES, WORKSTATION_TOOLS,
 };
+use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{Evidence, Metric, Snapshot, Status};
+use pcagent_storage::{ItemKind, ScanOptions, StorageService};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
 use serde_json::json;
 use std::{
     error::Error,
+    fs,
     io::{self, Write},
+    path::PathBuf,
     process::ExitCode,
+    sync::Arc,
     time::Duration,
 };
 
@@ -41,6 +46,15 @@ enum Command {
         #[arg(long,default_value_t=10,value_parser=clap::value_parser!(u16).range(1..=50))]
         limit: u16,
     },
+    /// Scan one explicitly authorized folder read-only (metadata only; links are never followed).
+    Storage {
+        root: PathBuf,
+        #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+        /// Rank directories instead of files.
+        #[arg(long)]
+        dirs: bool,
+    },
     /// Check local capabilities and configuration, offline unless explicitly requested.
     Doctor {
         /// Authorize a catalog request to Nebius using your key; sends no telemetry.
@@ -62,6 +76,12 @@ enum Command {
         /// Print only completed local tool calls; never print model reasoning or secrets.
         #[arg(long)]
         verbose: bool,
+        /// Authorize a folder the model may scan (metadata only), as an opaque scope. Repeatable.
+        #[arg(long)]
+        scan_root: Vec<PathBuf>,
+        /// JSON preferences file (exclusions, preserved apps, permissions).
+        #[arg(long)]
+        preferences: Option<PathBuf>,
     },
 }
 fn write_json(value: &impl Serialize) -> Result<()> {
@@ -197,6 +217,43 @@ fn run(args: Args) -> Result<u8> {
             }
             Ok(if sample.has_observations() { 0 } else { 3 })
         }
+        Command::Storage { root, limit, dirs } => {
+            let storage = StorageService::new();
+            let scope = storage.authorize(&root)?.scope_id;
+            let summary = storage.scan_blocking(&scope, &ScanOptions::default(), &mut |_| {})?;
+            let kind = if dirs {
+                ItemKind::Dirs
+            } else {
+                ItemKind::Files
+            };
+            let overview = storage.get_storage_overview(&scope)?;
+            let largest = storage.get_largest_items(&scope, kind, 0, usize::from(limit))?;
+            if args.json {
+                write_json(&json!({"overview":overview,"largest":largest}))?;
+            } else {
+                let mut out = io::stdout().lock();
+                writeln!(
+                    out,
+                    "Scan {:?} in {} ms | {:?}",
+                    summary.status, summary.duration_ms, summary.coverage
+                )?;
+                for item in &largest.items {
+                    // Debug formatting escapes control characters in untrusted file names.
+                    writeln!(
+                        out,
+                        "{:>12} logical, {:>12} allocated | {:?}",
+                        item.logical_bytes,
+                        item.allocated_bytes
+                            .map_or("unknown".into(), |b| b.to_string()),
+                        item.path.as_deref().unwrap_or(&item.redacted_path)
+                    )?;
+                }
+                for limit in &largest.limitations {
+                    writeln!(out, "Limit: {limit}")?;
+                }
+            }
+            Ok(if summary.status == Status::Ok { 0 } else { 3 })
+        }
         Command::Doctor { check_cloud } => {
             let cloud_result = if check_cloud {
                 Some(
@@ -225,7 +282,17 @@ fn run(args: Args) -> Result<u8> {
             allow_cloud,
             preview_cloud,
             verbose,
+            scan_root,
+            preferences,
         } => {
+            let prefs = match &preferences {
+                Some(path) => Preferences::from_json(&fs::read_to_string(path)?)?,
+                None => Preferences::default(),
+            };
+            let storage = Arc::new(StorageService::new());
+            for root in &scan_root {
+                storage.authorize(root)?;
+            }
             if question.trim().is_empty() || question.len() > MAX_QUESTION_BYTES {
                 return Err(pcagent_agent::AgentError::InvalidQuestion.into());
             }
@@ -242,29 +309,29 @@ fn run(args: Args) -> Result<u8> {
             if preview_cloud {
                 write_json(
                     &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
-                    "question":question,"initial_observation":cloud_observation(&initial)}),
+                    "question":question,"initial_observation":cloud_observation(&initial),
+                    "tools":WORKSTATION_TOOLS.iter().map(|t| t.name).collect::<Vec<_>>(),
+                    "authorized_scopes":storage.scopes().len()}),
                 )?;
                 return Ok(0);
             }
+            let policy = Policy::from_env();
+            let mut workstation =
+                Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
             let report = match &mut model {
-                Some(model) => investigate(
-                    model,
-                    &question,
-                    &initial,
-                    &mut SnapshotTools::new(|processes, limit| {
-                        collector.snapshot(processes, limit)
-                    }),
-                    |event| {
-                        if verbose {
-                            eprintln!(
-                                "Completed {} [{:?}] in {} ms",
-                                event.tool, event.status, event.duration_ms
-                            );
-                        }
-                    },
-                ),
+                Some(model) => investigate(model, &question, &initial, &mut workstation, |event| {
+                    if verbose {
+                        eprintln!(
+                            "Completed {} [{:?}] in {} ms",
+                            event.tool, event.status, event.duration_ms
+                        );
+                    }
+                }),
                 None => local_report(&initial),
             };
+            for job in workstation.take_jobs() {
+                job.cancel();
+            }
             if args.json {
                 write_json(&report)?;
             } else {
