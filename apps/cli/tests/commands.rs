@@ -45,3 +45,37 @@ fn preview_does_not_send_or_leak_process_metadata() {
     assert!(value["initial_observation"].get("processes").is_none());
     assert!(value["initial_observation"].get("session_id").is_none());
 }
+#[test]
+fn storage_scan_is_read_only_and_reports_items() {
+    let dir = std::env::temp_dir().join(format!("pcagent-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.bin"), vec![1u8; 4096]).unwrap();
+    let out = cli(&["storage", dir.to_str().unwrap(), "--json", "--limit", "5"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["largest"]["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(std::fs::read(dir.join("a.bin")).unwrap().len(), 4096);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+#[test]
+fn preview_lists_tools_and_counts_scopes_without_paths() {
+    let dir = std::env::temp_dir().join(format!("pcagent-preview-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = cli(&[
+        "diagnose",
+        "test",
+        "--preview-cloud",
+        "--scan-root",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(!text.contains(&*dir.to_string_lossy()));
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["authorized_scopes"], 1);
+    assert!(value["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t == "get_largest_items"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -588,7 +588,9 @@ dependencies = [
  "clap",
  "pcagent-agent",
  "pcagent-diagnostics",
+ "pcagent-policy",
  "pcagent-shared",
+ "pcagent-storage",
  "pcagent-telemetry",
  "serde",
  "serde_json",
@@ -599,7 +601,10 @@ name = "pcagent-agent"
 version = "0.1.0"
 dependencies = [
  "pcagent-diagnostics",
+ "pcagent-policy",
  "pcagent-shared",
+ "pcagent-storage",
+ "pcagent-telemetry",
  "reqwest",
  "serde",
  "serde_json",

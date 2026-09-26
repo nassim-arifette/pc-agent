@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 mod nebius;
 mod tools;
+mod workstation;
 pub use nebius::{Config, Nebius};
 use pcagent_diagnostics::{analyze, Classification, Finding};
 use pcagent_shared::{
@@ -18,6 +19,7 @@ use thiserror::Error;
 pub use tools::{
     validate_call, ArgValue, Args, Param, ParamKind, SnapshotTools, ToolOutput, ToolSpec, Toolbox,
 };
+pub use workstation::{Workstation, HISTORY_METRICS, WORKSTATION_TOOLS};
 
 pub const MAX_ROUNDS: usize = 6;
 pub const MAX_TOOLS: usize = 12;
