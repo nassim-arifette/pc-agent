@@ -104,7 +104,7 @@ impl Adapter {
 
 const SYNTHETIC_CACHE_DIR: &[&str] = &["pcagent", "synthetic-demo-cache"];
 pub const SYNTHETIC_CACHE_ID: &str = "pcagent.synthetic_demo_cache";
-pub const SYNTHETIC_CACHE_MARKER: &str = "PCAGENT_SYNTHETIC_CACHE";
+pub const SYNTHETIC_CACHE_MARKER: &str = "PCAGENT_SYNTHETIC_DEMO_CACHE.txt";
 
 const BROWSER_CONDITIONS: &[&str] = &[
     "Browser closed",
@@ -119,7 +119,7 @@ pub const BUILTIN_ADAPTERS: &[Adapter] = &[
         targets: &[TargetPattern { base: Base::LocalAppData, relative: SYNTHETIC_CACHE_DIR }],
         recognized_conditions: &[
             "Directory created by the pcagent synthetic demo generator",
-            "Contains the PCAGENT_SYNTHETIC_CACHE marker file",
+            "Contains the PCAGENT_SYNTHETIC_DEMO_CACHE.txt marker file",
         ],
         preconditions: &[
             "Marker file present and unchanged",
