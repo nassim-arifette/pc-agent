@@ -615,6 +615,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcagent-policy"
+version = "0.1.0"
+dependencies = [
+ "pcagent-shared",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "pcagent-shared"
 version = "0.1.0"
 dependencies = [
