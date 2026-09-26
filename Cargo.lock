@@ -624,6 +624,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcagent-storage"
+version = "0.1.0"
+dependencies = [
+ "pcagent-shared",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pcagent-telemetry"
 version = "0.1.0"
 dependencies = [
