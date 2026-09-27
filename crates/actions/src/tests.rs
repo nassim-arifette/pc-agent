@@ -546,6 +546,7 @@ fn no_elevation_termination_shell_or_permanent_delete_code() {
         "cmd.exe",
         "powershell",
         "DeleteFile",
+        "SHFileOperation",
         "remove_file",
         "PROCESS_TERMINATE",
         "PROCESS_ALL_ACCESS",
@@ -553,6 +554,7 @@ fn no_elevation_termination_shell_or_permanent_delete_code() {
         assert!(!native.contains(banned), "{banned}");
     }
     assert!(native.contains("FOF_ALLOWUNDO"));
+    assert!(native.contains("FOFX_RECYCLEONDELETE"));
 }
 
 #[test]
@@ -750,9 +752,243 @@ fn native_guard_tracks_disposable_temp_file_identity() {
             .unwrap()
             .unwrap()
     ));
-    assert!(matches!(
+    assert_eq!(
         NativeEffects::default().capability(ActionKind::RecycleSelectedFiles),
-        Capability::RecommendationOnly(_)
+        Capability::Executable
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn recycled_evidence(expected: &FileIdentity) -> crate::RecycleEvidence {
+    let item = r"C:\$Recycle.Bin\S-1-5-21-1\$RABC123.txt".to_owned();
+    crate::RecycleEvidence {
+        shell_succeeded: true,
+        recycled_item: Some((item.clone(), Some(expected.clone()))),
+        tracked: Some((format!(r"\\?\{item}"), expected.clone())),
+        original_now: None,
+    }
+}
+
+#[test]
+fn recycle_bin_location_is_bound_to_the_original_volume() {
+    use crate::native::in_recycle_bin;
+    let original = Path::new(r"C:\Users\u\a.txt");
+    assert!(in_recycle_bin(
+        original,
+        r"C:\$Recycle.Bin\S-1-5-21-1\$RABC.txt"
     ));
+    assert!(in_recycle_bin(
+        original,
+        r"\\?\c:\$RECYCLE.BIN\S-1-5-21-1\$RABC.txt"
+    ));
+    for bad in [
+        r"D:\$Recycle.Bin\S-1-5-21-1\$RABC.txt",
+        r"C:\$Recycle.Bin\$RABC.txt",
+        r"C:\$Recycle.Bin\S-1\",
+        r"C:\$Recycle.Bin\S-1\..\x",
+        r"C:\Users\u\$Recycle.Bin\S-1\x",
+        r"C:\$Recycle.Binx\S-1\x",
+        r"C:\Users\u\a.txt",
+        "",
+    ] {
+        assert!(!in_recycle_bin(original, bad), "{bad}");
+    }
+    assert!(!in_recycle_bin(
+        Path::new(r"\\srv\share\a.txt"),
+        r"C:\$Recycle.Bin\S-1\x"
+    ));
+}
+
+#[test]
+fn recycle_post_check_fails_closed_on_any_mismatch() {
+    let original = Path::new(r"C:\Users\u\a.txt");
+    let expected = file_id(5);
+    let ok = recycled_evidence(&expected);
+    assert_eq!(crate::verify_recycled(original, &expected, &ok), Ok(()));
+
+    let mut other = expected.clone();
+    other.file_id = 6;
+    let mut resized = expected.clone();
+    resized.size_bytes = resized.size_bytes.checked_add(1).unwrap();
+    let mut touched = expected.clone();
+    touched.modified_filetime = 43;
+    let mut foreign_volume = expected.clone();
+    foreign_volume.volume_serial = 8;
+
+    type Mutation = Box<dyn Fn(&mut crate::RecycleEvidence)>;
+    let cases: Vec<(&str, Mutation)> = vec![
+        ("shell failed", Box::new(|e| e.shell_succeeded = false)),
+        ("permanently deleted", Box::new(|e| e.recycled_item = None)),
+        (
+            "item outside the bin",
+            Box::new(|e| e.recycled_item.as_mut().unwrap().0 = r"C:\Users\u\a.txt".into()),
+        ),
+        (
+            "bin on another volume",
+            Box::new(|e| {
+                e.recycled_item.as_mut().unwrap().0 = r"D:\$Recycle.Bin\S-1\$RABC123.txt".into()
+            }),
+        ),
+        (
+            "swapped file recycled",
+            Box::new(move |e| e.recycled_item.as_mut().unwrap().1 = Some(other.clone())),
+        ),
+        (
+            "recycled item unreadable",
+            Box::new(|e| e.recycled_item.as_mut().unwrap().1 = None),
+        ),
+        (
+            "size changed",
+            Box::new(move |e| e.recycled_item.as_mut().unwrap().1 = Some(resized.clone())),
+        ),
+        (
+            "mtime changed",
+            Box::new(move |e| e.recycled_item.as_mut().unwrap().1 = Some(touched.clone())),
+        ),
+        ("tracker lost", Box::new(|e| e.tracked = None)),
+        (
+            "tracked file elsewhere",
+            Box::new(|e| e.tracked.as_mut().unwrap().0 = r"C:\Users\u\moved.txt".into()),
+        ),
+        (
+            "tracked object differs",
+            Box::new(move |e| e.tracked.as_mut().unwrap().1 = foreign_volume.clone()),
+        ),
+        (
+            "original still present",
+            Box::new(|e| e.original_now = Some(file_id(5))),
+        ),
+    ];
+    for (name, mutate) in cases {
+        let mut evidence = recycled_evidence(&expected);
+        mutate(&mut evidence);
+        assert!(
+            crate::verify_recycled(original, &expected, &evidence).is_err(),
+            "{name}"
+        );
+    }
+    let mut replaced_at_path = recycled_evidence(&expected);
+    replaced_at_path.original_now = Some(file_id(9));
+    assert_eq!(
+        crate::verify_recycled(original, &expected, &replaced_at_path),
+        Ok(())
+    );
+}
+
+#[cfg(windows)]
+fn native_temp_file(tag: &str, contents: &[u8]) -> (PathBuf, FileTarget) {
+    let dir = temp_dir(tag);
+    let canonical = std::fs::canonicalize(&dir).unwrap();
+    let dir_str = canonical
+        .to_str()
+        .unwrap()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    let path = PathBuf::from(format!(r"{dir_str}\target.txt"));
+    std::fs::write(&path, contents).unwrap();
+    let identity = NativeGuard.observe_file(&path).unwrap().unwrap();
+    (dir, FileTarget { path, identity })
+}
+
+#[cfg(windows)]
+#[test]
+fn native_pin_forbids_rename_delete_and_write_by_others() {
+    let (dir, file) = native_temp_file("pin", b"pinned");
+    let moved = dir.join("moved.txt");
+    let pin = crate::windows::pin_verified(&file).unwrap();
+    assert!(std::fs::rename(&file.path, &moved).is_err());
+    assert!(std::fs::remove_file(&file.path).is_err());
+    assert!(std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file.path)
+        .is_err());
+    assert_eq!(
+        NativeGuard.observe_file(&file.path).unwrap(),
+        Some(file.identity.clone())
+    );
+    drop(pin);
+    std::fs::rename(&file.path, &moved).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn native_recycle_refuses_swapped_hard_linked_in_use_and_protected_targets() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let fx = NativeEffects::default();
+    let permit = crate::broker::test_permit();
+
+    let (dir, file) = native_temp_file("swap", b"original");
+    std::fs::rename(&file.path, dir.join("original.txt")).unwrap();
+    std::fs::write(&file.path, b"original").unwrap();
+    assert_eq!(
+        fx.recycle_file(&permit, &file).unwrap(),
+        EffectOutcome::Refused(Refusal::TargetReplaced)
+    );
+    assert!(file.path.exists() && dir.join("original.txt").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let (dir, file) = native_temp_file("links", b"linked");
+    std::fs::hard_link(&file.path, dir.join("second.txt")).unwrap();
+    let file = FileTarget {
+        identity: NativeGuard.observe_file(&file.path).unwrap().unwrap(),
+        ..file
+    };
+    assert_eq!(
+        fx.recycle_file(&permit, &file).unwrap(),
+        EffectOutcome::Refused(Refusal::MultipleLinks)
+    );
+    assert!(file.path.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let (dir, file) = native_temp_file("busy", b"busy");
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ only: no one else may delete or rename.
+        .open(&file.path)
+        .unwrap();
+    assert_eq!(
+        fx.recycle_file(&permit, &file).unwrap(),
+        EffectOutcome::Refused(Refusal::InUse)
+    );
+    drop(holder);
+    assert!(file.path.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let (dir, file) = native_temp_file("missing", b"gone");
+    std::fs::remove_file(&file.path).unwrap();
+    assert_eq!(
+        fx.recycle_file(&permit, &file).unwrap(),
+        EffectOutcome::Refused(Refusal::TargetMissing)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let protected = FileTarget {
+        path: r"C:\Windows\win.ini".into(),
+        identity: file_id(1),
+    };
+    assert_eq!(
+        fx.recycle_file(&permit, &protected).unwrap(),
+        EffectOutcome::Refused(Refusal::Protected)
+    );
+    assert!(protected.path.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn native_recycle_moves_exactly_the_verified_file() {
+    let (dir, file) = native_temp_file("recycle", b"recycle me");
+    let sibling = dir.join("keep.txt");
+    std::fs::write(&sibling, b"keep").unwrap();
+    match NativeEffects::default().recycle_file(&crate::broker::test_permit(), &file) {
+        Ok(EffectOutcome::Done(_)) => {
+            assert_eq!(NativeGuard.observe_file(&file.path).unwrap(), None);
+            assert!(sibling.exists());
+        }
+        Err(e) if e.status == Status::Unsupported => {
+            eprintln!("recycle bin unavailable on this runner: {}", e.detail);
+        }
+        other => panic!("{other:?}; target still present: {}", file.path.exists()),
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

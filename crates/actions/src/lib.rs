@@ -32,6 +32,8 @@ pub use journal::{
 pub use native::{
     explorer_select_arg, is_windows_absolute, BaselineProtection, NativeEffects, NativeGuard,
 };
+#[cfg_attr(not(windows), allow(unused_imports))]
+pub(crate) use native::{same_object, verify_recycled, RecycleEvidence};
 pub use plan::{
     ActionIntent, ActionKind, ActionPlan, CleanupTarget, FileIdentity, FileTarget, PlanItem,
     PlanModelView, PlanState, Precondition, ProcessIdentity, ProcessTarget, Recovery,

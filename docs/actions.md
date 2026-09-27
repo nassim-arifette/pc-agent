@@ -26,7 +26,8 @@ text such as "fais tout" are rejected and can never produce approval.
   `NativeGuard`), `open_settings_page` (allowlisted page) and `run_cleanup_adapter` (a directory the
   policy classifies as `pcagent.synthetic_demo_cache` with a verified marker, reopened with
   `SyntheticDemoCache::open`; refused when `permissions.reversible_only`). `recycle_selected_files`
-  and `request_normal_close` cannot be proposed; recycle remains recommendation-only.
+  and `request_normal_close` cannot be proposed. Recycle is executable in the actions crate but
+  is not a model-proposable kind; wiring it is left to the coordinator.
 - Targets are resolved locally into a `FixedTargets` resolver and checked by `PolicyProtection`
   (baseline + policy protected paths + user exclusions). The model gets `PlanModelView` only; at most
   `MAX_PENDING_PLANS` (3) per investigation.
@@ -81,12 +82,48 @@ Effects take a `Permit` only the broker can build. `Capability` gates `prepare_p
 | `open_in_explorer` | `%WINDIR%\explorer.exe /select,"<path>"` via `Command::raw_arg`, no shell; paths with `" < > | ? * /`, controls or extra `:` refused | yes |
 | `open_settings_page` | fixed allowlist `storagesense`, `appsfeatures`, `startupapps` → `ms-settings:` via explorer.exe | yes |
 | `request_normal_close` | process handle held (`QUERY_LIMITED_INFORMATION | SYNCHRONIZE`), identity rechecked, `WM_CLOSE` to visible unowned top-level windows, bounded wait; never `TerminateProcess` | yes |
-| `recycle_selected_files` | `SHFileOperationW(FO_DELETE, FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | ...)` after `SHQueryRecycleBinW`; identity checked on a held handle; afterwards the handle's final path must be in `$Recycle.Bin`; no permanent-delete fallback | **recommendation only** |
+| `recycle_selected_files` | exclusive pin + `IFileOperation::DeleteItem` (`FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_EARLYFAILURE`, no UI) after `SHQueryRecycleBinW`, fail-closed post-check (below); no permanent-delete fallback | yes |
 | `run_cleanup_adapter` | `SyntheticDemoCache`: pcagent-created directory with a marker file; removes only regular files directly inside it | only when a cache is configured |
 
-Recycle is not exposed as executable: the shell API reopens the path, so the validated object cannot
-be guaranteed to be the operated object (spec 11.3). The backend is implemented and cross-checked so
-an `IFileOperation`/handle-bound variant can replace it later.
+### Recycle binding (spec 11.3)
+
+`windows::recycle_file` runs on its own COM STA thread (`IFileOperation` requires STA):
+
+1. Refuse `BaselineProtection` paths (the broker has already applied `PolicyProtection`).
+2. Pin: `CreateFileW(DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ,
+   FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)`. Without `FILE_SHARE_DELETE` /
+   `FILE_SHARE_WRITE` no other open can rename, delete, replace or write the file while the pin is
+   held; if someone else already has such access the open fails and the item is refused `in_use`.
+3. On the pinned handle: `GetFileInformationByHandle` identity (volume serial, file id, size,
+   mtime) must equal the plan's, no reparse point, final path (`GetFinalPathNameByHandleW`) equal
+   to the planned path, not a directory, exactly one hard link (`multiple_links` otherwise, since
+   recycling one name would not remove the data), NTFS (`GetVolumeInformationByHandleW`).
+4. A share-all attribute handle is opened while pinned, so it is bound to the same object and
+   follows it through the move into the recycle bin.
+5. `SHCreateItemFromParsingName(path)` + `IFileOperation::DeleteItem` + `PerformOperations`, with
+   an `IFileOperationProgressSink`. The pin is closed in `StartOperations` (see below).
+   `PreDeleteItem` checks that it is the only item, the `TSF_DELETE_RECYCLE_IF_POSSIBLE` flag is
+   set, the item path is the planned path, the tracking handle still sees the same object with one
+   link and the path still names it (not through a reparse point); otherwise it aborts. Any
+   rename/move/copy/new-item callback aborts.
+6. Post-check (`native::verify_recycled`, pure and unit-tested): operation succeeded and was not
+   aborted; `PostDeleteItem` reported a recycle bin item (otherwise it may have been deleted
+   permanently); that item is under `<same drive>:\$Recycle.Bin\<SID>\` and has the same volume,
+   file id, size and mtime; the tracking handle's final path is that item; the original path no
+   longer names the object. Any mismatch is an error, never `done`.
+
+**Remaining limitation.** The shell takes items only as paths/PIDLs and opens the file itself
+with `DELETE`; there is no documented handle-based recycle API. It does so twice: in a pre-flight
+step after `StartOperations` and before `PreDeleteItem` (observed on Windows 11 with and without
+`FOFX_EARLYFAILURE`, `FOF_WANTNUKEWARNING` and `FOFX_RECYCLEONDELETE`, and on the `windows-latest`
+runner; with the pin still held it fails with
+`COPYENGINE_E_SHARING_VIOLATION_DEST`, `0x80270028`), and for the move itself. The pin is therefore
+released in `StartOperations`, the last callback before that pre-flight open. From then until the
+move, a local process with write access to the parent directory could swap the file. A swap before
+`PreDeleteItem` makes it abort; one after it cannot be prevented through the shell, is detected by
+step 6 and reported as an error (the substituted file is then in the recycle bin, i.e. restorable,
+not deleted), and the verified file stays at its original path or wherever it was moved. Content
+written to the file after the pin is released changes its size or mtime and also fails step 6.
 
 Non-Windows builds report `Status::Unsupported` for every native effect and observation.
 
@@ -111,6 +148,8 @@ replayed. Reads are bounded (16 MiB per journal, 64 KiB per line, 4096 journals)
 
 Everything under `src/windows.rs` is only compiled/clippy-checked for `x86_64-pc-windows-msvc` here.
 The CI `windows-latest` job runs one `#[cfg(windows)]` test (identity of a disposable temp file and
-of the test process). Not exercised natively: Explorer and Settings launching, `WM_CLOSE`
-behaviour, recycle bin operation and its post-check, boot id stability across clock changes, and
+of the test process). Recycle has `#[cfg(windows)]` tests for the pin (rename/delete/write by
+others refused while pinned), refusal of swapped, hard-linked, in-use, missing and protected targets,
+and an end-to-end recycle of a temp file (skipped if the runner has no recycle bin). Not exercised
+natively: Explorer and Settings launching, `WM_CLOSE` behaviour, boot id stability across clock changes, and
 behaviour on non-NTFS, network, or redirected-folder volumes.
