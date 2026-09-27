@@ -19,6 +19,23 @@ pub enum Classification {
     NoContentionObserved,
     InsufficientEvidence,
 }
+impl Classification {
+    /// Short heading for human-readable output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LowAvailableMemory => "Low available memory",
+            Self::HighCommitRatio => "System commit close to its limit",
+            Self::HighCpuSample => "High CPU use",
+            Self::LargestMemoryContributor => "Largest memory contributor",
+            Self::HighDiskLatency => "High disk latency",
+            Self::HardFaultPressure => "Heavy hard-fault paging",
+            Self::SaturatedLogicalProcessor => "One processor core saturated",
+            Self::HighGpuEngineSample => "High GPU engine use",
+            Self::NoContentionObserved => "No contention observed",
+            Self::InsufficientEvidence => "Insufficient evidence",
+        }
+    }
+}
 /// Evidence support levels (spec 8.3). Not statistical probabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +43,15 @@ pub enum Support {
     Supported,
     Plausible,
     Insufficient,
+}
+impl Support {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Plausible => "plausible",
+            Self::Insufficient => "insufficient",
+        }
+    }
 }
 /// A locally generated statement whose numbers all come from referenced evidence.
 #[derive(Debug, Clone, Serialize)]
@@ -464,8 +490,12 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         snapshot
             .evidence
             .iter()
-            .filter(|e| e.entity_ref == "system" && e.usable_value().is_some())
-            .map(|e| fact(format!("{:?} was measured by {}.", e.metric, e.source), &[e]))
+            .filter(|e| e.entity_ref == "system")
+            .filter_map(|e| {
+                let value = e.usable_value()?;
+                let text = format!("{} was {}.", e.metric.label(), e.metric.format_value(value));
+                Some(fact(text, &[e]))
+            })
             .collect(),
     );
     abstain.support = Support::Insufficient;
@@ -765,5 +795,22 @@ mod tests {
                 assert!(s.evidence.iter().any(|e| e.id == id));
             }
         }
+    }
+    #[test]
+    fn abstention_facts_state_measured_values() {
+        let s = sample(&[
+            (Metric::CpuBusyBasisPoints, 1_124),
+            (Metric::DiskIdleBasisPoints, 9_806),
+        ]);
+        let findings = analyze(&s);
+        let abstain = findings
+            .iter()
+            .find(|f| f.classification == Classification::InsufficientEvidence)
+            .unwrap();
+        let texts: Vec<&str> = abstain.facts.iter().map(|f| f.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["CPU (all cores) was 11.2%.", "Disk idle time was 98.1%."]
+        );
     }
 }

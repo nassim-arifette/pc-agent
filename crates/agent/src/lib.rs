@@ -84,12 +84,21 @@ pub struct Reply {
     pub content: Option<String>,
     pub total_tokens: Option<u64>,
 }
+/// Whether the model may answer this turn or must call a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolChoice {
+    Auto,
+    /// No conclusion before a real inspection: the initial observation already carries candidate
+    /// findings, and models otherwise tend to select one without calling any tool.
+    Required,
+}
 /// A replaceable transport: unit tests use scripted replies, never a live paid provider.
 pub trait Model {
     fn complete(
         &mut self,
         messages: &[Value],
         tools: &Value,
+        choice: ToolChoice,
         timeout: Duration,
     ) -> Result<Reply, AgentError>;
 }
@@ -279,9 +288,15 @@ pub fn investigate(
             return result.partial(AgentError::Budget);
         }
         result.stats.inference_calls += 1;
+        let choice = if result.stats.tool_calls == 0 {
+            ToolChoice::Required
+        } else {
+            ToolChoice::Auto
+        };
         let reply = match model.complete(
             &messages,
             &definitions,
+            choice,
             remaining.min(Duration::from_secs(30)),
         ) {
             Ok(reply) => reply,
@@ -363,10 +378,18 @@ mod tests {
     struct Script {
         replies: VecDeque<Result<Reply, AgentError>>,
         calls: usize,
+        choices: Vec<ToolChoice>,
     }
     impl Model for Script {
-        fn complete(&mut self, _: &[Value], _: &Value, _: Duration) -> Result<Reply, AgentError> {
+        fn complete(
+            &mut self,
+            _: &[Value],
+            _: &Value,
+            choice: ToolChoice,
+            _: Duration,
+        ) -> Result<Reply, AgentError> {
             self.calls += 1;
+            self.choices.push(choice);
             self.replies.pop_front().expect("script exhausted")
         }
     }
@@ -413,6 +436,7 @@ mod tests {
         Script {
             replies: replies.into_iter().map(Ok).collect(),
             calls: 0,
+            choices: Vec::new(),
         }
     }
     #[test]
@@ -510,6 +534,7 @@ mod tests {
         assert_eq!(events, 1);
         assert_eq!(r.stats.inference_calls, 2);
         assert_eq!(r.stats.total_tokens, Some(20));
+        assert_eq!(m.choices, [ToolChoice::Required, ToolChoice::Auto]);
     }
     #[test]
     fn fabricated_finding_and_free_form_claims_are_rejected() {
@@ -602,6 +627,7 @@ mod tests {
         let mut m = Script {
             replies: vec![Err(AgentError::Network)].into(),
             calls: 0,
+            choices: Vec::new(),
         };
         let r = investigate(
             &mut m,
