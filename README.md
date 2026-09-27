@@ -1,6 +1,6 @@
 # PC Agent
 
-A CLI-first Windows investigation agent, read-only by default, with locally approved actions. Based on **PC Agent specification v0.1 (2026-09-25)**. This is an early prototype, not a finished optimizer or a validated hackathon submission.
+A Windows investigation agent with a desktop app and a CLI, read-only by default, with locally approved actions. Based on **PC Agent specification v0.1 (2026-09-25)**. This is an early prototype, not a finished optimizer or a validated hackathon submission.
 
 ## Implemented in this first slice
 
@@ -17,6 +17,28 @@ A CLI-first Windows investigation agent, read-only by default, with locally appr
 All commands support `--json`. Output marks missing measurements explicitly rather than substituting zero. Non-Windows builds are useful for portable tests but do **not** collect Linux/macOS metrics as though they were Windows measurements.
 
 Scans read metadata only and may run in background workers during an investigation; cancellation and normal shutdown join those workers. Actions require a separate opt-in and a typed local approval. The executable cleanup adapter removes only approved files in a marked synthetic demo cache on Windows/NTFS. There is no elevation, forced process termination, startup modification or automatic cloud request. Interrupted actions are reported from the journal on the next action-enabled run; they are never replayed automatically.
+
+## Desktop app
+
+`pcagent-gui` (`apps/gui`, Tauri 2) runs the same core in a window: live memory, processor, disk
+and NVIDIA graphics cards; investigations that show each step as it really runs, with a Stop
+button, the answer's support level, what argues against it and what could not be checked; a
+storage screen that scans a chosen or dropped folder and lists its largest folders and files; and
+settings for the Nebius key and model, theme (light, dark), language (English, French) and
+animations. Iris, the mascot, reflects what is actually happening: measuring, waiting on
+Nemotron, or the kind of result.
+
+Local analysis is the default. Before an AI investigation, the window lists what is sent and
+what is never sent, can show the exact first message, and asks for confirmation; budget
+extensions are asked the same way, with the cost so far. The key is stored by the Rust side in
+the same `%APPDATA%\pcagent\.env` file as the CLI and never reaches the page.
+
+```powershell
+cargo run --release --locked -p pcagent-gui
+```
+
+The first build compiles Tauri (about 3 GB in `target\`). Design, architecture, security and the
+browser-based design review are described in [the desktop app notes](docs/gui.md).
 
 ## Build and run on Windows
 
@@ -87,6 +109,7 @@ Reports distinguish `execution_status` (`completed`, `budget_exhausted`, `failed
 
 ```text
 apps/cli/             argument parsing and rendering
+apps/gui/             desktop window (Tauri 2): commands and events in Rust, interface in ui/ (docs/gui.md)
 crates/shared/        versioned observations, units, statuses and process identities
 crates/telemetry/     read-only Windows adapters; unsupported results elsewhere
 crates/diagnostics/   conservative deterministic candidate findings
@@ -96,7 +119,7 @@ crates/policy/        protected paths, preferences, cleanup classification and p
 crates/actions/       manifests, local single-use approval, restricted action catalog (docs/actions.md)
 ```
 
-The CLI has no cleanup or diagnostic business rules. The crates are intended to be reusable by a future Tauri interface. Unsafe code is isolated to the native Windows adapter; all other crates forbid it.
+The CLI and the desktop app have no cleanup or diagnostic business rules; both call the same crates. Unsafe code is isolated to the native Windows adapter; all other crates forbid it.
 
 ## Validation
 
@@ -114,7 +137,7 @@ The tests cover missing/stale data, large integers, CPU counter regressions, com
 
 ## Known gaps versus the specification
 
-Action plans are proposed by the model, approved in the CLI and verified according to the effect: actual deleted bytes and volume space for cleanup, system windows for normal close, no performance verdict for Explorer or Settings. Recycle Bin moves are implemented and verified in the actions crate but cannot be proposed by the model yet. Storage investigations can need more than the initial six turns. The interactive extension prompt now continues the same investigation after explicit consent; unattended runs retain a partial report when the budget is exhausted. Disk latency/idle/queue, hard-fault page reads, per-core CPU and GPU engine utilization come from `_Total`/aggregated PDH counters only (no per-device disk attribution, no per-process GPU/disk attribution). NVIDIA GPUs also report temperature, memory, SM clock, power and slowdown reasons through NVML; other GPUs report only engine utilization. No persistent history, NTFS MFT backend, Tauri UI, installer or Tavily integration is implemented yet. `doctor` does not yet validate the Windows build number or storage/database capabilities. Process identities use session-local aliases plus PID and creation time; a true boot identifier is explicitly absent and cross-boot correlation is disabled. Large (>64 logical processor) systems report aggregate CPU as unsupported rather than misreporting one processor group as the whole machine.
+Action plans are proposed by the model, approved in the CLI and verified according to the effect: actual deleted bytes and volume space for cleanup, system windows for normal close, no performance verdict for Explorer or Settings. Recycle Bin moves are implemented and verified in the actions crate but cannot be proposed by the model yet. Storage investigations can need more than the initial six turns. The interactive extension prompt now continues the same investigation after explicit consent; unattended runs retain a partial report when the budget is exhausted. Disk latency/idle/queue, hard-fault page reads, per-core CPU and GPU engine utilization come from `_Total`/aggregated PDH counters only (no per-device disk attribution, no per-process GPU/disk attribution). NVIDIA GPUs also report temperature, memory, SM clock, power and slowdown reasons through NVML; other GPUs report only engine utilization. No persistent history, NTFS MFT backend, installer or Tavily integration is implemented yet; the desktop app does not offer action proposals yet, and finding texts stay in English when it is in French. `doctor` does not yet validate the Windows build number or storage/database capabilities. Process identities use session-local aliases plus PID and creation time; a true boot identifier is explicitly absent and cross-boot correlation is disabled. Large (>64 logical processor) systems report aggregate CPU as unsupported rather than misreporting one processor group as the whole machine.
 
 JSON byte counts remain exact 64-bit integers in Rust. Future JavaScript/IPC consumers must preserve them as BigInt or a lossless representation; a JavaScript Number is not safe for every value.
 
