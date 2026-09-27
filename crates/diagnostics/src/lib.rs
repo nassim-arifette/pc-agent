@@ -2,7 +2,11 @@
 #![forbid(unsafe_code)]
 mod compare;
 pub use compare::{compare, Comparison, Direction, Outcome, WindowSummary};
-use pcagent_shared::{ratio_basis_points, Evidence, Metric, Snapshot, SCHEMA_VERSION};
+use pcagent_shared::{
+    gpu_slowdown_reasons, ratio_basis_points, Evidence, Metric, Snapshot,
+    NVML_HW_POWER_BRAKE_SLOWDOWN, NVML_HW_SLOWDOWN, NVML_HW_THERMAL_SLOWDOWN,
+    NVML_SW_THERMAL_SLOWDOWN, SCHEMA_VERSION,
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -16,6 +20,10 @@ pub enum Classification {
     HardFaultPressure,
     SaturatedLogicalProcessor,
     HighGpuEngineSample,
+    /// An NVIDIA GPU reduced its clocks for heat or a hardware limit (NVML).
+    GpuClockSlowdown,
+    /// An NVIDIA GPU's memory was nearly full (NVML).
+    GpuMemoryPressure,
     NoContentionObserved,
     InsufficientEvidence,
 }
@@ -31,6 +39,8 @@ impl Classification {
             Self::HardFaultPressure => "Heavy hard-fault paging",
             Self::SaturatedLogicalProcessor => "One processor core saturated",
             Self::HighGpuEngineSample => "High GPU engine use",
+            Self::GpuClockSlowdown => "GPU slowed down by heat or a hardware limit",
+            Self::GpuMemoryPressure => "GPU memory nearly full",
             Self::NoContentionObserved => "No contention observed",
             Self::InsufficientEvidence => "Insufficient evidence",
         }
@@ -103,6 +113,13 @@ const HIGH_DISK_LATENCY_US: u64 = 50_000;
 /// Prototype trigger: 1 000 pages read per second to resolve hard faults.
 const HIGH_HARD_FAULTS_X100: u64 = 100_000;
 const DISK_AGGREGATE: &str = "Disk counters aggregate every physical disk (_Total); the affected device is not identified and one sample cannot separate a slow device from a burst of work.";
+/// NVML slowdowns that are not normal operation; a power cap alone is expected under load.
+const GPU_SLOWDOWN_BITS: u64 = NVML_HW_SLOWDOWN
+    | NVML_SW_THERMAL_SLOWDOWN
+    | NVML_HW_THERMAL_SLOWDOWN
+    | NVML_HW_POWER_BRAKE_SLOWDOWN;
+/// Prototype trigger: 90% of an NVIDIA GPU's memory in use (driver reserve included).
+const HIGH_GPU_MEMORY_BP: u64 = 9_000;
 const NO_PURCHASE: &str =
     "This observation is not a hardware replacement or purchase recommendation.";
 
@@ -412,6 +429,7 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         d.limitations.push(NO_PURCHASE.into());
         drafts.push(d);
     }
+    nvidia_findings(snapshot, &mut drafts);
     if let Some((p, e, bytes)) = largest_private_commit(snapshot) {
         let mut d = Draft::new(
             Classification::LargestMemoryContributor,
@@ -438,6 +456,8 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                     | Classification::HardFaultPressure
                     | Classification::SaturatedLogicalProcessor
                     | Classification::HighGpuEngineSample
+                    | Classification::GpuClockSlowdown
+                    | Classification::GpuMemoryPressure
             )
         });
         if a.4 >= 2_000 && c.4 < 8_000 && busy < 5_000 && !contended {
@@ -506,6 +526,84 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         .into_iter()
         .map(|d| d.build(snapshot, &missing))
         .collect()
+}
+
+/// NVIDIA devices read through NVML (`gpu-nvidia-<index>` entities).
+fn nvidia_findings(snapshot: &Snapshot, drafts: &mut Vec<Draft>) {
+    let mut devices: Vec<&str> = Vec::new();
+    for e in &snapshot.evidence {
+        if e.entity_ref.starts_with("gpu-nvidia-") && !devices.contains(&e.entity_ref.as_str()) {
+            devices.push(&e.entity_ref);
+        }
+    }
+    let value = |entity: &str, metric: Metric| {
+        snapshot
+            .evidence
+            .iter()
+            .find(|e| e.entity_ref == entity && e.metric == metric)
+            .and_then(|e| e.usable_value().map(|v| (e, v)))
+    };
+    let (mut slow, mut full) = (Vec::new(), Vec::new());
+    for entity in devices {
+        let name = format!("NVIDIA GPU {}", entity.trim_start_matches("gpu-nvidia-"));
+        if let Some((e, bits)) = value(entity, Metric::GpuSlowdownReasons)
+            .filter(|(_, bits)| bits & GPU_SLOWDOWN_BITS != 0)
+        {
+            slow.push(fact(
+                format!(
+                    "{name} reported slowdown reasons: {}.",
+                    gpu_slowdown_reasons(bits).join(", ")
+                ),
+                &[e],
+            ));
+            if let Some((t, celsius)) = value(entity, Metric::GpuTemperatureCelsius) {
+                slow.push(fact(format!("{name} was at {celsius} °C."), &[t]));
+            }
+        }
+        if let (Some((u, used)), Some((t, total))) = (
+            value(entity, Metric::GpuMemoryUsedBytes),
+            value(entity, Metric::GpuMemoryTotalBytes),
+        ) {
+            if let Some(bp) = ratio_basis_points(used, total).filter(|bp| *bp >= HIGH_GPU_MEMORY_BP)
+            {
+                full.push(fact(
+                    format!(
+                        "{name} had {} of {} memory in use ({}).",
+                        gib(used),
+                        gib(total),
+                        percent(bp)
+                    ),
+                    &[u, t],
+                ));
+            }
+        }
+    }
+    if !slow.is_empty() {
+        let mut d = Draft::new(
+            Classification::GpuClockSlowdown,
+            "An NVIDIA GPU was reducing its clocks because of heat or a hardware limit during this sample. Laptops do this near their limits; a sustained slowdown under load makes games and rendering slower.",
+            slow,
+        );
+        d.hypothesis = Some("If it persists under the same workload, cooling (dust, blocked vents, a soft surface under a laptop) or the power supply may be limiting the GPU.");
+        d.next_step = "Check the vents and airflow, then observe the GPU temperature and slowdown reasons again under the same workload.";
+        d.limitations.push(
+            "NVML reports the driver's state at one instant; a short spike can set a reason."
+                .into(),
+        );
+        d.limitations.push(NO_PURCHASE.into());
+        drafts.push(d);
+    }
+    if !full.is_empty() {
+        let mut d = Draft::new(
+            Classification::GpuMemoryPressure,
+            "An NVIDIA GPU's memory was nearly full during this sample. Games and applications that need more video memory can stutter when it is full.",
+            full,
+        );
+        d.next_step = "Close other GPU-heavy applications or lower texture and resolution settings, then observe GPU memory again under the same workload.";
+        d.limitations.push("Memory in use includes the driver's reserve; the process holding it is not reported on Windows.".into());
+        d.limitations.push(NO_PURCHASE.into());
+        drafts.push(d);
+    }
 }
 
 fn largest_private_commit(s: &Snapshot) -> Option<(&str, &Evidence, u64)> {
@@ -809,5 +907,46 @@ mod tests {
             .unwrap();
         let texts: Vec<&str> = abstain.facts.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(texts, ["CPU (all cores): 11.2%.", "Disk idle time: 98.1%."]);
+    }
+    #[test]
+    fn nvidia_slowdowns_and_full_memory_are_findings_but_a_power_cap_is_not() {
+        use pcagent_shared::{NVML_HW_THERMAL_SLOWDOWN, NVML_SW_POWER_CAP};
+        let gpu = |bits: u64, used: u64| {
+            let mut s = sample(&[]);
+            for (metric, value) in [
+                (Metric::GpuSlowdownReasons, bits),
+                (Metric::GpuMemoryUsedBytes, used),
+                (Metric::GpuMemoryTotalBytes, 2 << 30),
+                (Metric::GpuTemperatureCelsius, 87),
+            ] {
+                s.evidence.push(Evidence::measured(
+                    metric,
+                    "gpu-nvidia-0",
+                    value,
+                    "fixture:nvml",
+                    Window::instant(),
+                ));
+            }
+            analyze(&s)
+        };
+        let hot = gpu(NVML_HW_THERMAL_SLOWDOWN, 1 << 30);
+        let slow = finding(&hot, Classification::GpuClockSlowdown).unwrap();
+        assert_eq!(slow.support, Support::Plausible);
+        assert_eq!(
+            slow.facts[0].text,
+            "NVIDIA GPU 0 reported slowdown reasons: thermal (hardware)."
+        );
+        assert_eq!(slow.facts[1].text, "NVIDIA GPU 0 was at 87 °C.");
+        assert!(slow.limitations.iter().any(|l| l.contains("purchase")));
+        assert!(finding(&hot, Classification::GpuMemoryPressure).is_none());
+
+        let capped = gpu(NVML_SW_POWER_CAP, (2 << 30) / 100 * 95);
+        assert!(finding(&capped, Classification::GpuClockSlowdown).is_none());
+        let full = finding(&capped, Classification::GpuMemoryPressure).unwrap();
+        assert_eq!(
+            full.facts[0].text,
+            "NVIDIA GPU 0 had 1.90 GiB of 2.00 GiB memory in use (95.0%)."
+        );
+        assert_eq!(full.evidence_refs.len(), 2);
     }
 }

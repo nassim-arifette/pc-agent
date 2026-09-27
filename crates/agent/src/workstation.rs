@@ -55,7 +55,7 @@ pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_system_snapshot",
         class: crate::tools::ToolClass::Inspection,
-        description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations. No changes to the computer.",
+        description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations, plus NVIDIA GPU temperature, memory, clock and slowdown reasons when NVML is available. No changes to the computer.",
         params: &[],
     },
     ToolSpec {

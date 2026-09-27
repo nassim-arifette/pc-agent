@@ -233,6 +233,64 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
         }
         rows.push(("GPU engines".to_owned(), parts.join(", ")));
     }
+    // One line per NVIDIA GPU read through NVML.
+    for gpu in &s.gpus {
+        let value = |metric: Metric| {
+            s.evidence
+                .iter()
+                .find(|e| e.entity_ref == gpu.entity_ref && e.metric == metric)
+                .and_then(Evidence::usable_value)
+        };
+        let mut parts = Vec::new();
+        if let Some(v) = value(Metric::GpuTemperatureCelsius) {
+            parts.push(Metric::GpuTemperatureCelsius.format_value(v));
+        }
+        if let (Some(used), Some(total)) = (
+            value(Metric::GpuMemoryUsedBytes),
+            value(Metric::GpuMemoryTotalBytes),
+        ) {
+            parts.push(format!(
+                "{} of {} memory",
+                format_bytes(used),
+                format_bytes(total)
+            ));
+        }
+        if let Some(v) = value(Metric::GpuUtilizationBasisPoints) {
+            parts.push(format!(
+                "{} busy",
+                Metric::GpuUtilizationBasisPoints.format_value(v)
+            ));
+        }
+        if let Some(v) = value(Metric::GpuSmClockMegahertz) {
+            parts.push(Metric::GpuSmClockMegahertz.format_value(v));
+        }
+        if let Some(v) = value(Metric::GpuPowerMilliwatts) {
+            parts.push(Metric::GpuPowerMilliwatts.format_value(v));
+        }
+        match value(Metric::GpuSlowdownReasons) {
+            Some(0) => parts.push("no slowdown".to_owned()),
+            Some(bits) => parts.push(format!(
+                "slowing down: {}",
+                Metric::GpuSlowdownReasons.format_value(bits)
+            )),
+            None => {}
+        }
+        let name = gpu.name.as_deref().map_or_else(
+            || {
+                format!(
+                    "NVIDIA GPU {}",
+                    gpu.entity_ref.trim_start_matches("gpu-nvidia-")
+                )
+            },
+            clean,
+        );
+        let text = if parts.is_empty() {
+            "no readings (see notes)".to_owned()
+        } else {
+            parts.join(", ")
+        };
+        rows.push((name, text));
+    }
     rows
 }
 
