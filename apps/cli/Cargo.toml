@@ -13,3 +13,5 @@ pcagent-shared.workspace = true
 pcagent-telemetry.workspace = true
 pcagent-diagnostics.workspace = true
 pcagent-agent.workspace = true
+pcagent-storage.workspace = true
+pcagent-policy.workspace = true

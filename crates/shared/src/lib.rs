@@ -44,13 +44,18 @@ pub enum Metric {
     CpuBusyBasisPoints,
     ProcessWorkingSetBytes,
     ProcessPrivateCommitBytes,
+    /// Share of all logical processors used by one instance over the evidence window.
+    ProcessCpuBasisPoints,
+    /// I/O counter deltas over the evidence window; include cached and non-disk I/O.
+    ProcessIoReadBytes,
+    ProcessIoWriteBytes,
+    ProcessIoOtherBytes,
 }
 impl Metric {
     pub fn unit(self) -> &'static str {
-        if self == Self::CpuBusyBasisPoints {
-            "basis_points_of_total_cpu"
-        } else {
-            "bytes"
+        match self {
+            Self::CpuBusyBasisPoints | Self::ProcessCpuBasisPoints => "basis_points_of_total_cpu",
+            _ => "bytes",
         }
     }
 }
@@ -148,7 +153,7 @@ pub struct ProcessInstance {
     pub entity_ref: String,
     pub pid: u32,
     pub creation_time_filetime: u64,
-    /// Not collected in this first slice. Never substitute an estimated boot time.
+    /// Collector-provided boot identity; its source and precision are stated in limitations.
     pub boot_id: Option<String>,
     pub executable_name: Option<String>,
 }
@@ -212,6 +217,227 @@ impl Snapshot {
     }
 }
 
+/// A single inventory observation with its own provenance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Observed<T> {
+    pub value: Option<T>,
+    pub source: String,
+    pub status: Status,
+}
+impl<T> Observed<T> {
+    pub fn ok(value: T, source: &str) -> Self {
+        Self {
+            value: Some(value),
+            source: source.into(),
+            status: Status::Ok,
+        }
+    }
+    pub fn missing(source: &str, status: Status) -> Self {
+        Self {
+            value: None,
+            source: source.into(),
+            status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OsVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub build: u32,
+    pub update_build_revision: Option<u32>,
+    pub display_version: Option<String>,
+    /// Inferred from major version and build number, not from the marketing product name.
+    pub family: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeKind {
+    Fixed,
+    Removable,
+    Network,
+    Optical,
+    RamDisk,
+    NoRootDir,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeInfo {
+    pub root: String,
+    pub kind: VolumeKind,
+    pub total_bytes: Option<u64>,
+    pub free_bytes: Option<u64>,
+    pub available_to_caller_bytes: Option<u64>,
+    pub source: String,
+    pub status: Status,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuAdapter {
+    pub description: String,
+    pub dedicated_video_memory_bytes: Option<u64>,
+}
+
+/// Local capability inventory. Contains no serial numbers or machine identifiers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HardwareInventory {
+    pub schema_version: u32,
+    pub id: String,
+    pub origin: Origin,
+    /// Aggregate of OS, architecture, processors, memory and volumes; GPU is reported separately.
+    pub status: Status,
+    pub collected_at_unix_ms: u64,
+    pub os_version: Observed<OsVersion>,
+    pub architecture: Observed<String>,
+    pub logical_processors: Observed<u32>,
+    pub installed_memory_bytes: Observed<u64>,
+    pub volumes: Observed<Vec<VolumeInfo>>,
+    pub gpu_adapters: Observed<Vec<GpuAdapter>>,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentRelation {
+    /// Parent PID was observed and its instance predates the child.
+    Observed,
+    /// No process with the recorded parent PID was observed; the parent likely exited.
+    ParentNotObserved,
+    /// The recorded parent PID now belongs to an instance created after the child.
+    PidReused,
+    /// A creation time needed for validation was unreadable.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessTreeNode {
+    pub pid: u32,
+    pub parent_pid: u32,
+    pub entity_ref: Option<String>,
+    pub creation_time_filetime: Option<u64>,
+    pub executable_name: Option<String>,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessEdge {
+    pub parent_pid: u32,
+    pub child_pid: u32,
+    /// Set only when `relation` is `observed`; a reused PID never inherits a parent identity.
+    pub parent_ref: Option<String>,
+    pub child_ref: Option<String>,
+    pub relation: ParentRelation,
+}
+
+/// Observed parent relationships. Observation only: never an authorization to act on descendants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessTree {
+    pub schema_version: u32,
+    pub id: String,
+    pub session_id: String,
+    pub origin: Origin,
+    pub status: Status,
+    pub window: Window,
+    pub nodes: Vec<ProcessTreeNode>,
+    pub edges: Vec<ProcessEdge>,
+    pub truncated: bool,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceState {
+    /// Re-opened and matched on PID plus creation time at lookup.
+    Running,
+    /// Known to this session but could not be re-validated at lookup.
+    Unverified,
+    Exited,
+    /// The PID now belongs to a different instance.
+    PidReused,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessDetails {
+    pub schema_version: u32,
+    pub entity_ref: String,
+    pub status: Status,
+    pub state: InstanceState,
+    pub instance: Option<ProcessInstance>,
+    /// Latest evidence recorded for this instance; never transferred to a reused PID.
+    pub evidence: Vec<Evidence>,
+    pub observed_at_unix_ms: Option<u64>,
+    pub age_ms: Option<u64>,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricPoint {
+    pub unix_ms: u64,
+    /// Monotonic milliseconds since the recording collector started.
+    pub monotonic_ms: u64,
+    pub value: Option<u64>,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GapReason {
+    /// Nothing was recorded (collector not sampling, or before its first sample).
+    NotRecorded,
+    /// Samples existed but were evicted by the retention bounds.
+    Evicted,
+    /// Consecutive samples are farther apart than twice the expected interval.
+    MissedSamples,
+    BootChanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryGap {
+    pub from_monotonic_ms: u64,
+    pub to_monotonic_ms: u64,
+    pub reason: GapReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootChange {
+    pub at_unix_ms: u64,
+    pub previous_boot_id: Option<String>,
+    pub boot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Retention {
+    pub max_samples: usize,
+    pub max_age_ms: u64,
+    pub expected_interval_ms: u64,
+}
+
+/// Samples actually recorded in a bounded window. Values are never interpolated across gaps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricSeries {
+    pub schema_version: u32,
+    pub id: String,
+    pub metric: Metric,
+    pub entity_ref: String,
+    pub unit: String,
+    pub origin: Origin,
+    pub status: Status,
+    pub requested_window_ms: u64,
+    pub window_start_monotonic_ms: u64,
+    pub window_end_monotonic_ms: u64,
+    pub observed_interval_ms: Option<u64>,
+    pub retention: Retention,
+    pub points: Vec<MetricPoint>,
+    pub gaps: Vec<HistoryGap>,
+    pub boot_changes: Vec<BootChange>,
+    pub limitations: Vec<String>,
+}
+
 /// Calculate an integer ratio without overflowing a 64-bit byte counter.
 pub fn ratio_basis_points(numerator: u64, denominator: u64) -> Option<u64> {
     if denominator == 0 {
@@ -258,6 +484,23 @@ mod tests {
         );
         e.status = Status::Stale;
         assert_eq!(e.usable_value(), None);
+    }
+    #[test]
+    fn metric_units_are_explicit() {
+        assert_eq!(
+            Metric::ProcessCpuBasisPoints.unit(),
+            "basis_points_of_total_cpu"
+        );
+        assert_eq!(Metric::ProcessIoOtherBytes.unit(), "bytes");
+        let json = serde_json::to_value(Metric::ProcessIoReadBytes).unwrap();
+        assert_eq!(json, "process_io_read_bytes");
+    }
+    #[test]
+    fn missing_inventory_fields_are_null() {
+        let o: Observed<u64> = Observed::missing("platform", Status::Unsupported);
+        let json = serde_json::to_value(&o).unwrap();
+        assert!(json["value"].is_null());
+        assert_eq!(json["status"], "unsupported");
     }
     #[test]
     fn ratios_are_checked() {
