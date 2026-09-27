@@ -9,6 +9,7 @@ publish.workspace = true
 pcagent-shared.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Wdk_Foundation", "Wdk_Storage_FileSystem"] }

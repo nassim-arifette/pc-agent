@@ -1,5 +1,5 @@
 //! Read-only native boundary. Enumeration and child opens are relative to held directory
-//! handles; no path lookup can follow a replaced ancestor. File data is never opened.
+//! handles; no path lookup can follow a replaced ancestor. Data access is separate and opt-in.
 use crate::{
     index::VolumeSpace,
     scan::{
@@ -22,8 +22,9 @@ use std::{
 use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
     Storage::FileSystem::{
-        NtCreateFile, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT,
-        FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        NtCreateFile, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+        FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT,
     },
 };
 use windows_sys::Win32::{
@@ -34,10 +35,11 @@ use windows_sys::Win32::{
     Storage::FileSystem::{
         CreateFileW, FileBasicInfo, FileIdBothDirectoryInfo, FileIdInfo, FileStandardInfo,
         GetDiskFreeSpaceExW, GetDriveTypeW, GetFileInformationByHandleEx,
-        GetFinalPathNameByHandleW, GetVolumeInformationW, GetVolumePathNameW, FILE_BASIC_INFO,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO,
-        FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, OPEN_EXISTING,
+        GetFinalPathNameByHandleW, GetVolumeInformationW, GetVolumePathNameW, ReadFile,
+        FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_STANDARD_INFO, OPEN_EXISTING,
     },
     System::IO::IO_STATUS_BLOCK,
 };
@@ -264,6 +266,81 @@ impl Directory {
             file_facts(&handle, volume)
         })
     }
+    pub fn open_content(
+        &mut self,
+        name: &OsStr,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<ContentFile> {
+        // RECALL_ON_OPEN is visible only during enumeration. Check it before opening, and
+        // check handle attributes again before any reads. Never hydrate a placeholder.
+        loop {
+            check()?;
+            let Some(child) = self.next() else {
+                break;
+            };
+            let child = child?;
+            if child.name == name {
+                if classify_attributes(child.attributes) != AttributeClass::File {
+                    return Err(invalid("content unavailable"));
+                }
+                return open_relative_access(&self.handle, name, false, false, true)
+                    .map(ContentFile);
+            }
+        }
+        Err(io::Error::from(io::ErrorKind::NotFound))
+    }
+}
+
+#[test]
+fn content_open_checks_cancellation_while_enumerating() {
+    let root = std::env::temp_dir().join(pcagent_shared::new_id("pcagent-content-cancel"));
+    fs::create_dir(&root).unwrap();
+    for n in 0..8 {
+        fs::write(root.join(format!("{n}.bin")), b"test").unwrap();
+    }
+    let (_, mut dir) = authorize_root(&root).unwrap();
+    let mut checks = 0;
+    let result = dir.open_content(OsStr::new("not-present.bin"), &mut || {
+        checks += 1;
+        if checks == 3 {
+            Err(io::ErrorKind::Interrupted.into())
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(result, Err(e) if e.kind() == io::ErrorKind::Interrupted));
+    assert_eq!(checks, 3);
+    drop(dir);
+    fs::remove_dir_all(root).unwrap();
+}
+
+pub(crate) struct ContentFile(OwnedHandle);
+impl ContentFile {
+    pub fn facts(&self, volume: VolumeId) -> io::Result<FileFacts> {
+        file_facts(&self.0, volume)
+    }
+}
+impl io::Read for ContentFile {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let length = buffer.len().min(u32::MAX as usize) as u32;
+        let mut read = 0;
+        // SAFETY: the uniquely owned synchronous handle has FILE_READ_DATA access. The
+        // writable buffer holds at least `length` bytes, and `read` outlives the call.
+        if unsafe {
+            ReadFile(
+                self.0 .0,
+                buffer.as_mut_ptr(),
+                length,
+                &mut read,
+                null_mut(),
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(read as usize)
+        }
+    }
 }
 fn inspect_enumerated(
     attributes: u32,
@@ -347,6 +424,15 @@ fn open_relative(
     directory: bool,
     enumerate: bool,
 ) -> io::Result<OwnedHandle> {
+    open_relative_access(parent, name, directory, enumerate, false)
+}
+fn open_relative_access(
+    parent: &OwnedHandle,
+    name: &OsStr,
+    directory: bool,
+    enumerate: bool,
+    read_data: bool,
+) -> io::Result<OwnedHandle> {
     let mut name: Vec<u16> = name.encode_wide().collect();
     if name.is_empty()
         || name.iter().any(|c| matches!(*c, 0 | 47 | 58 | 92))
@@ -372,16 +458,19 @@ fn open_relative(
     let mut raw = null_mut();
     let mut status = IO_STATUS_BLOCK::default();
     // SAFETY: all input buffers outlive this synchronous call. RootDirectory is held open;
-    // FILE_OPEN never creates, no data/write access is requested, and reparsing is disabled.
+    // FILE_OPEN never creates; data access is explicitly opt-in, writes and reparsing disabled.
     let result = unsafe {
         NtCreateFile(
             &mut raw,
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE | if enumerate { FILE_LIST_DIRECTORY } else { 0 },
+            FILE_READ_ATTRIBUTES
+                | SYNCHRONIZE
+                | if enumerate { FILE_LIST_DIRECTORY } else { 0 }
+                | if read_data { FILE_READ_DATA } else { 0 },
             &attrs,
             &mut status,
             null(),
             0,
-            if directory {
+            if directory || read_data {
                 FILE_SHARE_READ
             } else {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
@@ -394,6 +483,11 @@ fn open_relative(
                     FILE_DIRECTORY_FILE
                 } else {
                     FILE_OPEN_NO_RECALL
+                        | if read_data {
+                            FILE_NON_DIRECTORY_FILE
+                        } else {
+                            0
+                        }
                 },
             null(),
             0,
