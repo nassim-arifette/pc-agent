@@ -6,7 +6,7 @@
 - Run portable unit tests on Linux and Windows.
 - Run Windows-native memory/process smoke and session identity tests.
 - Run CLI commands without any Nebius credentials and verify no implicit cloud mode.
-- Exercise synthetic model replies for tool allowlisting, complete-batch validation, duplicate IDs, forged findings, loop budgets and provider errors.
+- Exercise synthetic model replies for tool allowlisting, complete-batch validation, duplicate IDs, forged findings/observation citations, loop budgets and provider errors. Cover extension consent/refusal/caps, preserved conversation and duplicate protection, hardware/storage/history citations, and independent execution/coverage/support states.
 - Check that cloud payloads omit process names, PIDs, creation times, boot IDs and session identifiers.
 - Build the Windows executable and upload only the binary, not measurements or configuration.
 
@@ -35,6 +35,6 @@ A live provider test incurs provider usage and must be explicitly authorized. No
 - Validate the live model and JSON/tool contract on the user's account.
 - Add representative observation windows, missing sensor coverage and diagnostic evaluation fixtures.
 - Evaluate existing process CPU, E/S and process-tree inspection on representative workloads.
-- Replace the narrow finding-selection output with richer, locally validated explanation contracts.
+- Evaluate the finding/observation citation contract on representative workloads; causal interpretation and unrestricted synthesis remain out of scope.
 
 Metadata storage scans and controlled actions are implemented with bounded scope; see [storage](storage.md), [actions](actions.md) and [review status](review-status.md). GUI, installer, persistent history, MFT and Tavily remain later work.

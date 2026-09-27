@@ -21,7 +21,7 @@ des évolutions de produit, pas des fonctions déjà promises par cette version.
 | 2. `reversible_only` inversé | **Corrigé** : `true` par défaut, y compris lors de la lecture de préférences incomplètes. Le nettoyage synthétique exige un opt-in explicite. |
 | 3. Deux JSON sur stdout | **Corrigé** : un seul document avec investigation, `actions` et `recovery`. Les plans non exécutés conservent leur manifeste local. |
 | 4. N’importe quel outil satisfait l’inspection obligatoire | **Corrigé** : classes `Inspection`, `Context`, `Proposal` ; seules des observations utilisables issues d’une inspection réussie débloquent la conclusion. |
-| 5. Observations absentes du rapport final | **Partiellement corrigé** : les résultats minimisés restent dans `observations`, notamment matériel, historique et stockage. Une conclusion structurée qui sélectionne aussi des observations et de nouveaux types de findings reste **à développer**. |
+| 5. Observations absentes du rapport final | **Corrigé** : la conclusion sélectionne aussi des `observation_ids` matériel, stockage et historique, validés localement. Les faits sont produits depuis les mesures conservées ; le rapport expose `observation_refs`. Des observations seules ne suffisent pas à établir un diagnostic causal. |
 | 6. Findings obsolètes encore sélectionnables | **Corrigé** : des mesures plus récentes et comparables remplacent les findings concernés ; les anciens restent dans `historical_findings`. Le modèle reçoit les `current_finding_ids`. |
 | 7. Présélection des processus uniquement par RAM | **Corrigé** : tri avant limitation par working set, private commit, CPU, débit E/S lecture ou écriture. Les valeurs inconnues viennent en dernier. De nouveaux findings CPU/E/S et croissance persistante restent **à développer**. |
 | 8. Énumération d’un gros dossier hors budget | **Corrigé** : parcours progressif, buffers bornés et estimation des frames actives. Les budgets de temps/RAM restent coopératifs et approximatifs : **covered limitation**. |
@@ -30,7 +30,7 @@ des évolutions de produit, pas des fonctions déjà promises par cette version.
 | 11. Cleanup partiel rapporté comme échec sans bilan | **Corrigé** : fichiers et octets effectivement supprimés sont conservés, même si un fichier suivant échoue ou si l’utilisateur annule. |
 | 12. Échec du dernier écrit de journal masqué | **Corrigé** : `journal_status=error` interdit le résultat global `completed`, tout en gardant les effets déjà constatés. |
 | 13. Recovery et annulation non branchés | **Corrigé** : récupération au démarrage du parcours d’actions, signalements `needs_inspection` persistants, aucun rejeu. Ctrl+C/Ctrl+Break pilote l’annulation pendant l’exécution approuvée. |
-| 14. `Status::Ok` trop optimiste | **Covered limitation** : ce statut décrit l’exécution du parcours, pas la santé du PC ni l’exhaustivité des capteurs. Couverture, valeurs inconnues, limitations et niveau de support restent séparés. Un champ global `coverage_status` reste **à développer**. |
+| 14. `Status::Ok` trop optimiste | **Corrigé** : `execution_status`, `coverage` (globale et par domaine/cible) et `diagnostic_support` sont indépendants et affichés dans la CLI. Les domaines non inspectés restent `not_collected`. Le `status` global reste `partial` si couverture ou appui sont incomplets, même après une exécution réussie. |
 | 15. Documentation en retard | **Corrigé** : README, architecture, actions, stockage, télémétrie et validation alignés avec l’implémentation. Un registre de capacités partagé avec `doctor` reste **à développer**. |
 | 16. Vérification indépendante de la nature de l’action | **Corrigé** : aucun verdict de performance après l’ouverture d’une fenêtre ; bilan des octets/espace volume pour le nettoyage ; comparaison système réservée à la fermeture normale. |
 | 17. CI et corpus d’évaluation | **Corrigé pour la CI** : validation des pushes et PR sans auto-commit/push ni réécriture du commit évalué. Corpus représentatif et replay restent **à développer**. |
@@ -82,8 +82,11 @@ des évolutions de produit, pas des fonctions déjà promises par cette version.
   distinctes : allocation, corbeille et autres processus peuvent expliquer leur différence.
 - Sans identifiant de boot fiable, aucune corrélation entre boots ni fermeture d’un processus
   dont l’identité ne peut être confirmée. La fermeture normale reste hors des propositions modèle.
-- Six tours peuvent être insuffisants pour un parcours stockage puis proposition. La limite borne
-  volontairement les requêtes ; une continuation explicite ou un meilleur parcours reste à développer.
+- Six tours peuvent être insuffisants pour un parcours stockage puis proposition. À chaque borne,
+  la CLI interactive présente le bilan partiel et demande une prolongation explicite : +6 tours,
+  +12 outils, +90 secondes, au maximum trois fois. Contexte, jobs et références sont conservés,
+  le temps de décision humaine est exclu. JSON/non-interactif : rapport partiel avec `continuation`,
+  sans prolongation automatique. La reprise après fermeture du processus reste à développer.
 
 ## Travail futur et validation
 
@@ -96,7 +99,7 @@ Windows et Linux. Elle ne valide pas le compte Nebius ni une session live du fou
 tests OneDrive réels, les grands volumes, les pilotes GPU et une recette complète des actions sur
 un autre PC Windows restent dans la [checklist de validation](validation.md).
 
-Validation locale de ce lot avec Rust 1.90.0 : **203 tests réussis sous Windows**, **192 sous
+Validation locale de ce lot avec Rust 1.90.0 : **214 tests réussis sous Windows**, **203 sous
 Linux (WSL)** ; le test live Nebius est ignoré sur les deux plateformes. `cargo fmt --all --
 --check` et `cargo clippy --workspace --all-targets --locked -- -D warnings` passent sur les deux
 plateformes. Le binaire Windows compile avec `cargo build --release --locked -p pcagent`.

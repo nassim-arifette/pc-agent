@@ -63,6 +63,17 @@ Selected findings (identical PC state is not guaranteed between models):
 30 s and occasional timeouts; a longer per-request limit would be needed to make it reliable.
 Lightning needs a reasoning control before another trial.
 
+## Check after merging citations and budget extensions
+
+Later the same day, after merging observation citations, coverage states and consent-based budget
+extensions from `main`, Super was rerun with the merged build: 54 of 57 diagnoses completed (the
+eight questions twice, plus repeats of "Is my CPU the bottleneck?"). The three failures were
+answers rejected by local validation: two conclusions citing something other than a current
+finding or a citable observation (`invalid_finding`) and one tool call with arguments outside its
+schema (`invalid_tool`). With a local debug trace, 25 further runs of that question did not
+reproduce them. On the eight questions, a diagnosis cost $0.0038 to $0.0060 (mean $0.0044). The
+first request grew to 4,620 to 5,004 tokens with the citation instructions.
+
 ## Limits
 
 One PC, eight questions, one round per question and model. The live PC state differs between
