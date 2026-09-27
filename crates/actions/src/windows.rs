@@ -887,3 +887,56 @@ fn recycle_in_apartment(file: &FileTarget) -> Result<EffectOutcome, EffectError>
         )),
     }
 }
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+    fn run(tag: &str, exclusive: bool, track: bool) -> String {
+        let dir = std::env::temp_dir().join(format!("pcagent-probe-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = PathBuf::from(
+            std::fs::canonicalize(&dir)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .trim_start_matches(r"\\?\")
+                .to_owned(),
+        );
+        let path = dir.join("t.txt");
+        std::fs::write(&path, b"x").unwrap();
+        let identity = observe_file(&path).unwrap().unwrap();
+        let file = FileTarget { path, identity };
+        let out = std::thread::scope(|s| {
+            s.spawn(|| {
+                let _a = Apartment::enter().unwrap();
+                let pin = if exclusive {
+                    pin_verified(&file).unwrap()
+                } else {
+                    open_attributes(&file.path).unwrap().unwrap()
+                };
+                let _tracker = track.then(|| open_attributes(&file.path).unwrap().unwrap());
+                let r = shell_recycle(&file, pin).unwrap();
+                format!(
+                    "{tag}: {} recycled={:?} exists={}",
+                    r.trace,
+                    r.recycled,
+                    file.path.exists()
+                )
+            })
+            .join()
+            .unwrap()
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+    #[test]
+    fn probe_recycle() {
+        let r = [
+            run("excl_track", true, true),
+            run("excl", true, false),
+            run("attr_track", false, true),
+            run("attr", false, false),
+        ];
+        panic!("{r:#?}");
+    }
+}
