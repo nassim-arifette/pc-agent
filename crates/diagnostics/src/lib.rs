@@ -493,7 +493,7 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             .filter(|e| e.entity_ref == "system")
             .filter_map(|e| {
                 let value = e.usable_value()?;
-                let text = format!("{} was {}.", e.metric.label(), e.metric.format_value(value));
+                let text = format!("{}: {}.", e.metric.label(), e.metric.format_value(value));
                 Some(fact(text, &[e]))
             })
             .collect(),
@@ -808,9 +808,6 @@ mod tests {
             .find(|f| f.classification == Classification::InsufficientEvidence)
             .unwrap();
         let texts: Vec<&str> = abstain.facts.iter().map(|f| f.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            ["CPU (all cores) was 11.2%.", "Disk idle time was 98.1%."]
-        );
+        assert_eq!(texts, ["CPU (all cores): 11.2%.", "Disk idle time: 98.1%."]);
     }
 }
