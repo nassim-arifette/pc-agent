@@ -1,0 +1,9 @@
+# Typical questions for scripts/compare-models.ps1, one per line (French and English).
+Pourquoi mon PC rame ?
+Est-ce que j'ai besoin de plus de RAM ?
+Why is my PC slow?
+Mon disque est-il le problème ?
+Pourquoi mon PC chauffe et le ventilateur tourne fort ?
+Quel programme utilise le plus de mémoire ?
+Mes jeux saccadent, est-ce la carte graphique ?
+Is my CPU the bottleneck?
