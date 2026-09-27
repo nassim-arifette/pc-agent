@@ -712,6 +712,7 @@ impl Drop for Apartment {
 }
 
 struct ShellReport {
+    trace: String,
     performed: bool,
     released: bool,
     deleted: Option<HRESULT>,
@@ -769,28 +770,48 @@ fn shell_recycle(file: &FileTarget, pin: OwnedHandle) -> Result<ShellReport, Eff
         | FOFX_RECYCLEONDELETE
         | FOFX_EARLYFAILURE;
     let v = op.vtbl();
+    let mut trace = String::new();
     // SAFETY: op and item are live interface pointers on this STA thread; the sink implements
     // IFileOperationProgressSink with the header's vtable layout and outlives `op`.
     let performed = unsafe {
         let mut cookie = 0_u32;
         let mut aborted: BOOL = 0;
-        if (v.set_operation_flags)(op.raw(), flags) < 0
-            || (v.advise)(op.raw(), sink_raw, &mut cookie) < 0
-        {
-            false
-        } else {
-            let done = (v.delete_item)(op.raw(), item.raw(), null_mut()) >= 0
-                && (v.perform_operations)(op.raw()) >= 0
-                && (v.get_any_operations_aborted)(op.raw(), &mut aborted) >= 0
-                && aborted == 0;
+        let hr = (v.set_operation_flags)(op.raw(), flags);
+        trace.push_str(&format!("flags={hr:#x}"));
+        let advised = hr >= 0 && {
+            let hr = (v.advise)(op.raw(), sink_raw, &mut cookie);
+            trace.push_str(&format!(" advise={hr:#x}"));
+            hr >= 0
+        };
+        if advised {
+            let hr = (v.delete_item)(op.raw(), item.raw(), null_mut());
+            trace.push_str(&format!(" delete_item={hr:#x}"));
+            let done = hr >= 0
+                && {
+                    let hr = (v.perform_operations)(op.raw());
+                    trace.push_str(&format!(" perform={hr:#x}"));
+                    hr >= 0
+                }
+                && {
+                    let hr = (v.get_any_operations_aborted)(op.raw(), &mut aborted);
+                    trace.push_str(&format!(" aborted={hr:#x}/{aborted}"));
+                    hr >= 0 && aborted == 0
+                };
             (v.unadvise)(op.raw(), cookie);
             done
+        } else {
+            false
         }
     };
     drop(op);
     drop(item);
     drop(sink.pin.take());
+    if let Some(hr) = sink.deleted.get() {
+        trace.push_str(&format!(" post_delete={hr:#x}"));
+    }
+    trace.push_str(&format!(" pre_deletes={}", sink.pre_deletes.get()));
     let report = ShellReport {
+        trace,
         performed,
         released: sink.released.get(),
         deleted: sink.deleted.get(),
@@ -859,7 +880,10 @@ fn recycle_in_apartment(file: &FileTarget) -> Result<EffectOutcome, EffectError>
         Err(reason) if !report.released => Err(shell_error(reason)),
         Err(reason) => Err(EffectError::new(
             Status::Error,
-            &format!("{reason}; inspect the recycle bin manually"),
+            &format!(
+                "{reason} ({}); inspect the recycle bin manually",
+                report.trace
+            ),
         )),
     }
 }

@@ -988,7 +988,7 @@ fn native_recycle_moves_exactly_the_verified_file() {
         Err(e) if e.status == Status::Unsupported => {
             eprintln!("recycle bin unavailable on this runner: {}", e.detail);
         }
-        other => panic!("{other:?}"),
+        other => panic!("{other:?}; target still present: {}", file.path.exists()),
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
