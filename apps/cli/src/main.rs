@@ -147,11 +147,11 @@ fn review_actions(
         )?;
         for item in p.plan.items() {
             let target = match &item.target {
-                ResolvedTarget::File(f) => text::clean(&f.path.display().to_string()),
+                ResolvedTarget::File(f) => text::path(&f.path),
                 ResolvedTarget::SettingsPage { page } => page.uri().into(),
                 ResolvedTarget::CleanupAdapter(c) => format!(
                     "{} ({}, {})",
-                    text::clean(&c.root.display().to_string()),
+                    text::path(&c.root),
                     text::plural(c.files, "file", "files"),
                     c.bytes.map_or_else(|| "size unknown".into(), format_bytes)
                 ),
@@ -163,7 +163,7 @@ fn review_actions(
         writeln!(
             err,
             "  Recovery: {}\n  Checked again just before running: {}",
-            text::words(&p.plan.recovery()),
+            text::recovery(p.plan.recovery()),
             checks.join(", ")
         )?;
         if !interactive || json_out {
@@ -183,6 +183,7 @@ fn review_actions(
         let mut answer = String::new();
         io::stdin().lock().read_line(&mut answer)?;
         if answer.trim() != "yes" {
+            eprintln!("  Skipped.");
             results.push(json!({"plan_id": plan_id, "decision": "declined"}));
             continue;
         }
@@ -425,7 +426,7 @@ fn run(args: Args) -> Result<u8> {
                     "Created {} of synthetic data in {} under {}",
                     format_bytes(total),
                     text::plural(files.len() as u64, "file", "files"),
-                    text::clean(&root.display().to_string())
+                    text::path(&root)
                 );
                 println!("{notice}");
             }

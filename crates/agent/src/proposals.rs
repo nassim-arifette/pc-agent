@@ -23,9 +23,10 @@ pub const SETTINGS_PAGES: &[&str] = &["storagesense", "appsfeatures", "startupap
 pub const PREPARE_ACTION_PLAN: ToolSpec = ToolSpec {
     name: "prepare_action_plan",
     description: "Propose one action for the user to review locally after the investigation. \
-        Nothing runs now; you cannot approve or execute it. open_in_explorer and \
-        run_cleanup_adapter need scope_id + item_ref from storage tools; open_settings_page \
-        needs settings_page.",
+        Nothing runs now; you cannot approve or execute it. open_settings_page needs \
+        settings_page. open_in_explorer needs scope_id + item_ref from get_largest_items or \
+        get_cleanup_candidates. run_cleanup_adapter needs scope_id + the item_ref of a \
+        get_cleanup_candidates entry (kind dirs) that has an adapter_id.",
     params: &[
         Param {
             name: "action_kind",
@@ -163,6 +164,16 @@ pub(crate) fn prepare(
     proposal: Proposal,
     protection: &dyn ProtectionCheck,
 ) -> Result<pcagent_actions::PlanModelView, String> {
+    // The same action on the same target is reviewed once, not once per proposal.
+    if let Some(existing) = desk.pending.iter().find(|p| {
+        p.plan.action_kind() == proposal.kind
+            && p.plan
+                .items()
+                .iter()
+                .any(|i| i.target_ref == proposal.target_ref)
+    }) {
+        return Ok(existing.plan.model_view());
+    }
     if desk.pending.len() >= MAX_PENDING_PLANS {
         return Err(format!(
             "at most {MAX_PENDING_PLANS} plans per investigation"
