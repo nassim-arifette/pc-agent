@@ -20,14 +20,14 @@ pub struct Config {
 }
 impl Config {
     pub fn from_env() -> Result<Self, AgentError> {
-        let api_key = std::env::var("NEBIUS_API_KEY")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or(AgentError::MissingKey)?;
-        let model_id = std::env::var("NEBIUS_MODEL_ID")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or(AgentError::MissingModel)?;
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` from whatever source the caller trusts
+    /// (environment, a per-user credentials file); empty values count as missing.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, AgentError> {
+        let get = |name: &str| lookup(name).filter(|s| !s.trim().is_empty());
+        let api_key = get("NEBIUS_API_KEY").ok_or(AgentError::MissingKey)?;
+        let model_id = get("NEBIUS_MODEL_ID").ok_or(AgentError::MissingModel)?;
         validate_model_id(&model_id)?;
         Ok(Self { api_key, model_id })
     }

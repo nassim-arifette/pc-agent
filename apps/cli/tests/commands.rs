@@ -1,11 +1,44 @@
-use std::process::Command;
-fn cli(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_pcagent"))
-        .args(args)
-        .env_remove("NEBIUS_API_KEY")
+use std::{path::Path, process::Command};
+/// No Nebius settings: neither in the environment nor in a per-user credentials file.
+fn command() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_pcagent"));
+    c.env_remove("NEBIUS_API_KEY")
         .env_remove("NEBIUS_MODEL_ID")
+        .env("APPDATA", std::env::temp_dir().join("pcagent-no-appdata"));
+    c
+}
+fn cli(args: &[&str]) -> std::process::Output {
+    command().args(args).output().unwrap()
+}
+fn doctor_json(appdata: &Path, cwd: &Path) -> serde_json::Value {
+    let out = command()
+        .args(["doctor", "--json"])
+        .env("APPDATA", appdata)
+        .current_dir(cwd)
         .output()
-        .unwrap()
+        .unwrap();
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+#[test]
+fn credentials_come_from_the_user_file_never_from_the_current_folder() {
+    let root = std::env::temp_dir().join(format!("pcagent-creds-cli-{}", std::process::id()));
+    let (appdata, folder) = (root.join("appdata"), root.join("someone-elses-folder"));
+    std::fs::create_dir_all(appdata.join("pcagent")).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    let settings = "NEBIUS_API_KEY=k\nNEBIUS_MODEL_ID=nvidia/nemotron-test\n";
+    std::fs::write(folder.join(".env"), settings).unwrap();
+
+    let ignored = doctor_json(&appdata, &folder);
+    assert_eq!(ignored["nebius_key_configured"], false);
+    assert_eq!(ignored["credentials_file_found"], false);
+
+    std::fs::write(appdata.join("pcagent").join(".env"), settings).unwrap();
+    let used = doctor_json(&appdata, &folder);
+    assert_eq!(used["nebius_key_configured"], true);
+    assert_eq!(used["nebius_model_configured"], true);
+    assert_eq!(used["credentials_file_found"], true);
+    assert_eq!(used["cloud_check"], "not_requested");
+    std::fs::remove_dir_all(&root).unwrap();
 }
 #[test]
 fn help_is_available_without_configuration() {
