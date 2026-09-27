@@ -258,20 +258,16 @@ fn usize_arg(args: &Args, name: &str, default: usize) -> usize {
 impl Workstation<'_> {
     fn process_details(&mut self, entity_ref: &str) -> ToolOutput {
         let d = self.collector.process_details(entity_ref);
+        let values = crate::measurements(
+            d.evidence
+                .iter()
+                .filter(|e| crate::cloud_entity_allowed(&e.entity_ref)),
+        );
         let mut out = output(
             d.status,
-            allow(
-                &d,
-                &[
-                    "entity_ref",
-                    "status",
-                    "state",
-                    "evidence",
-                    "observed_at_unix_ms",
-                    "age_ms",
-                    "limitations",
-                ],
-            ),
+            json!({"entity_ref": d.entity_ref, "status": d.status, "state": d.state,
+                "measurements": values, "observed_at_unix_ms": d.observed_at_unix_ms,
+                "age_ms": d.age_ms, "limitations": d.limitations}),
         );
         out.evidence = d.evidence;
         out.inspection_complete =

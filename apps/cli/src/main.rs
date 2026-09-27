@@ -8,7 +8,7 @@ use pcagent_actions::{
     ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
 use pcagent_agent::{
-    cloud_observation, investigate, local_report, verify_action, ActionDesk, AgentError, Config,
+    initial_message, investigate, local_report, verify_action, ActionDesk, AgentError, Config,
     Nebius, PendingPlan, PolicyProtection, Pricing, Workstation, MAX_QUESTION_BYTES,
     PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
@@ -573,7 +573,7 @@ fn run(args: Args) -> Result<u8> {
             if preview_cloud {
                 write_json(
                     &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
-                    "question":question,"initial_observation":cloud_observation(&initial),
+                    "message":initial_message(&question, &initial),
                     "tools":WORKSTATION_TOOLS.iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
                     "authorized_scopes":storage.scopes().len()}),
                 )?;
