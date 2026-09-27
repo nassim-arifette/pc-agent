@@ -47,6 +47,170 @@ fn scan_with(
     let scope = ScanScope::authorize(root).unwrap();
     ClassicBackend.scan(&scope, &options, &CancelToken::default(), progress)
 }
+
+#[test]
+fn aliases_distinguish_files_and_folders_without_disclosing_names() {
+    let tree = Tree::new();
+    tree.file("private-a/report.pdf", 10);
+    tree.file("private-b/report.pdf", 10);
+    let index = scan_with(&tree.0, ScanOptions::default(), &mut |_| {});
+    let page = index
+        .largest_items(ItemKind::Files, 0, 10)
+        .unwrap()
+        .without_paths()
+        .redact_names();
+    assert_ne!(page.items[0].alias, page.items[1].alias);
+    assert_ne!(page.items[0].alias_path, page.items[1].alias_path);
+    let payload = serde_json::to_string(&page).unwrap();
+    for secret in ["private-a", "private-b", "report.pdf"] {
+        assert!(!payload.contains(secret));
+    }
+    for file in &page.items {
+        let parent = index.item(file.parent_ref.as_deref().unwrap()).unwrap();
+        assert!(parent.alias.starts_with("dir-"));
+        assert!(file
+            .alias_path
+            .ends_with(&format!("{}/{}", parent.alias, file.alias)));
+        assert!(index
+            .local_path(&file.item_ref)
+            .unwrap()
+            .ends_with("report.pdf"));
+    }
+}
+
+fn compare_tree(tree: &Tree, options: ContentOptions) -> ContentComparison {
+    let service = StorageService::new();
+    let scope = service.authorize(&tree.0).unwrap().scope_id;
+    service
+        .scan_blocking(&scope, &ScanOptions::default(), &mut |_| {})
+        .unwrap();
+    service.compare_content(&scope, &options).unwrap()
+}
+
+#[test]
+fn content_comparison_finds_equal_bytes_not_equal_size_or_name() {
+    let tree = Tree::new();
+    tree.file("a/private.pdf", 17);
+    tree.file("b/copy.txt", 17);
+    fs::write(tree.file("c/private.pdf", 17), [8; 17]).unwrap();
+    let compared = compare_tree(&tree, ContentOptions::default());
+    assert_eq!(compared.checked_refs.len(), 3);
+    assert_eq!(compared.groups.len(), 1);
+    assert_eq!(compared.groups[0].item_refs.len(), 2);
+    assert_eq!(compared.bytes_read, 51);
+    let json = serde_json::to_string(&compared).unwrap();
+    assert!(!json.contains("private.pdf"));
+    assert!(!json.contains("copy.txt"));
+}
+
+#[test]
+fn content_comparison_honors_read_time_and_file_limits() {
+    let tree = Tree::new();
+    tree.file("a.bin", 32);
+    tree.file("b.bin", 32);
+    for options in [
+        ContentOptions {
+            max_bytes: 31,
+            ..ContentOptions::default()
+        },
+        ContentOptions {
+            max_duration: Duration::ZERO,
+            ..ContentOptions::default()
+        },
+        ContentOptions {
+            max_files: 1,
+            ..ContentOptions::default()
+        },
+    ] {
+        let compared = compare_tree(&tree, options);
+        assert_eq!(compared.status, Status::Partial);
+        assert_eq!(compared.bytes_read, 0);
+        assert!(compared.groups.is_empty());
+    }
+    let compared = compare_tree(
+        &tree,
+        ContentOptions {
+            max_bytes: 32,
+            ..ContentOptions::default()
+        },
+    );
+    assert_eq!(compared.bytes_read, 32);
+    assert_eq!(compared.checked_refs.len(), 1);
+    assert!(compared.groups.is_empty());
+}
+
+#[test]
+fn content_comparison_rejects_replacements_and_hard_links() {
+    let tree = Tree::new();
+    let first = tree.file("a.bin", 32);
+    tree.file("b.bin", 32);
+    let scope = ScanScope::authorize(&tree.0).unwrap();
+    let index = ClassicBackend.scan(
+        &scope,
+        &ScanOptions::default(),
+        &CancelToken::default(),
+        &mut |_| {},
+    );
+    fs::rename(&first, tree.0.join("saved.bin")).unwrap();
+    tree.file("a.bin", 32);
+    let compared = content::compare(
+        &scope,
+        &index,
+        &ContentOptions::default(),
+        &CancelToken::default(),
+    );
+    assert!(compared.groups.is_empty());
+    assert_eq!(compared.unavailable_files, 1);
+    fs::hard_link(&first, tree.0.join("hard-link.bin")).unwrap();
+    let compared = compare_tree(&tree, ContentOptions::default());
+    assert!(compared.unavailable_files >= 1);
+    // saved.bin and b.bin are real independent copies; the hard-linked a.bin is excluded.
+    assert_eq!(compared.groups[0].item_refs.len(), 2);
+}
+
+#[test]
+fn content_comparison_cancelled_before_read_keeps_no_matches() {
+    let tree = Tree::new();
+    tree.file("a.bin", 32);
+    tree.file("b.bin", 32);
+    let scope = ScanScope::authorize(&tree.0).unwrap();
+    let index = ClassicBackend.scan(
+        &scope,
+        &ScanOptions::default(),
+        &CancelToken::default(),
+        &mut |_| {},
+    );
+    let cancel = CancelToken::default();
+    cancel.cancel();
+    let compared = content::compare(&scope, &index, &ContentOptions::default(), &cancel);
+    assert_eq!(compared.status, Status::Cancelled);
+    assert_eq!(compared.bytes_read, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn content_comparison_never_follows_a_file_replaced_with_a_symlink() {
+    let tree = Tree::new();
+    let first = tree.file("a.bin", 32);
+    let other = tree.file("b.bin", 32);
+    let scope = ScanScope::authorize(&tree.0).unwrap();
+    let index = ClassicBackend.scan(
+        &scope,
+        &ScanOptions::default(),
+        &CancelToken::default(),
+        &mut |_| {},
+    );
+    fs::remove_file(&first).unwrap();
+    std::os::unix::fs::symlink(other, first).unwrap();
+    let compared = content::compare(
+        &scope,
+        &index,
+        &ContentOptions::default(),
+        &CancelToken::default(),
+    );
+    assert_eq!(compared.unavailable_files, 1);
+    assert!(compared.groups.is_empty());
+}
 fn scan(root: &Path) -> StorageIndex {
     scan_with(root, ScanOptions::default(), &mut |_| {})
 }

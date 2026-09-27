@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 mod credentials;
+mod storage_view;
 mod text;
 use clap::{Parser, Subcommand};
 use credentials::{Credentials, Source};
@@ -10,12 +11,12 @@ use pcagent_actions::{
 use pcagent_agent::{
     initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
     AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,
-    PolicyProtection, Pricing, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN,
-    VERIFY_SAMPLES, WORKSTATION_TOOLS,
+    PolicyProtection, Pricing, StorageContext, Workstation, MAX_QUESTION_BYTES,
+    PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{format_bytes, Snapshot, Status};
-use pcagent_storage::{volume_space, ItemKind, ScanOptions, StorageService};
+use pcagent_storage::{volume_space, ContentOptions, ItemKind, ScanOptions, StorageService};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
 use serde_json::json;
@@ -72,7 +73,7 @@ enum Command {
         #[arg(long, default_value="working_set", value_parser=["working_set", "private_commit", "cpu", "io_read", "io_write"])]
         sort_by: String,
     },
-    /// Find the largest files or folders in one folder (reads metadata only; never follows links).
+    /// Find the largest files or folders (metadata only unless --compare-content; no links).
     Storage {
         /// Folder to scan.
         root: PathBuf,
@@ -82,6 +83,9 @@ enum Command {
         /// Rank directories instead of files.
         #[arg(long)]
         dirs: bool,
+        /// Read file contents locally to find same-content copies (bounded; no deletion).
+        #[arg(long)]
+        compare_content: bool,
     },
     /// Check this PC's support and the cloud configuration (offline unless --check-cloud).
     Doctor {
@@ -109,6 +113,12 @@ enum Command {
         /// Authorize a folder the model may scan (metadata only), as an opaque scope. Repeatable.
         #[arg(long)]
         scan_root: Vec<PathBuf>,
+        /// Read contents locally in --scan-root folders to compare copies (256 MiB total).
+        #[arg(long, requires = "scan_root")]
+        compare_content: bool,
+        /// Allow selected basenames to be sent; use --preview-cloud to review them offline.
+        #[arg(long, requires = "scan_root", conflicts_with = "offline")]
+        share_file_names: bool,
         /// JSON preferences file (exclusions, preserved apps, permissions).
         #[arg(long)]
         preferences: Option<PathBuf>,
@@ -438,7 +448,12 @@ fn run(args: Args) -> Result<u8> {
             }
             Ok(if sample.has_observations() { 0 } else { 3 })
         }
-        Command::Storage { root, limit, dirs } => {
+        Command::Storage {
+            root,
+            limit,
+            dirs,
+            compare_content,
+        } => {
             let storage = StorageService::new();
             let info = authorize_folder(&storage, &root)?;
             let scope = info.scope_id;
@@ -450,8 +465,19 @@ fn run(args: Args) -> Result<u8> {
             };
             let overview = storage.get_storage_overview(&scope)?;
             let largest = storage.get_largest_items(&scope, kind, 0, usize::from(limit))?;
+            let mut context = StorageContext::default();
+            if compare_content {
+                context.add_comparison(
+                    storage.compare_content(&scope, &ContentOptions::default())?,
+                    storage.index(&scope)?.as_ref(),
+                );
+            }
+            let items =
+                context.local_items(&largest.items, &Policy::from_env(), &Preferences::default());
             if args.json {
-                write_json(&json!({"overview":overview,"largest":largest}))?;
+                write_json(
+                    &json!({"overview":overview,"largest":largest,"items":items,"content_comparisons":context.comparisons()}),
+                )?;
             } else {
                 text::storage(
                     &mut io::stdout().lock(),
@@ -461,6 +487,8 @@ fn run(args: Args) -> Result<u8> {
                     &largest,
                     dirs,
                 )?;
+                text::storage_context(&mut io::stdout().lock(), &items)?;
+                text::content_comparisons(&mut io::stdout().lock(), context.comparisons())?;
             }
             Ok(if summary.status == Status::Ok { 0 } else { 3 })
         }
@@ -536,10 +564,15 @@ fn run(args: Args) -> Result<u8> {
             preview_cloud,
             verbose,
             scan_root,
+            compare_content,
+            share_file_names,
             preferences,
             propose_actions,
             journal_dir,
         } => {
+            if share_file_names && !allow_cloud && !preview_cloud {
+                return Err("--share-file-names requires --preview-cloud or --allow-cloud.".into());
+            }
             let prefs = match &preferences {
                 Some(path) => fs::read_to_string(path)
                     .map_err(|e| {
@@ -592,18 +625,36 @@ fn run(args: Args) -> Result<u8> {
             };
             let mut collector = Collector::new();
             let initial = collector.snapshot(true, 10);
+            let policy = Policy::from_env();
+            let prepared = storage_view::prepare(
+                &storage,
+                &policy,
+                &prefs,
+                share_file_names,
+                compare_content,
+            )?;
             if preview_cloud {
                 write_json(
                     &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
                     "message":initial_message(&question, &initial),
                     "tools":WORKSTATION_TOOLS.iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
-                    "authorized_scopes":storage.scopes().len()}),
+                    "authorized_scopes":storage.scopes().len(),
+                    "file_name_sharing":prepared.context.sharing_preview(),
+                    "storage_tool_previews":prepared.preview}),
                 )?;
                 return Ok(0);
             }
-            let policy = Policy::from_env();
+            if share_file_names {
+                // The flag is the explicit permission. Show this run's exact finite allowlist
+                // before the first request, including in batch mode (stderr preserves JSON).
+                eprintln!(
+                    "File names authorized for this run (before any cloud request):\n{}",
+                    serde_json::to_string_pretty(&prepared.context.sharing_preview())?
+                );
+            }
             let mut workstation =
                 Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
+            workstation.set_storage_context(prepared.context.clone());
             let mut recovery = None;
             if propose_actions {
                 let dir = journal_dir.unwrap_or_else(|| local_data_dir().join("journal"));
@@ -620,7 +671,7 @@ fn run(args: Args) -> Result<u8> {
                 recovery = Some(recovered);
                 workstation.enable_action_proposals(ActionDesk::native(journal));
             }
-            let report = match &mut model {
+            let mut report = match &mut model {
                 Some(model) => {
                     if io::stderr().is_terminal() {
                         eprintln!("Investigating with Nebius; initial budget: 6 requests, 12 tools, 90 seconds. An extension requires your confirmation.");
@@ -650,6 +701,7 @@ fn run(args: Args) -> Result<u8> {
                 }
                 None => local_report(&initial),
             };
+            prepared.record_uninspected_scopes(&mut report);
             let jobs = workstation.take_jobs();
             for job in &jobs {
                 job.cancel();
@@ -661,6 +713,14 @@ fn run(args: Args) -> Result<u8> {
             drop(workstation);
             if !args.json {
                 text::report(&mut io::stdout().lock(), &report, verbose)?;
+                if !prepared.local_items.is_empty() {
+                    println!("Authorized folder observations (prepared locally):");
+                    text::storage_context(&mut io::stdout().lock(), &prepared.local_items)?;
+                }
+                text::content_comparisons(
+                    &mut io::stdout().lock(),
+                    prepared.context.comparisons(),
+                )?;
             }
             let mut results = Vec::new();
             if let Some((desk, pending)) = actions {
@@ -671,7 +731,9 @@ fn run(args: Args) -> Result<u8> {
                 results = review_actions(&desk, pending, &protection, &mut collector, args.json)?;
             }
             if args.json {
-                write_json(&diagnosis_json(&report, &results, recovery.as_ref()))?;
+                let mut json = diagnosis_json(&report, &results, recovery.as_ref());
+                json["storage_preparation"] = prepared.local_report();
+                write_json(&json)?;
             }
             let action_failed = results.iter().any(|r| {
                 r.get("error").is_some()

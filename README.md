@@ -11,12 +11,40 @@ A CLI-first Windows investigation agent, read-only by default, with locally appr
 | `pcagent doctor` | Offline platform/configuration checks. `--check-cloud` explicitly checks the configured model in the Nebius catalog without sending telemetry. |
 | `pcagent diagnose "question"` | Local deterministic observations by default. Does not call a model without `--allow-cloud`. |
 | `pcagent diagnose "question" --preview-cloud` | Prints the exact first message locally. Sends nothing. Later tool samples may differ. |
-| `pcagent storage <folder> [--dirs] [--limit N]` | Metadata-only scan of one explicitly given folder: largest files or directories, coverage and limitations. Never reads contents or follows links. |
+| `pcagent storage <folder> [--dirs] [--limit N] [--compare-content]` | Metadata scan with distinct file/folder aliases and local role/application/recovery hints. Optional bounded local content comparison; no deletion or link following. |
 | `pcagent diagnose "question" --allow-cloud --verbose` | Bounded Nebius/Nemotron tool loop with local validation and traces of completed inspections. Requires an explicit model ID and API key. |
 
 All commands support `--json`. Output marks missing measurements explicitly rather than substituting zero. Non-Windows builds are useful for portable tests but do **not** collect Linux/macOS metrics as though they were Windows measurements.
 
 Scans read metadata only and may run in background workers during an investigation; cancellation and normal shutdown join those workers. Actions require a separate opt-in and a typed local approval. The executable cleanup adapter removes only approved files in a marked synthetic demo cache on Windows/NTFS. There is no elevation, forced process termination, startup modification or automatic cloud request. Interrupted actions are reported from the journal on the next action-enabled run; they are never replayed automatically.
+
+## File names and local storage context
+
+Each file and folder has a distinct alias within its scan, linked to an opaque `item_ref`.
+The CLI and local JSON restore real paths from the local index. Cloud tools see aliases and
+locally computed role/application/recovery hints; a path pattern does not verify ownership,
+installation, backup availability or permission to delete.
+
+```powershell
+# Local metadata and context; no cloud and no file-content reads.
+pcagent storage "$env:USERPROFILE\Downloads" --limit 10
+# Explicit local content reads: up to 256 files, 256 MiB and 15 seconds per comparison.
+pcagent storage "$env:USERPROFILE\Downloads" --compare-content
+# Review useful basenames and representative storage tool payloads; sends nothing.
+pcagent diagnose "Quels fichiers examiner ?" --scan-root "$env:USERPROFILE\Downloads" --share-file-names --preview-cloud
+# Authorize those categories of data for this run; the actual name list is printed before sending.
+pcagent diagnose "Quels fichiers examiner ?" --scan-root "$env:USERPROFILE\Downloads" --share-file-names --allow-cloud
+```
+
+`--share-file-names` shares only a frozen list of at most 200 basenames: the largest 20 files
+and 20 folders per scope plus ancestors, excluding the root. New scans cannot expand that list.
+`--compare-content` is independent and also works with `diagnose --offline --scan-root ...`.
+Contents and SHA-256 hashes stay local in every mode. Matches are observations of same-content
+copies, with coverage limits, not a deletion recommendation, antivirus scan or corruption check.
+
+`diagnose --scan-root` prepares bounded metadata scans before the investigation, including in
+preview/offline mode. Preparation shares 30 seconds and, when enabled, 256 MiB of content reads
+across scopes. Limits are cooperative; incomplete coverage stays explicit. See [storage](docs/storage.md).
 
 ## Build and run on Windows
 
@@ -91,7 +119,7 @@ crates/shared/        versioned observations, units, statuses and process identi
 crates/telemetry/     read-only Windows adapters; unsupported results elsewhere
 crates/diagnostics/   conservative deterministic candidate findings
 crates/agent/         minimized cloud envelope, tool registry, bounded orchestration, Nebius transport
-crates/storage/       bounded metadata-only storage scanner (docs/storage.md)
+crates/storage/       bounded metadata scans and opt-in local content comparison (docs/storage.md)
 crates/policy/        protected paths, preferences, cleanup classification and plans (docs/policy.md)
 crates/actions/       manifests, local single-use approval, restricted action catalog (docs/actions.md)
 ```

@@ -115,6 +115,46 @@ impl Directory {
             other_volume: stat.st_dev != volume.0,
         })
     }
+    pub fn open_content(
+        &mut self,
+        name: &OsStr,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<ContentFile> {
+        check()?;
+        // NONBLOCK prevents a replaced regular file from blocking on a FIFO before fstat.
+        let fd = fs::openat(
+            self.reader.fd()?,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )?;
+        Ok(ContentFile(fd.into()))
+    }
+}
+
+pub(crate) struct ContentFile(std::fs::File);
+impl ContentFile {
+    pub fn facts(&self, volume: VolumeId) -> io::Result<FileFacts> {
+        let stat = fs::fstat(&self.0)?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        Ok(FileFacts {
+            logical: u64::try_from(stat.st_size).map_err(|_| io::ErrorKind::InvalidData)?,
+            allocated: None,
+            key: Some((stat.st_dev, u128::from(stat.st_ino))),
+            links: u32::try_from(stat.st_nlink).ok(),
+            modified_ms: modified_ms(&stat),
+            sparse: false,
+            compressed: false,
+            other_volume: stat.st_dev != volume.0,
+        })
+    }
+}
+impl io::Read for ContentFile {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        io::Read::read(&mut self.0, buffer)
+    }
 }
 pub(crate) fn authorize_root(root: &Path) -> Result<(PathBuf, Directory), StorageError> {
     authorize_after_capture(root, || {})

@@ -1,8 +1,11 @@
-//! Read-only, scope-bound storage inventory (spec 9.1, 9.3, 9.4). File contents are never read.
+//! Read-only, scope-bound storage inventory (spec 9.1, 9.3, 9.4). Scans read metadata only.
+//! Content comparison is a separate, locally authorized and bounded operation.
 //! Paths stay local: agent-facing views should use `item_ref`/`redacted_path` via `without_paths`.
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 #![cfg_attr(windows, deny(unsafe_code))]
+mod content;
 mod index;
+pub use content::{ContentComparison, ContentGroup, ContentOptions};
 #[cfg(not(windows))]
 mod portable;
 mod scan;
@@ -418,6 +421,21 @@ impl StorageService {
         let scopes = self.lock();
         let state = scopes.get(scope_id).ok_or(StorageError::UnknownScope)?;
         state.index.clone().ok_or(StorageError::NotScanned)
+    }
+    /// Reads file bytes locally. Call only after explicit user authorization; never expose
+    /// this operation as an autonomous model tool. Hashes and contents are not returned.
+    pub fn compare_content(
+        &self,
+        scope_id: &str,
+        options: &ContentOptions,
+    ) -> Result<ContentComparison, StorageError> {
+        let (scope, cancel) = self.begin(scope_id)?;
+        let _guard = RunningGuard {
+            service: self,
+            scope_id: scope_id.into(),
+        };
+        let index = self.index(scope_id)?;
+        Ok(content::compare(&scope, &index, options, &cancel))
     }
     /// `get_storage_overview`: live volume space plus the latest completed scan, if any.
     pub fn get_storage_overview(&self, scope_id: &str) -> Result<StorageOverview, StorageError> {

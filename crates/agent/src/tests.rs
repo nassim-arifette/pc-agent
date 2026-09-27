@@ -670,6 +670,7 @@ fn conclusion_cites_hardware_storage_and_history_without_inventing_a_diagnosis()
                 evidence: vec![],
                 findings: vec![],
                 processes: vec![],
+                storage_items: vec![],
                 limitations: vec![],
             }
         }
