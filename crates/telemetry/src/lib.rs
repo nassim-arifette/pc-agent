@@ -1,5 +1,6 @@
 //! Read-only collectors. Non-Windows targets report unsupported, not fixture data.
 #![deny(unsafe_code)]
+pub mod counters;
 pub mod history;
 mod identity;
 pub mod tree;
@@ -34,6 +35,8 @@ pub struct Collector {
     history: MetricHistory,
     #[cfg(windows)]
     last_ticks: Option<TickSample>,
+    #[cfg(windows)]
+    pdh: Option<Result<windows::pdh::Pdh, counters::Unavailable>>,
 }
 impl Default for Collector {
     fn default() -> Self {
@@ -56,6 +59,8 @@ impl Collector {
             history: MetricHistory::new(config, Origin::Live),
             #[cfg(windows)]
             last_ticks: None,
+            #[cfg(windows)]
+            pdh: None,
         }
     }
     pub fn session_id(&self) -> &str {
@@ -240,7 +245,10 @@ fn unsupported_snapshot(session_id: &str) -> Snapshot {
         Metric::SystemCommitBytes,
         Metric::SystemCommitLimitBytes,
         Metric::CpuBusyBasisPoints,
-    ] {
+    ]
+    .into_iter()
+    .chain(counters::COUNTER_METRICS)
+    {
         result.evidence.push(Evidence::missing(
             metric,
             "system",
@@ -448,6 +456,37 @@ mod tests {
             .filter_map(|e| (e.metric == Metric::ProcessCpuBasisPoints).then_some(e.value))
             .flatten()
             .all(|v| v <= 10_000));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_counters_smoke_test_tolerates_unsupported() {
+        let mut c = Collector::new();
+        let s = c.snapshot(false, 1);
+        for m in counters::COUNTER_METRICS {
+            let e = s
+                .evidence
+                .iter()
+                .find(|e| e.metric == m && e.entity_ref == "system")
+                .unwrap_or_else(|| panic!("{m:?} reported"));
+            assert_eq!(e.unit, m.unit());
+            match e.status {
+                Status::Ok | Status::Partial if e.value.is_some() => {
+                    assert!(e.window.duration_ms >= 900 || m == Metric::DiskQueueLength);
+                }
+                Status::Ok => panic!("{m:?} ok without a value"),
+                _ => assert!(e.value.is_none(), "{m:?}"),
+            }
+            assert_ne!(e.status, Status::Error, "{m:?}: {:?}", e.limitations);
+        }
+        assert!(s
+            .evidence
+            .iter()
+            .filter(|e| e.metric == Metric::GpuEngineBasisPoints)
+            .all(
+                |e| e.entity_ref.starts_with("gpu-engine-") && e.value.is_some_and(|v| v <= 10_000)
+            ));
+        let text = serde_json::to_string(&s.evidence).unwrap();
+        assert!(!text.contains("luid") && !text.contains("pid_"));
     }
     #[cfg(windows)]
     #[test]
