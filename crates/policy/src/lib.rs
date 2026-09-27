@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 pub mod adapters;
 pub mod classify;
+mod context;
+pub use context::{ApplicationHint, ItemContext, RecoveryOptions};
 pub mod path;
 pub mod plan;
 pub mod prefs;

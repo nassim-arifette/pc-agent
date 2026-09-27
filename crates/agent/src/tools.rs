@@ -163,6 +163,8 @@ pub struct ToolOutput {
     pub evidence: Vec<Evidence>,
     pub findings: Vec<Finding>,
     pub processes: Vec<ProcessInstance>,
+    /// Local report only. Never serialize this alongside the cloud payload.
+    pub storage_items: Vec<crate::LocalStorageItem>,
     pub limitations: Vec<String>,
 }
 impl ToolOutput {
@@ -178,6 +180,7 @@ impl ToolOutput {
             evidence: s.evidence.clone(),
             findings: analyze(s),
             processes: s.processes.clone(),
+            storage_items: Vec::new(),
             limitations: s.limitations.clone(),
         }
     }

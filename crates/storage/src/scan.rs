@@ -303,6 +303,7 @@ impl<'a> Walk<'a> {
             entry.logical = f.logical;
             entry.modified_ms = f.modified_ms.or(entry.modified_ms);
             entry.links = f.links;
+            entry.identity = f.key;
             match f.allocated {
                 Some(a) => entry.allocated = a,
                 None => entry.flags |= F_ALLOC_UNKNOWN,
