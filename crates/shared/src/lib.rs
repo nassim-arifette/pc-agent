@@ -92,6 +92,71 @@ impl Metric {
             | Self::ProcessIoOtherBytes => "bytes",
         }
     }
+    /// Short label for human-readable output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PhysicalTotalBytes => "Physical memory",
+            Self::PhysicalAvailableBytes => "Available memory",
+            Self::SystemCommitBytes => "Commit charge",
+            Self::SystemCommitLimitBytes => "Commit limit",
+            Self::CpuBusyBasisPoints => "CPU (all cores)",
+            Self::ProcessWorkingSetBytes => "Working set",
+            Self::ProcessPrivateCommitBytes => "Private commit",
+            Self::ProcessCpuBasisPoints => "CPU",
+            Self::ProcessIoReadBytes => "I/O read",
+            Self::ProcessIoWriteBytes => "I/O write",
+            Self::ProcessIoOtherBytes => "I/O other",
+            Self::CpuBusiestCoreBasisPoints => "Busiest core",
+            Self::DiskReadLatencyMicroseconds => "Disk read latency",
+            Self::DiskWriteLatencyMicroseconds => "Disk write latency",
+            Self::DiskIdleBasisPoints => "Disk idle time",
+            Self::DiskQueueLength => "Disk queue length",
+            Self::HardFaultPagesPerSecondX100 => "Hard-fault page reads",
+            Self::GpuEngineBasisPoints => "GPU engine",
+            Self::GpuBusiestEngineBasisPoints => "Busiest GPU engine",
+        }
+    }
+    /// A value of this metric in human units: binary byte units, percentages, milliseconds.
+    pub fn format_value(self, value: u64) -> String {
+        match self {
+            Self::PhysicalTotalBytes
+            | Self::PhysicalAvailableBytes
+            | Self::SystemCommitBytes
+            | Self::SystemCommitLimitBytes
+            | Self::ProcessWorkingSetBytes
+            | Self::ProcessPrivateCommitBytes
+            | Self::ProcessIoReadBytes
+            | Self::ProcessIoWriteBytes
+            | Self::ProcessIoOtherBytes => format_bytes(value),
+            Self::CpuBusyBasisPoints
+            | Self::ProcessCpuBasisPoints
+            | Self::CpuBusiestCoreBasisPoints
+            | Self::DiskIdleBasisPoints
+            | Self::GpuEngineBasisPoints
+            | Self::GpuBusiestEngineBasisPoints => format!("{:.1}%", value as f64 / 100.0),
+            Self::DiskReadLatencyMicroseconds | Self::DiskWriteLatencyMicroseconds => {
+                format!("{:.1} ms", value as f64 / 1_000.0)
+            }
+            Self::DiskQueueLength => value.to_string(),
+            Self::HardFaultPagesPerSecondX100 => format!("{:.1} pages/s", value as f64 / 100.0),
+        }
+    }
+}
+
+/// Binary (IEC) units, labelled as such: 1 KiB = 1024 bytes.
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let decimals = if unit >= 2 { 2 } else { 1 };
+    format!("{value:.decimals$} {}", UNITS[unit])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -563,5 +628,28 @@ mod tests {
         let encoded = serde_json::to_string(&e).unwrap();
         let decoded: Evidence = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.value, Some(u64::MAX));
+    }
+    #[test]
+    fn display_values_use_each_metric_unit() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(12_612_919_296), "11.75 GiB");
+        assert_eq!(format_bytes(u64::MAX), "16384.00 PiB");
+        assert_eq!(Metric::CpuBusyBasisPoints.format_value(1124), "11.2%");
+        assert_eq!(Metric::DiskIdleBasisPoints.format_value(9806), "98.1%");
+        assert_eq!(
+            Metric::DiskWriteLatencyMicroseconds.format_value(191),
+            "0.2 ms"
+        );
+        assert_eq!(Metric::DiskQueueLength.format_value(3), "3");
+        assert_eq!(
+            Metric::HardFaultPagesPerSecondX100.format_value(1597),
+            "16.0 pages/s"
+        );
+        assert_eq!(
+            Metric::ProcessPrivateCommitBytes.format_value(1_536_155_648),
+            "1.43 GiB"
+        );
     }
 }
