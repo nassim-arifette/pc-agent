@@ -1,0 +1,186 @@
+// Entry point: preferences, the Rust bridge, the shell and the router.
+import { h, fill } from "./dom.js";
+import { icon } from "./icons.js";
+import { t } from "./i18n.js";
+import { connect } from "./api.js";
+import { loadPrefs } from "./prefs.js";
+import { state, subscribe, refreshInfo, wireEvents, answerExtension } from "./store.js";
+import { createMark } from "./mascot.js";
+import { dialog, button, dialogOpen } from "./ui.js";
+import { usd } from "./format.js";
+import { modelName } from "./models.js";
+import { currentRoute, navigate, ROUTES } from "./router.js";
+import * as home from "./views/home.js";
+import * as investigate from "./views/investigate.js";
+import * as storage from "./views/storage.js";
+import * as settings from "./views/settings.js";
+
+const VIEWS = { home, investigate, storage, settings };
+const NAV = [
+  { route: "home", icon: "home", label: "nav.home" },
+  { route: "investigate", icon: "sparkle", label: "nav.investigate" },
+  { route: "storage", icon: "drive", label: "nav.storage" },
+  { route: "settings", icon: "sliders", label: "nav.settings" },
+];
+
+let main = null;
+let nav = null;
+let statusHost = null;
+let unmount = null;
+let mountedRoute = null;
+
+function renderStatus() {
+  if (!statusHost) return;
+  const cloud = state.info?.cloud;
+  let dot = "neutral";
+  let title = t("status.local.title");
+  let text = t("status.local.text");
+  if (cloud?.ready) {
+    dot = "good";
+    title = t("status.cloud.title");
+    text = modelName(cloud.model_id);
+  } else if (cloud && (cloud.key_configured || cloud.model_id)) {
+    dot = "warn";
+    title = t("status.problem.title");
+    text = t("status.problem.text");
+  }
+  fill(
+    statusHost,
+    h(
+      "button",
+      { type: "button", class: "status-card", title, onclick: () => navigate("settings") },
+      h("span", { class: ["dot", dot] }),
+      h("span", { class: "status-text" }, h("strong", null, title), h("span", null, text)),
+    ),
+  );
+}
+
+function renderNav() {
+  const route = currentRoute();
+  const running = state.inv && (state.inv.status === "running" || state.inv.status === "stopping");
+  fill(
+    nav,
+    NAV.map((item) =>
+      h(
+        "button",
+        {
+          type: "button",
+          class: "nav-item",
+          "aria-current": item.route === route ? "page" : null,
+          title: t(item.label),
+          onclick: () => navigate(item.route),
+        },
+        icon(item.icon),
+        h("span", { class: "nav-label" }, t(item.label)),
+        item.route === "investigate" && running ? h("span", { class: "nav-badge", "aria-label": t("inv.running") }) : null,
+      ),
+    ),
+  );
+}
+
+function renderShell() {
+  const app = document.getElementById("app");
+  nav = h("nav", { class: "nav", "aria-label": t("nav.label") });
+  statusHost = h("div");
+  main = h("main", { class: "main", id: "main", tabindex: "-1" });
+  fill(
+    app,
+    h(
+      "aside",
+      { class: "sidebar" },
+      h("div", { class: "brand" }, createMark(), h("div", { class: "brand-text" }, h("div", { class: "brand-name" }, "PC Agent"), h("div", { class: "brand-sub" }, t("app.tagline")))),
+      nav,
+      h("div", { class: "sidebar-foot" }, statusHost, h("p", { class: "foot-note hint" }, t("foot.privacy"))),
+    ),
+    main,
+  );
+  renderNav();
+  renderStatus();
+}
+
+function route(force = false) {
+  const name = currentRoute();
+  if (!force && name === mountedRoute) return;
+  unmount?.();
+  mountedRoute = name;
+  const page = h("div", { class: "page" });
+  fill(main, page);
+  main.scrollTop = 0;
+  unmount = VIEWS[name].mount(page) || null;
+  renderNav();
+}
+
+/** Redraws everything, e.g. after the language changes. */
+function redraw() {
+  unmount?.();
+  unmount = null;
+  mountedRoute = null;
+  renderShell();
+  route(true);
+}
+
+function extensionDialog() {
+  const inv = state.inv;
+  const ext = inv?.extension;
+  if (!ext || dialogOpen()) return;
+  const cost = ext.usage?.cost ? usd(ext.usage.cost.usd) : t("extension.cost.unknown");
+  dialog(
+    (close) => [
+      h("div", { class: "dialog-head" }, h("div", { class: "metric-icon warn" }, icon("clock")), h("h2", { class: "dialog-title" }, t("extension.title"))),
+      h("p", null, t(`extension.reason.${ext.request.reason}`)),
+      h(
+        "p",
+        { class: "note", style: { "margin-top": "8px" } },
+        t("extension.body", {
+          requests: ext.usage.requests,
+          cost,
+          rounds: ext.request.additional_rounds,
+          tools: ext.request.additional_tool_calls,
+          seconds: ext.request.additional_seconds,
+        }),
+      ),
+      h(
+        "div",
+        { class: "dialog-actions" },
+        button(t("extension.stop"), { onClick: () => close(false) }),
+        button(t("extension.continue"), { variant: "primary", iconName: "play", onClick: () => close(true) }),
+      ),
+    ],
+    { label: t("extension.title"), dismissValue: false },
+  ).then((accept) => answerExtension(accept));
+}
+
+async function boot() {
+  loadPrefs();
+  await connect();
+  renderShell();
+  wireEvents();
+  subscribe((topic) => {
+    if (topic === "info") renderStatus();
+    if (topic === "inv") renderNav();
+    if (topic === "extension") extensionDialog();
+  });
+  window.addEventListener("hashchange", () => route());
+  window.addEventListener("pcagent:redraw", redraw);
+  document.addEventListener("keydown", (e) => {
+    // Ctrl+1..4 switch screens; Ctrl+K jumps to the question box.
+    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    const index = Number(e.key) - 1;
+    if (index >= 0 && index < ROUTES.length) {
+      e.preventDefault();
+      navigate(ROUTES[index]);
+    } else if (e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      if (currentRoute() !== "home" && currentRoute() !== "investigate") navigate("home");
+      window.setTimeout(() => document.querySelector(".ask textarea")?.focus(), 60);
+    }
+  });
+  route(true);
+  try {
+    await refreshInfo();
+  } catch {
+    // The status card keeps its local default.
+  }
+}
+
+boot();

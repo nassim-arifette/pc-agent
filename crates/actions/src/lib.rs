@@ -41,6 +41,8 @@ pub use plan::{
     PlanModelView, PlanState, Precondition, ProcessIdentity, ProcessTarget, Recovery,
     ResolvedTarget, SettingsPage, MAX_REF_LEN, MAX_TARGETS,
 };
+#[cfg(windows)]
+pub use windows::show_in_explorer;
 
 use pcagent_shared::Status;
 

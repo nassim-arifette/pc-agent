@@ -337,6 +337,13 @@ pub fn open_in_explorer(file: &FileTarget) -> Result<EffectOutcome, EffectError>
         .ok_or_else(|| EffectError::new(Status::Error, "path cannot be passed to Explorer"))?;
     spawn_explorer(&arg)
 }
+/// Opens Explorer with `path` selected, at the user's own request in a local interface. Nothing
+/// is modified, and neither a model proposal nor an approval is involved.
+pub fn show_in_explorer(path: &Path) -> Result<(), EffectError> {
+    let arg = explorer_select_arg(path)
+        .ok_or_else(|| EffectError::new(Status::Error, "path cannot be passed to Explorer"))?;
+    spawn_explorer(&arg).map(|_| ())
+}
 pub fn open_settings_page(page: SettingsPage) -> Result<EffectOutcome, EffectError> {
     spawn_explorer(page.uri())
 }
