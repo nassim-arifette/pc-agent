@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Runs `pcagent diagnose --allow-cloud --json` for every question and model and writes one CSV row
-per run: success, requests, tokens, estimated cost, duration and the selected finding.
+per run: execution status, requests, tokens, estimated cost, duration and the selected finding.
 
 .DESCRIPTION
 Each run is a live, paid Nebius request (a few US cents at most). The PC's state changes between
@@ -49,7 +49,7 @@ try {
                     $s = $d.stats
                     $first = if ($s.requests.Count -gt 0) { $s.requests[0].prompt_tokens } else { $null }
                     $row += [ordered]@{
-                        status = $d.status; error = $d.error
+                        status = $d.execution_status; support = $d.diagnostic_support; error = $d.error
                         requests = $s.inference_calls; tool_calls = $s.tool_calls; inspections = $s.inspection_calls
                         first_prompt_tokens = $first; prompt_tokens = $s.prompt_tokens
                         completion_tokens = $s.completion_tokens; reasoning_tokens = $s.reasoning_tokens
@@ -60,7 +60,7 @@ try {
                     $row.status = 'no_json'
                 }
                 $rows += [pscustomobject]$row
-                Write-Host ("{0,-40} {1,-38} {2,-8} {3,6}s {4}" -f $model, $question, $row.status, $row.seconds, $row.cost_usd)
+                Write-Host ("{0,-40} {1,-38} {2,-16} {3,6}s {4}" -f $model, $question, $row.status, $row.seconds, $row.cost_usd)
             }
         }
     }

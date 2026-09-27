@@ -8,9 +8,10 @@ use pcagent_actions::{
     ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
 use pcagent_agent::{
-    initial_message, investigate, local_report, verify_action, ActionDesk, AgentError, Config,
-    Nebius, PendingPlan, PolicyProtection, Pricing, Workstation, MAX_QUESTION_BYTES,
-    PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
+    initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
+    AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,
+    PolicyProtection, Pricing, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN,
+    VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{format_bytes, Snapshot, Status};
@@ -130,6 +131,27 @@ fn local_data_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("pcagent")
+}
+
+/// No reading stdin or emitting an extra report in machine-readable/batch mode.
+fn review_extension(
+    report: &Investigation,
+    request: &ExtensionRequest,
+    json_mode: bool,
+    interactive: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> io::Result<bool> {
+    if json_mode || !interactive || !request.available {
+        return Ok(false);
+    }
+    text::report(output, report, false)?;
+    write!(output, "Continue with up to {} additional model requests, {} tools and {} seconds? This can consume more provider tokens. Type 'yes' to continue [no]: ",
+        request.additional_rounds, request.additional_tool_calls, request.additional_seconds)?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    Ok(answer.trim().eq_ignore_ascii_case("yes"))
 }
 /// Trusted local review: every pending plan needs a typed "yes" on an interactive terminal.
 fn review_actions(
@@ -601,13 +623,30 @@ fn run(args: Args) -> Result<u8> {
             let report = match &mut model {
                 Some(model) => {
                     if io::stderr().is_terminal() {
-                        eprintln!("Investigating with Nebius; this can take up to 90 seconds...");
+                        eprintln!("Investigating with Nebius; initial budget: 6 requests, 12 tools, 90 seconds. An extension requires your confirmation.");
                     }
-                    investigate(model, &question, &initial, &mut workstation, |event| {
-                        if verbose {
-                            eprintln!("{}", text::tool_event(event));
-                        }
-                    })
+                    investigate_with_extension(
+                        model,
+                        &question,
+                        &initial,
+                        &mut workstation,
+                        |event| {
+                            if verbose {
+                                eprintln!("{}", text::tool_event(event));
+                            }
+                        },
+                        |partial, request| {
+                            review_extension(
+                                partial,
+                                request,
+                                args.json,
+                                io::stdin().is_terminal() && io::stderr().is_terminal(),
+                                &mut io::stdin().lock(),
+                                &mut io::stderr().lock(),
+                            )
+                            .unwrap_or(false)
+                        },
+                    )
                 }
                 None => local_report(&initial),
             };
@@ -639,7 +678,7 @@ fn run(args: Args) -> Result<u8> {
                     || r.get("result").is_some_and(|v| v["overall"] != "completed")
             });
             Ok(
-                if report.error.is_none() && report.status == Status::Ok && !action_failed {
+                if report.execution_status == ExecutionStatus::Completed && !action_failed {
                     0
                 } else {
                     3
@@ -673,6 +712,55 @@ fn diagnosis_json(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    #[test]
+    fn extension_prompt_requires_interactive_explicit_yes_and_never_reads_json_or_piped_input() {
+        let report = local_report(&Snapshot::empty("fixture"));
+        let request = ExtensionRequest {
+            reason: pcagent_agent::BudgetLimit::Rounds,
+            available: true,
+            additional_rounds: 6,
+            additional_tool_calls: 12,
+            additional_seconds: 90,
+        };
+        for (json_mode, interactive) in [(true, true), (false, false)] {
+            let mut input = io::Cursor::new(b"yes\n");
+            let mut output = Vec::new();
+            assert!(!review_extension(
+                &report,
+                &request,
+                json_mode,
+                interactive,
+                &mut input,
+                &mut output
+            )
+            .unwrap());
+            assert_eq!(input.position(), 0);
+            assert!(output.is_empty());
+        }
+        for (answer, expected) in [
+            ("yes\n", true),
+            ("YES\n", true),
+            ("no\n", false),
+            ("\n", false),
+            ("", false),
+        ] {
+            let mut output = Vec::new();
+            assert_eq!(
+                review_extension(
+                    &report,
+                    &request,
+                    false,
+                    true,
+                    &mut io::Cursor::new(answer.as_bytes()),
+                    &mut output
+                )
+                .unwrap(),
+                expected
+            );
+            let shown = String::from_utf8(output).unwrap();
+            assert!(shown.contains("Execution:") && shown.contains("provider tokens"));
+        }
+    }
     #[cfg(windows)]
     #[test]
     fn json_report_retains_pending_manifest_without_approving_or_executing() {

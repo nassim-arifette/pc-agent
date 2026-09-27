@@ -67,6 +67,12 @@ fn default_diagnosis_works_without_an_api_key() {
     assert_eq!(value["stats"]["inference_calls"], 0);
     assert_eq!(value["stats"]["tool_calls"], 0);
     assert!(value["error"].is_null());
+    assert_eq!(value["execution_status"], "completed");
+    assert!(value["coverage"]["domains"]
+        .as_array()
+        .is_some_and(|d| d.len() == 5));
+    assert!(value["diagnostic_support"].is_string());
+    assert!(value["continuation"].is_null());
 }
 #[test]
 fn explicit_cloud_without_key_fails_without_claiming_success() {

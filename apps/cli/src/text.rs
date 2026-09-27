@@ -480,13 +480,34 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
         "nebius" => writeln!(out, "Cloud-assisted investigation (Nebius)")?,
         other => writeln!(out, "Mode: {}", clean(other))?,
     }
+    writeln!(
+        out,
+        "Execution: {} | Sensor coverage: {} | Diagnostic support: {}",
+        words(&r.execution_status),
+        words(&r.coverage.status),
+        r.diagnostic_support.label()
+    )?;
+    for domain in &r.coverage.domains {
+        let target = domain
+            .target
+            .as_ref()
+            .map(|t| format!(" ({})", clean(t)))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "  {}{target}: {}",
+            words(&domain.domain),
+            words(&domain.status)
+        )?;
+        if verbose {
+            list(out, "    Missing coverage", &domain.missing)?;
+        }
+    }
     if let Some(error) = &r.error {
         writeln!(
             out,
-            "Warning: the investigation did not complete ({error}). Showing the local fallback."
+            "Warning: the investigation did not complete ({error}). Collected observations are retained below."
         )?;
-    } else if r.status != Status::Ok {
-        writeln!(out, "Warning: some measurements were unavailable.")?;
     }
     writeln!(out)?;
     let f = &r.selected;
@@ -521,6 +542,38 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
         .map(|a| format!("{}: {}", a.classification.label(), a.summary))
         .collect();
     list(out, "Other possibilities", &alternatives)?;
+    for observation in r
+        .observations
+        .iter()
+        .filter(|o| {
+            r.observation_refs.contains(&o.observation_id) || (r.error.is_some() && o.citable)
+        })
+        .take(pcagent_agent::MAX_CITED_OBSERVATIONS)
+    {
+        writeln!(
+            out,
+            "Observation: {} [{}] ({})",
+            clean(&observation.tool),
+            clean(&observation.observation_id),
+            words(&observation.status)
+        )?;
+        let facts: Vec<_> = observation.facts.iter().map(|f| clean(f)).collect();
+        list(out, "  Facts", &facts)?;
+        let limits: Vec<_> = observation.limitations.iter().map(|l| clean(l)).collect();
+        list(out, "  Limits", &limits)?;
+    }
+    if let Some(request) = &r.continuation {
+        writeln!(
+            out,
+            "Budget reached: {}. {}",
+            words(&request.reason),
+            if request.available {
+                "Further investigation requires explicit consent in this interactive session."
+            } else {
+                "The maximum extension or per-response tool limit was reached."
+            }
+        )?;
+    }
     writeln!(out, "Next step: {}", f.next_step)?;
     writeln!(out)?;
     list(out, "Limitations", &f.limitations)?;
