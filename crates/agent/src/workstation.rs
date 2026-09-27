@@ -435,7 +435,7 @@ impl Workstation<'_> {
         });
         let mut out = output(
             i.status,
-            json!({"status": i.status, "origin": i.origin, "os_version": i.os_version,
+            json!({"status": i.status, "origin": i.origin, "collected_at_unix_ms": i.collected_at_unix_ms, "os_version": i.os_version,
                 "architecture": i.architecture, "logical_processors": i.logical_processors,
                 "installed_memory_bytes": i.installed_memory_bytes,
                 "volumes": {"value": volumes, "status": i.volumes.status, "source": i.volumes.source},
@@ -570,6 +570,10 @@ impl Toolbox for Workstation<'_> {
             ),
             _ => output(Status::Error, json!({"error": "unregistered tool"})),
         };
+        // Preserve the target even on errors, so one failed scope cannot disappear from coverage.
+        if !scope.is_empty() {
+            out.cloud["scope_id"] = scope.into();
+        }
         if matches!(spec.class, crate::tools::ToolClass::Inspection) && out.inspection_complete {
             let reference = pcagent_shared::new_id("obs");
             out.cloud["observation_id"] = reference.clone().into();
