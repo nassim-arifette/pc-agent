@@ -494,8 +494,9 @@ struct ProgressSink {
     path: PathBuf,
     expected: FileIdentity,
     pin: Cell<Option<OwnedHandle>>,
+    tracker: OwnedHandle,
     pre_deletes: Cell<u32>,
-    released: Cell<bool>,
+    approved: Cell<bool>,
     deleted: Cell<Option<HRESULT>>,
     recycled: RefCell<Option<String>>,
 }
@@ -536,7 +537,7 @@ static SINK_VTBL: SinkVtbl = SinkVtbl {
     query_interface: sink_query_interface,
     add_ref: sink_add_ref,
     release: sink_release,
-    start_operations: sink_ok,
+    start_operations: sink_start,
     finish_operations: sink_finish,
     pre_rename_item: sink_refuse_named,
     post_rename_item: sink_post_rename,
@@ -597,6 +598,17 @@ unsafe extern "system" fn sink_release(this: Raw) -> u32 {
 unsafe extern "system" fn sink_ok(_: Raw) -> HRESULT {
     S_OK
 }
+/// The shell opens the file with `DELETE` after `StartOperations` and before `PreDeleteItem`
+/// (observed on Windows 11 and the `windows-latest` runner, with or without the early-failure,
+/// nuke-warning and recycle flags); the pin would make that open fail with a sharing violation. It is therefore released here, as late as the shell
+/// allows. Until now it was held continuously since verification, so the path still names the
+/// verified object at this point.
+unsafe extern "system" fn sink_start(this: Raw) -> HRESULT {
+    // SAFETY: `this` is our sink.
+    let s = unsafe { sink(this) };
+    drop(s.pin.take());
+    S_OK
+}
 unsafe extern "system" fn sink_finish(_: Raw, _: HRESULT) -> HRESULT {
     S_OK
 }
@@ -649,31 +661,27 @@ unsafe extern "system" fn sink_post_new(
 ) -> HRESULT {
     S_OK
 }
-/// Last check before the shell opens the file: exactly one item, recyclable, the planned path,
-/// still the pinned object. Only then is the pin released so the shell can take `DELETE` access.
+/// Last check before the shell moves the file: exactly one item, recyclable, the planned path, the
+/// tracked object still has one link and the path still names it (not through a reparse point).
 unsafe extern "system" fn sink_pre_delete(this: Raw, flags: u32, item: Raw) -> HRESULT {
     // SAFETY: `this` is our sink.
     let s = unsafe { sink(this) };
     let calls = s.pre_deletes.get().saturating_add(1);
     s.pre_deletes.set(calls);
-    let pin = s.pin.take();
     let recyclable = flags & TSF_DELETE_RECYCLE_IF_POSSIBLE as u32 != 0;
     let same_item = file_system_path(item)
         .zip(s.path.to_str())
         .is_some_and(|(a, b)| same_path(&a, b));
-    let pinned = pin
-        .as_ref()
-        .and_then(|h| handle_info(h).ok())
-        .is_some_and(|(id, links)| same_object(&id, &s.expected) && links == 1);
+    let tracked = handle_info(&s.tracker)
+        .is_ok_and(|(id, links)| same_object(&id, &s.expected) && links == 1);
     let at_path = observe_file(&s.path)
         .ok()
         .flatten()
         .is_some_and(|id| same_object(&id, &s.expected) && !id.is_reparse_point);
-    if calls != 1 || !recyclable || !same_item || !pinned || !at_path {
+    if calls != 1 || !recyclable || !same_item || !tracked || !at_path {
         return E_ABORT;
     }
-    drop(pin);
-    s.released.set(true);
+    s.approved.set(true);
     S_OK
 }
 unsafe extern "system" fn sink_post_delete(
@@ -686,7 +694,7 @@ unsafe extern "system" fn sink_post_delete(
     // SAFETY: `this` is our sink.
     let s = unsafe { sink(this) };
     if s.deleted.replace(Some(hr)).is_some() {
-        s.released.set(false);
+        s.approved.set(false);
         return E_ABORT;
     }
     *s.recycled.borrow_mut() = file_system_path(newly_created);
@@ -714,16 +722,22 @@ impl Drop for Apartment {
 struct ShellReport {
     trace: String,
     performed: bool,
-    released: bool,
+    approved: bool,
     deleted: Option<HRESULT>,
     recycled: Option<String>,
+    tracked: Option<(String, FileIdentity)>,
 }
 fn shell_error(detail: &str) -> EffectError {
     EffectError::new(Status::Error, detail)
 }
 /// `IFileOperation::DeleteItem` with undo (recycle), no UI, stopping at the first error. The pin
-/// is handed to the progress sink, which releases it only in `PreDeleteItem` after rechecking.
-fn shell_recycle(file: &FileTarget, pin: OwnedHandle) -> Result<ShellReport, EffectError> {
+/// is handed to the progress sink, which releases it in `StartOperations`; `PreDeleteItem`
+/// rechecks the target through the tracking handle and the path before approving the move.
+fn shell_recycle(
+    file: &FileTarget,
+    pin: OwnedHandle,
+    tracker: OwnedHandle,
+) -> Result<ShellReport, EffectError> {
     let path = wide(file.path.as_os_str()).ok_or_else(|| shell_error("invalid path"))?;
     let mut raw: Raw = null_mut();
     // SAFETY: path is NUL-terminated; IID and output pointer are valid.
@@ -755,8 +769,9 @@ fn shell_recycle(file: &FileTarget, pin: OwnedHandle) -> Result<ShellReport, Eff
         path: file.path.clone(),
         expected: file.identity.clone(),
         pin: Cell::new(Some(pin)),
+        tracker,
         pre_deletes: Cell::new(0),
-        released: Cell::new(false),
+        approved: Cell::new(false),
         deleted: Cell::new(None),
         recycled: RefCell::new(None),
     });
@@ -813,9 +828,12 @@ fn shell_recycle(file: &FileTarget, pin: OwnedHandle) -> Result<ShellReport, Eff
     let report = ShellReport {
         trace,
         performed,
-        released: sink.released.get(),
+        approved: sink.approved.get(),
         deleted: sink.deleted.get(),
         recycled: sink.recycled.borrow_mut().take(),
+        tracked: final_path(&sink.tracker)
+            .ok()
+            .zip(handle_info(&sink.tracker).ok().map(|(id, _)| id)),
     };
     if sink.refs.load(Ordering::SeqCst) != 1 {
         // The shell still references the sink: keep it alive instead of freeing it under it.
@@ -831,15 +849,17 @@ fn shell_recycle(file: &FileTarget, pin: OwnedHandle) -> Result<ShellReport, Eff
 ///    one hard link, NTFS, baseline protection — all checked on that handle.
 /// 2. A share-all attribute handle is opened while pinned, so it is bound to the same object and
 ///    follows it through the move.
-/// 3. `IFileOperation` recycle; `PreDeleteItem` re-verifies and only then releases the pin.
+/// 3. `IFileOperation` recycle. The pin is released in `StartOperations`; `PreDeleteItem`
+///    re-verifies through the tracking handle and the path and aborts on any mismatch.
 /// 4. Post-check ([`verify_recycled`]): the item reported by `PostDeleteItem` is in
 ///    `$Recycle.Bin` on the same volume and carries the same identity, the tracking handle's final
 ///    path is that item, and the original path no longer names the object.
 ///
-/// The shell only accepts paths/PIDLs and must itself open the file with `DELETE`, which the pin
-/// forbids; the pin is therefore released inside `PreDeleteItem`, immediately before the shell's
-/// own open. A swap in that window is detected by step 4 and reported as a failure (the swapped
-/// file is then in the recycle bin, not deleted); it cannot be prevented through the shell.
+/// The shell only accepts paths/PIDLs and opens the file with `DELETE` itself, both in a
+/// pre-flight step between `StartOperations` and `PreDeleteItem` and for the move, so the pin
+/// cannot be held across the operation. A swap before `PreDeleteItem` is aborted; a swap between
+/// it and the move is detected by step 4 and reported as a failure (the swapped file is then in
+/// the recycle bin, not deleted). It cannot be prevented through the shell.
 pub fn recycle_file(file: &FileTarget) -> Result<EffectOutcome, EffectError> {
     std::thread::scope(|scope| {
         scope
@@ -859,25 +879,25 @@ fn recycle_in_apartment(file: &FileTarget) -> Result<EffectOutcome, EffectError>
         _ => return Ok(EffectOutcome::Refused(Refusal::TargetReplaced)),
     };
     recycle_bin_available(&file.path)?;
-    let report = shell_recycle(file, pin)?;
+    let report = shell_recycle(file, pin, tracker)?;
     let evidence = RecycleEvidence {
         shell_succeeded: report.performed
-            && report.released
+            && report.approved
             && report.deleted.is_some_and(|hr| hr >= 0),
         recycled_item: report.recycled.map(|p| {
             let id = observe_file(Path::new(&p)).ok().flatten();
             (p, id)
         }),
-        tracked: final_path(&tracker)
-            .ok()
-            .zip(handle_info(&tracker).ok().map(|(id, _)| id)),
+        tracked: report.tracked,
         original_now: observe_file(&file.path).ok().flatten(),
     };
     match verify_recycled(&file.path, &file.identity, &evidence) {
         Ok(()) => Ok(EffectOutcome::Done(Some(
             "moved to the recycle bin; identity verified on the recycled item".into(),
         ))),
-        Err(reason) if !report.released => Err(shell_error(reason)),
+        Err(reason) if !report.approved => {
+            Err(shell_error(&format!("{reason} ({})", report.trace)))
+        }
         Err(reason) => Err(EffectError::new(
             Status::Error,
             &format!(
