@@ -1,10 +1,12 @@
 //! The only unsafe boundary: documented, read-only Windows API calls.
 mod inventory;
+pub(super) mod pdh;
 mod tree;
 pub(super) use inventory::hardware_inventory;
 pub(super) use tree::process_tree;
 
 use super::{cpu_busy_basis_points, process_cpu_basis_points, Collector, TickSample};
+use crate::counters::{counter_evidence, CounterReadings, MIN_RATE_WINDOW};
 use crate::identity::{CounterSample, Key};
 use pcagent_shared::{
     unix_ms, Evidence, InstanceState, Metric, ProcessCoverage, Snapshot, Status, Window,
@@ -527,11 +529,51 @@ pub(super) fn collect(
     reuse_cpu: bool,
 ) -> Snapshot {
     let mut result = Snapshot::empty(&collector.session_id);
+    let fresh = start_counters(collector, reuse_cpu);
     collect_cpu(&mut result, collector, reuse_cpu);
     collect_memory(&mut result);
+    collect_counters(&mut result, collector, fresh && !reuse_cpu);
     if include_processes {
         collect_processes(&mut result, collector, limit);
     }
-    result.limitations.push("Short sample: no sustained contention, memory leak or causal diagnosis can be established. Disk, GPU and hard-fault activity are not collected yet.".into());
+    result.limitations.push("Short sample: no sustained contention, memory leak or causal diagnosis can be established.".into());
     result
+}
+/// Opens the PDH query once per collector. A fresh window starts now unless a reusable
+/// pending collection (at most 60 s old) exists; returns whether a fresh window started.
+fn start_counters(collector: &mut Collector, reuse: bool) -> bool {
+    let now = collector.started.elapsed();
+    let Ok(query) = collector.pdh.get_or_insert_with(pdh::Pdh::open) else {
+        return false;
+    };
+    let reusable = reuse
+        && query
+            .baseline_age(now)
+            .is_some_and(|a| a <= Duration::from_secs(60));
+    if !reusable {
+        query.start(now);
+    }
+    !reusable
+}
+fn collect_counters(result: &mut Snapshot, collector: &mut Collector, fresh: bool) {
+    let started = collector.started;
+    let (readings, window) = match collector.pdh.as_mut() {
+        Some(Ok(query)) => {
+            if fresh {
+                if let Some(rest) = query
+                    .baseline_age(started.elapsed())
+                    .and_then(|age| MIN_RATE_WINDOW.checked_sub(age))
+                {
+                    std::thread::sleep(rest);
+                }
+            }
+            match query.read(started.elapsed()) {
+                Ok(r) => r,
+                Err(u) => (CounterReadings::unavailable(&u), Window::instant()),
+            }
+        }
+        Some(Err(u)) => (CounterReadings::unavailable(u), Window::instant()),
+        None => return,
+    };
+    result.evidence.extend(counter_evidence(&readings, &window));
 }

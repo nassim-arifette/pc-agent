@@ -15,6 +15,7 @@ Collector::metric_history(&self, Metric, Duration) -> MetricSeries              
 Collector::history(&self) -> &MetricHistory; boot_id(); session_id()
 MetricHistory::{new, record, query}, SystemSample::from_snapshot                    // portable, fixture-friendly
 cpu_busy_basis_points, process_cpu_basis_points, windows_family, boot_estimate_id, parse_multi_sz, tree::{link, relation}
+counters::{counter_evidence, scaled, clamp_share, busiest_core, gpu_engine_type, gpu_engines, COUNTER_METRICS}
 ```
 
 ## Design
@@ -27,6 +28,18 @@ cpu_busy_basis_points, process_cpu_basis_points, windows_family, boot_estimate_i
 - **Boot identity**: `boot-estimate-unix-s-<n>` = `GetSystemTimeAsFileTime − GetTickCount64`, rounded to one minute and computed once per collector. It is an estimate, labelled as such in snapshot and tree limitations; wall-clock changes can shift it between sessions. It is not a documented Windows boot identifier and must not be used alone to join persistent cross-boot history.
 - **Inventory**: OS major/minor/build/UBR/DisplayVersion from `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` (64-bit view), family inferred from the build (≥ 22000 → Windows 11), `GetNativeSystemInfo` architecture, logical processor count, `GetPhysicallyInstalledSystemMemory`, and volumes via `GetLogicalDriveStringsW`/`GetDriveTypeW`/`GetDiskFreeSpaceExW`. Only fixed and RAM-disk volumes are probed; network/removable/optical are listed with kind and `unsupported`. GPU is `unsupported` (DXGI not implemented). No serials or machine identifiers.
 - **History**: `MetricHistory` is an in-memory ring buffer (default 1 800 samples / 1 h / 2 s expected interval) fed by every `snapshot`/`sample_system`. Queries are capped to retention and return explicit gaps (`not_recorded`, `evicted`, `missed_samples` > 2× interval, `boot_changed`), boot changes, median observed interval and unit. Values are never interpolated. Non-monotonic or zero-capacity records are rejected.
+- **System performance counters (PDH)**: one query per collector (`PdhOpenQueryW`, `PdhAddEnglishCounterW` with language-neutral English paths, `PdhCollectQueryData`, `PdhGetFormattedCounterValue` / `PdhGetFormattedCounterArrayW` with `PDH_FMT_DOUBLE | PDH_FMT_NOCAP100`, `PdhCloseQuery` on drop). Every value is used only when both the call and its `CStatus` report valid data. Rate counters need two collections at least one second apart; the evidence window is the span between them. `snapshot` starts a fresh window before the CPU sleep; `sample_system` reuses a pending collection up to 60 s old and never sleeps (a window shorter than one second is `partial`, the pending collection is kept).
+
+  | Metric | Counter | Unit |
+  |---|---|---|
+  | `disk_read_latency_microseconds` / `disk_write_latency_microseconds` | `\PhysicalDisk(_Total)\Avg. Disk sec/Read` / `sec/Write` | microseconds |
+  | `disk_idle_basis_points` | `\PhysicalDisk(_Total)\% Idle Time` | basis points of the window (≤5 % overshoot clamped) |
+  | `disk_queue_length` | `\PhysicalDisk(_Total)\Current Disk Queue Length` | outstanding requests, instantaneous (zero-length window at its end) |
+  | `hard_fault_pages_per_second_x100` | `\Memory\Pages Input/sec` | pages/s × 100 |
+  | `cpu_busiest_core_basis_points` | `\Processor Information(*)\% Processor Utility`, max over non-`_Total` instances | basis points of one logical processor; can exceed 10 000 with turbo |
+  | `gpu_engine_basis_points` (entity `gpu-engine-<type>`) / `gpu_busiest_engine_basis_points` | `\GPU Engine(*)\Utilization Percentage`, per-process instances summed per physical engine, busiest engine per type | basis points of engine time |
+
+  Absent objects, counters or instances (`PDH_CSTATUS_NO_OBJECT`, `NO_COUNTER`, `NO_INSTANCE`, …) are `unsupported`; an empty GPU Engine array (basic display adapter, most VMs/CI) is `unsupported`; invalid, negative, non-finite or out-of-range values are `partial` with no value. Nothing unknown becomes zero. GPU engine types are reduced to a fixed list of generic names (`3d`, `compute`, `copy`, `videodecode`, `videoencode`, …; anything else is `other`); PIDs, adapter LUIDs and engine indices are dropped before evidence is built. Processor Information uses `group,index` instances, so per-core CPU also works above 64 logical processors.
 - **Cheap sampling**: `sample_system` reuses the previous CPU tick sample when it is 250 ms–60 s old instead of sleeping one second.
 
 ## Safety boundaries
@@ -35,6 +48,6 @@ The crate root is `#![deny(unsafe_code)]`; only the `windows` module allows it, 
 
 ## Validation status
 
-- Portable logic (CPU share math, identity/PID reuse, tree validation, ring buffer bounds/gaps/boot changes, parsing) is unit-tested on Linux.
+- Portable logic (counter conversion, GPU engine aggregation and naming, CPU share math, identity/PID reuse, tree validation, ring buffer bounds/gaps/boot changes, parsing) is unit-tested on Linux.
 - Windows code is compiled and linted for `x86_64-pc-windows-msvc` from Linux. `#[cfg(windows)]` smoke tests run in the CI `windows-latest` job only; see the PR's CI run for their actual result.
-- Not validated on a real Windows 11 PC: CPU share against Performance Monitor, I/O deltas, tree correctness under PID reuse, inventory values (DisplayVersion/UBR, installed memory, BitLocker-locked or offline volumes), boot estimate stability across clock changes and sleep, per-process cost of the collectors.
+- Not validated on a real Windows 11 PC: CPU share against Performance Monitor, I/O deltas, tree correctness under PID reuse, inventory values (DisplayVersion/UBR, installed memory, BitLocker-locked or offline volumes), boot estimate stability across clock changes and sleep, per-process cost of the collectors, PDH values against Performance Monitor (disk latency, Pages Input/sec, Processor Utility, GPU Engine on real WDDM drivers). The `GPU Engine` counter set is provided by the graphics kernel and its instance-name format is not a documented contract; unrecognized names are rejected or reported as `other`.

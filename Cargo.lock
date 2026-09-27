@@ -717,6 +717,7 @@ name = "pcagent-telemetry"
 version = "0.1.0"
 dependencies = [
  "pcagent-shared",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 

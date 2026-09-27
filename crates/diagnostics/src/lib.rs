@@ -12,6 +12,10 @@ pub enum Classification {
     HighCommitRatio,
     HighCpuSample,
     LargestMemoryContributor,
+    HighDiskLatency,
+    HardFaultPressure,
+    SaturatedLogicalProcessor,
+    HighGpuEngineSample,
     NoContentionObserved,
     InsufficientEvidence,
 }
@@ -51,15 +55,46 @@ const THRESHOLDS: &str =
     "Initial observation thresholds are prototype triggers, not validated diagnostic rules.";
 const OBSERVE_LONGER: &str =
     "Observe a representative workload over a longer period and check resources not yet measured.";
-const SYSTEM_METRICS: [(Metric, &str); 5] = [
+const SYSTEM_METRICS: [(Metric, &str); 12] = [
     (Metric::PhysicalTotalBytes, "physical memory total"),
     (Metric::PhysicalAvailableBytes, "available physical memory"),
     (Metric::SystemCommitBytes, "system commit"),
     (Metric::SystemCommitLimitBytes, "system commit limit"),
     (Metric::CpuBusyBasisPoints, "aggregate CPU"),
+    (Metric::CpuBusiestCoreBasisPoints, "per-core CPU"),
+    (Metric::DiskReadLatencyMicroseconds, "disk read latency"),
+    (Metric::DiskWriteLatencyMicroseconds, "disk write latency"),
+    (Metric::DiskIdleBasisPoints, "disk idle time"),
+    (Metric::DiskQueueLength, "disk queue length"),
+    (Metric::HardFaultPagesPerSecondX100, "hard-fault page reads"),
+    (
+        Metric::GpuBusiestEngineBasisPoints,
+        "GPU engine utilization",
+    ),
 ];
-const NOT_INSTRUMENTED: &str =
-    "Disk latency, GPU, hard faults and per-core CPU are not instrumented in this snapshot.";
+/// Prototype trigger for average read or write latency (50 ms), not a device-independent rule.
+const HIGH_DISK_LATENCY_US: u64 = 50_000;
+/// Prototype trigger: 1 000 pages read per second to resolve hard faults.
+const HIGH_HARD_FAULTS_X100: u64 = 100_000;
+const DISK_AGGREGATE: &str = "Disk counters aggregate every physical disk (_Total); the affected device is not identified and one sample cannot separate a slow device from a burst of work.";
+const NO_PURCHASE: &str =
+    "This observation is not a hardware replacement or purchase recommendation.";
+
+/// Names the counters this snapshot could not measure, so gaps are explicit per snapshot.
+fn unmeasured(s: &Snapshot) -> Option<String> {
+    let absent: Vec<&str> = SYSTEM_METRICS[5..]
+        .iter()
+        .filter(|(m, _)| s.system_value(*m).is_none())
+        .map(|(_, label)| *label)
+        .collect();
+    (!absent.is_empty()).then(|| format!("Not measured in this snapshot: {}.", absent.join(", ")))
+}
+fn ms(microseconds: u64) -> String {
+    format!("{:.1} ms", microseconds as f64 / 1_000.0)
+}
+fn rate(x100: u64) -> String {
+    format!("{:.1} pages/s", x100 as f64 / 100.0)
+}
 
 fn gib(bytes: u64) -> String {
     format!("{:.2} GiB", bytes as f64 / 1_073_741_824.0)
@@ -180,8 +215,50 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                 percent(commit_bp)
             ));
         }
+        match snapshot.system_value(Metric::HardFaultPagesPerSecondX100) {
+            Some((_, faults)) if faults < HIGH_HARD_FAULTS_X100 / 10 => {
+                d.counter_evidence.push(format!(
+                    "Hard-fault page reads were {}, so heavy paging is not also observed.",
+                    rate(faults)
+                ))
+            }
+            _ => {}
+        }
         d.next_step =
             "Inspect process memory contributors and observe whether low availability persists.";
+        drafts.push(d);
+    }
+    if let (Some((a, t, _, _, bp)), Some((f, faults))) = (
+        low_memory,
+        snapshot
+            .system_value(Metric::HardFaultPagesPerSecondX100)
+            .filter(|(_, v)| *v >= HIGH_HARD_FAULTS_X100),
+    ) {
+        let mut d = Draft::new(
+            Classification::HardFaultPressure,
+            "Many pages were read from disk to resolve hard faults while available memory was low. Paging pressure is plausible but unproven.",
+            vec![
+                fact(format!("Hard-fault page reads averaged {} over {} ms.", rate(faults), f.window.duration_ms), &[f]),
+                fact(format!("Available physical memory was {}.", percent(bp)), &[a, t]),
+            ],
+        );
+        d.hypothesis = Some("Memory pressure may be forcing pages to be read back from disk.");
+        if let Some((e, read)) = snapshot
+            .system_value(Metric::DiskReadLatencyMicroseconds)
+            .filter(|(_, v)| *v < HIGH_DISK_LATENCY_US / 5)
+        {
+            d.counter_evidence.push(format!(
+                "Average disk read latency was {}, so disk reads were not observed to be slow.",
+                ms(read)
+            ));
+            d.facts.push(fact(
+                format!("Average disk read latency was {}.", ms(read)),
+                &[e],
+            ));
+        }
+        d.limitations.push("Pages Input/sec includes executables and mapped files being loaded; hard faults are not hardware faults.".into());
+        d.limitations.push(NO_PURCHASE.into());
+        d.next_step = "Observe whether hard faults and low availability persist together under the same workload.";
         drafts.push(d);
     }
     if let Some((u, l, used, limit, bp)) = r.commit.filter(|c| c.4 >= 9_000) {
@@ -209,6 +286,106 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         d.hypothesis = Some("CPU contention may contribute to the reported symptom.");
         drafts.push(d);
     }
+    let slow_disk = [
+        (Metric::DiskReadLatencyMicroseconds, "read"),
+        (Metric::DiskWriteLatencyMicroseconds, "write"),
+    ]
+    .into_iter()
+    .filter_map(|(m, kind)| {
+        snapshot
+            .system_value(m)
+            .filter(|(_, v)| *v >= HIGH_DISK_LATENCY_US)
+            .map(|(e, v)| (e, v, kind))
+    })
+    .collect::<Vec<_>>();
+    if !slow_disk.is_empty() {
+        let mut d = Draft::new(
+            Classification::HighDiskLatency,
+            "Average disk request latency is high in this sample. Storage contention is plausible but unproven.",
+            slow_disk
+                .iter()
+                .map(|(e, v, kind)| {
+                    fact(
+                        format!("Average disk {kind} latency was {} over {} ms.", ms(*v), e.window.duration_ms),
+                        &[e],
+                    )
+                })
+                .collect(),
+        );
+        d.hypothesis = Some("Slow storage requests may contribute to the reported symptom.");
+        if let Some((e, idle)) = snapshot
+            .system_value(Metric::DiskIdleBasisPoints)
+            .filter(|(_, v)| *v >= 9_000)
+        {
+            d.counter_evidence.push(format!(
+                "Disks were idle {} of the window; averages over few requests are noisy.",
+                percent(idle)
+            ));
+            d.facts
+                .push(fact(format!("Disk idle time was {}.", percent(idle)), &[e]));
+        }
+        if let Some((e, queue)) = snapshot.system_value(Metric::DiskQueueLength) {
+            d.facts.push(fact(
+                format!("{queue} disk requests were outstanding at the end of the window."),
+                &[e],
+            ));
+        }
+        d.limitations.push(DISK_AGGREGATE.into());
+        d.limitations.push(NO_PURCHASE.into());
+        d.next_step = "Observe disk latency over a longer representative workload and identify which activity issues the requests.";
+        drafts.push(d);
+    }
+    let busiest_core = snapshot
+        .system_value(Metric::CpuBusiestCoreBasisPoints)
+        .filter(|(_, v)| *v >= 9_500);
+    if let (Some((c, core)), Some((e, busy))) = (busiest_core, r.cpu.filter(|c| c.1 < 9_000)) {
+        let mut d = Draft::new(
+            Classification::SaturatedLogicalProcessor,
+            "One logical processor was nearly saturated while aggregate CPU was not. A single busy thread is plausible but unproven.",
+            vec![
+                fact(format!("The busiest logical processor had {} processor utility.", percent(core)), &[c]),
+                fact(format!("Aggregate CPU busy was {} of total capacity.", percent(busy)), &[e]),
+            ],
+        );
+        d.hypothesis = Some("A single-threaded workload may be limited by one processor.");
+        d.limitations.push("Processor utility is normalized to nominal frequency and threads migrate between processors; the busy thread is not identified.".into());
+        drafts.push(d);
+    }
+    if let Some((g, gpu)) = snapshot
+        .system_value(Metric::GpuBusiestEngineBasisPoints)
+        .filter(|(_, v)| *v >= 9_500)
+    {
+        let mut facts = vec![fact(
+            format!(
+                "The busiest GPU engine was {} utilized over {} ms.",
+                percent(gpu),
+                g.window.duration_ms
+            ),
+            &[g],
+        )];
+        facts.extend(
+            snapshot
+                .evidence
+                .iter()
+                .filter(|e| {
+                    e.metric == Metric::GpuEngineBasisPoints && e.usable_value() == Some(gpu)
+                })
+                .map(|e| {
+                    fact(
+                        format!("Engine type {} reached that value.", e.entity_ref),
+                        &[e],
+                    )
+                }),
+        );
+        let mut d = Draft::new(
+            Classification::HighGpuEngineSample,
+            "A GPU engine was nearly fully busy during this short observation. High GPU use is expected for games and rendering and is not a fault by itself.",
+            facts,
+        );
+        d.limitations.push("GPU engines are aggregated by generic type; dedicated memory, adapter and the using process are not reported.".into());
+        d.limitations.push(NO_PURCHASE.into());
+        drafts.push(d);
+    }
     if let Some((p, e, bytes)) = largest_private_commit(snapshot) {
         let mut d = Draft::new(
             Classification::LargestMemoryContributor,
@@ -228,7 +405,16 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         drafts.push(d);
     }
     if let (Some(a), Some(c), Some((e, busy))) = (r.available, r.commit, r.cpu) {
-        if a.4 >= 2_000 && c.4 < 8_000 && busy < 5_000 {
+        let contended = drafts.iter().any(|d: &Draft| {
+            matches!(
+                d.class,
+                Classification::HighDiskLatency
+                    | Classification::HardFaultPressure
+                    | Classification::SaturatedLogicalProcessor
+                    | Classification::HighGpuEngineSample
+            )
+        });
+        if a.4 >= 2_000 && c.4 < 8_000 && busy < 5_000 && !contended {
             let mut d = Draft::new(
                 Classification::NoContentionObserved,
                 "No memory or aggregate CPU contention was observed in this sample. No software intervention is identified from these measurements.",
@@ -238,10 +424,37 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                     fact(format!("Aggregate CPU busy was {}.", percent(busy)), &[e]),
                 ],
             );
-            d.counter_evidence.push(
-                "A moderate aggregate CPU value does not exclude a single saturated thread.".into(),
-            );
-            d.limitations.push(NOT_INSTRUMENTED.into());
+            match snapshot.system_value(Metric::CpuBusiestCoreBasisPoints) {
+                Some((c, core)) => d.facts.push(fact(
+                    format!(
+                        "The busiest logical processor had {} processor utility.",
+                        percent(core)
+                    ),
+                    &[c],
+                )),
+                None => d.counter_evidence.push(
+                    "A moderate aggregate CPU value does not exclude a single saturated thread."
+                        .into(),
+                ),
+            }
+            for (m, kind) in [
+                (Metric::DiskReadLatencyMicroseconds, "read"),
+                (Metric::DiskWriteLatencyMicroseconds, "write"),
+            ] {
+                if let Some((e, v)) = snapshot.system_value(m) {
+                    d.facts.push(fact(
+                        format!("Average disk {kind} latency was {}.", ms(v)),
+                        &[e],
+                    ));
+                }
+            }
+            if let Some((f, faults)) = snapshot.system_value(Metric::HardFaultPagesPerSecondX100) {
+                d.facts.push(fact(
+                    format!("Hard-fault page reads were {}.", rate(faults)),
+                    &[f],
+                ));
+            }
+            d.limitations.extend(unmeasured(snapshot));
             drafts.push(d);
         }
     }
@@ -257,7 +470,7 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     );
     abstain.support = Support::Insufficient;
     abstain.support_reason = "Explicit abstention: causes remain unmeasured or unestablished.";
-    abstain.limitations.push(NOT_INSTRUMENTED.into());
+    abstain.limitations.extend(unmeasured(snapshot));
     drafts.push(abstain);
     drafts
         .into_iter()
@@ -423,6 +636,123 @@ mod tests {
             classes(&analyze(&s)),
             [Classification::InsufficientEvidence]
         );
+    }
+    fn healthy_with(extra: &[(Metric, u64)]) -> Snapshot {
+        let mut v = HEALTHY.to_vec();
+        v.extend_from_slice(extra);
+        sample(&v)
+    }
+    fn finding(f: &[Finding], c: Classification) -> Option<&Finding> {
+        f.iter().find(|f| f.classification == c)
+    }
+    #[test]
+    fn high_disk_latency_is_reported_with_refs_counter_evidence_and_limits() {
+        let s = healthy_with(&[
+            (Metric::DiskReadLatencyMicroseconds, 80_000),
+            (Metric::DiskWriteLatencyMicroseconds, 2_000),
+            (Metric::DiskIdleBasisPoints, 9_500),
+            (Metric::DiskQueueLength, 0),
+        ]);
+        let f = analyze(&s);
+        let d = finding(&f, Classification::HighDiskLatency).unwrap();
+        assert_eq!(d.support, Support::Plausible);
+        assert_eq!(d.facts.len(), 3);
+        assert!(d.facts[0].text.contains("read latency was 80.0 ms"));
+        assert_eq!(d.counter_evidence.len(), 1);
+        assert!(d.limitations.iter().any(|l| l.contains("_Total")));
+        assert!(d.limitations.iter().any(|l| l.contains("not a hardware")));
+        assert!(finding(&f, Classification::NoContentionObserved).is_none());
+        let fast = analyze(&healthy_with(&[(
+            Metric::DiskReadLatencyMicroseconds,
+            49_999,
+        )]));
+        assert!(finding(&fast, Classification::HighDiskLatency).is_none());
+    }
+    #[test]
+    fn hard_faults_need_low_available_memory() {
+        let faults = (Metric::HardFaultPagesPerSecondX100, 250_000);
+        let f = analyze(&healthy_with(&[faults]));
+        assert!(finding(&f, Classification::HardFaultPressure).is_none());
+        let s = sample(&[
+            (Metric::PhysicalAvailableBytes, 3),
+            (Metric::PhysicalTotalBytes, 100),
+            faults,
+            (Metric::DiskReadLatencyMicroseconds, 1_000),
+        ]);
+        let f = analyze(&s);
+        let h = finding(&f, Classification::HardFaultPressure).unwrap();
+        assert_eq!(h.support, Support::Plausible);
+        assert_eq!(h.evidence_refs.len(), 4);
+        assert_eq!(h.counter_evidence.len(), 1);
+        assert!(h.facts[0].text.contains("2500.0 pages/s"));
+        let quiet = analyze(&sample(&[
+            (Metric::PhysicalAvailableBytes, 3),
+            (Metric::PhysicalTotalBytes, 100),
+            (Metric::HardFaultPagesPerSecondX100, 500),
+        ]));
+        let low = finding(&quiet, Classification::LowAvailableMemory).unwrap();
+        assert!(low.counter_evidence[0].contains("5.0 pages/s"));
+    }
+    #[test]
+    fn a_saturated_core_is_distinguished_from_aggregate_cpu() {
+        let f = analyze(&healthy_with(&[(Metric::CpuBusiestCoreBasisPoints, 9_900)]));
+        assert!(finding(&f, Classification::SaturatedLogicalProcessor).is_some());
+        assert!(finding(&f, Classification::NoContentionObserved).is_none());
+        let calm = analyze(&healthy_with(&[(Metric::CpuBusiestCoreBasisPoints, 3_000)]));
+        let n = finding(&calm, Classification::NoContentionObserved).unwrap();
+        assert_eq!(n.facts.len(), 4);
+        assert!(n.counter_evidence.is_empty());
+    }
+    #[test]
+    fn busy_gpu_names_only_a_generic_engine_type() {
+        let mut s = healthy_with(&[(Metric::GpuBusiestEngineBasisPoints, 9_800)]);
+        s.evidence.push(Evidence::measured(
+            Metric::GpuEngineBasisPoints,
+            "gpu-engine-3d",
+            9_800,
+            "fixture",
+            Window::instant(),
+        ));
+        let f = analyze(&s);
+        let g = finding(&f, Classification::HighGpuEngineSample).unwrap();
+        assert_eq!(g.facts.len(), 2);
+        assert!(g.facts[1].text.contains("gpu-engine-3d"));
+        assert!(g.hypothesis.is_none());
+    }
+    #[test]
+    fn unsupported_counters_stay_listed_as_unmeasured() {
+        let mut s = healthy_with(&[]);
+        s.evidence.push(Evidence::missing(
+            Metric::GpuBusiestEngineBasisPoints,
+            "system",
+            "fixture",
+            Status::Unsupported,
+            "no GPU counters",
+        ));
+        let f = analyze(&s);
+        let abstain = f.last().unwrap();
+        let note = abstain
+            .limitations
+            .iter()
+            .find(|l| l.starts_with("Not measured"))
+            .unwrap();
+        assert!(note.contains("GPU engine utilization") && note.contains("disk read latency"));
+        assert!(abstain
+            .missing
+            .contains(&"GPU engine utilization".to_string()));
+        let all = healthy_with(&[
+            (Metric::CpuBusiestCoreBasisPoints, 1_000),
+            (Metric::DiskReadLatencyMicroseconds, 1_000),
+            (Metric::DiskWriteLatencyMicroseconds, 1_000),
+            (Metric::DiskIdleBasisPoints, 9_000),
+            (Metric::DiskQueueLength, 0),
+            (Metric::HardFaultPagesPerSecondX100, 0),
+            (Metric::GpuBusiestEngineBasisPoints, 100),
+        ]);
+        for f in analyze(&all) {
+            assert!(!f.limitations.iter().any(|l| l.starts_with("Not measured")));
+            assert!(!f.limitations.iter().any(|l| l.contains("not instrumented")));
+        }
     }
     #[test]
     fn every_fact_refers_to_real_evidence() {
