@@ -137,7 +137,8 @@ export async function ask(question, { cloud }) {
       return;
     }
     if (state.skipConsent) {
-      useStorage = state.lastUseStorage ?? true;
+      // A scanned folder is shared only if the person ticked it in a consent dialog.
+      useStorage = state.lastUseStorage ?? false;
     } else {
       const decision = await consent(text);
       if (!decision) return;
