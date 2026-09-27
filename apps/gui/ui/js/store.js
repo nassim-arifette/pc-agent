@@ -1,0 +1,236 @@
+// Application state and the backend's events. Views subscribe to topics ("info", "inv",
+// "scan", "extension") and redraw the parts they own.
+import { call, on } from "./api.js";
+
+const listeners = new Set();
+
+export const state = {
+  info: null,
+  /** The current investigation, or null. */
+  inv: null,
+  /** Investigations of this session, newest first: { question, report, cloud, at }. */
+  history: [],
+  scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
+  /** "Don't ask again until I close PC Agent" was ticked in the consent dialog. */
+  skipConsent: false,
+};
+
+export function subscribe(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function notify(topic) {
+  for (const listener of [...listeners]) listener(topic);
+}
+
+export async function refreshInfo() {
+  state.info = await call("app_info");
+  notify("info");
+  return state.info;
+}
+
+// ---------- Investigations ----------
+
+/** Events can arrive before start_investigation returns: the first one names the id. */
+function current(id) {
+  const inv = state.inv;
+  if (!inv) return null;
+  if (inv.id == null) inv.id = id;
+  return inv.id === id ? inv : null;
+}
+
+export async function startInvestigation(question, { cloud, useStorage }) {
+  state.inv = {
+    id: null,
+    question,
+    cloud,
+    status: "running",
+    steps: [],
+    report: null,
+    failure: null,
+    extension: null,
+    startedAt: Date.now(),
+  };
+  notify("inv");
+  try {
+    const id = await call("start_investigation", { question, cloud, useStorage });
+    if (state.inv && state.inv.id == null) state.inv.id = id;
+  } catch (error) {
+    state.inv.status = "failed";
+    state.inv.failure = { code: "start", message: error.message };
+    notify("inv");
+  }
+}
+
+export async function stopInvestigation() {
+  const inv = state.inv;
+  if (!inv || inv.status !== "running") return;
+  inv.status = "stopping";
+  notify("inv");
+  if (inv.id != null) await call("stop_investigation", { id: inv.id });
+}
+
+export async function answerExtension(accept) {
+  const inv = state.inv;
+  if (!inv || inv.id == null) return;
+  inv.extension = null;
+  notify("inv");
+  try {
+    await call("answer_extension", { id: inv.id, accept });
+  } catch {
+    // The investigation ended meanwhile; its final event updates the view.
+  }
+}
+
+function update(inv, key, patch) {
+  const step = inv.steps.find((s) => s.key === key);
+  if (step) Object.assign(step, patch);
+}
+
+function onStep({ id, at_unix_ms: at, step }) {
+  const inv = current(id);
+  if (!inv) return;
+  switch (step.kind) {
+    case "snapshot_started":
+      inv.steps.push({ key: "snapshot", type: "snapshot", state: "running", at });
+      break;
+    case "snapshot_finished":
+      update(inv, "snapshot", { state: "done", duration: step.duration_ms, count: step.measured });
+      break;
+    case "model_started":
+      inv.steps.push({ key: `model-${step.request}`, type: "model", state: "running", at });
+      break;
+    case "model_finished":
+      update(inv, `model-${step.request}`, {
+        state: step.outcome === "ok" ? "done" : "failed",
+        duration: step.duration_ms,
+        promptTokens: step.prompt_tokens,
+        completionTokens: step.completion_tokens,
+        outcome: step.outcome,
+      });
+      break;
+    case "tool_started":
+      inv.steps.push({ key: `tool-${inv.steps.length}`, type: "tool", tool: step.tool, state: "running", at });
+      break;
+    case "tool_finished": {
+      const running = [...inv.steps].reverse().find((s) => s.type === "tool" && s.tool === step.tool && s.state === "running");
+      const patch = {
+        state: step.status === "ok" ? "done" : step.status === "partial" ? "partial" : "failed",
+        status: step.status,
+        duration: step.duration_ms,
+      };
+      if (running) Object.assign(running, patch);
+      else inv.steps.push({ key: `tool-${inv.steps.length}`, type: "tool", tool: step.tool, at, ...patch });
+      break;
+    }
+    default:
+      return;
+  }
+  notify("inv");
+}
+
+function onExtension(payload) {
+  const inv = current(payload.id);
+  if (!inv) return;
+  inv.extension = payload;
+  notify("inv");
+  notify("extension");
+}
+
+function onDone({ id, report }) {
+  const inv = current(id);
+  if (!inv) return;
+  // A local analysis runs the rules engine on the first measurement; show it as its own step.
+  for (const step of inv.steps) if (step.state === "running") step.state = "cancelled";
+  if (report.mode === "local_rules") inv.steps.push({ key: "local", type: "local", state: "done" });
+  // The last request of a completed investigation is the one that chose the conclusion.
+  const lastModel = [...inv.steps].reverse().find((s) => s.type === "model");
+  if (lastModel && !report.error && lastModel.state === "done") lastModel.final = true;
+  inv.report = report;
+  inv.extension = null;
+  inv.status = "done";
+  inv.finishedAt = Date.now();
+  state.history.unshift({ question: inv.question, report, cloud: inv.cloud, at: inv.finishedAt });
+  state.history.length = Math.min(state.history.length, 20);
+  notify("inv");
+}
+
+function onFailed({ id, code, message }) {
+  const inv = current(id);
+  if (!inv) return;
+  for (const step of inv.steps) if (step.state === "running") step.state = "cancelled";
+  inv.status = "failed";
+  inv.failure = { code, message };
+  inv.extension = null;
+  notify("inv");
+}
+
+// ---------- Storage scans ----------
+
+function currentScan(scopeId) {
+  const scan = state.scan;
+  if (scan.status === "starting" && !scan.scopeId) scan.scopeId = scopeId;
+  return scan.scopeId === scopeId ? scan : null;
+}
+
+export async function startScan(path) {
+  state.scan = { status: "starting", root: path, scopeId: null, progress: null, view: null, error: null };
+  notify("scan");
+  try {
+    const started = await call("start_scan", { path });
+    if (state.scan.status === "starting" || state.scan.scopeId === started.scope_id) {
+      state.scan.scopeId = started.scope_id;
+      state.scan.root = started.root;
+      if (state.scan.status === "starting") state.scan.status = "scanning";
+    }
+  } catch (error) {
+    state.scan.status = "failed";
+    state.scan.error = error.message;
+  }
+  notify("scan");
+}
+
+export async function cancelScan() {
+  if (state.scan.status !== "scanning" && state.scan.status !== "starting") return;
+  await call("cancel_scan");
+}
+
+export async function morePage(kind) {
+  const view = state.scan.view;
+  const page = view?.[kind];
+  if (!page || page.next_offset == null) return;
+  const next = await call("scan_page", { scopeId: view.scope_id, kind, offset: page.next_offset });
+  page.items.push(...next.items);
+  page.next_offset = next.next_offset;
+  notify("scan");
+}
+
+export function wireEvents() {
+  on("inv:step", onStep);
+  on("inv:extension", onExtension);
+  on("inv:done", onDone);
+  on("inv:failed", onFailed);
+  on("scan:progress", (p) => {
+    const scan = currentScan(p.scope_id);
+    if (!scan) return;
+    if (scan.status === "starting") scan.status = "scanning";
+    scan.progress = p;
+    notify("scan");
+  });
+  on("scan:done", (view) => {
+    const scan = currentScan(view.scope_id);
+    if (!scan) return;
+    scan.status = "done";
+    scan.view = view;
+    scan.root = view.root;
+    notify("scan");
+  });
+  on("scan:failed", ({ scope_id: scopeId, message }) => {
+    const scan = currentScan(scopeId);
+    if (!scan) return;
+    scan.status = "failed";
+    scan.error = message;
+    notify("scan");
+  });
+}

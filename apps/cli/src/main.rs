@@ -1,13 +1,12 @@
 #![forbid(unsafe_code)]
-mod credentials;
 mod storage_view;
 mod text;
 use clap::{Parser, Subcommand};
-use credentials::{Credentials, Source};
 use pcagent_actions::{
     approve_locally, recover, ActionCancellation, ActionKind, Journal, LocalSession,
     ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
+use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_agent::{
     initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
     AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,

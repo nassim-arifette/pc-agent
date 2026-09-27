@@ -2,6 +2,7 @@
 //! A `.env` in the current directory is never read: running pcagent inside someone else's folder
 //! must not send your question and measurements to their account.
 use std::{
+    collections::HashSet,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -28,6 +29,10 @@ pub struct Credentials {
 impl Credentials {
     pub fn load() -> Self {
         Self::load_from(|name| std::env::var(name).ok(), file_path())
+    }
+    /// Only the given file, ignoring environment variables (tests and settings previews).
+    pub fn load_file(path: &Path) -> Self {
+        Self::load_from(|_| None, Some(path.to_owned()))
     }
     fn load_from(env: impl Fn(&str) -> Option<String>, file: Option<PathBuf>) -> Self {
         let (from_file, file_found, problem) = match &file {
@@ -102,20 +107,24 @@ fn read(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(text.trim_start_matches('\u{feff}').to_owned()))
 }
 
+/// The setting a `NAME=value` line assigns, if it is one of [`KEYS`], and its raw value.
+fn setting(line: &str) -> Option<(&'static str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let (name, value) = line.split_once('=')?;
+    let key = KEYS.iter().find(|k| **k == name.trim())?;
+    Some((key, value))
+}
+
 /// `NAME=value` lines; blank lines, `#` comments and an `export ` prefix are accepted, and one
 /// pair of matching quotes around the value is removed. Only [`KEYS`] are kept.
 fn parse(text: &str) -> Vec<(&'static str, String)> {
     let mut out: Vec<(&'static str, String)> = Vec::new();
     for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        let Some(&key) = KEYS.iter().find(|k| **k == name.trim()) else {
+        let Some((key, value)) = setting(line) else {
             continue;
         };
         let value = value.trim();
@@ -129,9 +138,100 @@ fn parse(text: &str) -> Vec<(&'static str, String)> {
     out
 }
 
+/// Writes `updates` to the per-user settings file at `path`, creating it if needed. Other lines
+/// (comments, other variables) are kept; a setting that appears twice is written once. Values
+/// must be single-line, without spaces or quotes. The file is replaced atomically; its contents
+/// are never logged.
+pub fn save(path: &Path, updates: &[(&str, &str)]) -> Result<(), String> {
+    for (name, value) in updates {
+        if !KEYS.contains(name) {
+            return Err(format!("{name} is not a PC Agent setting"));
+        }
+        let bad = |c: char| c.is_whitespace() || c.is_control() || c == '"' || c == '\'';
+        if value.is_empty() || value.len() > 4096 || value.chars().any(bad) {
+            return Err(format!(
+                "{name} must be a single word without spaces or quotes"
+            ));
+        }
+    }
+    let existing = read(path)?.unwrap_or_default();
+    let mut written = HashSet::new();
+    let mut lines = Vec::new();
+    for line in existing.lines() {
+        let update =
+            setting(line).and_then(|(key, _)| updates.iter().find(|(name, _)| *name == key));
+        match update {
+            Some((name, value)) => {
+                if written.insert(*name) {
+                    lines.push(format!("{name}={value}"));
+                }
+            }
+            None => lines.push(line.to_owned()),
+        }
+    }
+    for (name, value) in updates {
+        if !written.contains(name) {
+            lines.push(format!("{name}={value}"));
+        }
+    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("{} has no folder", path.display()))?;
+    fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let temp = dir.join(".env.saving");
+    fs::write(&temp, lines.join("\n") + "\n")
+        .map_err(|e| format!("cannot write {}: {e}", temp.display()))?;
+    fs::rename(&temp, path).map_err(|e| {
+        let _ = fs::remove_file(&temp);
+        format!("cannot replace {}: {e}", path.display())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saving_replaces_only_pc_agent_settings_and_keeps_other_lines() {
+        let dir = std::env::temp_dir().join(format!("pcagent-save-{}", std::process::id()));
+        let file = dir.join("pcagent").join(".env");
+        save(&file, &[("NEBIUS_MODEL_ID", "nvidia/nemotron-a")]).unwrap();
+        let c = Credentials::load_from(|_| None, Some(file.clone()));
+        assert_eq!(
+            c.get("NEBIUS_MODEL_ID").as_deref(),
+            Some("nvidia/nemotron-a")
+        );
+        assert_eq!(c.get("NEBIUS_API_KEY"), None);
+
+        fs::write(
+            &file,
+            "# mine\nNEBIUS_API_KEY=old\nOTHER=kept\nexport NEBIUS_API_KEY='older'\n",
+        )
+        .unwrap();
+        save(
+            &file,
+            &[
+                ("NEBIUS_API_KEY", "v1.new-key"),
+                ("NEBIUS_MODEL_ID", "nvidia/nemotron-b"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "# mine\nNEBIUS_API_KEY=v1.new-key\nOTHER=kept\nNEBIUS_MODEL_ID=nvidia/nemotron-b\n"
+        );
+        for (name, value) in [
+            ("PATH", r"C:\evil"),
+            ("NEBIUS_API_KEY", ""),
+            ("NEBIUS_API_KEY", "two words"),
+            ("NEBIUS_API_KEY", "line\nbreak"),
+            ("NEBIUS_MODEL_ID", "\"quoted\""),
+        ] {
+            assert!(save(&file, &[(name, value)]).is_err(), "{name}={value:?}");
+        }
+        assert!(fs::read_to_string(&file).unwrap().contains("v1.new-key"));
+        assert!(!dir.join("pcagent").join(".env.saving").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
     #[test]
     fn only_nebius_keys_are_read_and_quotes_are_removed() {
         let parsed = parse(
