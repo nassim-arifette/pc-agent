@@ -7,6 +7,7 @@
 
 mod approval;
 mod broker;
+mod cancellation;
 mod cleanup;
 mod journal;
 mod native;
@@ -25,6 +26,7 @@ pub use broker::{
     ItemResult, MeasurementHooks, OverallOutcome, Permit, ProtectionCheck, Refusal, SkipReason,
     TargetResolver, DEFAULT_PLAN_TTL, MAX_PLAN_TTL,
 };
+pub use cancellation::ActionCancellation;
 pub use cleanup::{CacheInventory, SyntheticDemoCache, SYNTHETIC_DEMO_CACHE_ID};
 pub use journal::{
     recover, InterruptedItem, Journal, JournalPhase, JournalRecord, PreState, RecoveryReport,

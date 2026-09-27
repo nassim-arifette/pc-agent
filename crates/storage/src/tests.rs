@@ -51,6 +51,126 @@ fn scan(root: &Path) -> StorageIndex {
     scan_with(root, ScanOptions::default(), &mut |_| {})
 }
 
+fn directory_link(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd")
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW: test helpers must not open terminals.
+        .args(["/c", "mklink", "/J"])
+        .arg(link.to_string_lossy().replace('/', "\\"))
+        .arg(target.to_string_lossy().replace('/', "\\"))
+        .output()
+        .unwrap()
+        .status
+        .success());
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn replaced_authorized_root_or_ancestor_cannot_escape_scope() {
+    for replace_parent in [false, true] {
+        let t = Tree::new();
+        t.file("parent/root/approved.bin", 10);
+        t.file("outside/root/private.bin", 1000);
+        let root = t.0.join("parent/root");
+        let scope = ScanScope::authorize(&root).unwrap();
+        let (replaced, target) = if replace_parent {
+            (t.0.join("parent"), t.0.join("outside"))
+        } else {
+            (root.clone(), t.0.join("outside/root"))
+        };
+        fs::rename(&replaced, t.0.join("saved")).unwrap();
+        directory_link(&replaced, &target);
+        let index = ClassicBackend.scan(
+            &scope,
+            &ScanOptions::default(),
+            &CancelToken::default(),
+            &mut |_| {},
+        );
+        assert_ne!(index.status(), Status::Ok);
+        assert_eq!(index.totals().files, 0);
+        #[cfg(windows)]
+        fs::remove_dir(replaced).unwrap();
+        #[cfg(unix)]
+        fs::remove_file(replaced).unwrap();
+    }
+}
+
+#[test]
+fn child_replaced_during_enumeration_is_not_followed() {
+    let t = Tree::new();
+    t.file("root/child/approved.bin", 10);
+    t.file("outside/private.bin", 1000);
+    let child = t.0.join("root/child");
+    let mut first = true;
+    let ix = scan_with(&t.0.join("root"), ScanOptions::default(), &mut |_| {
+        if std::mem::take(&mut first) {
+            fs::rename(&child, t.0.join("saved")).unwrap();
+            directory_link(&child, &t.0.join("outside"));
+        }
+    });
+    assert_eq!(ix.totals().files, 0);
+    assert_eq!(ix.coverage().reparse_skipped + ix.coverage().errors, 1);
+    #[cfg(windows)]
+    fs::remove_dir(child).unwrap();
+    #[cfg(unix)]
+    fs::remove_file(child).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn active_scan_pins_ancestors_until_the_last_metadata_read() {
+    let t = Tree::new();
+    t.file("parent/root/child/approved.bin", 10);
+    let mut checks = 0;
+    let ix = scan_with(
+        &t.0.join("parent/root"),
+        ScanOptions::default(),
+        &mut |_| {
+            assert!(fs::rename(t.0.join("parent"), t.0.join("moved")).is_err());
+            checks += 1;
+        },
+    );
+    assert!(checks > 0);
+    assert_eq!(ix.totals().files, 1);
+    assert_eq!(ix.status(), Status::Ok);
+    fs::rename(t.0.join("parent"), t.0.join("moved")).unwrap();
+}
+
+#[test]
+fn dropping_a_job_cancels_and_joins_its_worker() {
+    struct UntilCancelled;
+    impl ScanBackend for UntilCancelled {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn scan(
+            &self,
+            scope: &ScanScope,
+            options: &ScanOptions,
+            cancel: &CancelToken,
+            progress: &mut dyn FnMut(&ScanProgress),
+        ) -> StorageIndex {
+            while !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ClassicBackend.scan(scope, options, cancel, progress)
+        }
+    }
+    let t = Tree::new();
+    let service = Arc::new(StorageService::with_backend(Arc::new(UntilCancelled)));
+    let scope = service.authorize(&t.0).unwrap();
+    drop(
+        service
+            .start_storage_scan(&scope.scope_id, ScanOptions::default())
+            .unwrap(),
+    );
+    assert!(service.index(&scope.scope_id).unwrap().coverage().cancelled);
+    assert!(!service.cancel(&scope.scope_id).unwrap());
+}
+
 #[test]
 fn nested_dirs_aggregate_without_double_counting() {
     let t = Tree::new();
@@ -107,13 +227,7 @@ fn junctions_are_not_followed() {
     let outside = Tree::new();
     outside.file("secret/huge.bin", 50_000);
     t.file("inside.bin", 100);
-    let status = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(t.0.join("junction"))
-        .arg(outside.0.join("secret"))
-        .status()
-        .unwrap();
-    assert!(status.success());
+    directory_link(&t.0.join("junction"), &outside.0.join("secret"));
     let ix = scan(&t.0);
     assert_eq!(ix.coverage().reparse_skipped, 1);
     assert_eq!(ix.totals().logical_bytes, 100);

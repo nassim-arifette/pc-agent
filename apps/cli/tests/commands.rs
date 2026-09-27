@@ -2,6 +2,11 @@ use std::{path::Path, process::Command};
 /// No Nebius settings: neither in the environment nor in a per-user credentials file.
 fn command() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_pcagent"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW for background test helpers.
+    }
     c.env_remove("NEBIUS_API_KEY")
         .env_remove("NEBIUS_MODEL_ID")
         .env("APPDATA", std::env::temp_dir().join("pcagent-no-appdata"));

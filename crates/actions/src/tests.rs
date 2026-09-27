@@ -88,6 +88,7 @@ struct Recorder<'a> {
     recycle_removes_from: Option<&'a Fake>,
     cancel_after_first: Option<&'a AtomicBool>,
     panic_on_call: Cell<Option<usize>>,
+    block_journal: Option<&'a Path>,
 }
 impl Recorder<'_> {
     fn record(&self, call: String) {
@@ -96,6 +97,15 @@ impl Recorder<'_> {
             panic!("simulated crash");
         }
         self.calls.borrow_mut().push(call);
+        if let Some(dir) = self.block_journal {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|e| e == "jsonl") {
+                    std::fs::rename(&path, path.with_extension("saved")).unwrap();
+                    std::fs::create_dir(path).unwrap();
+                }
+            }
+        }
         if let Some(flag) = self.cancel_after_first {
             flag.store(true, Ordering::SeqCst);
         }
@@ -506,7 +516,7 @@ fn interruption_mid_plan_is_partial_and_recovery_never_replays() {
     assert_eq!(item.fingerprint, plan.fingerprint());
     assert!(matches!(item.pre_state, Some(PreState::File { .. })));
     assert_eq!(fx.calls.borrow().len(), 1);
-    assert!(recover(&env.journal).unwrap().needs_inspection.is_empty());
+    assert_eq!(recover(&env.journal).unwrap().needs_inspection.len(), 1);
     let text: String =
         std::fs::read_to_string(env.dir.join(format!("{}.jsonl", plan.plan_id()))).unwrap();
     assert!(text.contains("needs_inspection") && !text.contains("secret"));
@@ -545,7 +555,8 @@ fn no_elevation_termination_shell_or_permanent_delete_code() {
         "ShellExecute",
         "cmd.exe",
         "powershell",
-        "DeleteFile",
+        "DeleteFileW",
+        "DeleteFileA",
         "SHFileOperation",
         "remove_file",
         "PROCESS_TERMINATE",
@@ -652,6 +663,7 @@ fn illegal_transitions_are_errors() {
     assert!(PlanState::Completed.is_terminal());
 }
 
+#[cfg(windows)]
 #[test]
 fn synthetic_cleanup_adapter_only_touches_marked_cache() {
     let root = temp_dir("cache");
@@ -669,6 +681,9 @@ fn synthetic_cleanup_adapter_only_touches_marked_cache() {
         ))
         .is_err());
     b.synthetic_cache = Some(&cache);
+    cache
+        .manifest()
+        .expect("synthetic cache manifest is available");
     assert!(matches!(
         b.prepare_plan(&intent(ActionKind::RunCleanupAdapter, &["browser_cache"])),
         Err(ActionError::UnknownAdapter(_))
@@ -716,6 +731,103 @@ fn native_backend_reports_unsupported_off_windows() {
         NativeGuard.observe_file(&file.path),
         Err(Status::Unsupported)
     );
+}
+
+#[test]
+fn final_journal_failure_is_not_reported_as_completed() {
+    let env = Env::new();
+    let fake = Fake::default();
+    let fx = Recorder {
+        block_journal: Some(&env.dir),
+        ..Default::default()
+    };
+    let b = broker(&fake, &BaselineProtection, &fx, &env);
+    let mut plan = b
+        .prepare_plan(&intent(ActionKind::OpenSettingsPage, &["storagesense"]))
+        .unwrap();
+    let session = LocalSession::new();
+    let token = approve_locally(&mut plan, &session, TTL).unwrap();
+    let result = go(&b, &mut plan, &token, &session).unwrap();
+    assert_eq!(result.overall, OverallOutcome::Partial);
+    assert_eq!(result.journal_status, Status::Error);
+    assert!(matches!(
+        result.items[0].outcome,
+        ItemOutcome::Completed { .. }
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn cleanup_refuses_changed_approved_objects_and_reports_partial_progress() {
+    for change in ["added", "replacement", "root", "overflow", "partial"] {
+        let root = temp_dir("manifest");
+        let cache =
+            SyntheticDemoCache::create(root.join("demo"), &[("a.bin", 10), ("b.bin", 20)]).unwrap();
+        let env = Env::new();
+        let fake = Fake::default();
+        let fx = Recorder::default();
+        let mut b = broker(&fake, &BaselineProtection, &fx, &env);
+        b.synthetic_cache = Some(&cache);
+        let mut plan = b
+            .prepare_plan(&intent(
+                ActionKind::RunCleanupAdapter,
+                &[SYNTHETIC_DEMO_CACHE_ID],
+            ))
+            .unwrap();
+        let session = LocalSession::new();
+        let token = approve_locally(&mut plan, &session, TTL).unwrap();
+        let original_permissions = std::fs::metadata(cache.root().join("b.bin"))
+            .unwrap()
+            .permissions();
+        match change {
+            "added" => std::fs::write(cache.root().join("new.bin"), b"private").unwrap(),
+            "replacement" => {
+                std::fs::rename(cache.root().join("a.bin"), root.join("original.bin")).unwrap();
+                std::fs::write(cache.root().join("a.bin"), [0_u8; 10]).unwrap();
+            }
+            "root" => {
+                std::fs::rename(cache.root(), root.join("original")).unwrap();
+                SyntheticDemoCache::create(cache.root(), &[("a.bin", 10), ("b.bin", 20)]).unwrap();
+            }
+            "overflow" => {
+                for n in 0..1024 {
+                    std::fs::write(cache.root().join(format!("extra{n}")), []).unwrap();
+                }
+            }
+            "partial" => {
+                let path = cache.root().join("b.bin");
+                let mut permissions = original_permissions.clone();
+                permissions.set_readonly(true);
+                std::fs::set_permissions(path, permissions).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let result = go(&b, &mut plan, &token, &session).unwrap();
+        if change == "partial" {
+            assert!(
+                matches!(
+                    result.items[0].outcome,
+                    ItemOutcome::Partial {
+                        files_removed: 1,
+                        bytes_removed: Some(10),
+                        ..
+                    }
+                ),
+                "{result:?}"
+            );
+            assert_eq!(result.overall, OverallOutcome::Partial);
+            let path = cache.root().join("b.bin");
+            std::fs::set_permissions(path, original_permissions).unwrap();
+        } else {
+            assert!(
+                matches!(result.items[0].outcome, ItemOutcome::Refused { .. }),
+                "{change}: {result:?}"
+            );
+            assert!(cache.root().join("a.bin").exists());
+            assert!(cache.root().join("b.bin").exists());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(windows)]

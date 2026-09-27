@@ -8,14 +8,7 @@ use crate::{
 };
 use pcagent_shared::unix_ms;
 use serde::Serialize;
-use std::{
-    collections::HashSet,
-    ffi::OsString,
-    fs::{self, DirEntry, Metadata},
-    io::ErrorKind,
-    path::PathBuf,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashSet, ffi::OsString, io::ErrorKind, time::Instant};
 
 pub const ATTR_DIRECTORY: u32 = 0x10;
 pub const ATTR_REPARSE_POINT: u32 = 0x400;
@@ -50,17 +43,6 @@ pub fn classify_attributes(attributes: u32) -> AttributeClass {
     }
 }
 
-pub(crate) fn is_link(meta: &Metadata) -> bool {
-    matches!(
-        platform::classify(meta),
-        AttributeClass::Reparse | AttributeClass::Placeholder
-    )
-}
-
-pub(crate) fn system_ms(t: SystemTime) -> Option<u64> {
-    u64::try_from(t.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FileFacts {
     pub logical: u64,
@@ -72,6 +54,19 @@ pub(crate) struct FileFacts {
     pub sparse: bool,
     pub compressed: bool,
     pub other_volume: bool,
+}
+
+pub(crate) struct EntryFacts {
+    pub class: AttributeClass,
+    pub logical: u64,
+    pub modified_ms: Option<u64>,
+    pub facts: Option<FileFacts>,
+    pub other_volume: bool,
+}
+
+struct Frame {
+    index: usize,
+    directory: platform::Directory,
 }
 
 pub struct ClassicBackend;
@@ -102,6 +97,7 @@ struct Walk<'a> {
     links: HashSet<(u64, u128)>,
     clock: Instant,
     started_ms: u64,
+    walk_bytes: u64,
     progress: ScanProgress,
 }
 
@@ -121,6 +117,7 @@ impl<'a> Walk<'a> {
             links: HashSet::new(),
             clock: Instant::now(),
             started_ms,
+            walk_bytes: 0,
             progress: ScanProgress::default(),
         }
     }
@@ -135,7 +132,12 @@ impl<'a> Walk<'a> {
         if self.index.entries.len() >= self.options.max_entries {
             return Err(Stop::Truncated(Truncation::EntryLimit));
         }
-        if self.progress.index_bytes_estimate > self.options.index_budget_bytes {
+        if self
+            .progress
+            .index_bytes_estimate
+            .saturating_add(self.walk_bytes)
+            > self.options.index_budget_bytes
+        {
             return Err(Stop::Truncated(Truncation::MemoryBudget));
         }
         Ok(())
@@ -171,45 +173,53 @@ impl<'a> Walk<'a> {
     }
 
     fn run(mut self, progress: &mut dyn FnMut(&ScanProgress)) -> StorageIndex {
-        let root = self.scope.root().to_path_buf();
         self.push(Entry::dir(usize::MAX, OsString::new()));
         self.index.coverage.dirs += 1;
-        let mut stack: Vec<(usize, PathBuf)> = vec![(0, root)];
+        let mut stack = Vec::new();
+        match platform::Directory::open_root(self.scope.root(), Some(self.scope.identity)) {
+            Ok(directory) => stack.push(Frame {
+                index: 0,
+                directory,
+            }),
+            Err(e) => self.directory_error(0, e),
+        }
         let stop = loop {
-            let Some((dir, path)) = stack.pop() else {
+            self.walk_bytes = stack.iter().map(|f| f.directory.estimated_bytes()).sum();
+            if stack.is_empty() {
                 break None;
-            };
+            }
             if let Err(stop) = self.check() {
-                stack.push((dir, path));
                 break Some(stop);
             }
-            let children = match self.list(dir, &path) {
-                Ok(children) => children,
-                Err(stop) => {
-                    stack.push((dir, path));
-                    break Some(stop);
+            let frame = stack.last_mut().expect("active frame");
+            let name = match frame.directory.next() {
+                Some(Ok(name)) => name,
+                Some(Err(e)) => {
+                    let dir = frame.index;
+                    self.directory_error(dir, e);
+                    stack.pop();
+                    continue;
+                }
+                None => {
+                    self.progress.dirs_enumerated += 1;
+                    stack.pop();
+                    continue;
                 }
             };
-            self.progress.dirs_enumerated += 1;
+            // Names are streamed one at a time. Check the deadline/cancellation before the
+            // metadata access, including when almost every entry is skipped.
             self.progress.elapsed_ms = self.clock.elapsed().as_millis() as u64;
             progress(&self.progress);
-            let mut stopped = None;
-            for child in &children {
-                if let Err(stop) = self.check() {
-                    self.index.entries[dir].flags |= F_INCOMPLETE;
-                    stopped = Some(stop);
-                    break;
-                }
-                if let Some(sub) = self.entry(dir, child) {
-                    stack.push(sub);
-                }
+            if let Err(stop) = self.check() {
+                break Some(stop);
             }
-            if stopped.is_some() {
-                break stopped;
+            let frame = stack.last().expect("active frame");
+            if let Some(child) = self.entry(frame, name) {
+                stack.push(child);
             }
         };
-        for (dir, _) in &stack {
-            self.index.entries[*dir].flags |= F_INCOMPLETE;
+        for frame in &stack {
+            self.index.entries[frame.index].flags |= F_INCOMPLETE;
         }
         match stop {
             Some(Stop::Cancelled) => self.index.coverage.cancelled = true,
@@ -220,132 +230,97 @@ impl<'a> Walk<'a> {
         self.index
     }
 
-    fn list(&mut self, dir: usize, path: &PathBuf) -> Result<Vec<DirEntry>, Stop> {
-        let reader = match fs::read_dir(path) {
-            Ok(r) => r,
-            Err(e) => {
-                if e.kind() == ErrorKind::PermissionDenied {
-                    self.deny(dir);
-                } else {
-                    self.index.entries[dir].flags |= F_INCOMPLETE;
-                    if e.kind() == ErrorKind::NotFound && dir != 0 {
-                        self.index.coverage.vanished += 1;
-                    } else {
-                        self.index.coverage.errors += 1;
-                    }
-                }
-                if dir == 0 {
-                    self.index.root_error = Some(e.kind());
-                }
-                return Ok(Vec::new());
-            }
-        };
-        let remaining = self
-            .options
-            .max_entries
-            .saturating_sub(self.index.entries.len());
-        let mut children = Vec::new();
-        for item in reader {
-            if children.len() % 1024 == 1023 && self.cancel.is_cancelled() {
-                return Err(Stop::Cancelled);
-            }
-            match item {
-                Ok(child) if children.len() < remaining => children.push(child),
-                Ok(_) => {
-                    self.index.entries[dir].flags |= F_INCOMPLETE;
-                    break;
-                }
-                Err(_) => {
-                    self.index.coverage.errors += 1;
-                    self.index.entries[dir].flags |= F_INCOMPLETE;
-                    break;
-                }
+    fn directory_error(&mut self, dir: usize, e: std::io::Error) {
+        if e.kind() == ErrorKind::PermissionDenied {
+            self.deny(dir);
+        } else {
+            self.index.entries[dir].flags |= F_INCOMPLETE;
+            if e.kind() == ErrorKind::NotFound && dir != 0 {
+                self.index.coverage.vanished += 1;
+            } else {
+                self.index.coverage.errors += 1;
             }
         }
-        Ok(children)
+        if dir == 0 {
+            self.index.root_error = Some(e.kind());
+        }
     }
 
-    fn entry(&mut self, dir: usize, child: &DirEntry) -> Option<(usize, PathBuf)> {
-        let coverage = &mut self.index.coverage;
-        let meta = match child.metadata() {
-            Ok(m) => m,
+    fn entry(&mut self, parent: &Frame, child: platform::Child) -> Option<Frame> {
+        let dir = parent.index;
+        let name = platform::child_name(&child);
+        let meta = match parent.directory.inspect(&child, self.scope.volume) {
+            Ok(meta) => meta,
             Err(e) => {
                 match e.kind() {
-                    ErrorKind::NotFound => coverage.vanished += 1,
-                    ErrorKind::PermissionDenied => coverage.denied_files += 1,
-                    _ => coverage.errors += 1,
+                    ErrorKind::NotFound => self.index.coverage.vanished += 1,
+                    ErrorKind::PermissionDenied => self.index.coverage.denied_files += 1,
+                    _ => self.index.coverage.errors += 1,
                 }
+                self.index.entries[dir].flags |= F_INCOMPLETE;
                 return None;
             }
         };
-        let path = child.path();
-        match platform::classify(&meta) {
-            AttributeClass::Reparse => coverage.reparse_skipped += 1,
-            AttributeClass::Special => coverage.special_skipped += 1,
+        match meta.class {
+            AttributeClass::Reparse => self.index.coverage.reparse_skipped += 1,
+            AttributeClass::Special => self.index.coverage.special_skipped += 1,
             AttributeClass::Placeholder => {
-                coverage.placeholders += 1;
-                coverage.placeholder_logical_bytes = coverage
+                self.index.coverage.placeholders += 1;
+                self.index.coverage.placeholder_logical_bytes = self
+                    .index
+                    .coverage
                     .placeholder_logical_bytes
-                    .saturating_add(meta.len());
+                    .saturating_add(meta.logical);
             }
             AttributeClass::Dir => {
-                if platform::dir_on_other_volume(&meta, self.scope.volume) {
-                    coverage.other_volume_skipped += 1;
+                if meta.other_volume {
+                    self.index.coverage.other_volume_skipped += 1;
                     return None;
                 }
-                coverage.dirs += 1;
-                let mut entry = Entry::dir(dir, child.file_name());
-                entry.modified_ms = meta.modified().ok().and_then(system_ms);
-                let idx = self.push(entry);
-                return Some((idx, path));
+                self.index.coverage.dirs += 1;
+                let mut entry = Entry::dir(dir, name.clone());
+                entry.modified_ms = meta.modified_ms;
+                let index = self.push(entry);
+                match parent.directory.child(&name, self.scope.volume) {
+                    Ok(directory) => return Some(Frame { index, directory }),
+                    Err(e) => self.directory_error(index, e),
+                }
             }
-            AttributeClass::File => self.file(dir, child, &path, &meta),
+            AttributeClass::File => self.file(dir, name, meta),
         }
         None
     }
 
-    fn file(&mut self, dir: usize, child: &DirEntry, path: &std::path::Path, meta: &Metadata) {
+    fn file(&mut self, dir: usize, name: OsString, meta: EntryFacts) {
         let coverage = &mut self.index.coverage;
-        let mut entry = Entry::file(dir, child.file_name(), meta.len());
-        entry.modified_ms = meta.modified().ok().and_then(system_ms);
-        match platform::file_facts(path, meta, self.scope.volume) {
-            Ok(f) if f.other_volume => {
+        let mut entry = Entry::file(dir, name, meta.logical);
+        entry.modified_ms = meta.modified_ms;
+        if let Some(f) = meta.facts {
+            if f.other_volume {
                 coverage.other_volume_skipped += 1;
                 return;
             }
-            Ok(f) => {
-                entry.logical = f.logical;
-                entry.modified_ms = f.modified_ms.or(entry.modified_ms);
-                entry.links = f.links;
-                match f.allocated {
-                    Some(a) => entry.allocated = a,
-                    None => entry.flags |= F_ALLOC_UNKNOWN,
-                }
-                if f.sparse {
-                    entry.flags |= F_SPARSE;
-                }
-                if f.compressed {
-                    entry.flags |= F_COMPRESSED;
-                }
-                if let (Some(key), Some(n)) = (f.key, f.links) {
-                    if n > 1 && !self.links.insert(key) {
-                        entry.flags |= F_ALIAS;
-                        coverage.hard_link_aliases += 1;
-                    }
+            entry.logical = f.logical;
+            entry.modified_ms = f.modified_ms.or(entry.modified_ms);
+            entry.links = f.links;
+            match f.allocated {
+                Some(a) => entry.allocated = a,
+                None => entry.flags |= F_ALLOC_UNKNOWN,
+            }
+            if f.sparse {
+                entry.flags |= F_SPARSE;
+            }
+            if f.compressed {
+                entry.flags |= F_COMPRESSED;
+            }
+            if let (Some(key), Some(n)) = (f.key, f.links) {
+                if n > 1 && !self.links.insert(key) {
+                    entry.flags |= F_ALIAS;
+                    coverage.hard_link_aliases += 1;
                 }
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                coverage.vanished += 1;
-                return;
-            }
-            Err(e) => {
-                if e.kind() == ErrorKind::PermissionDenied {
-                    coverage.denied_files += 1;
-                } else {
-                    coverage.errors += 1;
-                }
-                entry.flags |= F_ALLOC_UNKNOWN;
-            }
+        } else {
+            entry.flags |= F_ALLOC_UNKNOWN;
         }
         if entry.modified_ms.is_some_and(|m| m > self.started_ms) {
             coverage.changed_during_scan += 1;

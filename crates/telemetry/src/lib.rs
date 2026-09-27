@@ -19,6 +19,56 @@ use std::time::{Duration, Instant};
 /// Evidence older than this is reported `stale` by `process_details`.
 pub const DETAILS_FRESHNESS: Duration = Duration::from_secs(30);
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProcessSort {
+    #[default]
+    WorkingSet,
+    PrivateCommit,
+    Cpu,
+    IoRead,
+    IoWrite,
+}
+impl ProcessSort {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "working_set" => Some(Self::WorkingSet),
+            "private_commit" => Some(Self::PrivateCommit),
+            "cpu" => Some(Self::Cpu),
+            "io_read" => Some(Self::IoRead),
+            "io_write" => Some(Self::IoWrite),
+            _ => None,
+        }
+    }
+    pub fn metric(self) -> Metric {
+        match self {
+            Self::WorkingSet => Metric::ProcessWorkingSetBytes,
+            Self::PrivateCommit => Metric::ProcessPrivateCommitBytes,
+            Self::Cpu => Metric::ProcessCpuBasisPoints,
+            Self::IoRead => Metric::ProcessIoReadBytes,
+            Self::IoWrite => Metric::ProcessIoWriteBytes,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::WorkingSet => "working set",
+            Self::PrivateCommit => "private commit",
+            Self::Cpu => "CPU",
+            Self::IoRead => "read I/O rate",
+            Self::IoWrite => "write I/O rate",
+        }
+    }
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn rank(self, evidence: &[pcagent_shared::Evidence]) -> Option<u128> {
+        let e = evidence.iter().find(|e| e.metric == self.metric())?;
+        let value = u128::from(e.usable_value()?);
+        if matches!(self, Self::IoRead | Self::IoWrite) {
+            (e.window.duration_ms > 0).then(|| value * 1000 / u128::from(e.window.duration_ms))
+        } else {
+            Some(value)
+        }
+    }
+}
+
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TickSample {
@@ -74,11 +124,19 @@ impl Collector {
     /// Process inspection is optional; output is bounded to the top 1..=50 readable processes.
     /// Per-process CPU and I/O are deltas since this collector's previous observation of the same instance.
     pub fn snapshot(&mut self, include_processes: bool, limit: usize) -> Snapshot {
+        self.snapshot_sorted(include_processes, limit, ProcessSort::WorkingSet)
+    }
+    pub fn snapshot_sorted(
+        &mut self,
+        include_processes: bool,
+        limit: usize,
+        sort: ProcessSort,
+    ) -> Snapshot {
         #[cfg(windows)]
-        let result = windows::collect(self, include_processes, limit.clamp(1, 50), false);
+        let result = windows::collect(self, include_processes, limit.clamp(1, 50), false, sort);
         #[cfg(not(windows))]
         let result = {
-            let _ = (include_processes, limit);
+            let _ = (include_processes, limit, sort);
             unsupported_snapshot(&self.session_id)
         };
         self.record(&result);
@@ -88,7 +146,7 @@ impl Collector {
     /// avoiding the one-second sleep; otherwise behaves like `snapshot(false, _)`.
     pub fn sample_system(&mut self) -> Snapshot {
         #[cfg(windows)]
-        let result = windows::collect(self, false, 1, true);
+        let result = windows::collect(self, false, 1, true, ProcessSort::WorkingSet);
         #[cfg(not(windows))]
         let result = unsupported_snapshot(&self.session_id);
         self.record(&result);
@@ -319,6 +377,60 @@ pub fn parse_multi_sz(buffer: &[u16]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resource_ranking_keeps_cpu_and_commit_contributors_and_normalizes_io() {
+        use pcagent_shared::{Evidence, Window};
+        let row = |working_set, commit, cpu, io, duration_ms| {
+            vec![
+                Evidence::measured(
+                    Metric::ProcessWorkingSetBytes,
+                    "proc-fixture",
+                    working_set,
+                    "fixture",
+                    Window::instant(),
+                ),
+                Evidence::measured(
+                    Metric::ProcessPrivateCommitBytes,
+                    "proc-fixture",
+                    commit,
+                    "fixture",
+                    Window::instant(),
+                ),
+                Evidence::measured(
+                    Metric::ProcessCpuBasisPoints,
+                    "proc-fixture",
+                    cpu,
+                    "fixture",
+                    Window::instant(),
+                ),
+                Evidence::measured(
+                    Metric::ProcessIoReadBytes,
+                    "proc-fixture",
+                    io,
+                    "fixture",
+                    Window {
+                        started_at_unix_ms: 0,
+                        finished_at_unix_ms: duration_ms,
+                        duration_ms,
+                    },
+                ),
+            ]
+        };
+        let memory_heavy = row(10_000, 2_000, 10, 2_000, 10_000);
+        let cpu_heavy = row(100, 20_000, 9_000, 1_000, 1_000);
+        assert!(
+            ProcessSort::WorkingSet.rank(&memory_heavy) > ProcessSort::WorkingSet.rank(&cpu_heavy)
+        );
+        for sort in [
+            ProcessSort::PrivateCommit,
+            ProcessSort::Cpu,
+            ProcessSort::IoRead,
+        ] {
+            assert!(sort.rank(&cpu_heavy) > sort.rank(&memory_heavy));
+            assert!(sort.rank(&memory_heavy) > sort.rank(&[]));
+        }
+        assert_eq!(ProcessSort::IoRead.rank(&row(0, 0, 0, 100, 0)), None);
+    }
     #[test]
     fn idle_is_not_double_counted() {
         assert_eq!(cpu_busy_basis_points([0, 0, 0], [50, 80, 20]), Some(5_000));

@@ -35,17 +35,29 @@ text such as "fais tout" are rejected and can never produce approval.
   asks for a typed `yes` on an interactive terminal (stdin and stderr). Only then does it call
   `approve_locally` and `Broker::execute`. With `--json` or without a terminal nothing runs
   (`not_reviewed`). Tokens never leave the CLI process.
-- Before/after (spec 18): around each approved action the CLI takes `VERIFY_SAMPLES` (3) system
-  samples, executes with the last sample's id as `before_ref`, waits 2 s, takes 3 more samples and
-  records `after_ref`. `verify_action` compares available memory, commit and CPU with
-  `diagnostics::compare` (improvement only when the whole after window beats the whole before
-  window; otherwise `no_net_change`/`needs_more_measurement`). Cleanup also reports volume free bytes
-  before/after next to the adapter's `bytes_removed`; unknown values stay unknown.
+- Verification depends on the action. Normal-close verification uses `VERIFY_SAMPLES` (3)
+  system samples on each side, separated by 2 s; incomplete, duplicate or overlapping measurement
+  windows cannot establish an improvement. Cleanup reports actual deleted bytes and volume free
+  space before/after. Opening Explorer or Settings makes no performance-improvement claim.
+- Proposals require prior usable observations and retain their local `observation_id` references.
+  These references identify the investigation context, not a proof that the action solves a cause.
+- JSON output contains one report with pending manifests and decisions. It never grants approval.
 - `pcagent demo-cache --mb N` (1–256) creates the marked synthetic cache under
   `%LOCALAPPDATA%\pcagent\synthetic-demo-cache`.
 
 ## Manifest and state machine
 
+- Synthetic cleanup binds the root identity, marker identity and every file's path, volume/file
+  identity, size and modification time into the approval fingerprint. Added/replaced files,
+  replacement roots and enumeration overflow require a new plan. More than 1024 directory entries
+  is refused rather than truncated. This is a metadata manifest, not a hash of file contents.
+- On Windows, the adapter pins the directories, marker and complete approved file set before
+  the first effect, compares the complete manifest again, then removes each file through its
+  verified handle with `SetFileInformationByHandle(FileDispositionInfo)`. Redirection of a path
+  cannot change the object deleted. No arbitrary-path deletion fallback exists. Other platforms
+  may inventory/create demo data but cannot execute this adapter.
+- `permissions.reversible_only` defaults to `true`. Synthetic deletion needs an explicit `false`
+  preference as well as local approval; regenerable data is not considered restorable data.
 - `ActionPlan` fields follow 17.4. The fingerprint is SHA-256 (`sha2 =0.10.9`, published
   2025-04-30, `default-features = false`) over a serde_json serialization of a fixed-order struct
   containing every field except `state` and `fingerprint`. Every check recomputes it; a mismatch
@@ -83,7 +95,7 @@ Effects take a `Permit` only the broker can build. `Capability` gates `prepare_p
 | `open_settings_page` | fixed allowlist `storagesense`, `appsfeatures`, `startupapps` → `ms-settings:` via explorer.exe | yes |
 | `request_normal_close` | process handle held (`QUERY_LIMITED_INFORMATION | SYNCHRONIZE`), identity rechecked, `WM_CLOSE` to visible unowned top-level windows, bounded wait; never `TerminateProcess` | yes |
 | `recycle_selected_files` | exclusive pin + `IFileOperation::DeleteItem` (`FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_EARLYFAILURE`, no UI) after `SHQueryRecycleBinW`, fail-closed post-check (below); no permanent-delete fallback | yes |
-| `run_cleanup_adapter` | `SyntheticDemoCache`: pcagent-created directory with a marker file; removes only regular files directly inside it | only when a cache is configured |
+| `run_cleanup_adapter` | `SyntheticDemoCache`: exact approved manifest, verified handles, only regular files directly inside the marked root | Windows, configured cache and explicit permission |
 
 ### Recycle binding (spec 11.3)
 
@@ -131,25 +143,35 @@ Non-Windows builds report `Status::Unsupported` for every native effect and obse
 
 `Journal::open(dir)` writes `<plan_id>.jsonl`, one fsync'd line per `started` / `finished` record
 with fingerprint, item index, target ref, pre-state and outcome. No token or secret is recorded.
-If a line cannot be written, remaining items are skipped (`journal_unavailable`). `recover(&journal)`
-finds items whose last record is `started`, appends `needs_inspection` and returns them; nothing is
-replayed. Reads are bounded (16 MiB per journal, 64 KiB per line, 4096 journals).
+If a line cannot be written, remaining items are skipped (`journal_unavailable`). Even failure of
+the final `finished` write prevents an overall `completed` result; `journal_status` records the error
+without erasing effects already observed. A partially completed cleanup reports its removed file
+and byte counts. A failure before any removal is an overall failure, not a partial success.
+
+The CLI calls `recover(&journal)` when action proposals are enabled. Unfinished `started` records
+become `needs_inspection`; subsequent runs continue reporting them. Nothing is replayed. Reads are
+bounded (16 MiB per journal, 64 KiB per line, 4096 journals).
+
+During approved execution, a scoped Windows console handler converts Ctrl+C/Ctrl+Break into the
+broker's cancellation flag. Cleanup checks it between files, subsequent plans remain unexecuted,
+and verification can stop early. A native operation already in progress is not forcibly interrupted.
 
 ## Safety boundaries
 
 - Crate root: `forbid(unsafe_code)` off Windows, `deny(unsafe_code)` on Windows with the only
   `allow` on `mod windows`; every block has a `// SAFETY:` comment and handles are RAII.
 - No elevation, `runas`, token privileges, `cmd`/PowerShell, `ShellExecute` verbs, `TerminateProcess`
-  or `DeleteFile` (asserted by a test on the source of `windows.rs`).
+  or path-based `DeleteFileW/A` (asserted by a source test). Handle-based permanent deletion belongs
+  only to the explicitly approved synthetic adapter; recycle never falls back to it.
 - `FileIdentity::is_reparse_point` is also set when the final path differs from the requested
   path, so resolvers must supply normalized long paths.
 
-## Not validated on real Windows
+## Validation boundaries
 
-Everything under `src/windows.rs` is only compiled/clippy-checked for `x86_64-pc-windows-msvc` here.
-The CI `windows-latest` job runs one `#[cfg(windows)]` test (identity of a disposable temp file and
-of the test process). Recycle has `#[cfg(windows)]` tests for the pin (rename/delete/write by
+Windows regression tests run locally as well as in CI, using disposable fixtures: identity,
+synthetic-manifest changes, partial deletion, journal failure and recovery. Recycle has tests for
+the pin (rename/delete/write by
 others refused while pinned), refusal of swapped, hard-linked, in-use, missing and protected targets,
 and an end-to-end recycle of a temp file (skipped if the runner has no recycle bin). Not exercised
-natively: Explorer and Settings launching, `WM_CLOSE` behaviour, boot id stability across clock changes, and
+natively as a full acceptance scenario: Explorer and Settings launching, `WM_CLOSE` behaviour, Ctrl+C during a real action, and
 behaviour on non-NTFS, network, or redirected-folder volumes.

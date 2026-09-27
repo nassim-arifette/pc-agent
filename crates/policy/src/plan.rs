@@ -509,6 +509,16 @@ mod tests {
     const GIB: u64 = 1 << 30;
     const CACHE: &str = r"C:\Users\bob\AppData\Local\pcagent\synthetic-demo-cache";
 
+    fn allow_synthetic_delete() -> Preferences {
+        Preferences {
+            permissions: crate::prefs::Permissions {
+                reversible_only: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     fn cand(item: &str, path: &str, is_dir: bool, alloc: Option<u64>) -> CandidateInput {
         CandidateInput {
             item_ref: item.into(),
@@ -560,7 +570,7 @@ mod tests {
     fn plan(goal: u64, c: PlanConstraints) -> CleanupPlan {
         Policy::default().build_plan(
             &corpus(),
-            &Preferences::default(),
+            &allow_synthetic_delete(),
             &PlanConstraints {
                 goal_bytes: goal,
                 ..c
@@ -662,13 +672,7 @@ mod tests {
             (cache.immediate_reclaim_bytes, cache.deferred_reclaim_bytes),
             (Some(0), Some(20 * GIB))
         );
-        let prefs = Preferences {
-            permissions: crate::prefs::Permissions {
-                reversible_only: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let prefs = Preferences::default();
         let p2 = Policy::default().build_plan(
             &corpus(),
             &prefs,
@@ -723,7 +727,7 @@ mod tests {
     fn unknown_allocation_is_never_invented() {
         let p = Policy::default().build_plan(
             &[cand("c1", CACHE, true, None)],
-            &Preferences::default(),
+            &allow_synthetic_delete(),
             &PlanConstraints {
                 goal_bytes: 1,
                 ..Default::default()
@@ -781,7 +785,7 @@ mod tests {
         ];
         let p = Policy::default().build_plan(
             &items,
-            &Preferences::default(),
+            &allow_synthetic_delete(),
             &PlanConstraints {
                 goal_bytes: GIB,
                 ..Default::default()
@@ -798,7 +802,7 @@ mod tests {
         ];
         let p = Policy::default().build_plan(
             &items,
-            &Preferences::default(),
+            &allow_synthetic_delete(),
             &PlanConstraints::default(),
         );
         assert_eq!(p.goal_status, GoalStatus::Reached);

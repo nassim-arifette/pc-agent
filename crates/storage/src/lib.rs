@@ -86,23 +86,19 @@ pub struct ScanScope {
     id: String,
     root: PathBuf,
     volume: platform::VolumeId,
+    identity: (u64, u128),
     profile: Option<PathBuf>,
 }
 impl ScanScope {
     pub fn authorize(root: &Path) -> Result<Self, StorageError> {
-        let link = std::fs::symlink_metadata(root)?;
-        if scan::is_link(&link) {
-            return Err(StorageError::ReparseRoot);
-        }
-        let root = std::fs::canonicalize(root)?;
-        if !std::fs::metadata(&root)?.is_dir() {
-            return Err(StorageError::NotADirectory);
-        }
+        let (root, pinned) = platform::authorize_root(root)?;
+        let identity = pinned.identity()?;
         let volume = platform::check_root(&root)?;
         Ok(Self {
             id: new_id("scope"),
             root,
             volume,
+            identity,
             profile: platform::profile_dir(),
         })
     }
@@ -259,7 +255,7 @@ pub struct ScanJob {
     pub scope_id: String,
     cancel: CancelToken,
     progress: Arc<Mutex<ScanProgress>>,
-    handle: JoinHandle<Result<ScanSummary, StorageError>>,
+    handle: Option<JoinHandle<Result<ScanSummary, StorageError>>>,
 }
 impl ScanJob {
     pub fn cancel(&self) {
@@ -269,12 +265,23 @@ impl ScanJob {
         *self.progress.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn is_finished(&self) -> bool {
-        self.handle.is_finished()
+        self.handle.as_ref().is_none_or(JoinHandle::is_finished)
     }
-    pub fn wait(self) -> Result<ScanSummary, StorageError> {
+    pub fn wait(mut self) -> Result<ScanSummary, StorageError> {
         self.handle
+            .take()
+            .expect("owned scan worker")
             .join()
             .unwrap_or_else(|_| Err(StorageError::Io("scan worker panicked".into())))
+    }
+}
+
+impl Drop for ScanJob {
+    fn drop(&mut self) {
+        self.cancel();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -399,7 +406,7 @@ impl StorageService {
             scope_id: scope_id.into(),
             cancel,
             progress,
-            handle,
+            handle: Some(handle),
         })
     }
     pub fn cancel(&self, scope_id: &str) -> Result<bool, StorageError> {

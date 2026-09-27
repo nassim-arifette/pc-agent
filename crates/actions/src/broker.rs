@@ -130,6 +130,12 @@ pub enum ItemOutcome {
         status: Status,
         detail: String,
     },
+    Partial {
+        status: Status,
+        detail: String,
+        files_removed: u64,
+        bytes_removed: Option<u64>,
+    },
     Skipped {
         reason: SkipReason,
     },
@@ -164,6 +170,8 @@ pub struct ActionResult {
     pub fingerprint: String,
     pub action_kind: ActionKind,
     pub overall: OverallOutcome,
+    /// A successful effect may still lack a durable completion record.
+    pub journal_status: Status,
     pub items: Vec<ItemResult>,
     pub measurement: MeasurementHooks,
 }
@@ -188,7 +196,7 @@ pub struct Broker<'a> {
 impl Broker<'_> {
     pub fn capability(&self, kind: ActionKind) -> Capability {
         match kind {
-            ActionKind::RunCleanupAdapter if self.synthetic_cache.is_some() => {
+            ActionKind::RunCleanupAdapter if cfg!(windows) && self.synthetic_cache.is_some() => {
                 Capability::Executable
             }
             ActionKind::RunCleanupAdapter => Capability::Unsupported,
@@ -285,15 +293,10 @@ impl Broker<'_> {
                     .synthetic_cache
                     .filter(|_| target_ref == SYNTHETIC_DEMO_CACHE_ID)
                     .ok_or_else(|| ActionError::UnknownAdapter(target_ref.into()))?;
-                let inventory = cache
-                    .inventory()
+                let manifest = cache
+                    .manifest()
                     .map_err(|_| ActionError::UnknownAdapter(target_ref.into()))?;
-                return Ok(ResolvedTarget::CleanupAdapter(crate::CleanupTarget {
-                    adapter_id: SYNTHETIC_DEMO_CACHE_ID.into(),
-                    root: cache.root().to_path_buf(),
-                    files: inventory.files,
-                    bytes: inventory.bytes,
-                }));
+                return Ok(ResolvedTarget::CleanupAdapter(manifest));
             }
             _ => {}
         }
@@ -374,10 +377,10 @@ impl Broker<'_> {
                 .map(|identity| PreState::Process { identity }),
             ResolvedTarget::SettingsPage { page } => Ok(PreState::SettingsPage { page: *page }),
             ResolvedTarget::CleanupAdapter(c) => match self.synthetic_cache {
-                Some(cache) if cache.root() == c.root => match cache.inventory() {
-                    Ok(inv) => Ok(PreState::CleanupAdapter {
-                        files: inv.files,
-                        bytes: inv.bytes,
+                Some(cache) if cache.root() == c.root => match cache.validate(c) {
+                    Ok(()) => Ok(PreState::CleanupAdapter {
+                        files: c.files,
+                        bytes: c.bytes,
                     }),
                     Err(_) => Err(Refusal::AdapterPreconditionFailed),
                 },
@@ -386,7 +389,13 @@ impl Broker<'_> {
         }
     }
 
-    fn apply(&self, kind: ActionKind, target: &ResolvedTarget, permit: &Permit) -> ItemOutcome {
+    fn apply(
+        &self,
+        kind: ActionKind,
+        target: &ResolvedTarget,
+        permit: &Permit,
+        cancel: &AtomicBool,
+    ) -> ItemOutcome {
         let effect = match (kind, target) {
             (ActionKind::OpenInExplorer, ResolvedTarget::File(f)) => {
                 self.effects.open_in_explorer(permit, f)
@@ -414,16 +423,9 @@ impl Broker<'_> {
                     other => other,
                 }
             }
-            (ActionKind::RunCleanupAdapter, ResolvedTarget::CleanupAdapter(_)) => {
-                return match self.synthetic_cache.map(SyntheticDemoCache::clean) {
-                    Some(Ok(removed)) => ItemOutcome::Completed {
-                        detail: Some(format!("{} synthetic files removed", removed.files)),
-                        bytes_removed: removed.bytes,
-                    },
-                    Some(Err(e)) => ItemOutcome::Failed {
-                        status: Status::Error,
-                        detail: format!("synthetic cache cleanup failed: {}", e.kind()),
-                    },
+            (ActionKind::RunCleanupAdapter, ResolvedTarget::CleanupAdapter(c)) => {
+                return match self.synthetic_cache {
+                    Some(cache) => cache.clean(c, cancel),
                     None => ItemOutcome::Refused {
                         reason: Refusal::AdapterPreconditionFailed,
                     },
@@ -508,7 +510,7 @@ impl Broker<'_> {
                                 reason: SkipReason::JournalUnavailable,
                             }
                         } else {
-                            let outcome = self.apply(kind, &item.target, &permit);
+                            let outcome = self.apply(kind, &item.target, &permit, cancel);
                             let rec = record(
                                 index,
                                 item,
@@ -536,10 +538,18 @@ impl Broker<'_> {
             .iter()
             .filter(|r| matches!(r.outcome, ItemOutcome::Completed { .. }))
             .count();
-        let cancelled = halted == Some(SkipReason::Cancelled);
-        let (overall, state) = if completed == results.len() {
+        let cancelled = halted == Some(SkipReason::Cancelled) || cancel.load(Ordering::SeqCst);
+        let partial_effect = results
+            .iter()
+            .any(|r| matches!(r.outcome, ItemOutcome::Partial { files_removed, .. } if files_removed > 0));
+        let journal_status = if halted == Some(SkipReason::JournalUnavailable) {
+            Status::Error
+        } else {
+            Status::Ok
+        };
+        let (overall, state) = if completed == results.len() && journal_status == Status::Ok {
             (OverallOutcome::Completed, PlanState::Completed)
-        } else if completed > 0 {
+        } else if completed > 0 || partial_effect {
             (OverallOutcome::Partial, PlanState::Partial)
         } else if cancelled {
             (OverallOutcome::Cancelled, PlanState::Cancelled)
@@ -553,6 +563,7 @@ impl Broker<'_> {
             fingerprint: plan.fingerprint().into(),
             action_kind: kind,
             overall,
+            journal_status,
             items: results,
             measurement: MeasurementHooks {
                 before_ref: before_measurement_ref,

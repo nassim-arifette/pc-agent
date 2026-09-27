@@ -54,21 +54,27 @@ pub const HISTORY_METRICS: &[&str] = &[
 pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_system_snapshot",
+        class: crate::tools::ToolClass::Inspection,
         description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations. No changes to the computer.",
         params: &[],
     },
     ToolSpec {
         name: "get_processes",
+        class: crate::tools::ToolClass::Inspection,
         description: "Collect readable process memory, CPU and I/O contributors as opaque session-scoped identities. No paths, names or commands.",
         params: &[Param {
             name: "limit",
             description: "Maximum process instances to return (default 10).",
             kind: ParamKind::Integer { min: 1, max: MAX_PROCESSES },
             required: false,
+        }, Param {
+            name: "sort_by", description: "Resource to rank before limiting results (default working_set). CPU/I/O need a previous sample; I/O ranks bytes per second.",
+            kind: ParamKind::OneOf(&["working_set", "private_commit", "cpu", "io_read", "io_write"]), required: false,
         }],
     },
     ToolSpec {
         name: "get_process_details",
+        class: crate::tools::ToolClass::Inspection,
         description: "Latest evidence for one process instance by opaque entity_ref; reports exited or reused PIDs explicitly.",
         params: &[Param {
             name: "entity_ref",
@@ -79,11 +85,13 @@ pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "get_process_tree",
+        class: crate::tools::ToolClass::Inspection,
         description: "Observed parent/child relations between opaque process references, validated by creation time. Observation only.",
         params: &[],
     },
     ToolSpec {
         name: "get_metric_history",
+        class: crate::tools::ToolClass::Inspection,
         description: "System samples recorded during this session over a trailing window; gaps are reported, never interpolated.",
         params: &[
             Param {
@@ -102,26 +110,31 @@ pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "get_hardware_inventory",
+        class: crate::tools::ToolClass::Inspection,
         description: "Windows version, architecture, logical processors, installed memory, volume capacity and GPU adapters. No serial numbers.",
         params: &[],
     },
     ToolSpec {
         name: "list_storage_scopes",
+        class: crate::tools::ToolClass::Context,
         description: "Storage roots the user authorized locally for this session, as opaque scope IDs.",
         params: &[],
     },
     ToolSpec {
         name: "get_storage_overview",
+        class: crate::tools::ToolClass::Inspection,
         description: "Volume space and the latest completed scan totals and coverage for one authorized scope.",
         params: &[SCOPE],
     },
     ToolSpec {
         name: "start_storage_scan",
+        class: crate::tools::ToolClass::Context,
         description: "Start a read-only metadata scan of an authorized scope in the background. Never reads file contents or follows links.",
         params: &[SCOPE],
     },
     ToolSpec {
         name: "get_largest_items",
+        class: crate::tools::ToolClass::Inspection,
         description: "Page of the largest files or directories from the latest completed scan, with redacted relative paths.",
         params: &[
             SCOPE,
@@ -137,11 +150,13 @@ pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "get_cleanup_candidates",
+        class: crate::tools::ToolClass::Inspection,
         description: "Local policy classification of the largest scanned items (protected, personal, regenerable...). Not an authorization to delete.",
         params: &[SCOPE, ITEM_KIND, PAGE_LIMIT],
     },
     ToolSpec {
         name: "get_user_preferences",
+        class: crate::tools::ToolClass::Context,
         description: "User exclusions, preserved application references and permissions as opaque references.",
         params: &[],
     },
@@ -157,6 +172,7 @@ pub struct Workstation<'a> {
     jobs: Vec<ScanJob>,
     specs: Vec<ToolSpec>,
     actions: Option<ActionDesk>,
+    observation_refs: Vec<String>,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -174,6 +190,7 @@ impl<'a> Workstation<'a> {
             jobs: Vec::new(),
             specs: WORKSTATION_TOOLS.to_vec(),
             actions: None,
+            observation_refs: Vec::new(),
         }
     }
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
@@ -200,6 +217,7 @@ impl<'a> Workstation<'a> {
 fn output(status: Status, cloud: Value) -> ToolOutput {
     ToolOutput {
         status,
+        inspection_complete: status == Status::Ok,
         cloud,
         evidence: Vec::new(),
         findings: Vec::new(),
@@ -256,6 +274,8 @@ impl Workstation<'_> {
             ),
         );
         out.evidence = d.evidence;
+        out.inspection_complete =
+            out.evidence.iter().any(|e| e.usable_value().is_some()) && d.status != Status::Stale;
         out
     }
     fn process_tree(&mut self) -> ToolOutput {
@@ -266,11 +286,13 @@ impl Workstation<'_> {
             .filter(|e| e.child_ref.is_some())
             .map(|e| json!({"parent_ref": e.parent_ref, "child_ref": e.child_ref, "relation": e.relation}))
             .collect();
-        output(
+        let mut out = output(
             t.status,
             json!({"status": t.status, "origin": t.origin, "window": t.window, "nodes": t.nodes.len(),
                 "edges": edges, "truncated": t.truncated, "limitations": t.limitations}),
-        )
+        );
+        out.inspection_complete = !t.nodes.is_empty();
+        out
     }
     fn local_item(&self, args: &Args) -> Result<(PathBuf, ItemKind, String), String> {
         let (Some(scope), Some(item_ref)) = (args.text("scope_id"), args.text("item_ref")) else {
@@ -352,7 +374,10 @@ impl Workstation<'_> {
             .actions
             .as_mut()
             .ok_or("action proposals are disabled")?;
-        let view = proposals::prepare(desk, proposal, &protection)?;
+        if self.observation_refs.is_empty() {
+            return Err("inspect the workstation before proposing an action".into());
+        }
+        let view = proposals::prepare(desk, proposal, &protection, self.observation_refs.clone())?;
         Ok(json!({
             "plan": view,
             "note": "Prepared for local review only. The user decides after the investigation; \
@@ -374,7 +399,7 @@ impl Workstation<'_> {
         };
         let window = Duration::from_secs(args.integer("window_seconds").unwrap_or(60));
         let s = self.collector.metric_history(metric, window);
-        output(
+        let mut out = output(
             s.status,
             allow(
                 &s,
@@ -391,7 +416,12 @@ impl Workstation<'_> {
                     "limitations",
                 ],
             ),
-        )
+        );
+        out.inspection_complete = s
+            .points
+            .iter()
+            .any(|p| p.value.is_some() && matches!(p.status, Status::Ok | Status::Partial));
+        out
     }
     fn inventory(&self) -> ToolOutput {
         let i = self.collector.hardware_inventory();
@@ -403,14 +433,17 @@ impl Workstation<'_> {
                 })
                 .collect::<Vec<_>>()
         });
-        output(
+        let mut out = output(
             i.status,
             json!({"status": i.status, "origin": i.origin, "os_version": i.os_version,
                 "architecture": i.architecture, "logical_processors": i.logical_processors,
                 "installed_memory_bytes": i.installed_memory_bytes,
                 "volumes": {"value": volumes, "status": i.volumes.status, "source": i.volumes.source},
                 "gpu_adapters": i.gpu_adapters, "limitations": i.limitations}),
-        )
+        );
+        out.inspection_complete =
+            i.logical_processors.value.is_some() || i.installed_memory_bytes.value.is_some();
+        out
     }
     fn cleanup_candidates(&self, scope: &str, args: &Args) -> ToolOutput {
         let page =
@@ -447,7 +480,9 @@ impl Workstation<'_> {
             view.limitations
                 .push("The underlying scan is incomplete; larger items may be missing.");
         }
-        output(view.status, to_value(&view))
+        let mut out = output(view.status, to_value(&view));
+        out.inspection_complete = view.status == Status::Ok || !inputs.is_empty();
+        out
     }
 }
 
@@ -457,11 +492,15 @@ impl Toolbox for Workstation<'_> {
     }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         let scope = args.text("scope_id").unwrap_or_default();
-        match spec.name {
+        let mut out = match spec.name {
             "get_system_snapshot" => ToolOutput::from_snapshot(&self.collector.snapshot(false, 1)),
             "get_processes" => {
                 let limit = usize_arg(args, "limit", MAX_PROCESSES as usize);
-                ToolOutput::from_snapshot(&self.collector.snapshot(true, limit))
+                let sort = args
+                    .text("sort_by")
+                    .and_then(pcagent_telemetry::ProcessSort::parse)
+                    .unwrap_or_default();
+                ToolOutput::from_snapshot(&self.collector.snapshot_sorted(true, limit, sort))
             }
             "get_process_details" => {
                 self.process_details(args.text("entity_ref").unwrap_or_default())
@@ -486,7 +525,9 @@ impl Toolbox for Workstation<'_> {
                     if let Some(map) = cloud.as_object_mut() {
                         map.remove("redacted_root");
                     }
-                    output(status, cloud)
+                    let mut out = output(status, cloud);
+                    out.inspection_complete = o.scan.is_some() || o.volume.free_bytes.is_some();
+                    out
                 }
                 Err(e) => storage_error(e),
             },
@@ -510,7 +551,10 @@ impl Toolbox for Workstation<'_> {
                 {
                     Ok(p) => {
                         let p = p.without_paths().redact_names();
-                        output(p.scan_status, to_value(&p))
+                        let mut out = output(p.scan_status, to_value(&p));
+                        out.inspection_complete =
+                            p.scan_status == Status::Ok || !p.items.is_empty();
+                        out
                     }
                     Err(e) => storage_error(e),
                 }
@@ -525,7 +569,13 @@ impl Toolbox for Workstation<'_> {
                 to_value(&self.policy.user_preferences_view(self.prefs)),
             ),
             _ => output(Status::Error, json!({"error": "unregistered tool"})),
+        };
+        if matches!(spec.class, crate::tools::ToolClass::Inspection) && out.inspection_complete {
+            let reference = pcagent_shared::new_id("obs");
+            out.cloud["observation_id"] = reference.clone().into();
+            self.observation_refs.push(reference);
         }
+        out
     }
 }
 
@@ -709,6 +759,13 @@ mod tests {
             let calls = Rc::new(Cell::new(0));
             ws.enable_action_proposals(desk("settings", &calls));
             ws.enable_action_proposals(desk("settings", &calls));
+            let args = r#"{"action_kind":"open_settings_page","settings_page":"storagesense"}"#;
+            assert_eq!(
+                run(&mut ws, "prepare_action_plan", args).status,
+                Status::Error
+            );
+            // A locally collected observation, independent of native telemetry in portable tests.
+            ws.observation_refs.push("obs-fixture".into());
             assert_eq!(
                 ws.specs()
                     .iter()
@@ -724,6 +781,7 @@ mod tests {
             assert_eq!(out.status, Status::Ok, "{}", out.cloud);
             assert_eq!(out.cloud["plan"]["state"], "awaiting_approval");
             assert_eq!(out.cloud["plan"]["approval_granted"], false);
+            assert_eq!(out.cloud["plan"]["evidence_refs"], json!(["obs-fixture"]));
             assert!(out.cloud["plan"].get("fingerprint").is_none());
             assert_eq!(calls.get(), 0);
 
@@ -767,14 +825,38 @@ mod tests {
                 target: None,
                 synthetic_cache: None,
             };
-            let first = prepare(&mut desk, settings("startupapps"), &protection).unwrap();
-            let again = prepare(&mut desk, settings("startupapps"), &protection).unwrap();
+            let first = prepare(
+                &mut desk,
+                settings("startupapps"),
+                &protection,
+                vec!["obs-fixture".into()],
+            )
+            .unwrap();
+            let again = prepare(
+                &mut desk,
+                settings("startupapps"),
+                &protection,
+                vec!["obs-fixture".into()],
+            )
+            .unwrap();
             assert_eq!(first.plan_id, again.plan_id);
             assert_eq!(desk.pending.len(), 1);
             for page in ["storagesense", "appsfeatures"] {
-                prepare(&mut desk, settings(page), &protection).unwrap();
+                prepare(
+                    &mut desk,
+                    settings(page),
+                    &protection,
+                    vec!["obs-fixture".into()],
+                )
+                .unwrap();
             }
-            let over = prepare(&mut desk, settings("another"), &protection).unwrap_err();
+            let over = prepare(
+                &mut desk,
+                settings("another"),
+                &protection,
+                vec!["obs-fixture".into()],
+            )
+            .unwrap_err();
             assert!(over.contains("at most"), "{over}");
             assert_eq!(calls.get(), 0);
         }
@@ -800,6 +882,11 @@ mod tests {
             let mut ws = Workstation::new(&mut c, storage, &policy, &prefs);
             let calls = Rc::new(Cell::new(0));
             ws.enable_action_proposals(desk("bounds", &calls));
+            run(
+                &mut ws,
+                "get_largest_items",
+                &json!({"scope_id":scope,"kind":"files","limit":1}).to_string(),
+            );
 
             let args = json!({"action_kind":"open_in_explorer","scope_id":scope,"item_ref":item})
                 .to_string();

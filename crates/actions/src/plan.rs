@@ -144,6 +144,10 @@ pub struct ProcessTarget {
 pub struct CleanupTarget {
     pub adapter_id: String,
     pub root: PathBuf,
+    pub root_identity: FileIdentity,
+    pub marker: FileTarget,
+    /// Exact, sorted direct-child objects covered by the approval fingerprint.
+    pub manifest: Vec<FileTarget>,
     pub files: u64,
     pub bytes: Option<u64>,
 }
