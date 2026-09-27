@@ -1,4 +1,4 @@
-use super::{AgentError, Model, Reply, ToolCall};
+use super::{AgentError, Model, Reply, ToolCall, ToolChoice};
 use reqwest::{
     blocking::{Client, RequestBuilder},
     redirect::Policy,
@@ -168,6 +168,7 @@ impl Model for Nebius {
         &mut self,
         messages: &[Value],
         tools: &Value,
+        choice: ToolChoice,
         timeout: Duration,
     ) -> Result<Reply, AgentError> {
         let started = Instant::now();
@@ -177,8 +178,12 @@ impl Model for Nebius {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .ok_or(AgentError::Budget)?;
+        let tool_choice = match choice {
+            ToolChoice::Auto => "auto",
+            ToolChoice::Required => "required",
+        };
         let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
-            "tool_choice":"auto","max_tokens":4096,"temperature":0.0,"stream":false});
+            "tool_choice":tool_choice,"max_tokens":4096,"temperature":0.0,"stream":false});
         let response = self.read_json(
             self.client
                 .post(format!("{BASE_URL}/chat/completions"))
