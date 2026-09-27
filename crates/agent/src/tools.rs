@@ -187,7 +187,7 @@ pub const MAX_PROCESSES: u64 = 10;
 const SNAPSHOT_TOOLS: [ToolSpec; 2] = [
     ToolSpec {
         name: "get_system_snapshot",
-        description: "Collect fresh system memory and aggregate CPU observations. No changes to the computer.",
+        description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations. No changes to the computer.",
         params: &[],
     },
     ToolSpec {
