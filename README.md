@@ -33,6 +33,11 @@ what is never sent, can show the exact first message, and asks for confirmation;
 extensions are asked the same way, with the cost so far. The key is stored by the Rust side in
 the same `%APPDATA%\pcagent\.env` file as the CLI and never reaches the page.
 
+![Home screen with Iris, the question box and live measurements](docs/images/gui-home.png)
+![An investigation in the dark theme: steps, answer and coverage](docs/images/gui-investigate-dark.png)
+
+*Screenshots with the design mock's synthetic data.*
+
 ```powershell
 cargo run --release --locked -p pcagent-gui
 ```
