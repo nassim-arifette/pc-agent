@@ -81,6 +81,18 @@ pub fn verify(
             },
         }
     });
+    let mut limitations =
+        vec!["Short windows around one action; background activity can dominate the difference."];
+    if matches!(
+        result.action_kind,
+        ActionKind::OpenInExplorer | ActionKind::OpenSettingsPage
+    ) {
+        limitations
+            .push("Opening Explorer or Settings is not expected to change resource use by itself.");
+    }
+    if volume.is_some() {
+        limitations.push("Free-space changes include writes by other programs during the window.");
+    }
     ActionVerification {
         schema_version: SCHEMA_VERSION,
         plan_id: result.plan_id.clone(),
@@ -89,11 +101,7 @@ pub fn verify(
         after_ref: result.measurement.after_ref.clone(),
         comparisons,
         volume,
-        limitations: vec![
-            "Short windows around one action; background activity can dominate the difference.",
-            "Opening Explorer or Settings is not expected to change resource use by itself.",
-            "Free-space changes include writes by other programs during the window.",
-        ],
+        limitations,
     }
 }
 
@@ -185,5 +193,9 @@ mod tests {
 
         let single = verify(&result(None), &before[2..], &after[..1], None);
         assert_eq!(single.comparisons[0].outcome, Outcome::NeedsMoreMeasurement);
+        // Only limitations that apply to this action and measurement are listed.
+        assert_eq!(single.limitations.len(), 1);
+        assert!(!shrunk.limitations.iter().any(|l| l.contains("Settings")));
+        assert!(shrunk.limitations.iter().any(|l| l.contains("Free-space")));
     }
 }

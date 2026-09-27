@@ -752,6 +752,34 @@ mod tests {
         }
 
         #[test]
+        fn identical_proposals_are_reviewed_once_and_plans_are_bounded() {
+            use crate::proposals::{prepare, Proposal};
+            let (policy, prefs) = (Policy::default(), Preferences::default());
+            let protection = PolicyProtection {
+                policy: &policy,
+                prefs: &prefs,
+            };
+            let calls = Rc::new(Cell::new(0));
+            let mut desk = desk("dedup", &calls);
+            let settings = |page: &str| Proposal {
+                kind: ActionKind::OpenSettingsPage,
+                target_ref: page.into(),
+                target: None,
+                synthetic_cache: None,
+            };
+            let first = prepare(&mut desk, settings("startupapps"), &protection).unwrap();
+            let again = prepare(&mut desk, settings("startupapps"), &protection).unwrap();
+            assert_eq!(first.plan_id, again.plan_id);
+            assert_eq!(desk.pending.len(), 1);
+            for page in ["storagesense", "appsfeatures"] {
+                prepare(&mut desk, settings(page), &protection).unwrap();
+            }
+            let over = prepare(&mut desk, settings("another"), &protection).unwrap_err();
+            assert!(over.contains("at most"), "{over}");
+            assert_eq!(calls.get(), 0);
+        }
+
+        #[test]
         fn proposals_are_bounded_validated_and_fail_closed() {
             let dir = std::env::temp_dir().join(format!("pcagent-prop-{}", std::process::id()));
             fs::create_dir_all(&dir).unwrap();
@@ -802,16 +830,18 @@ mod tests {
                     Status::Error
                 );
             }
-            let settings = r#"{"action_kind":"open_settings_page","settings_page":"startupapps"}"#;
-            for _ in 0..crate::MAX_PENDING_PLANS {
+            for page in crate::proposals::SETTINGS_PAGES {
+                let args =
+                    json!({"action_kind":"open_settings_page","settings_page":page}).to_string();
                 assert_eq!(
-                    run(&mut ws, "prepare_action_plan", settings).status,
+                    run(&mut ws, "prepare_action_plan", &args).status,
                     Status::Ok
                 );
             }
+            let again = r#"{"action_kind":"open_settings_page","settings_page":"startupapps"}"#;
             assert_eq!(
-                run(&mut ws, "prepare_action_plan", settings).status,
-                Status::Error
+                run(&mut ws, "prepare_action_plan", again).status,
+                Status::Ok
             );
             assert_eq!(ws.take_actions().unwrap().1.len(), crate::MAX_PENDING_PLANS);
             assert_eq!(calls.get(), 0);

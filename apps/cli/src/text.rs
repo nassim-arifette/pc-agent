@@ -1,9 +1,13 @@
 //! Human-readable terminal output. Machine-readable output is `--json` and is not produced here.
+use pcagent_actions::Recovery;
 use pcagent_agent::{ActionVerification, Investigation, ToolEvent, VERIFY_SAMPLES};
 use pcagent_shared::{format_bytes, Evidence, Metric, Origin, ProcessInstance, Snapshot, Status};
 use pcagent_storage::{LargestItemsPage, ScanSummary, StorageOverview};
 use serde::Serialize;
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 /// Untrusted names and paths: control and bidirectional-formatting characters are escaped so a
 /// name cannot move the cursor, recolor the terminal or reorder the line; the rest prints as is.
@@ -18,6 +22,28 @@ pub fn clean(s: &str) -> String {
         }
     }
     out
+}
+
+/// A local path as the user would type it: without the `\\?\` verbatim prefix, escaped like any
+/// untrusted name.
+pub fn path(p: &Path) -> String {
+    let s = p.display().to_string();
+    let s = match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => s
+            .strip_prefix(r"\\?\")
+            .map_or_else(|| s.clone(), str::to_owned),
+    };
+    clean(&s)
+}
+
+pub fn recovery(r: Recovery) -> &'static str {
+    match r {
+        Recovery::NotApplicable => "not applicable",
+        Recovery::RecycleBinIfOperationSupported => "restore it from the Recycle Bin",
+        Recovery::UserCanRestartApplication => "restart the application",
+        Recovery::NoneSyntheticRegenerableData => "none needed (synthetic, regenerable data)",
+    }
 }
 
 /// A snake_case enum value as words: `recycle_bin_available` -> `recycle bin available`.
@@ -490,12 +516,21 @@ pub fn verification(out: &mut impl Write, v: &ActionVerification) -> io::Result<
     }
     if let Some(vol) = &v.volume {
         let show = |b: Option<u64>| b.map_or_else(|| "unknown".into(), format_bytes);
+        // `gained_bytes` is absent both when a side is unknown and when free space did not grow.
+        let gained = match (
+            vol.gained_bytes,
+            vol.free_before_bytes,
+            vol.free_after_bytes,
+        ) {
+            (Some(g), _, _) => format_bytes(g),
+            (None, Some(_), Some(_)) => "none".into(),
+            _ => "unknown".into(),
+        };
         writeln!(
             out,
-            "    Free space: {} -> {} (gained {}; the adapter reports {} removed)",
+            "    Free space: {} -> {} (gained {gained}; the adapter reports {} removed)",
             show(vol.free_before_bytes),
             show(vol.free_after_bytes),
-            show(vol.gained_bytes),
             show(vol.reported_removed_bytes)
         )?;
     }
@@ -514,6 +549,12 @@ mod tests {
         assert_eq!(clean("a\u{1b}[31mb"), "a\\u{1b}[31mb");
         assert_eq!(clean("x\u{202e}gpj.exe"), "x\\u{202e}gpj.exe");
         assert_eq!(clean("line\nbreak\u{85}"), "line\\u{a}break\\u{85}");
+    }
+    #[test]
+    fn paths_drop_the_verbatim_prefix() {
+        assert_eq!(path(Path::new(r"\\?\C:\Users\me\x")), r"C:\Users\me\x");
+        assert_eq!(path(Path::new(r"\\?\UNC\srv\share\x")), r"\\srv\share\x");
+        assert_eq!(path(Path::new(r"C:\plain")), r"C:\plain");
     }
     #[test]
     fn numbers_and_enums_read_as_text() {
