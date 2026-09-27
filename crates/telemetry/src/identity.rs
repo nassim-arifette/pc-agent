@@ -1,6 +1,6 @@
 //! Session-scoped process identity registry keyed by PID plus creation time.
 #![cfg_attr(not(windows), allow(dead_code))]
-use pcagent_shared::{new_id, Evidence, InstanceState, ProcessInstance};
+use pcagent_shared::{new_short_ref, Evidence, InstanceState, ProcessInstance};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     time::Duration,
@@ -46,8 +46,19 @@ pub(crate) struct Registry {
 impl Registry {
     pub fn entry(&mut self, pid: u32, created: u64, boot_id: Option<&str>) -> &mut Tracked {
         let refs = &mut self.refs;
+        let retired = &self.retired;
         self.live.entry((pid, created)).or_insert_with(|| {
-            let entity_ref = new_id("proc");
+            // Short enough to cost few tokens, random enough not to be guessed; never reused.
+            let entity_ref = loop {
+                let candidate = new_short_ref("proc");
+                let taken = refs.contains_key(&candidate)
+                    || retired
+                        .iter()
+                        .any(|r| r.tracked.instance.entity_ref == candidate);
+                if !taken {
+                    break candidate;
+                }
+            };
             refs.insert(entity_ref.clone(), (pid, created));
             Tracked {
                 instance: ProcessInstance {

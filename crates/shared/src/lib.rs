@@ -8,6 +8,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
 }
+/// A short random reference (`proc-3f9a1c2b`): 32 random bits, so a caller cannot guess the
+/// references of instances it was never shown. Callers must reject collisions themselves.
+pub fn new_short_ref(prefix: &str) -> String {
+    let hex = Uuid::new_v4().simple().to_string();
+    format!("{prefix}-{}", &hex[..8])
+}
 pub fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
