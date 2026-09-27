@@ -99,6 +99,21 @@ pub struct CloudObservation {
     pub findings: Vec<Finding>,
     pub limitations: Vec<String>,
 }
+/// Evidence entities that may leave the machine: the system, opaque process references and
+/// generic GPU engine types. Anything else (device or instance names) stays local.
+pub fn cloud_entity_allowed(entity_ref: &str) -> bool {
+    let generic = |rest: &str| {
+        (1..=24).contains(&rest.len())
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    };
+    entity_ref == "system"
+        || entity_ref
+            .strip_prefix("proc-")
+            .is_some_and(|r| !r.is_empty())
+        || entity_ref.strip_prefix("gpu-engine-").is_some_and(generic)
+}
 /// Positive allowlist. Do NOT serialize Snapshot directly into a provider request.
 /// Executable names, PIDs, creation times, boot IDs and collector session IDs stay local.
 pub fn cloud_observation(s: &Snapshot) -> CloudObservation {
@@ -106,7 +121,12 @@ pub fn cloud_observation(s: &Snapshot) -> CloudObservation {
         schema_version: SCHEMA_VERSION,
         snapshot_id: s.id.clone(),
         origin: s.origin,
-        evidence: s.evidence.clone(),
+        evidence: s
+            .evidence
+            .iter()
+            .filter(|e| cloud_entity_allowed(&e.entity_ref))
+            .cloned()
+            .collect(),
         process_coverage: s.process_coverage.clone(),
         findings: analyze(s),
         limitations: s.limitations.clone(),
@@ -333,6 +353,7 @@ pub fn investigate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pcagent_shared::{Metric, Window};
     use std::collections::VecDeque;
     struct Script {
         replies: VecDeque<Result<Reply, AgentError>>,
@@ -403,6 +424,32 @@ mod tests {
         ] {
             assert!(!encoded.contains(secret), "leaked {secret}");
         }
+    }
+    #[test]
+    fn cloud_evidence_keeps_only_generic_entities() {
+        let mut s = fixture();
+        for entity in [
+            "system",
+            "proc-opaque",
+            "gpu-engine-3d",
+            "gpu-engine-pid_4_luid_0x0_0xA_phys_0",
+            "gpu-engine-",
+            r"C:\Users\PRIVATE",
+        ] {
+            s.evidence.push(Evidence::measured(
+                Metric::GpuEngineBasisPoints,
+                entity,
+                1,
+                "fixture",
+                Window::instant(),
+            ));
+        }
+        let kept: Vec<String> = cloud_observation(&s)
+            .evidence
+            .into_iter()
+            .map(|e| e.entity_ref)
+            .collect();
+        assert_eq!(kept, ["system", "proc-opaque", "gpu-engine-3d"]);
     }
     #[test]
     fn arbitrary_tools_and_arguments_are_rejected() {
