@@ -52,9 +52,18 @@ $env:NEBIUS_MODEL_ID = Read-Host "Exact NVIDIA Nemotron model ID from your accou
 Remove-Item Env:NEBIUS_API_KEY
 ```
 
+To avoid setting them in every session, put both values in `%APPDATA%\pcagent\.env`:
+
+```text
+NEBIUS_API_KEY=<your key>
+NEBIUS_MODEL_ID=nvidia/nemotron-3-super-120b-a12b
+```
+
+Only these two names are read from that file, and environment variables take precedence over it. A `.env` in the current directory is never read: running pcagent inside someone else's folder must not send your question and measurements to their account. `pcagent doctor` shows where each value comes from.
+
 `--allow-cloud` authorizes this invocation to send **your question verbatim**, selected numeric metrics, their time windows, source labels, coverage, limitations, opaque process references and candidate findings to Nebius. Do not put a secret in the question. Process names, PIDs, process creation times, boot identifiers, full paths and collector session IDs are excluded from the cloud envelope. This is data minimization, not a claim of anonymity or provider non-retention.
 
-The only endpoint is `https://api.tokenfactory.nebius.com/v1`; HTTPS is required and redirects are disabled. The key stays in the process environment and client memory. `.env` is not automatically loaded and no credential vault has been implemented yet. Never paste a real key into a repository, issue, terminal recording or chat.
+The only endpoint is `https://api.tokenfactory.nebius.com/v1`; HTTPS is required and redirects are disabled. The key stays in the process environment, the credentials file and client memory. The file is plain text protected only by your Windows profile permissions; no credential vault (such as Windows Credential Manager) is implemented yet. Never paste a real key into a repository, issue, terminal recording or chat.
 
 ## How the first agent works
 
