@@ -6,7 +6,7 @@ Basis: PC Agent specification v0.1, 2026-09-25, sections 6.4, 7, 8, 13, 15, 17 a
 
 The CLI owns consent. `diagnose` is offline unless `--allow-cloud` is present; preview and offline flags conflict with that permission. `doctor --check-cloud` grants only an explicit catalog lookup. Normal configuration checks never make network requests.
 
-The provider never receives the serialized local `Snapshot` object. `cloud_observation` constructs a separate allowlisted envelope. Local process names/identifiers are excluded. The question itself is sent verbatim when cloud mode is explicitly enabled, and the help text and README disclose this.
+The provider never receives the serialized local `Snapshot` object. `cloud_observation` constructs a separate allowlisted envelope of compact measurements: usable values grouped by entity, each unit once, observation windows per metric and unmeasured metrics summarized once per reason. Candidate findings travel without local evidence IDs, under per-investigation aliases (`F1`, `F2`, …) that the controller resolves; local finding IDs are never accepted from the model. Local process names/identifiers are excluded. The question itself is sent verbatim when cloud mode is explicitly enabled, and the help text and README disclose this.
 
 The Workstation registry declares twelve tools for inspection and context, plus the optional action-proposal tool. Names, closed argument schemas, call type, ID length and uniqueness are validated before a batch runs. Only a successful inspection with usable data unlocks a conclusion. Proposals carry locally issued observation references, never permission tokens. The model has no shell or action executor and cannot authorize a change.
 
