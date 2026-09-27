@@ -1,0 +1,31 @@
+[package]
+name = "pcagent-gui"
+description = "PC Agent desktop interface (Tauri) over the same core as the CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pcagent-gui"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+pcagent-shared.workspace = true
+pcagent-diagnostics.workspace = true
+pcagent-agent.workspace = true
+pcagent-storage.workspace = true
+
+# The window only exists on Windows, the product's platform; elsewhere the binary explains that
+# and the portable view code is still built and tested.
+[target.'cfg(windows)'.dependencies]
+pcagent-telemetry.workspace = true
+pcagent-policy.workspace = true
+pcagent-actions.workspace = true
+tauri = { version = "=2.12.0", features = [] }
+tauri-plugin-dialog = "=2.8.0"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.0", features = [] }
