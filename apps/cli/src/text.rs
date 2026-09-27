@@ -363,6 +363,91 @@ fn processes(out: &mut impl Write, s: &Snapshot) -> io::Result<()> {
     Ok(())
 }
 
+/// Alias resolution uses local index entries, never string substitution in model output.
+pub fn storage_context(
+    out: &mut impl Write,
+    items: &[pcagent_agent::LocalStorageItem],
+) -> io::Result<()> {
+    for item in items {
+        writeln!(
+            out,
+            "  {} -> {} ({})",
+            clean(&item.alias_path),
+            clean(&item.path),
+            format_bytes(item.logical_bytes)
+        )?;
+        writeln!(
+            out,
+            "    Role: {}; folder: {} ({})",
+            words(&item.context.role),
+            words(&item.context.folder_role),
+            item.context.basis.replace('_', " ")
+        )?;
+        if let Some(app) = &item.context.application {
+            writeln!(
+                out,
+                "    Associated application: {} (path pattern; installation/ownership unverified)",
+                clean(app.name)
+            )?;
+        }
+        writeln!(
+            out,
+            "    Content comparison: {}",
+            item.content.status.replace('_', " ")
+        )?;
+        for copy in &item.other_copy_paths {
+            writeln!(out, "      Observed copy: {}", clean(copy))?;
+        }
+        if item.content.other_copy_count > item.other_copy_paths.len() {
+            writeln!(
+                out,
+                "      Showing {} of {} other observed copies.",
+                item.other_copy_paths.len(),
+                item.content.other_copy_count
+            )?;
+        }
+        if let Some(regeneration) = item.context.recovery.regeneration {
+            writeln!(out, "    Possible regeneration: {}", clean(regeneration))?;
+        }
+        if let Some(method) = item.context.recovery.adapter_method {
+            writeln!(
+                out,
+                "    Adapter recovery: {} (conditional; no action authorized)",
+                words(&method)
+            )?;
+        }
+        writeln!(
+            out,
+            "    Recovery: {}; backup and Recycle Bin not verified.",
+            clean(item.content.recovery_note).trim_end_matches('.')
+        )?;
+        for condition in &item.context.conditions {
+            writeln!(out, "    Condition: {}", clean(condition))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn content_comparisons(
+    out: &mut impl Write,
+    comparisons: &[pcagent_storage::ContentComparison],
+) -> io::Result<()> {
+    for comparison in comparisons {
+        writeln!(
+            out,
+            "Content comparison: {} groups, {} files hashed, {} read ({})",
+            comparison.groups.len(),
+            comparison.checked_refs.len(),
+            format_bytes(comparison.bytes_read),
+            words(&comparison.status)
+        )?;
+        for limitation in &comparison.limitations {
+            writeln!(out, "  {}", clean(limitation))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn storage(
     out: &mut impl Write,
     root: &str,
@@ -559,6 +644,7 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
         )?;
         let facts: Vec<_> = observation.facts.iter().map(|f| clean(f)).collect();
         list(out, "  Facts", &facts)?;
+        storage_context(out, &observation.storage_items)?;
         let limits: Vec<_> = observation.limitations.iter().map(|l| clean(l)).collect();
         list(out, "  Limits", &limits)?;
     }
