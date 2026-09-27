@@ -127,8 +127,9 @@ pub struct CloudObservation {
     pub process_coverage: ProcessCoverage,
     pub limitations: Vec<String>,
 }
-/// Evidence entities that may leave the machine: the system, opaque process references and
-/// generic GPU engine types. Anything else (device or instance names) stays local.
+/// Evidence entities that may leave the machine: the system, opaque process references, generic
+/// GPU engine types and NVML device indexes. Anything else (device or instance names) stays
+/// local.
 pub fn cloud_entity_allowed(entity_ref: &str) -> bool {
     let generic = |rest: &str| {
         (1..=24).contains(&rest.len())
@@ -141,6 +142,9 @@ pub fn cloud_entity_allowed(entity_ref: &str) -> bool {
             .strip_prefix("proc-")
             .is_some_and(|r| !r.is_empty())
         || entity_ref.strip_prefix("gpu-engine-").is_some_and(generic)
+        || entity_ref.strip_prefix("gpu-nvidia-").is_some_and(|index| {
+            (1..=2).contains(&index.len()) && index.bytes().all(|b| b.is_ascii_digit())
+        })
 }
 /// Positive allowlist. Do NOT serialize Snapshot directly into a provider request.
 /// Executable names, PIDs, creation times, boot IDs and collector session IDs stay local.
@@ -666,6 +670,9 @@ mod tests {
             "gpu-engine-pid_4_luid_0x0_0xA_phys_0",
             "gpu-engine-",
             r"C:\Users\PRIVATE",
+            "gpu-nvidia-0",
+            "gpu-nvidia-GeForce MX350",
+            "gpu-nvidia-123",
         ] {
             s.evidence.push(Evidence::measured(
                 Metric::GpuEngineBasisPoints,
@@ -680,7 +687,10 @@ mod tests {
             .values
             .into_keys()
             .collect();
-        assert_eq!(kept, ["gpu-engine-3d", "proc-opaque", "system"]);
+        assert_eq!(
+            kept,
+            ["gpu-engine-3d", "gpu-nvidia-0", "proc-opaque", "system"]
+        );
     }
     #[test]
     fn arbitrary_tools_and_arguments_are_rejected() {

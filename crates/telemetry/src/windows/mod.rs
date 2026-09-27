@@ -1,5 +1,6 @@
 //! The only unsafe boundary: documented, read-only Windows API calls.
 mod inventory;
+pub(super) mod nvml;
 pub(super) mod pdh;
 mod tree;
 pub(super) use inventory::hardware_inventory;
@@ -9,7 +10,7 @@ use super::{cpu_busy_basis_points, process_cpu_basis_points, Collector, TickSamp
 use crate::counters::{counter_evidence, CounterReadings, MIN_RATE_WINDOW};
 use crate::identity::{CounterSample, Key};
 use pcagent_shared::{
-    unix_ms, Evidence, InstanceState, Metric, ProcessCoverage, Snapshot, Status, Window,
+    unix_ms, Evidence, GpuDevice, InstanceState, Metric, ProcessCoverage, Snapshot, Status, Window,
 };
 use std::{
     collections::HashSet,
@@ -545,6 +546,7 @@ pub(super) fn collect(
     collect_cpu(&mut result, collector, reuse_cpu);
     collect_memory(&mut result);
     collect_counters(&mut result, collector, fresh && !reuse_cpu);
+    collect_nvidia(&mut result, collector);
     if include_processes {
         collect_processes(&mut result, collector, limit, sort);
     }
@@ -566,6 +568,38 @@ fn start_counters(collector: &mut Collector, reuse: bool) -> bool {
         query.start(now);
     }
     !reusable
+}
+/// NVIDIA GPUs through NVML, opened once per collector. Without nvml.dll there is no NVIDIA
+/// driver and nothing to add: the Windows GPU engine counters already cover every adapter.
+fn collect_nvidia(result: &mut Snapshot, collector: &mut Collector) {
+    let devices = match collector.nvml.get_or_insert_with(nvml::Nvml::open) {
+        Ok(library) => library.read(),
+        Err(nvml::OpenError::Absent) => return,
+        Err(nvml::OpenError::Failed(why)) => Err(why.clone()),
+    };
+    match devices {
+        Ok(devices) => {
+            let window = Window::instant();
+            for d in &devices {
+                result.gpus.push(GpuDevice {
+                    entity_ref: crate::gpu::entity(d.index),
+                    name: d.name.clone(),
+                    source: "NVML".into(),
+                });
+                result
+                    .evidence
+                    .extend(crate::gpu::device_evidence(d, &window));
+            }
+            if !devices.is_empty() {
+                result
+                    .limitations
+                    .extend(crate::gpu::LIMITATIONS.iter().map(|l| (*l).to_owned()));
+            }
+        }
+        Err(why) => result
+            .limitations
+            .push(format!("NVIDIA GPU details unavailable: {why}.")),
+    }
 }
 fn collect_counters(result: &mut Snapshot, collector: &mut Collector, fresh: bool) {
     let started = collector.started;

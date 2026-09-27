@@ -1,6 +1,7 @@
 //! Read-only collectors. Non-Windows targets report unsupported, not fixture data.
 #![deny(unsafe_code)]
 pub mod counters;
+pub mod gpu;
 pub mod history;
 mod identity;
 pub mod tree;
@@ -87,6 +88,9 @@ pub struct Collector {
     last_ticks: Option<TickSample>,
     #[cfg(windows)]
     pdh: Option<Result<windows::pdh::Pdh, counters::Unavailable>>,
+    /// NVML, opened on the first snapshot and shut down with the collector.
+    #[cfg(windows)]
+    nvml: Option<Result<windows::nvml::Nvml, windows::nvml::OpenError>>,
 }
 impl Default for Collector {
     fn default() -> Self {
@@ -111,6 +115,8 @@ impl Collector {
             last_ticks: None,
             #[cfg(windows)]
             pdh: None,
+            #[cfg(windows)]
+            nvml: None,
         }
     }
     pub fn session_id(&self) -> &str {
@@ -599,6 +605,57 @@ mod tests {
             ));
         let text = serde_json::to_string(&s.evidence).unwrap();
         assert!(!text.contains("luid") && !text.contains("pid_"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_nvml_reports_each_nvidia_metric_or_nothing_without_the_driver() {
+        use pcagent_shared::NVML_SLOWDOWN_MASK;
+        let mut c = Collector::new();
+        let s = c.snapshot(false, 1);
+        let nvidia: Vec<_> = s
+            .evidence
+            .iter()
+            .filter(|e| e.entity_ref.starts_with("gpu-nvidia-"))
+            .collect();
+        let windows = std::env::var_os("WINDIR").expect("WINDIR");
+        if !std::path::Path::new(&windows)
+            .join(r"System32\nvml.dll")
+            .exists()
+        {
+            assert!(nvidia.is_empty() && s.gpus.is_empty());
+            assert!(!s.limitations.iter().any(|l| l.contains("NVML")));
+            return;
+        }
+        if s.gpus.is_empty() {
+            // Library present but no usable device: the reason is stated, nothing invented.
+            assert!(nvidia.is_empty());
+            return;
+        }
+        for gpu in &s.gpus {
+            assert!(gpu.entity_ref.starts_with("gpu-nvidia-"));
+            assert_eq!(gpu.source, "NVML");
+            let value = |metric: Metric| {
+                let found: Vec<_> = nvidia
+                    .iter()
+                    .filter(|e| e.metric == metric && e.entity_ref == gpu.entity_ref)
+                    .collect();
+                assert_eq!(found.len(), 1, "{metric:?} once per device");
+                assert_eq!(found[0].unit, metric.unit());
+                found[0].usable_value()
+            };
+            if let Some(total) = value(Metric::GpuMemoryTotalBytes) {
+                assert!(total > 0);
+                assert!(value(Metric::GpuMemoryUsedBytes).is_none_or(|used| used <= total));
+            }
+            assert!(value(Metric::GpuTemperatureCelsius).is_none_or(|t| t <= 150));
+            assert!(value(Metric::GpuUtilizationBasisPoints).is_none_or(|u| u <= 10_000));
+            assert!(value(Metric::GpuSlowdownReasons).is_none_or(|b| b & !NVML_SLOWDOWN_MASK == 0));
+            value(Metric::GpuSmClockMegahertz);
+            value(Metric::GpuPowerMilliwatts);
+        }
+        assert!(s.limitations.iter().any(|l| l.contains("NVML")));
+        // The second snapshot reuses the open library.
+        assert_eq!(c.snapshot(false, 1).gpus.len(), s.gpus.len());
     }
     #[cfg(windows)]
     #[test]
