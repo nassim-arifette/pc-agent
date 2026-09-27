@@ -86,8 +86,11 @@ fn preview_does_not_send_or_leak_process_metadata() {
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["sent"], false);
-    assert!(value["initial_observation"].get("processes").is_none());
-    assert!(value["initial_observation"].get("session_id").is_none());
+    let observation = &value["message"]["initial_observation"];
+    assert!(observation.is_object());
+    assert!(observation.get("processes").is_none());
+    assert!(observation.get("session_id").is_none());
+    assert_eq!(value["message"]["question"], "test");
 }
 #[test]
 fn storage_scan_is_read_only_and_reports_items() {

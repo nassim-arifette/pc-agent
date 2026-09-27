@@ -1,7 +1,9 @@
 //! Human-readable terminal output. Machine-readable output is `--json` and is not produced here.
 use pcagent_actions::Recovery;
-use pcagent_agent::{ActionVerification, Investigation, ToolEvent, VERIFY_SAMPLES};
-use pcagent_shared::{format_bytes, Evidence, Metric, Origin, ProcessInstance, Snapshot, Status};
+use pcagent_agent::{ActionVerification, Cost, Investigation, Pricing, ToolEvent, VERIFY_SAMPLES};
+use pcagent_shared::{
+    format_bytes, format_utc_minute, Evidence, Metric, Origin, ProcessInstance, Snapshot, Status,
+};
 use pcagent_storage::{LargestItemsPage, ScanSummary, StorageOverview};
 use serde::Serialize;
 use std::{
@@ -230,6 +232,64 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
             parts.push(format!("{unmeasured} not measured"));
         }
         rows.push(("GPU engines".to_owned(), parts.join(", ")));
+    }
+    // One line per NVIDIA GPU read through NVML.
+    for gpu in &s.gpus {
+        let value = |metric: Metric| {
+            s.evidence
+                .iter()
+                .find(|e| e.entity_ref == gpu.entity_ref && e.metric == metric)
+                .and_then(Evidence::usable_value)
+        };
+        let mut parts = Vec::new();
+        if let Some(v) = value(Metric::GpuTemperatureCelsius) {
+            parts.push(Metric::GpuTemperatureCelsius.format_value(v));
+        }
+        if let (Some(used), Some(total)) = (
+            value(Metric::GpuMemoryUsedBytes),
+            value(Metric::GpuMemoryTotalBytes),
+        ) {
+            parts.push(format!(
+                "{} of {} memory",
+                format_bytes(used),
+                format_bytes(total)
+            ));
+        }
+        if let Some(v) = value(Metric::GpuUtilizationBasisPoints) {
+            parts.push(format!(
+                "{} busy",
+                Metric::GpuUtilizationBasisPoints.format_value(v)
+            ));
+        }
+        if let Some(v) = value(Metric::GpuSmClockMegahertz) {
+            parts.push(Metric::GpuSmClockMegahertz.format_value(v));
+        }
+        if let Some(v) = value(Metric::GpuPowerMilliwatts) {
+            parts.push(Metric::GpuPowerMilliwatts.format_value(v));
+        }
+        match value(Metric::GpuSlowdownReasons) {
+            Some(0) => parts.push("no slowdown".to_owned()),
+            Some(bits) => parts.push(format!(
+                "slowing down: {}",
+                Metric::GpuSlowdownReasons.format_value(bits)
+            )),
+            None => {}
+        }
+        let name = gpu.name.as_deref().map_or_else(
+            || {
+                format!(
+                    "NVIDIA GPU {}",
+                    gpu.entity_ref.trim_start_matches("gpu-nvidia-")
+                )
+            },
+            clean,
+        );
+        let text = if parts.is_empty() {
+            "no readings (see notes)".to_owned()
+        } else {
+            parts.join(", ")
+        };
+        rows.push((name, text));
     }
     rows
 }
@@ -537,18 +597,52 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
             "For a model-guided investigation, add --allow-cloud (sends your question and minimized measurements to Nebius)."
         )?;
     } else {
-        let tokens = r
-            .stats
-            .total_tokens
-            .map_or_else(|| "unknown".into(), thousands);
+        let s = &r.stats;
+        let tokens = match (s.total_tokens, s.prompt_tokens, s.completion_tokens) {
+            (Some(total), Some(input), Some(output)) => format!(
+                "{} tokens ({} in, {} out)",
+                thousands(total),
+                thousands(input),
+                thousands(output)
+            ),
+            (Some(total), _, _) => format!("{} tokens", thousands(total)),
+            _ => "tokens unknown".to_owned(),
+        };
         writeln!(
             out,
-            "Model usage: {}, {}; tokens: {tokens}",
-            plural(r.stats.inference_calls as u64, "request", "requests"),
-            plural(r.stats.tool_calls as u64, "tool call", "tool calls"),
+            "Model usage: {}, {}; {tokens}",
+            plural(s.inference_calls as u64, "request", "requests"),
+            plural(s.tool_calls as u64, "tool call", "tool calls"),
         )?;
+        writeln!(out, "{}", cost_line(s.cost.as_ref()))?;
     }
     Ok(())
+}
+
+/// Spec 13: a cost is shown only from a verified, dated price; otherwise usage alone.
+pub fn cost_line(cost: Option<&Cost>) -> String {
+    let Some(cost) = cost else {
+        return "Estimated cost: not shown (no verified, dated catalog price, or incomplete usage)"
+            .to_owned();
+    };
+    let rounded = cost.rounded_usd(4);
+    let amount = if rounded == "0.0000" && cost.usd != "0" {
+        cost.usd.clone()
+    } else {
+        rounded
+    };
+    format!("Estimated cost: ${amount} at {}", price_text(&cost.pricing))
+}
+
+pub fn price_text(pricing: &Pricing) -> String {
+    let rates = pricing.per_million_usd().map_or_else(
+        || "unparsed prices".to_owned(),
+        |(input, output)| format!("${input} in / ${output} out per million tokens"),
+    );
+    format!(
+        "Nebius catalog prices ({rates}, read {})",
+        format_utc_minute(pricing.read_at_unix_ms)
+    )
 }
 
 pub fn verification(out: &mut impl Write, v: &ActionVerification) -> io::Result<()> {

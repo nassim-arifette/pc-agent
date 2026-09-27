@@ -8,10 +8,10 @@ use pcagent_actions::{
     ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
 use pcagent_agent::{
-    cloud_observation, investigate_with_extension, local_report, verify_action, ActionDesk,
+    initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
     AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,
-    PolicyProtection, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN, VERIFY_SAMPLES,
-    WORKSTATION_TOOLS,
+    PolicyProtection, Pricing, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN,
+    VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{format_bytes, Snapshot, Status};
@@ -331,7 +331,7 @@ fn cloud_setup_error(e: AgentError, creds: &Credentials) -> Box<dyn Error> {
 }
 fn print_doctor(
     creds: &Credentials,
-    cloud: Option<&std::result::Result<(), AgentError>>,
+    cloud: Option<&std::result::Result<Option<Pricing>, AgentError>>,
     limits: &[&str],
 ) -> Result<()> {
     let origin = |name: &str| match creds.source(name) {
@@ -375,7 +375,13 @@ fn print_doctor(
             "  Catalog check",
             match cloud {
                 None => "not requested (add --check-cloud)".to_owned(),
-                Some(Ok(())) => "the model is in your account catalog".to_owned(),
+                Some(Ok(Some(pricing))) => format!(
+                    "the model is in your account catalog; {}",
+                    text::price_text(pricing)
+                ),
+                Some(Ok(None)) => {
+                    "the model is in your account catalog; no verifiable price published".to_owned()
+                }
                 Some(Err(e)) => format!("failed: {e}"),
             },
         ),
@@ -464,7 +470,11 @@ fn run(args: Args) -> Result<u8> {
                 Some(
                     Config::from_lookup(|name| creds.get(name))
                         .and_then(Nebius::new)
-                        .and_then(|mut client| client.check_catalog(Duration::from_secs(10))),
+                        .and_then(|mut client| {
+                            client
+                                .check_catalog(Duration::from_secs(10))
+                                .map(|()| client.catalog_pricing().cloned())
+                        }),
                 )
             } else {
                 None
@@ -481,7 +491,8 @@ fn run(args: Args) -> Result<u8> {
                     "read_only":true,"persistent_history":false,"actions_available":cfg!(windows),
                     "nebius_key_configured":creds.get("NEBIUS_API_KEY").is_some(),"nebius_model_configured":creds.get("NEBIUS_MODEL_ID").is_some(),
                     "credentials_file_found":creds.file_found(),
-                    "cloud_check":match &cloud_result { None=>"not_requested".to_string(),Some(Ok(()))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
+                    "cloud_check":match &cloud_result { None=>"not_requested".to_string(),Some(Ok(_))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
+                    "pricing":cloud_result.as_ref().and_then(|r| r.as_ref().ok()).cloned().flatten(),
                     "limits":limits});
                 write_json(&report)?;
             } else {
@@ -584,7 +595,7 @@ fn run(args: Args) -> Result<u8> {
             if preview_cloud {
                 write_json(
                     &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
-                    "question":question,"initial_observation":cloud_observation(&initial),
+                    "message":initial_message(&question, &initial),
                     "tools":WORKSTATION_TOOLS.iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
                     "authorized_scopes":storage.scopes().len()}),
                 )?;

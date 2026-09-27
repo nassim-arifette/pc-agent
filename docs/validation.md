@@ -22,7 +22,9 @@ On a separate Windows 11 x64 test PC, without elevation:
 4. Inspect `diagnose "test question" --preview-cloud`. Confirm the question disclosure and absence of local process metadata.
 5. Configure an actual NVIDIA Nemotron model available in the account. Use `doctor --check-cloud`, then one small opt-in diagnosis with `--allow-cloud --verbose`.
 6. Verify a real provider request, at least one model-selected tool, native collection, a returned tool result, a locally validated finding, an evidence reference and honest insufficient-evidence behavior.
-7. Test bad credentials, unavailable model, disconnected network, malformed responses, cancellation and missing metrics. Do not put secrets or personal telemetry in issue comments, Actions logs or committed fixtures.
+   The report shows tokens per request and an estimated cost with the catalog price and its read time; `scripts/compare-models.ps1` repeats typical questions per model and writes a CSV ([results of 2026-09-27](model-comparison.md)).
+7. Test bad credentials, unavailable model, disconnected network, malformed responses, a reply cut off at the output limit (`output_limit`, billed tokens still counted), a request timeout (`timeout`), cancellation and missing metrics. Do not put secrets or personal telemetry in issue comments, Actions logs or committed fixtures.
+8. On a PC with an NVIDIA GPU, compare `snapshot` NVIDIA values (temperature, memory, clock, slowdown reasons) with `nvidia-smi --query-gpu=temperature.gpu,memory.used,memory.total,clocks.sm,clocks_event_reasons.active --format=csv`, idle and under load. `memory.used` there excludes the driver reserve (shown as Reserved by `nvidia-smi -q -d MEMORY`), while pcagent reports total minus free, reserve included: 84 MiB against 0 MiB on an idle MX350.
 
 A live provider test incurs provider usage and must be explicitly authorized. No such test is run in CI. A successful catalog lookup is not a successful model tool-calling test.
 

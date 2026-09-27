@@ -21,7 +21,7 @@ counters::{counter_evidence, scaled, clamp_share, busiest_core, gpu_engine_type,
 
 ## Design
 
-- **Identity.** A session registry keys instances by (PID, creation FILETIME) and issues opaque `proc-<uuid>` refs. A complete enumeration retires instances whose PID vanished (`exited`) or now has a different readable creation time (`pid_reused`); unreadable PIDs keep their identity. Up to 256 retired instances are kept so lookups return a clear `stale` status. Enumerations flagged truncated never retire anything.
+- **Identity.** A session registry keys instances by (PID, creation FILETIME) and issues opaque, random `proc-<8 hex>` refs, redrawn if they collide with a live or retired ref, so a model cannot guess the ref of a process it was not shown. A complete enumeration retires instances whose PID vanished (`exited`) or now has a different readable creation time (`pid_reused`); unreadable PIDs keep their identity. Up to 256 retired instances are kept so lookups return a clear `stale` status. Enumerations flagged truncated never retire anything.
 - **Process CPU** (`process_cpu_basis_points`): Δ(kernel+user) from two `GetProcessTimes` samples of the same instance divided by monotonic elapsed × `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`, i.e. basis points of total capacity. First observation, regressions, empty windows and >5 % overshoot are `None` + `partial`; ≤5 % overshoot (timer granularity) is clamped to 10 000.
 - **Process I/O**: `GetProcessIoCounters` transfer-count deltas (read/write/other bytes). Every item states that the counters include cached, network and device I/O and are not physical disk activity.
 - **Ranking**: `ProcessSort` selects working set (default), private commit, CPU, read I/O or write I/O. Ranking happens before truncation, across readable process identities; an unavailable memory measurement does not hide a readable CPU measurement. I/O ranks by bytes per second over the observed interval; missing values sort last. The first CPU/I/O observation is unknown, so the CLI takes two observations for those sorts.
@@ -42,6 +42,18 @@ counters::{counter_evidence, scaled, clamp_share, busiest_core, gpu_engine_type,
   | `gpu_engine_basis_points` (entity `gpu-engine-<type>`) / `gpu_busiest_engine_basis_points` | `\GPU Engine(*)\Utilization Percentage`, per-process instances summed per physical engine, busiest engine per type | basis points of engine time |
 
   Absent objects, counters or instances (`PDH_CSTATUS_NO_OBJECT`, `NO_COUNTER`, `NO_INSTANCE`, …) are `unsupported`; an empty GPU Engine array (basic display adapter, most VMs/CI) is `unsupported`; invalid, negative, non-finite or out-of-range values are `partial` with no value. Nothing unknown becomes zero. GPU engine types are reduced to a fixed list of generic names (`3d`, `compute`, `copy`, `videodecode`, `videoencode`, …; anything else is `other`); PIDs, adapter LUIDs and engine indices are dropped before evidence is built. Processor Information uses `group,index` instances, so per-core CPU also works above 64 logical processors.
+- **NVIDIA GPUs (NVML)**: `nvml.dll` is loaded at run time with `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`, so only the copy the NVIDIA driver installs in System32 is used, never one from the current directory or `PATH`. It is initialized once per collector (`nvmlInit_v2`) and shut down with it. Per device (`nvmlDeviceGetCount_v2`, `nvmlDeviceGetHandleByIndex_v2`), read-only:
+
+  | Metric (entity `gpu-nvidia-<index>`) | NVML function | Unit |
+  | --- | --- | --- |
+  | `gpu_utilization_basis_points` | `nvmlDeviceGetUtilizationRates` | basis points of the driver's last sample period (1/6 s to 1 s) |
+  | `gpu_memory_used_bytes` / `gpu_memory_total_bytes` | `nvmlDeviceGetMemoryInfo` (v1: used = total − free, driver reserve included) | bytes |
+  | `gpu_temperature_celsius` | `nvmlDeviceGetTemperatureV`, else the deprecated `nvmlDeviceGetTemperature` | degrees Celsius |
+  | `gpu_sm_clock_megahertz` | `nvmlDeviceGetClockInfo(NVML_CLOCK_SM)` | MHz |
+  | `gpu_power_milliwatts` | `nvmlDeviceGetPowerUsage` | mW |
+  | `gpu_slowdown_reasons` | `nvmlDeviceGetCurrentClocksEventReasons`, else the deprecated `…ThrottleReasons` | NVML bits, masked to power cap, hardware, thermal and power-brake slowdowns |
+
+  Prototypes, structures and constants follow NVIDIA's `nvml.h` (API 13). A function missing from the library, `NVML_ERROR_NOT_SUPPORTED` or a denied permission gives `unsupported`/`permission_denied` evidence with the NVML code; out-of-range values are errors. Nothing becomes zero. Without `nvml.dll` (no NVIDIA driver) nothing is added; a library that fails to initialize is stated as a limitation. Device names stay in `Snapshot.gpus` for local display and are never sent to a provider. Reading NVML can wake a sleeping discrete GPU on hybrid laptops, so it happens only when a snapshot is requested.
 - **Cheap sampling**: `sample_system` reuses the previous CPU tick sample when it is 250 ms–60 s old instead of sleeping one second.
 
 ## Safety boundaries
@@ -52,4 +64,5 @@ The crate root is `#![deny(unsafe_code)]`; only the `windows` module allows it, 
 
 - Portable logic (counter conversion, GPU engine aggregation and naming, CPU share math, identity/PID reuse, tree validation, ring buffer bounds/gaps/boot changes, parsing) is unit-tested on Linux.
 - Native Windows smoke tests run locally and in CI. They verify availability and invariants on the test machine, not measurement accuracy across hardware configurations.
+- NVML was read on a GeForce MX350 (WDDM, hybrid laptop) on 2026-09-27: 61–62 °C, 83.5 MiB of 2 GiB, SM 1354 MHz, no slowdown reason; power draw is `unsupported` there, as `nvidia-smi` shows `N/A`. CI runners have no NVIDIA driver and check that nothing is invented. Values were not compared under load or on other NVIDIA products.
 - Not validated on a real Windows 11 PC: CPU share against Performance Monitor, I/O deltas, tree correctness under PID reuse, inventory values (DisplayVersion/UBR, installed memory, BitLocker-locked or offline volumes), boot estimate stability across clock changes and sleep, per-process cost of the collectors, PDH values against Performance Monitor (disk latency, Pages Input/sec, Processor Utility, GPU Engine on real WDDM drivers). The `GPU Engine` counter set is provided by the graphics kernel and its instance-name format is not a documented contract; unrecognized names are rejected or reported as `other`.

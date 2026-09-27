@@ -8,11 +8,37 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
 }
+/// A short random reference (`proc-3f9a1c2b`): 32 random bits, so a caller cannot guess the
+/// references of instances it was never shown. Callers must reject collisions themselves.
+pub fn new_short_ref(prefix: &str) -> String {
+    let hex = Uuid::new_v4().simple().to_string();
+    format!("{prefix}-{}", &hex[..8])
+}
 pub fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+/// `YYYY-MM-DD HH:MM UTC` for display (proleptic Gregorian calendar, no leap seconds).
+pub fn format_utc_minute(unix_ms: u64) -> String {
+    let secs = unix_ms / 1_000;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (H. Hinnant's algorithm), in March-based years.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        rem / 3_600,
+        rem % 3_600 / 60
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +92,50 @@ pub enum Metric {
     GpuEngineBasisPoints,
     /// Busiest GPU engine of any type over the window.
     GpuBusiestEngineBasisPoints,
+    /// NVIDIA device (NVML): share of the driver's last sample period (1/6 s to 1 s depending on
+    /// the product) during which one or more kernels ran.
+    GpuUtilizationBasisPoints,
+    /// NVIDIA device memory reserved or allocated (NVML), including the driver's own reserve.
+    GpuMemoryUsedBytes,
+    /// NVIDIA device memory installed (NVML).
+    GpuMemoryTotalBytes,
+    /// NVIDIA GPU die temperature (NVML).
+    GpuTemperatureCelsius,
+    /// NVIDIA streaming-multiprocessor clock (NVML).
+    GpuSmClockMegahertz,
+    /// NVIDIA board power draw (NVML).
+    GpuPowerMilliwatts,
+    /// NVML clock-event reasons that slow the GPU down, as their NVML bit values
+    /// ([`NVML_SLOWDOWN_MASK`]); 0 means none is active.
+    GpuSlowdownReasons,
+}
+
+/// NVML clock-event reason bits that slow an NVIDIA GPU down (nvml.h, API 13).
+pub const NVML_SW_POWER_CAP: u64 = 0x4;
+pub const NVML_HW_SLOWDOWN: u64 = 0x8;
+pub const NVML_SW_THERMAL_SLOWDOWN: u64 = 0x20;
+pub const NVML_HW_THERMAL_SLOWDOWN: u64 = 0x40;
+pub const NVML_HW_POWER_BRAKE_SLOWDOWN: u64 = 0x80;
+/// The reasons kept as `GpuSlowdownReasons`; idle, application clocks, sync boost and display
+/// clock settings are not slowdowns.
+pub const NVML_SLOWDOWN_MASK: u64 = NVML_SW_POWER_CAP
+    | NVML_HW_SLOWDOWN
+    | NVML_SW_THERMAL_SLOWDOWN
+    | NVML_HW_THERMAL_SLOWDOWN
+    | NVML_HW_POWER_BRAKE_SLOWDOWN;
+/// Names of the active slowdown reasons, in bit order.
+pub fn gpu_slowdown_reasons(bits: u64) -> Vec<&'static str> {
+    [
+        (NVML_SW_POWER_CAP, "power cap"),
+        (NVML_HW_SLOWDOWN, "hardware slowdown"),
+        (NVML_SW_THERMAL_SLOWDOWN, "thermal (driver)"),
+        (NVML_HW_THERMAL_SLOWDOWN, "thermal (hardware)"),
+        (NVML_HW_POWER_BRAKE_SLOWDOWN, "power brake"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| bits & bit != 0)
+    .map(|(_, name)| name)
+    .collect()
 }
 impl Metric {
     pub fn unit(self) -> &'static str {
@@ -81,7 +151,14 @@ impl Metric {
             Self::GpuEngineBasisPoints | Self::GpuBusiestEngineBasisPoints => {
                 "basis_points_of_engine_time"
             }
-            Self::PhysicalTotalBytes
+            Self::GpuUtilizationBasisPoints => "basis_points_of_sample_period",
+            Self::GpuTemperatureCelsius => "degrees_celsius",
+            Self::GpuSmClockMegahertz => "megahertz",
+            Self::GpuPowerMilliwatts => "milliwatts",
+            Self::GpuSlowdownReasons => "nvml_slowdown_reason_bits",
+            Self::GpuMemoryUsedBytes
+            | Self::GpuMemoryTotalBytes
+            | Self::PhysicalTotalBytes
             | Self::PhysicalAvailableBytes
             | Self::SystemCommitBytes
             | Self::SystemCommitLimitBytes
@@ -114,6 +191,13 @@ impl Metric {
             Self::HardFaultPagesPerSecondX100 => "Hard-fault page reads",
             Self::GpuEngineBasisPoints => "GPU engine",
             Self::GpuBusiestEngineBasisPoints => "Busiest GPU engine",
+            Self::GpuUtilizationBasisPoints => "GPU busy",
+            Self::GpuMemoryUsedBytes => "GPU memory used",
+            Self::GpuMemoryTotalBytes => "GPU memory",
+            Self::GpuTemperatureCelsius => "GPU temperature",
+            Self::GpuSmClockMegahertz => "GPU clock",
+            Self::GpuPowerMilliwatts => "GPU power",
+            Self::GpuSlowdownReasons => "GPU slowdown",
         }
     }
     /// A value of this metric in human units: binary byte units, percentages, milliseconds.
@@ -127,7 +211,17 @@ impl Metric {
             | Self::ProcessPrivateCommitBytes
             | Self::ProcessIoReadBytes
             | Self::ProcessIoWriteBytes
-            | Self::ProcessIoOtherBytes => format_bytes(value),
+            | Self::ProcessIoOtherBytes
+            | Self::GpuMemoryUsedBytes
+            | Self::GpuMemoryTotalBytes => format_bytes(value),
+            Self::GpuUtilizationBasisPoints => format!("{:.1}%", value as f64 / 100.0),
+            Self::GpuTemperatureCelsius => format!("{value} °C"),
+            Self::GpuSmClockMegahertz => format!("{value} MHz"),
+            Self::GpuPowerMilliwatts => format!("{:.1} W", value as f64 / 1_000.0),
+            Self::GpuSlowdownReasons => match gpu_slowdown_reasons(value).join(", ") {
+                none if none.is_empty() => "none".to_owned(),
+                reasons => reasons,
+            },
             Self::CpuBusyBasisPoints
             | Self::ProcessCpuBasisPoints
             | Self::CpuBusiestCoreBasisPoints
@@ -291,6 +385,16 @@ pub struct Snapshot {
     pub processes: Vec<ProcessInstance>,
     pub process_coverage: ProcessCoverage,
     pub limitations: Vec<String>,
+    /// Devices whose readings appear as evidence under their `entity_ref`; names stay local.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpus: Vec<GpuDevice>,
+}
+/// A GPU read through a vendor library (NVML), for local display; never sent to a provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuDevice {
+    pub entity_ref: String,
+    pub name: Option<String>,
+    pub source: String,
 }
 impl Snapshot {
     pub fn empty(session_id: &str) -> Self {
@@ -303,6 +407,7 @@ impl Snapshot {
             processes: Vec::new(),
             process_coverage: ProcessCoverage::default(),
             limitations: Vec::new(),
+            gpus: Vec::new(),
         }
     }
     pub fn system_value(&self, metric: Metric) -> Option<(&Evidence, u64)> {
@@ -628,6 +733,35 @@ mod tests {
         let encoded = serde_json::to_string(&e).unwrap();
         let decoded: Evidence = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.value, Some(u64::MAX));
+    }
+    #[test]
+    fn nvidia_gpu_values_read_in_their_units() {
+        assert_eq!(Metric::GpuTemperatureCelsius.format_value(53), "53 °C");
+        assert_eq!(Metric::GpuSmClockMegahertz.format_value(1_354), "1354 MHz");
+        assert_eq!(Metric::GpuPowerMilliwatts.format_value(12_345), "12.3 W");
+        assert_eq!(
+            Metric::GpuUtilizationBasisPoints.format_value(4_200),
+            "42.0%"
+        );
+        assert_eq!(
+            Metric::GpuMemoryTotalBytes.format_value(2 << 30),
+            "2.00 GiB"
+        );
+        assert_eq!(Metric::GpuSlowdownReasons.format_value(0), "none");
+        assert_eq!(
+            Metric::GpuSlowdownReasons.format_value(NVML_SW_POWER_CAP | NVML_HW_THERMAL_SLOWDOWN),
+            "power cap, thermal (hardware)"
+        );
+        // Bits outside the slowdown mask (idle, application clocks) are not reasons.
+        assert!(gpu_slowdown_reasons(0x1 | 0x2 | 0x10 | 0x100).is_empty());
+        assert_eq!(NVML_SLOWDOWN_MASK, 0xEC);
+    }
+    #[test]
+    fn utc_dates_are_civil_dates() {
+        assert_eq!(format_utc_minute(0), "1970-01-01 00:00 UTC");
+        assert_eq!(format_utc_minute(951_782_400_000), "2000-02-29 00:00 UTC");
+        assert_eq!(format_utc_minute(1_790_527_240_472), "2026-09-27 16:40 UTC");
+        assert_eq!(format_utc_minute(4_102_444_799_000), "2099-12-31 23:59 UTC");
     }
     #[test]
     fn display_values_use_each_metric_unit() {
