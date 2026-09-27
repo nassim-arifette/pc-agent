@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "The main window may listen to PC Agent's events. PC Agent's own commands validate every argument; no file-system, shell or dialog permission is granted to the page.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

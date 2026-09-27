@@ -1,0 +1,119 @@
+/* Design tokens. Light is the base; dark follows the system unless the person picks a theme. */
+:root {
+  color-scheme: light;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+
+  --bg: #f4f5fb;
+  --glow-1: rgba(124, 108, 255, 0.13);
+  --glow-2: rgba(45, 212, 191, 0.1);
+  --surface: #ffffff;
+  --surface-2: #f7f8fc;
+  --surface-3: #eceef7;
+  --overlay: rgba(18, 20, 36, 0.42);
+  --border: #e3e6f0;
+  --border-strong: #cfd4e4;
+  --text: #141726;
+  --text-2: #474d66;
+  --text-3: #767c95;
+
+  --accent: #6a59f3;
+  --accent-hover: #5b4ae6;
+  --accent-soft: #efecff;
+  --accent-text: #4f3fdc;
+  --on-accent: #ffffff;
+  --mint: #0f9f8f;
+  --mint-soft: #dcf7f2;
+
+  --good: #15803d;
+  --good-soft: #e2f6e9;
+  --warn: #b45309;
+  --warn-soft: #fdf0d9;
+  --bad: #c42b2b;
+  --bad-soft: #fde7e7;
+  --info: #2459d6;
+  --info-soft: #e4ecfd;
+  --neutral-soft: #eef0f6;
+
+  --track: #e8eaf3;
+  --bar: #6a59f3;
+  --bar-2: #19b3a1;
+
+  --shadow-sm: 0 1px 2px rgba(22, 26, 52, 0.06);
+  --shadow: 0 1px 2px rgba(22, 26, 52, 0.05), 0 10px 28px rgba(22, 26, 52, 0.07);
+  --shadow-lg: 0 28px 70px rgba(22, 26, 52, 0.22);
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius: 13px;
+  --radius-lg: 18px;
+  --radius-xl: 26px;
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+  --t: 200ms;
+  --t-slow: 360ms;
+  --focus-ring: 0 0 0 3px rgba(106, 89, 243, 0.38);
+
+  /* Iris, the mascot. */
+  --iris-shell-top: #ffffff;
+  --iris-shell-bottom: #e6e2ff;
+  --iris-outline: #cfc8ff;
+  --iris-visor-top: #2c2574;
+  --iris-visor-bottom: #17133f;
+  --iris-eye: #7cf3e6;
+  --iris-eye-glow: rgba(124, 243, 230, 0.75);
+  --iris-accent: #8b7fff;
+  --iris-tip: #ff8a65;
+  --iris-cheek: #ff9eb8;
+  --iris-shadow: rgba(40, 32, 110, 0.18);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0e16;
+  --glow-1: rgba(124, 108, 255, 0.16);
+  --glow-2: rgba(45, 212, 191, 0.08);
+  --surface: #141724;
+  --surface-2: #111421;
+  --surface-3: #1c2031;
+  --overlay: rgba(4, 5, 12, 0.62);
+  --border: #242a3c;
+  --border-strong: #31384f;
+  --text: #eceef8;
+  --text-2: #b4b9cd;
+  --text-3: #80869d;
+
+  --accent: #8d80ff;
+  --accent-hover: #9d92ff;
+  --accent-soft: #221e46;
+  --accent-text: #b8afff;
+  --on-accent: #0f0c2b;
+  --mint: #3dd6c4;
+  --mint-soft: #0f2d2a;
+
+  --good: #4ade80;
+  --good-soft: #10291a;
+  --warn: #fbbf24;
+  --warn-soft: #30230b;
+  --bad: #f87171;
+  --bad-soft: #351416;
+  --info: #7aa7ff;
+  --info-soft: #14213d;
+  --neutral-soft: #1b1f2e;
+
+  --track: #232839;
+  --bar: #8d80ff;
+  --bar-2: #3dd6c4;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.55);
+  --focus-ring: 0 0 0 3px rgba(141, 128, 255, 0.45);
+
+  --iris-shell-top: #f4f2ff;
+  --iris-shell-bottom: #cfc8ff;
+  --iris-outline: #a79dff;
+  --iris-shadow: rgba(0, 0, 0, 0.45);
+}
