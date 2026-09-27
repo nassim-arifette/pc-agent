@@ -4,13 +4,13 @@ use pcagent_actions::{
     approve_locally, Journal, LocalSession, ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
 use pcagent_agent::{
-    cloud_observation, investigate, local_report, ActionDesk, Config, Investigation, Nebius,
-    PendingPlan, PolicyProtection, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN,
-    WORKSTATION_TOOLS,
+    cloud_observation, investigate, local_report, verify_action, ActionDesk, ActionVerification,
+    Config, Investigation, Nebius, PendingPlan, PolicyProtection, Workstation, MAX_QUESTION_BYTES,
+    PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{Evidence, Metric, Snapshot, Status};
-use pcagent_storage::{ItemKind, ScanOptions, StorageService};
+use pcagent_storage::{volume_space, ItemKind, ScanOptions, StorageService};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
 use serde_json::json;
@@ -18,7 +18,7 @@ use std::{
     error::Error,
     fs,
     io::{self, BufRead, IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
@@ -110,6 +110,7 @@ fn review_actions(
     desk: &ActionDesk,
     pending: Vec<PendingPlan>,
     protection: &PolicyProtection<'_>,
+    collector: &mut Collector,
     json_out: bool,
 ) -> Result<Vec<serde_json::Value>> {
     let mut results = Vec::new();
@@ -166,6 +167,13 @@ fn review_actions(
             results.push(json!({"plan_id": plan_id, "decision": "declined"}));
             continue;
         }
+        let volume_root = p.plan.items().iter().find_map(|i| match &i.target {
+            ResolvedTarget::CleanupAdapter(c) => Some(c.root.clone()),
+            _ => None,
+        });
+        eprintln!("  Measuring before the action...");
+        let before = sample_system(collector);
+        let free_before = volume_root.as_deref().and_then(free_bytes);
         let token = approve_locally(&mut p.plan, &session, MAX_APPROVAL_TTL)?;
         let mut plan = p.plan.clone();
         let outcome = desk.broker(&p, protection).execute(
@@ -173,12 +181,26 @@ fn review_actions(
             &token,
             &session,
             &AtomicBool::new(false),
-            None,
+            before.last().map(|s| s.id.clone()),
         );
         match outcome {
-            Ok(result) => {
+            Ok(mut result) => {
                 eprintln!("  Result: {:?}", result.overall);
-                results.push(json!({"plan_id": plan_id, "decision": "approved", "result": result}));
+                eprintln!("  Measuring after the action...");
+                std::thread::sleep(SETTLE_AFTER_ACTION);
+                let after = sample_system(collector);
+                let free_after = volume_root.as_deref().and_then(free_bytes);
+                if let Some(last) = after.last() {
+                    result.record_after_measurement(last.id.clone());
+                }
+                let verification = verify_action(
+                    &result,
+                    &before,
+                    &after,
+                    volume_root.map(|_| (free_before, free_after)),
+                );
+                print_verification(&verification)?;
+                results.push(json!({"plan_id": plan_id, "decision": "approved", "result": result, "verification": verification}));
             }
             Err(e) => {
                 eprintln!("  Refused: {e}");
@@ -189,6 +211,49 @@ fn review_actions(
         }
     }
     Ok(results)
+}
+const SETTLE_AFTER_ACTION: Duration = Duration::from_secs(2);
+fn sample_system(collector: &mut Collector) -> Vec<Snapshot> {
+    (0..VERIFY_SAMPLES)
+        .map(|_| collector.snapshot(false, 1))
+        .collect()
+}
+fn free_bytes(root: &Path) -> Option<u64> {
+    volume_space(root).free_bytes
+}
+fn print_verification(v: &ActionVerification) -> io::Result<()> {
+    let mut err = io::stderr().lock();
+    writeln!(err, "  Before/after ({VERIFY_SAMPLES} samples each side):")?;
+    for c in &v.comparisons {
+        let median = |w: &Option<pcagent_diagnostics::WindowSummary>| {
+            w.as_ref()
+                .map_or("unknown".to_string(), |w| w.median.to_string())
+        };
+        writeln!(
+            err,
+            "    {:?}: {:?} (median {} -> {} {})",
+            c.metric,
+            c.outcome,
+            median(&c.before),
+            median(&c.after),
+            c.metric.unit()
+        )?;
+    }
+    if let Some(vol) = &v.volume {
+        let show = |b: Option<u64>| b.map_or("unknown".to_string(), |b| b.to_string());
+        writeln!(
+            err,
+            "    Volume free bytes: {} -> {} (gained {}, adapter reports {} removed)",
+            show(vol.free_before_bytes),
+            show(vol.free_after_bytes),
+            show(vol.gained_bytes),
+            show(vol.reported_removed_bytes)
+        )?;
+    }
+    for l in &v.limitations {
+        writeln!(err, "    Limitation: {l}")?;
+    }
+    Ok(())
 }
 fn write_json(value: &impl Serialize) -> Result<()> {
     let mut out = io::stdout().lock();
@@ -487,7 +552,8 @@ fn run(args: Args) -> Result<u8> {
                     policy: &policy,
                     prefs: &prefs,
                 };
-                let results = review_actions(&desk, pending, &protection, args.json)?;
+                let results =
+                    review_actions(&desk, pending, &protection, &mut collector, args.json)?;
                 if args.json && !results.is_empty() {
                     write_json(&json!({ "actions": results }))?;
                 }

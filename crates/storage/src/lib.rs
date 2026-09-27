@@ -18,6 +18,10 @@ pub use index::{
     dedup_parent_child, redact_names, redact_path, ItemKind, ItemView, LargestItemsPage, LastUse,
     StorageIndex, StorageOverview, Totals, VolumeSpace, GENERIC_NAMES,
 };
+/// Live free space of the volume that contains `root` (Win32 `GetDiskFreeSpaceExW`).
+pub fn volume_space(root: &Path) -> VolumeSpace {
+    platform::volume_space(root)
+}
 pub use scan::{
     classify_attributes, AttributeClass, ClassicBackend, ATTR_COMPRESSED, ATTR_DIRECTORY,
     ATTR_OFFLINE, ATTR_RECALL_ON_DATA_ACCESS, ATTR_RECALL_ON_OPEN, ATTR_REPARSE_POINT,
