@@ -66,7 +66,7 @@ Each finding follows the spec 8.3 structure: support level (`supported`/`plausib
 
 Initial local observation thresholds are below 10% physical memory available, at least 90% of the current commit limit, and at least 90% aggregate CPU in the sample. These are prototype triggers for further investigation, not universal diagnostic rules or validated anomaly thresholds. System commit is not physical RAM occupancy, working sets may share pages, and a short sample cannot establish a memory leak or justify a hardware purchase.
 
-The loop is bounded to six inference turns, twelve tool calls and a 90-second investigation budget checked between operations. HTTP calls have a maximum 30-second budget including initial catalog validation, and response bodies are capped at 256 KiB. A synchronous native collection may overrun a deadline before control returns. Errors, malformed replies or exhausted budgets produce an explicitly partial report with the observations retained, not a fabricated success.
+Until at least one tool has run, requests set `tool_choice: "required"`: the initial overview already carries candidate findings, and without it the model tends to select one immediately. A reply that still concludes before any tool call is rejected. The loop is bounded to six inference turns, twelve tool calls and a 90-second investigation budget checked between operations. HTTP calls have a maximum 30-second budget including initial catalog validation, and response bodies are capped at 256 KiB. A synchronous native collection may overrun a deadline before control returns. Errors, malformed replies or exhausted budgets produce an explicitly partial report with the observations retained, not a fabricated success.
 
 ## Workspace
 
