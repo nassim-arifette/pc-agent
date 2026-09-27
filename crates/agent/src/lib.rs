@@ -1,11 +1,13 @@
 //! Bounded, read-only orchestration. The model selects tools and validated findings;
 //! it never supplies measured values, commands, permissions or arbitrary report prose.
 #![forbid(unsafe_code)]
+mod cost;
 mod nebius;
 mod proposals;
 mod tools;
 mod verify;
 mod workstation;
+pub use cost::{estimate as estimate_cost, Cost, Pricing};
 pub use nebius::{Config, Nebius};
 use pcagent_diagnostics::{analyze, Classification, Finding, Support};
 use pcagent_shared::{
@@ -79,11 +81,16 @@ pub struct ToolCall {
     pub kind: String,
     pub function: FunctionCall,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Reply {
     pub calls: Vec<ToolCall>,
     pub content: Option<String>,
     pub total_tokens: Option<u64>,
+    /// Input tokens the provider reports for this request.
+    pub prompt_tokens: Option<u64>,
+    /// Output tokens, reasoning included.
+    pub completion_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
 }
 /// Whether the model may answer this turn or must call a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +109,10 @@ pub trait Model {
         choice: ToolChoice,
         timeout: Duration,
     ) -> Result<Reply, AgentError>;
+    /// Catalog prices of the model in use, when the provider published verifiable ones.
+    fn pricing(&self) -> Option<Pricing> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -154,12 +165,68 @@ pub struct ToolEvent {
     pub status: Status,
     pub duration_ms: u64,
 }
+/// Usage the provider reported for one inference request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RequestUsage {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
     pub inference_calls: usize,
     pub tool_calls: usize,
     pub inspection_calls: usize,
+    /// Sums over all requests; unknown as soon as one request did not report the count.
     pub total_tokens: Option<u64>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    /// One entry per inference request, in order.
+    pub requests: Vec<RequestUsage>,
+    /// Usage priced at the provider's catalog prices; absent without a verified, dated price or
+    /// complete usage (spec 13).
+    pub cost: Option<Cost>,
+}
+impl Stats {
+    fn none() -> Self {
+        Self {
+            inference_calls: 0,
+            tool_calls: 0,
+            inspection_calls: 0,
+            total_tokens: Some(0),
+            prompt_tokens: Some(0),
+            completion_tokens: Some(0),
+            reasoning_tokens: Some(0),
+            requests: Vec::new(),
+            cost: None,
+        }
+    }
+    fn record(&mut self, reply: &Reply) {
+        let add =
+            |sum: Option<u64>, part: Option<u64>| sum.zip(part).and_then(|(a, b)| a.checked_add(b));
+        self.total_tokens = add(self.total_tokens, reply.total_tokens);
+        self.prompt_tokens = add(self.prompt_tokens, reply.prompt_tokens);
+        self.completion_tokens = add(self.completion_tokens, reply.completion_tokens);
+        self.reasoning_tokens = add(self.reasoning_tokens, reply.reasoning_tokens);
+        self.requests.push(RequestUsage {
+            prompt_tokens: reply.prompt_tokens,
+            completion_tokens: reply.completion_tokens,
+            reasoning_tokens: reply.reasoning_tokens,
+        });
+    }
+    /// A failed request consumed an unknown number of tokens.
+    fn record_failure(&mut self) {
+        self.total_tokens = None;
+        self.prompt_tokens = None;
+        self.completion_tokens = None;
+        self.reasoning_tokens = None;
+        self.requests.push(RequestUsage {
+            prompt_tokens: None,
+            completion_tokens: None,
+            reasoning_tokens: None,
+        });
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Investigation {
@@ -272,12 +339,7 @@ pub fn local_report(snapshot: &Snapshot) -> Investigation {
         local_processes: snapshot.processes.clone(),
         limitations: snapshot.limitations.clone(),
         tool_events: Vec::new(),
-        stats: Stats {
-            inference_calls: 0,
-            tool_calls: 0,
-            inspection_calls: 0,
-            total_tokens: Some(0),
-        },
+        stats: Stats::none(),
         error: None,
     }
 }
@@ -325,6 +387,23 @@ pub fn investigate(
     question: &str,
     initial: &Snapshot,
     toolbox: &mut impl Toolbox,
+    on_event: impl FnMut(&ToolEvent),
+) -> Investigation {
+    let mut result = run(model, question, initial, toolbox, on_event);
+    let s = &result.stats;
+    result.stats.cost = match (s.prompt_tokens, s.completion_tokens, model.pricing()) {
+        (Some(prompt), Some(completion), Some(pricing)) if !s.requests.is_empty() => {
+            cost::estimate(prompt, completion, &pricing)
+        }
+        _ => None,
+    };
+    result
+}
+fn run(
+    model: &mut impl Model,
+    question: &str,
+    initial: &Snapshot,
+    toolbox: &mut impl Toolbox,
     mut on_event: impl FnMut(&ToolEvent),
 ) -> Investigation {
     let started = Instant::now();
@@ -360,15 +439,11 @@ pub fn investigate(
         ) {
             Ok(reply) => reply,
             Err(error) => {
-                result.stats.total_tokens = None;
+                result.stats.record_failure();
                 return result.partial(error);
             }
         };
-        result.stats.total_tokens = result
-            .stats
-            .total_tokens
-            .zip(reply.total_tokens)
-            .and_then(|(a, b)| a.checked_add(b));
+        result.stats.record(&reply);
         if started.elapsed() >= MAX_DURATION {
             return result.partial(AgentError::Budget);
         }
@@ -454,6 +529,7 @@ mod tests {
         replies: VecDeque<Result<Reply, AgentError>>,
         calls: usize,
         choices: Vec<ToolChoice>,
+        pricing: Option<Pricing>,
     }
     impl Model for Script {
         fn complete(
@@ -466,6 +542,9 @@ mod tests {
             self.calls += 1;
             self.choices.push(choice);
             self.replies.pop_front().expect("script exhausted")
+        }
+        fn pricing(&self) -> Option<Pricing> {
+            self.pricing.clone()
         }
     }
     fn fixture() -> Snapshot {
@@ -493,8 +572,10 @@ mod tests {
     fn tools(calls: Vec<ToolCall>) -> Reply {
         Reply {
             calls,
-            content: None,
             total_tokens: Some(10),
+            prompt_tokens: Some(9),
+            completion_tokens: Some(1),
+            ..Reply::default()
         }
     }
     fn done(id: &str) -> Reply {
@@ -502,6 +583,9 @@ mod tests {
             calls: vec![],
             content: Some(json!({"finding_ids":[id]}).to_string()),
             total_tokens: Some(10),
+            prompt_tokens: Some(9),
+            completion_tokens: Some(1),
+            ..Reply::default()
         }
     }
     fn tb(mut f: impl FnMut() -> Snapshot) -> impl Toolbox {
@@ -512,6 +596,7 @@ mod tests {
             replies: replies.into_iter().map(Ok).collect(),
             calls: 0,
             choices: Vec::new(),
+            pricing: None,
         }
     }
     #[test]
@@ -653,7 +738,7 @@ mod tests {
             Reply {
                 calls: vec![],
                 content: Some(json!({"finding_ids":[ids[0], first]}).to_string()),
-                total_tokens: None,
+                ..Reply::default()
             },
         ]);
         let r = investigate(&mut m, "test", &initial, &mut tb(|| next.clone()), |_| {});
@@ -717,6 +802,7 @@ mod tests {
             replies: vec![Err(AgentError::Network)].into(),
             calls: 0,
             choices: Vec::new(),
+            pricing: None,
         };
         let r = investigate(
             &mut m,
@@ -740,6 +826,47 @@ mod tests {
         let with_plans = system_prompt(&[PREPARE_ACTION_PLAN]);
         assert!(with_plans.contains("call prepare_action_plan"));
         assert!(!with_plans.contains(NO_ACTIONS));
+    }
+    #[test]
+    fn cost_needs_complete_usage_and_a_verified_catalog_price() {
+        let pricing = Pricing {
+            model_id: "nvidia/nemotron-fixture".into(),
+            prompt_usd_per_token: "0.0000003".into(),
+            completion_usd_per_token: "0.0000009".into(),
+            source: "fixture".into(),
+            read_at_unix_ms: 1,
+        };
+        let initial = fixture();
+        let next = fixture();
+        let id = analyze(&next)[0].id.clone();
+        let run = |replies: Vec<Reply>, pricing: Option<Pricing>| {
+            let mut m = script(replies);
+            m.pricing = pricing;
+            investigate(&mut m, "test", &initial, &mut tb(|| next.clone()), |_| {})
+        };
+        let snapshot_call = || tools(vec![call("a", "get_system_snapshot", "{}")]);
+        let r = run(vec![snapshot_call(), done(&id)], Some(pricing.clone()));
+        assert_eq!(r.stats.prompt_tokens, Some(18));
+        assert_eq!(r.stats.completion_tokens, Some(2));
+        assert_eq!(r.stats.requests.len(), 2);
+        // 18 input tokens at $0.30 and 2 output tokens at $0.90 per million.
+        assert_eq!(
+            r.stats.cost.as_ref().map(|c| c.usd.as_str()),
+            Some("0.0000072")
+        );
+        assert_eq!(r.stats.cost.unwrap().pricing, pricing);
+
+        assert!(run(vec![snapshot_call(), done(&id)], None)
+            .stats
+            .cost
+            .is_none());
+        let unreported = Reply {
+            content: Some(json!({"finding_ids":[id]}).to_string()),
+            ..Reply::default()
+        };
+        let r = run(vec![snapshot_call(), unreported], Some(pricing));
+        assert_eq!(r.stats.prompt_tokens, None);
+        assert!(r.stats.cost.is_none());
     }
     #[test]
     fn invalid_question_never_reaches_transport() {

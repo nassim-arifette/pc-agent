@@ -14,6 +14,26 @@ pub fn unix_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+/// `YYYY-MM-DD HH:MM UTC` for display (proleptic Gregorian calendar, no leap seconds).
+pub fn format_utc_minute(unix_ms: u64) -> String {
+    let secs = unix_ms / 1_000;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (H. Hinnant's algorithm), in March-based years.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        rem / 3_600,
+        rem % 3_600 / 60
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -628,6 +648,13 @@ mod tests {
         let encoded = serde_json::to_string(&e).unwrap();
         let decoded: Evidence = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.value, Some(u64::MAX));
+    }
+    #[test]
+    fn utc_dates_are_civil_dates() {
+        assert_eq!(format_utc_minute(0), "1970-01-01 00:00 UTC");
+        assert_eq!(format_utc_minute(951_782_400_000), "2000-02-29 00:00 UTC");
+        assert_eq!(format_utc_minute(1_790_527_240_472), "2026-09-27 16:40 UTC");
+        assert_eq!(format_utc_minute(4_102_444_799_000), "2099-12-31 23:59 UTC");
     }
     #[test]
     fn display_values_use_each_metric_unit() {
