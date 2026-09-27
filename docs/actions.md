@@ -34,6 +34,12 @@ text such as "fais tout" are rejected and can never produce approval.
   asks for a typed `yes` on an interactive terminal (stdin and stderr). Only then does it call
   `approve_locally` and `Broker::execute`. With `--json` or without a terminal nothing runs
   (`not_reviewed`). Tokens never leave the CLI process.
+- Before/after (spec 18): around each approved action the CLI takes `VERIFY_SAMPLES` (3) system
+  samples, executes with the last sample's id as `before_ref`, waits 2 s, takes 3 more samples and
+  records `after_ref`. `verify_action` compares available memory, commit and CPU with
+  `diagnostics::compare` (improvement only when the whole after window beats the whole before
+  window; otherwise `no_net_change`/`needs_more_measurement`). Cleanup also reports volume free bytes
+  before/after next to the adapter's `bytes_removed`; unknown values stay unknown.
 - `pcagent demo-cache --mb N` (1–256) creates the marked synthetic cache under
   `%LOCALAPPDATA%\pcagent\synthetic-demo-cache`.
 
