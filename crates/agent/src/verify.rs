@@ -63,7 +63,7 @@ pub fn verify(
     let (b, a) = (evidence(before), evidence(after));
     let comparisons = VERIFIED_METRICS
         .iter()
-        .map(|&m| compare(m, "system", &b, &a, VERIFY_SAMPLES.min(before.len()).max(1)))
+        .map(|&m| compare(m, "system", &b, &a, VERIFY_SAMPLES))
         .collect();
     let volume = volume.map(|(free_before, free_after)| {
         let gained_bytes = free_before
@@ -182,5 +182,8 @@ mod tests {
             Some((Some(1000), Some(900))),
         );
         assert_eq!(shrunk.volume.unwrap().gained_bytes, None);
+
+        let single = verify(&result(None), &before[2..], &after[..1], None);
+        assert_eq!(single.comparisons[0].outcome, Outcome::NeedsMoreMeasurement);
     }
 }
