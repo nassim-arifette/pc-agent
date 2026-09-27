@@ -4,6 +4,7 @@
 mod nebius;
 mod proposals;
 mod tools;
+mod verify;
 mod workstation;
 pub use nebius::{Config, Nebius};
 use pcagent_diagnostics::{analyze, Classification, Finding};
@@ -22,6 +23,10 @@ use std::{
 use thiserror::Error;
 pub use tools::{
     validate_call, ArgValue, Args, Param, ParamKind, SnapshotTools, ToolOutput, ToolSpec, Toolbox,
+};
+pub use verify::{
+    reported_removed_bytes, verify as verify_action, ActionVerification, VolumeChange,
+    VERIFIED_METRICS, VERIFY_SAMPLES,
 };
 pub use workstation::{Workstation, HISTORY_METRICS, WORKSTATION_TOOLS};
 
