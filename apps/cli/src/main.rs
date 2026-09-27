@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
+mod credentials;
 mod text;
 use clap::{Parser, Subcommand};
+use credentials::{Credentials, Source};
 use pcagent_actions::{
     approve_locally, Journal, LocalSession, ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
@@ -261,24 +263,49 @@ fn authorize_folder(storage: &StorageService, root: &Path) -> Result<pcagent_sto
         .authorize(root)
         .map_err(|e| format!("Cannot scan {shown}: {e}").into())
 }
-fn cloud_setup_error(e: AgentError) -> Box<dyn Error> {
+fn credentials_file_text(creds: &Credentials) -> String {
+    creds
+        .file()
+        .map_or_else(|| "%APPDATA%\\pcagent\\.env".to_owned(), text::path)
+}
+fn cloud_setup_error(e: AgentError, creds: &Credentials) -> Box<dyn Error> {
     match e {
-        AgentError::MissingKey | AgentError::MissingModel | AgentError::InvalidModel => format!(
-            "{e}.\nSet NEBIUS_API_KEY and NEBIUS_MODEL_ID (see \"Opt-in cloud investigation\" in the README), or run without --allow-cloud for a local analysis."
-        )
-        .into(),
+        AgentError::MissingKey | AgentError::MissingModel | AgentError::InvalidModel => {
+            let mut message = format!(
+                "{e}.\nPut NEBIUS_API_KEY and NEBIUS_MODEL_ID in {} or set them as environment variables (see \"Opt-in cloud investigation\" in the README), or run without --allow-cloud for a local analysis.",
+                credentials_file_text(creds)
+            );
+            if let Some(problem) = &creds.problem {
+                message.push_str(&format!("\nThe credentials file was not used: {problem}."));
+            }
+            message.into()
+        }
         other => other.into(),
     }
 }
 fn print_doctor(
+    creds: &Credentials,
     cloud: Option<&std::result::Result<(), AgentError>>,
     limits: &[&str],
 ) -> Result<()> {
-    let set = |name: &str| if configured(name) { "set" } else { "not set" };
-    let model = std::env::var("NEBIUS_MODEL_ID")
-        .ok()
-        .filter(|m| !m.trim().is_empty())
-        .map_or_else(|| "not set".to_owned(), |m| text::clean(&m));
+    let origin = |name: &str| match creds.source(name) {
+        Some(Source::Environment) => " (environment variable)",
+        Some(Source::File) => " (credentials file)",
+        None => "",
+    };
+    let key = match creds.get("NEBIUS_API_KEY") {
+        Some(_) => format!("set{}", origin("NEBIUS_API_KEY")),
+        None => "not set".to_owned(),
+    };
+    let model = match creds.get("NEBIUS_MODEL_ID") {
+        Some(m) => format!("{}{}", text::clean(&m), origin("NEBIUS_MODEL_ID")),
+        None => "not set".to_owned(),
+    };
+    let file = match (&creds.problem, creds.file_found()) {
+        (Some(problem), _) => format!("unusable: {problem}"),
+        (None, true) => credentials_file_text(creds),
+        (None, false) => format!("{} (not found)", credentials_file_text(creds)),
+    };
     let rows = [
         ("This PC", String::new()),
         (
@@ -295,7 +322,8 @@ fn print_doctor(
         ),
         ("  Windows version check", "not implemented yet".to_owned()),
         ("Cloud (Nebius)", String::new()),
-        ("  NEBIUS_API_KEY", set("NEBIUS_API_KEY").to_owned()),
+        ("  Credentials file", file),
+        ("  NEBIUS_API_KEY", key),
         ("  NEBIUS_MODEL_ID", model),
         (
             "  Catalog check",
@@ -330,11 +358,6 @@ fn print_doctor(
         writeln!(out, "  - {l}")?;
     }
     Ok(())
-}
-fn configured(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
 }
 fn run(args: Args) -> Result<u8> {
     match args.command {
@@ -375,9 +398,10 @@ fn run(args: Args) -> Result<u8> {
             Ok(if summary.status == Status::Ok { 0 } else { 3 })
         }
         Command::Doctor { check_cloud } => {
+            let creds = Credentials::load();
             let cloud_result = if check_cloud {
                 Some(
-                    Config::from_env()
+                    Config::from_lookup(|name| creds.get(name))
                         .and_then(Nebius::new)
                         .and_then(|mut client| client.check_catalog(Duration::from_secs(10))),
                 )
@@ -394,12 +418,13 @@ fn run(args: Args) -> Result<u8> {
                     "compiled_os":std::env::consts::OS,"compiled_arch":std::env::consts::ARCH,
                     "product_target":"Windows 11 x64","windows_version_check":"not_implemented",
                     "read_only":true,"persistent_history":false,"actions_available":true,
-                    "nebius_key_configured":configured("NEBIUS_API_KEY"),"nebius_model_configured":configured("NEBIUS_MODEL_ID"),
+                    "nebius_key_configured":creds.get("NEBIUS_API_KEY").is_some(),"nebius_model_configured":creds.get("NEBIUS_MODEL_ID").is_some(),
+                    "credentials_file_found":creds.file_found(),
                     "cloud_check":match &cloud_result { None=>"not_requested".to_string(),Some(Ok(()))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
                     "limits":limits});
                 write_json(&report)?;
             } else {
-                print_doctor(cloud_result.as_ref(), &limits)?;
+                print_doctor(&creds, cloud_result.as_ref(), &limits)?;
             }
             Ok(if cfg!(windows) && !cloud_failed { 0 } else { 3 })
         }
@@ -486,7 +511,10 @@ fn run(args: Args) -> Result<u8> {
                 return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
             }
             let mut model = if allow_cloud {
-                Some(Nebius::new(Config::from_env().map_err(cloud_setup_error)?)?)
+                let creds = Credentials::load();
+                let config = Config::from_lookup(|name| creds.get(name))
+                    .map_err(|e| cloud_setup_error(e, &creds))?;
+                Some(Nebius::new(config)?)
             } else {
                 None
             };
