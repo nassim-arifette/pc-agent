@@ -2,12 +2,16 @@
 //! it never supplies measured values, commands, permissions or arbitrary report prose.
 #![forbid(unsafe_code)]
 mod nebius;
+mod proposals;
 mod tools;
 mod workstation;
 pub use nebius::{Config, Nebius};
 use pcagent_diagnostics::{analyze, Classification, Finding};
 use pcagent_shared::{
     Evidence, Origin, ProcessCoverage, ProcessInstance, Snapshot, Status, SCHEMA_VERSION,
+};
+pub use proposals::{
+    ActionDesk, FixedTargets, PendingPlan, PolicyProtection, MAX_PENDING_PLANS, PREPARE_ACTION_PLAN,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

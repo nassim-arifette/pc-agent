@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 use clap::{Parser, Subcommand};
+use pcagent_actions::{
+    approve_locally, Journal, LocalSession, ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
+};
 use pcagent_agent::{
-    cloud_observation, investigate, local_report, Config, Investigation, Nebius, Workstation,
-    MAX_QUESTION_BYTES, WORKSTATION_TOOLS,
+    cloud_observation, investigate, local_report, ActionDesk, Config, Investigation, Nebius,
+    PendingPlan, PolicyProtection, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN,
+    WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{Evidence, Metric, Snapshot, Status};
@@ -13,10 +17,10 @@ use serde_json::json;
 use std::{
     error::Error,
     fs,
-    io::{self, Write},
+    io::{self, BufRead, IsTerminal, Write},
     path::PathBuf,
     process::ExitCode,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
@@ -82,7 +86,109 @@ enum Command {
         /// JSON preferences file (exclusions, preserved apps, permissions).
         #[arg(long)]
         preferences: Option<PathBuf>,
+        /// Let the model propose action plans; each one is shown here for explicit approval.
+        #[arg(long)]
+        propose_actions: bool,
+        /// Directory for the local action journal (default: %LOCALAPPDATA%\pcagent\journal).
+        #[arg(long)]
+        journal_dir: Option<PathBuf>,
     },
+    /// Create the clearly labelled synthetic cache used to demonstrate the cleanup adapter.
+    DemoCache {
+        #[arg(long,default_value_t=64,value_parser=clap::value_parser!(u16).range(1..=256))]
+        mb: u16,
+    },
+}
+fn local_data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pcagent")
+}
+/// Trusted local review: every pending plan needs a typed "yes" on an interactive terminal.
+fn review_actions(
+    desk: &ActionDesk,
+    pending: Vec<PendingPlan>,
+    protection: &PolicyProtection<'_>,
+    json_out: bool,
+) -> Result<Vec<serde_json::Value>> {
+    let mut results = Vec::new();
+    if pending.is_empty() {
+        return Ok(results);
+    }
+    let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
+    let session = LocalSession::new();
+    for mut p in pending {
+        let plan_id = p.plan.plan_id().to_string();
+        let mut err = io::stderr().lock();
+        writeln!(
+            err,
+            "\nProposed action {plan_id}: {:?}",
+            p.plan.action_kind()
+        )?;
+        for item in p.plan.items() {
+            let target = match &item.target {
+                ResolvedTarget::File(f) => f.path.display().to_string(),
+                ResolvedTarget::SettingsPage { page } => page.uri().into(),
+                ResolvedTarget::CleanupAdapter(c) => format!(
+                    "{} ({} files, {:?} bytes)",
+                    c.root.display(),
+                    c.files,
+                    c.bytes
+                ),
+                ResolvedTarget::Process(t) => format!("process {}", t.identity.pid),
+            };
+            writeln!(err, "  target: {target}")?;
+        }
+        writeln!(
+            err,
+            "  recovery: {:?}; preconditions: {:?}",
+            p.plan.recovery(),
+            p.plan.preconditions()
+        )?;
+        if !interactive || json_out {
+            writeln!(
+                err,
+                "  Not executed: approval requires an interactive terminal without --json."
+            )?;
+            results.push(json!({"plan_id": plan_id, "decision": "not_reviewed"}));
+            continue;
+        }
+        write!(
+            err,
+            "  Type 'yes' to run this action now, anything else to skip: "
+        )?;
+        err.flush()?;
+        drop(err);
+        let mut answer = String::new();
+        io::stdin().lock().read_line(&mut answer)?;
+        if answer.trim() != "yes" {
+            results.push(json!({"plan_id": plan_id, "decision": "declined"}));
+            continue;
+        }
+        let token = approve_locally(&mut p.plan, &session, MAX_APPROVAL_TTL)?;
+        let mut plan = p.plan.clone();
+        let outcome = desk.broker(&p, protection).execute(
+            &mut plan,
+            &token,
+            &session,
+            &AtomicBool::new(false),
+            None,
+        );
+        match outcome {
+            Ok(result) => {
+                eprintln!("  Result: {:?}", result.overall);
+                results.push(json!({"plan_id": plan_id, "decision": "approved", "result": result}));
+            }
+            Err(e) => {
+                eprintln!("  Refused: {e}");
+                results.push(
+                    json!({"plan_id": plan_id, "decision": "approved", "error": e.to_string()}),
+                );
+            }
+        }
+    }
+    Ok(results)
 }
 fn write_json(value: &impl Serialize) -> Result<()> {
     let mut out = io::stdout().lock();
@@ -276,6 +382,25 @@ fn run(args: Args) -> Result<u8> {
             write_json(&report)?;
             Ok(if cfg!(windows) && !cloud_failed { 0 } else { 3 })
         }
+        Command::DemoCache { mb } => {
+            let root = local_data_dir().join("synthetic-demo-cache");
+            let blob = 8 * 1024 * 1024_u64;
+            let total = u64::from(mb) * 1024 * 1024;
+            let names: Vec<String> = (0..total.div_ceil(blob))
+                .map(|i| format!("blob-{i}.bin"))
+                .collect();
+            let files: Vec<(&str, u64)> = names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.as_str(), blob.min(total - i as u64 * blob)))
+                .collect();
+            SyntheticDemoCache::create(&root, &files)?;
+            write_json(
+                &json!({"created": true, "root": root, "files": files.len(), "bytes": total,
+                "notice": "Synthetic filler only. Authorize its parent with --scan-root to let the model propose the cleanup adapter."}),
+            )?;
+            Ok(0)
+        }
         Command::Diagnose {
             question,
             offline: _,
@@ -284,11 +409,22 @@ fn run(args: Args) -> Result<u8> {
             verbose,
             scan_root,
             preferences,
+            propose_actions,
+            journal_dir,
         } => {
             let prefs = match &preferences {
                 Some(path) => Preferences::from_json(&fs::read_to_string(path)?)?,
                 None => Preferences::default(),
             };
+            if propose_actions && !allow_cloud {
+                return Err(
+                    "--propose-actions requires --allow-cloud: only the model proposes plans."
+                        .into(),
+                );
+            }
+            if journal_dir.is_some() && !propose_actions {
+                return Err("--journal-dir requires --propose-actions.".into());
+            }
             if allow_cloud && preferences.is_some() && !prefs.permissions.cloud_allowed {
                 return Err("The preferences file does not allow cloud requests (permissions.cloud_allowed is false).".into());
             }
@@ -313,7 +449,7 @@ fn run(args: Args) -> Result<u8> {
                 write_json(
                     &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
                     "question":question,"initial_observation":cloud_observation(&initial),
-                    "tools":WORKSTATION_TOOLS.iter().map(|t| t.name).collect::<Vec<_>>(),
+                    "tools":WORKSTATION_TOOLS.iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
                     "authorized_scopes":storage.scopes().len()}),
                 )?;
                 return Ok(0);
@@ -321,6 +457,10 @@ fn run(args: Args) -> Result<u8> {
             let policy = Policy::from_env();
             let mut workstation =
                 Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
+            if propose_actions {
+                let dir = journal_dir.unwrap_or_else(|| local_data_dir().join("journal"));
+                workstation.enable_action_proposals(ActionDesk::native(Journal::open(dir)?));
+            }
             let report = match &mut model {
                 Some(model) => investigate(model, &question, &initial, &mut workstation, |event| {
                     if verbose {
@@ -335,10 +475,22 @@ fn run(args: Args) -> Result<u8> {
             for job in workstation.take_jobs() {
                 job.cancel();
             }
+            let actions = workstation.take_actions();
+            drop(workstation);
             if args.json {
                 write_json(&report)?;
             } else {
                 print_report(&report)?;
+            }
+            if let Some((desk, pending)) = actions {
+                let protection = PolicyProtection {
+                    policy: &policy,
+                    prefs: &prefs,
+                };
+                let results = review_actions(&desk, pending, &protection, args.json)?;
+                if args.json && !results.is_empty() {
+                    write_json(&json!({ "actions": results }))?;
+                }
             }
             Ok(if report.error.is_none() && report.status == Status::Ok {
                 0

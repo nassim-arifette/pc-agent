@@ -634,6 +634,7 @@ name = "pcagent"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "pcagent-actions",
  "pcagent-agent",
  "pcagent-diagnostics",
  "pcagent-policy",
@@ -661,6 +662,7 @@ dependencies = [
 name = "pcagent-agent"
 version = "0.1.0"
 dependencies = [
+ "pcagent-actions",
  "pcagent-diagnostics",
  "pcagent-policy",
  "pcagent-shared",
