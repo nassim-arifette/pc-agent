@@ -81,7 +81,7 @@ const THRESHOLDS: &str =
     "Initial observation thresholds are prototype triggers, not validated diagnostic rules.";
 const OBSERVE_LONGER: &str =
     "Observe a representative workload over a longer period and check resources not yet measured.";
-const SYSTEM_METRICS: [(Metric, &str); 12] = [
+pub const SYSTEM_METRICS: [(Metric, &str); 12] = [
     (Metric::PhysicalTotalBytes, "physical memory total"),
     (Metric::PhysicalAvailableBytes, "available physical memory"),
     (Metric::SystemCommitBytes, "system commit"),
