@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 mod budget;
 mod cost;
+pub mod credentials;
 mod nebius;
 mod payload;
 mod proposals;
@@ -87,6 +88,8 @@ pub enum AgentError {
     Budget,
     #[error("Question is empty or exceeds the byte limit")]
     InvalidQuestion,
+    #[error("Stopped by the user")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
