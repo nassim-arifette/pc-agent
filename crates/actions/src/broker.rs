@@ -99,7 +99,13 @@ pub enum Refusal {
     TargetReplaced,
     ProcessReplaced,
     ReparsePoint,
-    Unverifiable { status: Status },
+    /// Another open of the file forbids the exclusive pin required before recycling.
+    InUse,
+    /// The file has more than one hard link; recycling one name would not remove the data.
+    MultipleLinks,
+    Unverifiable {
+        status: Status,
+    },
     NoTopLevelWindow,
     StillRunningAfterCloseRequest,
     AdapterPreconditionFailed,
@@ -559,7 +565,7 @@ impl Broker<'_> {
     }
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(test)]
 pub(crate) fn test_permit() -> Permit {
     Permit(())
 }
