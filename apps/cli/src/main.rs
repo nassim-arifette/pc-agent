@@ -1,15 +1,16 @@
 #![forbid(unsafe_code)]
+mod text;
 use clap::{Parser, Subcommand};
 use pcagent_actions::{
     approve_locally, Journal, LocalSession, ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
 use pcagent_agent::{
-    cloud_observation, investigate, local_report, verify_action, ActionDesk, ActionVerification,
-    Config, Investigation, Nebius, PendingPlan, PolicyProtection, Workstation, MAX_QUESTION_BYTES,
-    PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
+    cloud_observation, investigate, local_report, verify_action, ActionDesk, AgentError, Config,
+    Nebius, PendingPlan, PolicyProtection, Workstation, MAX_QUESTION_BYTES, PREPARE_ACTION_PLAN,
+    VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
-use pcagent_shared::{Evidence, Metric, Snapshot, Status};
+use pcagent_shared::{format_bytes, Snapshot, Status};
 use pcagent_storage::{volume_space, ItemKind, ScanOptions, StorageService};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
@@ -25,14 +26,24 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+const EXAMPLES: &str = r#"Examples:
+  pcagent snapshot
+  pcagent diagnose "Why is my PC slow?"
+  pcagent diagnose "Why is my PC slow?" --allow-cloud --verbose
+  pcagent storage "$env:USERPROFILE\Downloads" --limit 10
+  pcagent doctor --check-cloud
+
+Nothing is sent to the cloud without --allow-cloud, and nothing on your PC is changed unless you
+approve a proposed action (diagnose --allow-cloud --propose-actions)."#;
 #[derive(Parser)]
 #[command(
     name = "pcagent",
     version,
-    about = "Read-only Windows investigation prototype. No changes to your PC."
+    about = "Windows investigation prototype: explains what is slowing your PC down, read-only.",
+    after_help = EXAMPLES
 )]
 struct Args {
-    /// Machine-readable output. Byte values are 64-bit integers; do not parse them as JS Number.
+    /// Print machine-readable JSON instead of text (byte counts are 64-bit integers).
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -40,33 +51,38 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Collect system memory, one-second aggregate CPU and readable process contributors.
+    /// Measure memory, CPU, disk and GPU now and list the biggest processes.
     Snapshot {
+        /// Number of processes to show (1-50).
         #[arg(long,default_value_t=10,value_parser=clap::value_parser!(u16).range(1..=50))]
         limit: u16,
     },
     /// List readable processes ranked by working set. Never terminates a process.
     Processes {
+        /// Number of processes to show (1-50).
         #[arg(long,default_value_t=10,value_parser=clap::value_parser!(u16).range(1..=50))]
         limit: u16,
     },
-    /// Scan one explicitly authorized folder read-only (metadata only; links are never followed).
+    /// Find the largest files or folders in one folder (reads metadata only; never follows links).
     Storage {
+        /// Folder to scan.
         root: PathBuf,
+        /// Number of items to show (1-100).
         #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u16).range(1..=100))]
         limit: u16,
         /// Rank directories instead of files.
         #[arg(long)]
         dirs: bool,
     },
-    /// Check local capabilities and configuration, offline unless explicitly requested.
+    /// Check this PC's support and the cloud configuration (offline unless --check-cloud).
     Doctor {
         /// Authorize a catalog request to Nebius using your key; sends no telemetry.
         #[arg(long)]
         check_cloud: bool,
     },
-    /// Investigate a question. Local rules are the default; cloud requires --allow-cloud.
+    /// Answer a question such as "Why is my PC slow?". Local analysis unless --allow-cloud.
     Diagnose {
+        /// Your question, in quotes.
         question: String,
         /// Explicitly keep this investigation offline (also the default).
         #[arg(long, conflicts_with = "allow_cloud")]
@@ -77,7 +93,8 @@ enum Command {
         /// Inspect the initial cloud payload locally, without sending it. Later samples may differ.
         #[arg(long,conflicts_with_all=["allow_cloud","offline"])]
         preview_cloud: bool,
-        /// Print only completed local tool calls; never print model reasoning or secrets.
+        /// Also show each completed tool call, evidence IDs and collection notes (never model
+        /// reasoning or secrets).
         #[arg(long)]
         verbose: bool,
         /// Authorize a folder the model may scan (metadata only), as an opaque scope. Repeatable.
@@ -95,6 +112,7 @@ enum Command {
     },
     /// Create the clearly labelled synthetic cache used to demonstrate the cleanup adapter.
     DemoCache {
+        /// Size of the synthetic cache in MiB (1-256).
         #[arg(long,default_value_t=64,value_parser=clap::value_parser!(u16).range(1..=256))]
         mb: u16,
     },
@@ -124,28 +142,29 @@ fn review_actions(
         let mut err = io::stderr().lock();
         writeln!(
             err,
-            "\nProposed action {plan_id}: {:?}",
-            p.plan.action_kind()
+            "\nProposed action: {} (plan {plan_id})",
+            text::words(&p.plan.action_kind())
         )?;
         for item in p.plan.items() {
             let target = match &item.target {
-                ResolvedTarget::File(f) => f.path.display().to_string(),
+                ResolvedTarget::File(f) => text::clean(&f.path.display().to_string()),
                 ResolvedTarget::SettingsPage { page } => page.uri().into(),
                 ResolvedTarget::CleanupAdapter(c) => format!(
-                    "{} ({} files, {:?} bytes)",
-                    c.root.display(),
-                    c.files,
-                    c.bytes
+                    "{} ({}, {})",
+                    text::clean(&c.root.display().to_string()),
+                    text::plural(c.files, "file", "files"),
+                    c.bytes.map_or_else(|| "size unknown".into(), format_bytes)
                 ),
                 ResolvedTarget::Process(t) => format!("process {}", t.identity.pid),
             };
-            writeln!(err, "  target: {target}")?;
+            writeln!(err, "  Target: {target}")?;
         }
+        let checks: Vec<String> = p.plan.preconditions().iter().map(text::words).collect();
         writeln!(
             err,
-            "  recovery: {:?}; preconditions: {:?}",
-            p.plan.recovery(),
-            p.plan.preconditions()
+            "  Recovery: {}\n  Checked again just before running: {}",
+            text::words(&p.plan.recovery()),
+            checks.join(", ")
         )?;
         if !interactive || json_out {
             writeln!(
@@ -185,7 +204,7 @@ fn review_actions(
         );
         match outcome {
             Ok(mut result) => {
-                eprintln!("  Result: {:?}", result.overall);
+                eprintln!("  Result: {}", text::words(&result.overall));
                 eprintln!("  Measuring after the action...");
                 std::thread::sleep(SETTLE_AFTER_ACTION);
                 let after = sample_system(collector);
@@ -199,7 +218,7 @@ fn review_actions(
                     &after,
                     volume_root.map(|_| (free_before, free_after)),
                 );
-                print_verification(&verification)?;
+                text::verification(&mut io::stderr().lock(), &verification)?;
                 results.push(json!({"plan_id": plan_id, "decision": "approved", "result": result, "verification": verification}));
             }
             Err(e) => {
@@ -221,154 +240,94 @@ fn sample_system(collector: &mut Collector) -> Vec<Snapshot> {
 fn free_bytes(root: &Path) -> Option<u64> {
     volume_space(root).free_bytes
 }
-fn print_verification(v: &ActionVerification) -> io::Result<()> {
-    let mut err = io::stderr().lock();
-    writeln!(err, "  Before/after ({VERIFY_SAMPLES} samples each side):")?;
-    for c in &v.comparisons {
-        let median = |w: &Option<pcagent_diagnostics::WindowSummary>| {
-            w.as_ref()
-                .map_or("unknown".to_string(), |w| w.median.to_string())
-        };
-        writeln!(
-            err,
-            "    {:?}: {:?} (median {} -> {} {})",
-            c.metric,
-            c.outcome,
-            median(&c.before),
-            median(&c.after),
-            c.metric.unit()
-        )?;
-    }
-    if let Some(vol) = &v.volume {
-        let show = |b: Option<u64>| b.map_or("unknown".to_string(), |b| b.to_string());
-        writeln!(
-            err,
-            "    Volume free bytes: {} -> {} (gained {}, adapter reports {} removed)",
-            show(vol.free_before_bytes),
-            show(vol.free_after_bytes),
-            show(vol.gained_bytes),
-            show(vol.reported_removed_bytes)
-        )?;
-    }
-    for l in &v.limitations {
-        writeln!(err, "    Limitation: {l}")?;
-    }
-    Ok(())
-}
 fn write_json(value: &impl Serialize) -> Result<()> {
     let mut out = io::stdout().lock();
     serde_json::to_writer_pretty(&mut out, value)?;
     writeln!(out)?;
     Ok(())
 }
-fn print_evidence(e: &Evidence, out: &mut impl Write) -> io::Result<()> {
-    let value = match e.value {
-        Some(value) if e.metric == Metric::CpuBusyBasisPoints => {
-            format!("{:.2}% of total CPU", value as f64 / 100.0)
+/// Authorizes a folder for scanning, with messages that name the folder the user typed.
+fn authorize_folder(storage: &StorageService, root: &Path) -> Result<pcagent_storage::ScopeInfo> {
+    let shown = root.display();
+    match fs::metadata(root) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(format!("Folder not found: {shown}").into())
         }
-        Some(value) => format!("{value} bytes ({:.2} GiB)", value as f64 / 1_073_741_824.0),
-        None => "unknown".into(),
-    };
-    writeln!(
-        out,
-        "  {:?}: {} [{:?}] entity={} source={} time={} UTC(ms), window={}ms, evidence={}",
-        e.metric,
-        value,
-        e.status,
-        e.entity_ref,
-        e.source,
-        e.window.finished_at_unix_ms,
-        e.window.duration_ms,
-        e.id
-    )
+        Ok(m) if !m.is_dir() => return Err(format!("Not a folder: {shown}").into()),
+        _ => {}
+    }
+    storage
+        .authorize(root)
+        .map_err(|e| format!("Cannot scan {shown}: {e}").into())
 }
-fn print_snapshot(s: &Snapshot, processes_only: bool) -> Result<()> {
-    let mut out = io::stdout().lock();
-    writeln!(out, "Snapshot {} | origin {:?}", s.id, s.origin)?;
-    if !processes_only {
-        for e in s.evidence.iter().filter(|e| e.entity_ref == "system") {
-            print_evidence(e, &mut out)?;
-        }
+fn cloud_setup_error(e: AgentError) -> Box<dyn Error> {
+    match e {
+        AgentError::MissingKey | AgentError::MissingModel | AgentError::InvalidModel => format!(
+            "{e}.\nSet NEBIUS_API_KEY and NEBIUS_MODEL_ID (see \"Opt-in cloud investigation\" in the README), or run without --allow-cloud for a local analysis."
+        )
+        .into(),
+        other => other.into(),
     }
-    writeln!(
-        out,
-        "Processes: {:?}; {} returned / {} readable / {} enumerated; {} denied, {} unavailable",
-        s.process_coverage.status,
-        s.process_coverage.returned,
-        s.process_coverage.readable,
-        s.process_coverage.enumerated,
-        s.process_coverage.permission_denied,
-        s.process_coverage.unavailable
-    )?;
-    for p in &s.processes {
-        // Debug formatting escapes control characters in untrusted executable names.
-        writeln!(
-            out,
-            "PID {} | {:?} | {}",
-            p.pid,
-            p.executable_name.as_deref().unwrap_or("name unavailable"),
-            p.entity_ref
-        )?;
-        for e in s.evidence.iter().filter(|e| e.entity_ref == p.entity_ref) {
-            print_evidence(e, &mut out)?;
-        }
-    }
-    for limit in &s.limitations {
-        writeln!(out, "Limit: {limit}")?;
-    }
-    Ok(())
 }
-fn print_report(report: &Investigation) -> Result<()> {
+fn print_doctor(
+    cloud: Option<&std::result::Result<(), AgentError>>,
+    limits: &[&str],
+) -> Result<()> {
+    let set = |name: &str| if configured(name) { "set" } else { "not set" };
+    let model = std::env::var("NEBIUS_MODEL_ID")
+        .ok()
+        .filter(|m| !m.trim().is_empty())
+        .map_or_else(|| "not set".to_owned(), |m| text::clean(&m));
+    let rows = [
+        ("This PC", String::new()),
+        (
+            "  Native collector",
+            if cfg!(windows) {
+                "available".to_owned()
+            } else {
+                "not available on this platform (Windows only)".to_owned()
+            },
+        ),
+        (
+            "  Build",
+            format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        ),
+        ("  Windows version check", "not implemented yet".to_owned()),
+        ("Cloud (Nebius)", String::new()),
+        ("  NEBIUS_API_KEY", set("NEBIUS_API_KEY").to_owned()),
+        ("  NEBIUS_MODEL_ID", model),
+        (
+            "  Catalog check",
+            match cloud {
+                None => "not requested (add --check-cloud)".to_owned(),
+                Some(Ok(())) => "the model is in your account catalog".to_owned(),
+                Some(Err(e)) => format!("failed: {e}"),
+            },
+        ),
+        ("Safety", String::new()),
+        (
+            "  Default mode",
+            "read-only; nothing is sent without --allow-cloud".to_owned(),
+        ),
+        (
+            "  Actions",
+            "opt-in with --propose-actions; each one needs a typed 'yes'".to_owned(),
+        ),
+        ("  History", "not stored".to_owned()),
+    ];
+    let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
     let mut out = io::stdout().lock();
-    writeln!(
-        out,
-        "Mode: {} | status: {:?} | support: {:?}",
-        report.mode, report.status, report.selected.support
-    )?;
-    let f = &report.selected;
-    writeln!(out, "{}", f.summary)?;
-    writeln!(out, "Support: {:?} ({})", f.support, f.support_reason)?;
-    for fact in &f.facts {
-        writeln!(
-            out,
-            "Fact: {} [{}]",
-            fact.text,
-            fact.evidence_refs.join(", ")
-        )?;
+    for (label, value) in rows {
+        if value.is_empty() {
+            writeln!(out, "{label}")?;
+        } else {
+            writeln!(out, "{label:<width$}  {value}")?;
+        }
     }
-    if let Some(h) = &f.hypothesis {
-        writeln!(out, "Hypothesis: {h}")?;
+    writeln!(out, "Notes")?;
+    for l in limits {
+        writeln!(out, "  - {l}")?;
     }
-    for c in &f.counter_evidence {
-        writeln!(out, "Counter-evidence: {c}")?;
-    }
-    if !f.missing.is_empty() {
-        writeln!(out, "Missing: {}", f.missing.join("; "))?;
-    }
-    for alt in &report.alternatives {
-        writeln!(
-            out,
-            "Alternative: {:?} - {}",
-            alt.classification, alt.summary
-        )?;
-    }
-    writeln!(out, "Next: {}", report.selected.next_step)?;
-    for limit in report
-        .selected
-        .limitations
-        .iter()
-        .chain(&report.limitations)
-    {
-        writeln!(out, "Limit: {limit}")?;
-    }
-    if let Some(error) = &report.error {
-        writeln!(out, "Incomplete investigation: {error}")?;
-    }
-    writeln!(
-        out,
-        "Executed: {} inference requests, {} tools; tokens: {:?}",
-        report.stats.inference_calls, report.stats.tool_calls, report.stats.total_tokens
-    )?;
     Ok(())
 }
 fn configured(name: &str) -> bool {
@@ -384,13 +343,14 @@ fn run(args: Args) -> Result<u8> {
             if args.json {
                 write_json(&sample)?;
             } else {
-                print_snapshot(&sample, processes_only)?;
+                text::snapshot(&mut io::stdout().lock(), &sample, processes_only)?;
             }
             Ok(if sample.has_observations() { 0 } else { 3 })
         }
         Command::Storage { root, limit, dirs } => {
             let storage = StorageService::new();
-            let scope = storage.authorize(&root)?.scope_id;
+            let info = authorize_folder(&storage, &root)?;
+            let scope = info.scope_id;
             let summary = storage.scan_blocking(&scope, &ScanOptions::default(), &mut |_| {})?;
             let kind = if dirs {
                 ItemKind::Dirs
@@ -402,26 +362,14 @@ fn run(args: Args) -> Result<u8> {
             if args.json {
                 write_json(&json!({"overview":overview,"largest":largest}))?;
             } else {
-                let mut out = io::stdout().lock();
-                writeln!(
-                    out,
-                    "Scan {:?} in {} ms | {:?}",
-                    summary.status, summary.duration_ms, summary.coverage
+                text::storage(
+                    &mut io::stdout().lock(),
+                    &info.root,
+                    &summary,
+                    &overview,
+                    &largest,
+                    dirs,
                 )?;
-                for item in &largest.items {
-                    // Debug formatting escapes control characters in untrusted file names.
-                    writeln!(
-                        out,
-                        "{:>12} logical, {:>12} allocated | {:?}",
-                        item.logical_bytes,
-                        item.allocated_bytes
-                            .map_or("unknown".into(), |b| b.to_string()),
-                        item.path.as_deref().unwrap_or(&item.redacted_path)
-                    )?;
-                }
-                for limit in &largest.limitations {
-                    writeln!(out, "Limit: {limit}")?;
-                }
             }
             Ok(if summary.status == Status::Ok { 0 } else { 3 })
         }
@@ -436,15 +384,22 @@ fn run(args: Args) -> Result<u8> {
                 None
             };
             let cloud_failed = cloud_result.as_ref().is_some_and(|r| r.is_err());
-            let report = json!({"schema_version":1,"native_collector_available":cfg!(windows),
-                "compiled_os":std::env::consts::OS,"compiled_arch":std::env::consts::ARCH,
-                "product_target":"Windows 11 x64","windows_version_check":"not_implemented",
-                "read_only":true,"persistent_history":false,"actions_available":false,
-                "nebius_key_configured":configured("NEBIUS_API_KEY"),"nebius_model_configured":configured("NEBIUS_MODEL_ID"),
-                "cloud_check":match cloud_result { None=>"not_requested".to_string(),Some(Ok(()))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
-                "limits":["Doctor does not yet validate Windows build, storage capabilities or a local database.",
-                    "A catalog check does not validate tool calling, diagnostic quality or latency."]});
-            write_json(&report)?;
+            let limits = [
+                "Doctor does not yet validate Windows build, storage capabilities or a local database.",
+                "A catalog check does not validate tool calling, diagnostic quality or latency.",
+            ];
+            if args.json {
+                let report = json!({"schema_version":1,"native_collector_available":cfg!(windows),
+                    "compiled_os":std::env::consts::OS,"compiled_arch":std::env::consts::ARCH,
+                    "product_target":"Windows 11 x64","windows_version_check":"not_implemented",
+                    "read_only":true,"persistent_history":false,"actions_available":true,
+                    "nebius_key_configured":configured("NEBIUS_API_KEY"),"nebius_model_configured":configured("NEBIUS_MODEL_ID"),
+                    "cloud_check":match &cloud_result { None=>"not_requested".to_string(),Some(Ok(()))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
+                    "limits":limits});
+                write_json(&report)?;
+            } else {
+                print_doctor(cloud_result.as_ref(), &limits)?;
+            }
             Ok(if cfg!(windows) && !cloud_failed { 0 } else { 3 })
         }
         Command::DemoCache { mb } => {
@@ -460,10 +415,20 @@ fn run(args: Args) -> Result<u8> {
                 .map(|(i, n)| (n.as_str(), blob.min(total - i as u64 * blob)))
                 .collect();
             SyntheticDemoCache::create(&root, &files)?;
-            write_json(
-                &json!({"created": true, "root": root, "files": files.len(), "bytes": total,
-                "notice": "Synthetic filler only. Authorize its parent with --scan-root to let the model propose the cleanup adapter."}),
-            )?;
+            let notice = "Synthetic filler only. Authorize its parent with --scan-root to let the model propose the cleanup adapter.";
+            if args.json {
+                write_json(
+                    &json!({"created": true, "root": root, "files": files.len(), "bytes": total, "notice": notice}),
+                )?;
+            } else {
+                println!(
+                    "Created {} of synthetic data in {} under {}",
+                    format_bytes(total),
+                    text::plural(files.len() as u64, "file", "files"),
+                    text::clean(&root.display().to_string())
+                );
+                println!("{notice}");
+            }
             Ok(0)
         }
         Command::Diagnose {
@@ -478,7 +443,15 @@ fn run(args: Args) -> Result<u8> {
             journal_dir,
         } => {
             let prefs = match &preferences {
-                Some(path) => Preferences::from_json(&fs::read_to_string(path)?)?,
+                Some(path) => fs::read_to_string(path)
+                    .map_err(|e| {
+                        format!("Cannot read the preferences file {}: {e}", path.display())
+                    })
+                    .and_then(|json| {
+                        Preferences::from_json(&json).map_err(|e| {
+                            format!("Invalid preferences file {}: {e}", path.display())
+                        })
+                    })?,
                 None => Preferences::default(),
             };
             if propose_actions && !allow_cloud {
@@ -495,16 +468,24 @@ fn run(args: Args) -> Result<u8> {
             }
             let storage = Arc::new(StorageService::new());
             for root in &scan_root {
-                storage.authorize(root)?;
+                authorize_folder(&storage, root)?;
             }
-            if question.trim().is_empty() || question.len() > MAX_QUESTION_BYTES {
-                return Err(pcagent_agent::AgentError::InvalidQuestion.into());
+            if question.trim().is_empty() {
+                return Err(
+                    "The question is empty; ask something like \"Why is my PC slow?\"".into(),
+                );
+            }
+            if question.len() > MAX_QUESTION_BYTES {
+                return Err(format!(
+                    "The question is longer than {MAX_QUESTION_BYTES} bytes; shorten it."
+                )
+                .into());
             }
             if allow_cloud && !cfg!(windows) {
                 return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
             }
             let mut model = if allow_cloud {
-                Some(Nebius::new(Config::from_env()?)?)
+                Some(Nebius::new(Config::from_env().map_err(cloud_setup_error)?)?)
             } else {
                 None
             };
@@ -527,14 +508,16 @@ fn run(args: Args) -> Result<u8> {
                 workstation.enable_action_proposals(ActionDesk::native(Journal::open(dir)?));
             }
             let report = match &mut model {
-                Some(model) => investigate(model, &question, &initial, &mut workstation, |event| {
-                    if verbose {
-                        eprintln!(
-                            "Completed {} [{:?}] in {} ms",
-                            event.tool, event.status, event.duration_ms
-                        );
+                Some(model) => {
+                    if io::stderr().is_terminal() {
+                        eprintln!("Investigating with Nebius; this can take up to 90 seconds...");
                     }
-                }),
+                    investigate(model, &question, &initial, &mut workstation, |event| {
+                        if verbose {
+                            eprintln!("{}", text::tool_event(event));
+                        }
+                    })
+                }
                 None => local_report(&initial),
             };
             for job in workstation.take_jobs() {
@@ -545,7 +528,7 @@ fn run(args: Args) -> Result<u8> {
             if args.json {
                 write_json(&report)?;
             } else {
-                print_report(&report)?;
+                text::report(&mut io::stdout().lock(), &report, verbose)?;
             }
             if let Some((desk, pending)) = actions {
                 let protection = PolicyProtection {
