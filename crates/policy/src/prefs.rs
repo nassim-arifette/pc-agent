@@ -14,12 +14,21 @@ pub enum PreferencesError {
 }
 
 /// Explicit permissions. Every default is the most restrictive choice.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Permissions {
     pub cloud_allowed: bool,
     pub web_search_allowed: bool,
     pub reversible_only: bool,
+}
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            cloud_allowed: false,
+            web_search_allowed: false,
+            reversible_only: true,
+        }
+    }
 }
 
 /// An application the user declared necessary (e.g. Docker, a VM, a creative suite). It is
@@ -158,7 +167,7 @@ mod tests {
             Permissions {
                 cloud_allowed: false,
                 web_search_allowed: false,
-                reversible_only: false
+                reversible_only: true
             }
         );
         let minimal = Preferences::from_json(r#"{"schema_version":1}"#).unwrap();

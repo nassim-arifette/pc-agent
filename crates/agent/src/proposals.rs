@@ -22,6 +22,7 @@ pub const SETTINGS_PAGES: &[&str] = &["storagesense", "appsfeatures", "startupap
 
 pub const PREPARE_ACTION_PLAN: ToolSpec = ToolSpec {
     name: "prepare_action_plan",
+    class: crate::tools::ToolClass::Proposal,
     description: "Propose one action for the user to review locally after the investigation. \
         Nothing runs now; you cannot approve or execute it. open_settings_page needs \
         settings_page. open_in_explorer needs scope_id + item_ref from get_largest_items or \
@@ -163,6 +164,7 @@ pub(crate) fn prepare(
     desk: &mut ActionDesk,
     proposal: Proposal,
     protection: &dyn ProtectionCheck,
+    evidence_refs: Vec<String>,
 ) -> Result<pcagent_actions::PlanModelView, String> {
     // The same action on the same target is reviewed once, not once per proposal.
     if let Some(existing) = desk.pending.iter().find(|p| {
@@ -186,7 +188,7 @@ pub(crate) fn prepare(
     let intent = ActionIntent {
         action_kind: proposal.kind,
         target_refs: vec![proposal.target_ref],
-        evidence_refs: Vec::new(),
+        evidence_refs,
     };
     let plan = desk
         .broker_for(&targets, proposal.synthetic_cache.as_ref(), protection)

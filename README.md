@@ -1,13 +1,13 @@
 # PC Agent
 
-A read-only, CLI-first Windows investigation agent. Initial implementation based on **PC Agent specification v0.1 (2026-09-25), Lot A**. This is an early prototype, not a finished optimizer or a validated hackathon submission.
+A CLI-first Windows investigation agent, read-only by default, with locally approved actions. Based on **PC Agent specification v0.1 (2026-09-25)**. This is an early prototype, not a finished optimizer or a validated hackathon submission.
 
 ## Implemented in this first slice
 
 | Command | Behavior |
 | --- | --- |
 | `pcagent snapshot` | System physical memory, system commit, one-second aggregate CPU and top readable process memory contributors. |
-| `pcagent processes` | Local process names, PIDs, creation times, working set and private commit; sorted by readable working set. |
+| `pcagent processes [--sort-by working_set\|private_commit\|cpu\|io_read\|io_write]` | Local process identities and measurements, ranked before limiting results. CPU/I/O take two observations. |
 | `pcagent doctor` | Offline platform/configuration checks. `--check-cloud` explicitly checks the configured model in the Nebius catalog without sending telemetry. |
 | `pcagent diagnose "question"` | Local deterministic observations by default. Does not call a model without `--allow-cloud`. |
 | `pcagent diagnose "question" --preview-cloud` | Shows the initial minimized data envelope locally. Sends nothing. Later tool samples may differ. |
@@ -16,11 +16,11 @@ A read-only, CLI-first Windows investigation agent. Initial implementation based
 
 All commands support `--json`. Output marks missing measurements explicitly rather than substituting zero. Non-Windows builds are useful for portable tests but do **not** collect Linux/macOS metrics as though they were Windows measurements.
 
-There is no file deletion, application termination, elevation, startup modification, document-content inspection, background collection or automatic cloud request. Ctrl+C terminates the process; there are no detached workers or maintenance operations to continue afterward.
+Scans read metadata only and may run in background workers during an investigation; cancellation and normal shutdown join those workers. Actions require a separate opt-in and a typed local approval. The executable cleanup adapter removes only approved files in a marked synthetic demo cache on Windows/NTFS. There is no elevation, forced process termination, startup modification or automatic cloud request. Interrupted actions are reported from the journal on the next action-enabled run; they are never replayed automatically.
 
 ## Build and run on Windows
 
-Use an x64 Windows development environment with Rust/rustup and the MSVC C++ build tools. The repository pins Rust 1.90.0; Cargo.lock is generated and committed by the initial CI preparation job. Subsequent builds use that lockfile.
+Use an x64 Windows development environment with Rust/rustup and the MSVC C++ build tools. The repository pins Rust 1.90.0 and commits Cargo.lock. Builds and CI use that lockfile; CI does not rewrite or push source changes.
 
 ```powershell
 cargo build --release --locked -p pcagent
@@ -75,7 +75,9 @@ Each finding follows the spec 8.3 structure: support level (`supported`/`plausib
 
 Initial local observation thresholds are below 10% physical memory available, at least 90% of the current commit limit, and at least 90% aggregate CPU in the sample. These are prototype triggers for further investigation, not universal diagnostic rules or validated anomaly thresholds. System commit is not physical RAM occupancy, working sets may share pages, and a short sample cannot establish a memory leak or justify a hardware purchase.
 
-Until at least one tool has run, requests set `tool_choice: "required"`: the initial overview already carries candidate findings, and without it the model tends to select one immediately. A reply that still concludes before any tool call is rejected. The loop is bounded to six inference turns, twelve tool calls and a 90-second investigation budget checked between operations. HTTP calls have a maximum 30-second budget including initial catalog validation, and response bodies are capped at 256 KiB. A synchronous native collection may overrun a deadline before control returns. Errors, malformed replies or exhausted budgets produce an explicitly partial report with the observations retained, not a fabricated success.
+Until a real inspection returns usable observations, requests set `tool_choice: "required"`. Failed tools, preferences, scope listing, scan startup and action proposals do not satisfy that requirement. Fresh comparable measurements supersede older findings, which remain in `historical_findings` but cannot be selected. Minimized tool results remain in `observations`, including hardware, storage and history. The loop is bounded to six inference turns, twelve tool calls and a 90-second budget checked between operations. HTTP calls have a maximum 30-second budget including catalog validation; response bodies are capped at 256 KiB. A synchronous native call can overrun a deadline. Errors and exhausted budgets produce a partial report with observations retained.
+
+`diagnose --json` emits one document containing the investigation, `actions` (including unexecuted local plan manifests) and `recovery`. It never approves actions. Preferences default to `reversible_only: true`; demonstrating permanent deletion of synthetic data requires an explicit preferences file with `permissions.reversible_only: false` (and `cloud_allowed: true` for cloud diagnosis). `get_processes` also accepts `sort_by` with the same resource names as the CLI.
 
 ## Workspace
 
@@ -100,7 +102,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The GitHub workflow formats Rust and commits the initial dependency lockfile in a preparation job, then tests that exact revision on Windows and Linux. The build/test jobs have read-only repository permissions, use no provider credentials and do not upload live telemetry. This initial source-normalization write can be removed once the bootstrap is complete.
+The GitHub workflow checks formatting, tests and lints on Windows and Linux for pushes and pull requests. Jobs have read-only repository permissions, use no provider credentials and do not upload live telemetry or rewrite the reviewed commit.
 
 The tests cover missing/stale data, large integers, CPU counter regressions, commit-versus-RAM semantics, identity stability, cloud redaction, unknown tool rejection, duplicate call IDs, fabricated findings, resource budgets, provider failures and offline CLI behavior. Scripted provider replies are synthetic test fixtures, not evidence of a live Nemotron integration.
 
@@ -108,11 +110,11 @@ The tests cover missing/stale data, large integers, CPU counter regressions, com
 
 ## Known gaps versus the specification
 
-Action plans are proposed by the model, approved in the CLI and re-measured before and after execution. Recycle Bin moves are implemented and verified in the actions crate but cannot be proposed by the model yet. With `--propose-actions`, a storage-based proposal took Nemotron 7 to 9 turns in live tests (one tool call per turn: scopes, scan, largest items, cleanup candidates, proposal, conclusion), more than the six-turn budget, so the investigation usually ends before a plan is offered; spec 13 allows raising the bound or asking the user for an extension, which is not implemented. Disk latency/idle/queue, hard-fault page reads, per-core CPU and GPU engine utilization come from `_Total`/aggregated PDH counters only (no per-device attribution, no GPU memory, no per-process GPU/disk attribution). No persistent history, NTFS MFT backend, Tauri UI, installer or Tavily integration is implemented yet. `doctor` does not yet validate the Windows build number or storage/database capabilities. Process identities use session-local aliases plus PID and creation time; a true boot identifier is explicitly absent and cross-boot correlation is disabled. Large (>64 logical processor) systems report aggregate CPU as unsupported rather than misreporting one processor group as the whole machine.
+Action plans are proposed by the model, approved in the CLI and verified according to the effect: actual deleted bytes and volume space for cleanup, system windows for normal close, no performance verdict for Explorer or Settings. Recycle Bin moves are implemented and verified in the actions crate but cannot be proposed by the model yet. With `--propose-actions`, a storage-based proposal took Nemotron 7 to 9 turns in live tests (one tool call per turn: scopes, scan, largest items, cleanup candidates, proposal, conclusion), more than the six-turn budget, so the investigation usually ends before a plan is offered; spec 13 allows raising the bound or asking the user for an extension, which is not implemented. Disk latency/idle/queue, hard-fault page reads, per-core CPU and GPU engine utilization come from `_Total`/aggregated PDH counters only (no per-device attribution, no GPU memory, no per-process GPU/disk attribution). No persistent history, NTFS MFT backend, Tauri UI, installer or Tavily integration is implemented yet. `doctor` does not yet validate the Windows build number or storage/database capabilities. Process identities use session-local aliases plus PID and creation time; a true boot identifier is explicitly absent and cross-boot correlation is disabled. Large (>64 logical processor) systems report aggregate CPU as unsupported rather than misreporting one processor group as the whole machine.
 
 JSON byte counts remain exact 64-bit integers in Rust. Future JavaScript/IPC consumers must preserve them as BigInt or a lossless representation; a JavaScript Number is not safe for every value.
 
-See [architecture and safety](docs/architecture.md) and [validation checklist](docs/validation.md).
+See [architecture and safety](docs/architecture.md), [validation checklist](docs/validation.md) and [review status: covered and wanted limitations](docs/review-status.md).
 
 ## License
 

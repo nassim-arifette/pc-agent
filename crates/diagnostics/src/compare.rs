@@ -1,6 +1,7 @@
 //! Before/after verification (spec 18). The model explains results; it never computes them.
 use pcagent_shared::{Evidence, Metric, Origin, SCHEMA_VERSION};
 use serde::Serialize;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,8 +58,14 @@ pub struct Comparison {
 }
 
 fn select<'a>(set: &'a [Evidence], metric: Metric, entity_ref: &str) -> Vec<&'a Evidence> {
+    let mut ids = HashSet::new();
+    let mut windows = HashSet::new();
     set.iter()
         .filter(|e| e.metric == metric && e.entity_ref == entity_ref && e.usable_value().is_some())
+        .filter(|e| {
+            ids.insert(&e.id)
+                && windows.insert((e.window.started_at_unix_ms, e.window.finished_at_unix_ms))
+        })
         .collect()
 }
 
@@ -79,7 +86,7 @@ fn summarize(values: &[&Evidence]) -> Option<WindowSummary> {
         median,
         min: v[0],
         max: v[v.len() - 1],
-        first_unix_ms: values.iter().map(|e| e.window.finished_at_unix_ms).min()?,
+        first_unix_ms: values.iter().map(|e| e.window.started_at_unix_ms).min()?,
         last_unix_ms: values.iter().map(|e| e.window.finished_at_unix_ms).max()?,
     })
 }
@@ -115,10 +122,33 @@ pub fn compare(
     let origins: Vec<Origin> = b.iter().chain(&a).map(|e| e.origin).collect();
     let mixed = origins.windows(2).any(|w| w[0] != w[1]);
     let units_differ = b.iter().chain(&a).any(|e| e.unit != metric.unit());
-    let (Some(direction), false, false) = (direction, mixed, units_differ) else {
+    let sources_differ = b.iter().chain(&a).any(|e| {
+        b.first()
+            .or_else(|| a.first())
+            .is_some_and(|first| e.source != first.source)
+    });
+    let invalid_windows = [&b, &a].iter().any(|set| {
+        let mut windows: Vec<_> = set.iter().map(|e| &e.window).collect();
+        windows.sort_by_key(|w| w.started_at_unix_ms);
+        windows
+            .iter()
+            .any(|w| w.started_at_unix_ms > w.finished_at_unix_ms)
+            || windows
+                .windows(2)
+                .any(|w| w[0].finished_at_unix_ms > w[1].started_at_unix_ms)
+    });
+    let reused = b
+        .iter()
+        .any(|before| a.iter().any(|after| before.id == after.id));
+    let (Some(direction), false, false, false) = (
+        direction,
+        mixed,
+        units_differ || sources_differ,
+        invalid_windows || reused,
+    ) else {
         result
             .limitations
-            .push("Metric, unit or data origin does not support a before/after verdict.".into());
+            .push("Metric, unit, source, origin or independent measurement windows do not support a before/after verdict.".into());
         return result;
     };
     let (Some(before), Some(after)) = (&result.before, &result.after) else {
@@ -176,6 +206,42 @@ mod tests {
             .collect()
     }
     const AVAIL: Metric = Metric::PhysicalAvailableBytes;
+    #[test]
+    fn repeated_or_overlapping_observations_do_not_establish_improvement() {
+        let before = series(AVAIL, &[10], 1_000);
+        let after = series(AVAIL, &[100], 5_000);
+        let r = compare(
+            AVAIL,
+            "system",
+            &vec![before[0].clone(); 3],
+            &vec![after[0].clone(); 3],
+            3,
+        );
+        assert_eq!(r.outcome, Outcome::NeedsMoreMeasurement);
+        assert_eq!(r.before.unwrap().samples, 1);
+        let mut before = series(AVAIL, &[10, 12, 11], 2_000);
+        let mut after = series(AVAIL, &[100, 101, 102], 5_000);
+        for e in before.iter_mut().chain(&mut after) {
+            e.window.started_at_unix_ms = e.window.finished_at_unix_ms - 1_500;
+            e.window.duration_ms = 1_500;
+        }
+        assert_eq!(
+            compare(AVAIL, "system", &before, &after, 3).outcome,
+            Outcome::NotComparable
+        );
+        // Individually disjoint series, but the first after interval overlaps the last before one.
+        for e in &mut before {
+            e.window.started_at_unix_ms = e.window.finished_at_unix_ms;
+        }
+        for e in &mut after {
+            e.window.started_at_unix_ms = e.window.finished_at_unix_ms;
+        }
+        after[0].window.started_at_unix_ms = 3_500;
+        assert_eq!(
+            compare(AVAIL, "system", &before, &after, 3).outcome,
+            Outcome::NotComparable
+        );
+    }
     #[test]
     fn non_overlapping_windows_are_required_for_a_verdict() {
         let before = series(AVAIL, &[10, 12, 11], 0);

@@ -28,8 +28,15 @@ pub struct Param {
     pub required: bool,
 }
 #[derive(Debug, Clone, Copy)]
+pub enum ToolClass {
+    Inspection,
+    Context,
+    Proposal,
+}
+#[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {
     pub name: &'static str,
+    pub class: ToolClass,
     pub description: &'static str,
     pub params: &'static [Param],
 }
@@ -150,6 +157,8 @@ pub fn validate_call<'a>(
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub status: Status,
+    /// Set only when the tool returned a usable observation, not merely a successful dispatch.
+    pub inspection_complete: bool,
     pub cloud: Value,
     pub evidence: Vec<Evidence>,
     pub findings: Vec<Finding>,
@@ -159,6 +168,7 @@ pub struct ToolOutput {
 impl ToolOutput {
     pub fn from_snapshot(s: &Snapshot) -> Self {
         Self {
+            inspection_complete: s.has_observations(),
             status: if s.has_observations() {
                 Status::Ok
             } else {
@@ -187,11 +197,13 @@ pub const MAX_PROCESSES: u64 = 10;
 const SNAPSHOT_TOOLS: [ToolSpec; 2] = [
     ToolSpec {
         name: "get_system_snapshot",
+        class: crate::tools::ToolClass::Inspection,
         description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations. No changes to the computer.",
         params: &[],
     },
     ToolSpec {
         name: "get_processes",
+        class: crate::tools::ToolClass::Inspection,
         description: "Collect readable process memory contributors, represented by opaque session-scoped identities. No paths, names or commands.",
         params: &[Param {
             name: "limit",
@@ -231,6 +243,7 @@ mod tests {
     use crate::FunctionCall;
     const SPEC: ToolSpec = ToolSpec {
         name: "t",
+        class: crate::tools::ToolClass::Inspection,
         description: "",
         params: &[
             Param {

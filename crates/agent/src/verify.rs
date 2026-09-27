@@ -49,6 +49,10 @@ pub fn reported_removed_bytes(result: &ActionResult) -> Option<u64> {
             ItemOutcome::Completed {
                 bytes_removed: Some(b),
                 ..
+            }
+            | ItemOutcome::Partial {
+                bytes_removed: Some(b),
+                ..
             } => sum.checked_add(b),
             _ => None,
         })
@@ -63,6 +67,7 @@ pub fn verify(
     let (b, a) = (evidence(before), evidence(after));
     let comparisons = VERIFIED_METRICS
         .iter()
+        .filter(|_| result.action_kind == ActionKind::RequestNormalClose)
         .map(|&m| compare(m, "system", &b, &a, VERIFY_SAMPLES))
         .collect();
     let volume = volume.map(|(free_before, free_after)| {
@@ -138,6 +143,7 @@ mod tests {
             fingerprint: "f".into(),
             action_kind: ActionKind::RunCleanupAdapter,
             overall: OverallOutcome::Completed,
+            journal_status: Status::Ok,
             items: vec![ItemResult {
                 item_index: 0,
                 target_ref: "synthetic_demo_cache".into(),
@@ -160,12 +166,9 @@ mod tests {
     fn verdicts_come_from_local_samples_and_unknown_stays_unknown() {
         let before: Vec<_> = (1..=3).map(|i| sample(i * 1000, 100 + i)).collect();
         let after: Vec<_> = (5..=7).map(|i| sample(i * 1000, 500 + i)).collect();
-        let v = verify(
-            &result(Some(64)),
-            &before,
-            &after,
-            Some((Some(1000), Some(1064))),
-        );
+        let mut close = result(Some(64));
+        close.action_kind = ActionKind::RequestNormalClose;
+        let v = verify(&close, &before, &after, Some((Some(1000), Some(1064))));
         let available = &v.comparisons[0];
         assert_eq!(available.metric, Metric::PhysicalAvailableBytes);
         assert_eq!(available.outcome, Outcome::Improved);
@@ -191,7 +194,7 @@ mod tests {
         );
         assert_eq!(shrunk.volume.unwrap().gained_bytes, None);
 
-        let single = verify(&result(None), &before[2..], &after[..1], None);
+        let single = verify(&close, &before[2..], &after[..1], None);
         assert_eq!(single.comparisons[0].outcome, Outcome::NeedsMoreMeasurement);
         // Only limitations that apply to this action and measurement are listed.
         assert_eq!(single.limitations.len(), 1);

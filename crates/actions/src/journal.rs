@@ -177,17 +177,21 @@ pub fn recover(journal: &Journal) -> io::Result<RecoveryReport> {
         for r in records {
             last.insert((r.plan_id.clone(), r.item_index), r);
         }
-        for r in last
-            .into_values()
-            .filter(|r| r.phase == JournalPhase::Started)
-        {
-            journal.append(&JournalRecord {
-                schema_version: SCHEMA_VERSION,
-                phase: JournalPhase::NeedsInspection,
-                outcome: None,
-                at_unix_ms: unix_ms(),
-                ..r.clone()
-            })?;
+        for r in last.into_values().filter(|r| {
+            matches!(
+                r.phase,
+                JournalPhase::Started | JournalPhase::NeedsInspection
+            )
+        }) {
+            if r.phase == JournalPhase::Started {
+                journal.append(&JournalRecord {
+                    schema_version: SCHEMA_VERSION,
+                    phase: JournalPhase::NeedsInspection,
+                    outcome: None,
+                    at_unix_ms: unix_ms(),
+                    ..r.clone()
+                })?;
+            }
             report.needs_inspection.push(InterruptedItem {
                 plan_id: r.plan_id,
                 fingerprint: r.fingerprint,

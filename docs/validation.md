@@ -10,7 +10,7 @@
 - Check that cloud payloads omit process names, PIDs, creation times, boot IDs and session identifiers.
 - Build the Windows executable and upload only the binary, not measurements or configuration.
 
-The workflow initially commits rustfmt changes and Cargo.lock before testing. Tests check out that resulting commit, not an unformatted or differently resolved working tree. A fast-forward-only push prevents overwriting concurrent work. A failed job must not be reported as successful validation.
+The workflow validates pushes and pull requests with read-only permissions. It checks formatting and the committed lockfile, without pushing changes or replacing the revision under review. A failed job must not be reported as successful validation.
 
 ## Manual native acceptance — NOT completed by CI
 
@@ -32,7 +32,7 @@ A live provider test incurs provider usage and must be explicitly authorized. No
 - Collect a documented boot identity before enabling persistent cross-boot history.
 - Validate the live model and JSON/tool contract on the user's account.
 - Add representative observation windows, missing sensor coverage and diagnostic evaluation fixtures.
-- Add process CPU, E/S and process-tree inspection without weakening identity checks.
+- Evaluate existing process CPU, E/S and process-tree inspection on representative workloads.
 - Replace the narrow finding-selection output with richer, locally validated explanation contracts.
 
-Storage, controlled actions, GUI, installer, persistent memory, MFT and Tavily remain later work. No item in this list is claimed as already implemented or validated.
+Metadata storage scans and controlled actions are implemented with bounded scope; see [storage](storage.md), [actions](actions.md) and [review status](review-status.md). GUI, installer, persistent history, MFT and Tavily remain later work.

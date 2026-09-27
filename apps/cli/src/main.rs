@@ -4,7 +4,8 @@ mod text;
 use clap::{Parser, Subcommand};
 use credentials::{Credentials, Source};
 use pcagent_actions::{
-    approve_locally, Journal, LocalSession, ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
+    approve_locally, recover, ActionCancellation, ActionKind, Journal, LocalSession,
+    ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
 use pcagent_agent::{
     cloud_observation, investigate, local_report, verify_action, ActionDesk, AgentError, Config,
@@ -23,7 +24,10 @@ use std::{
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -41,7 +45,7 @@ approve a proposed action (diagnose --allow-cloud --propose-actions)."#;
 #[command(
     name = "pcagent",
     version,
-    about = "Windows investigation prototype: explains what is slowing your PC down, read-only.",
+    about = "Windows investigation prototype: local diagnosis and explicitly approved actions.",
     after_help = EXAMPLES
 )]
 struct Args {
@@ -59,11 +63,13 @@ enum Command {
         #[arg(long,default_value_t=10,value_parser=clap::value_parser!(u16).range(1..=50))]
         limit: u16,
     },
-    /// List readable processes ranked by working set. Never terminates a process.
+    /// List readable processes ranked by a selected resource. Never terminates a process.
     Processes {
         /// Number of processes to show (1-50).
         #[arg(long,default_value_t=10,value_parser=clap::value_parser!(u16).range(1..=50))]
         limit: u16,
+        #[arg(long, default_value="working_set", value_parser=["working_set", "private_commit", "cpu", "io_read", "io_write"])]
+        sort_by: String,
     },
     /// Find the largest files or folders in one folder (reads metadata only; never follows links).
     Storage {
@@ -139,8 +145,13 @@ fn review_actions(
     }
     let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
     let session = LocalSession::new();
+    let mut cancelled = false;
     for mut p in pending {
         let plan_id = p.plan.plan_id().to_string();
+        if cancelled {
+            results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "cancelled"}));
+            continue;
+        }
         let mut err = io::stderr().lock();
         writeln!(
             err,
@@ -173,7 +184,7 @@ fn review_actions(
                 err,
                 "  Not executed: approval requires an interactive terminal without --json."
             )?;
-            results.push(json!({"plan_id": plan_id, "decision": "not_reviewed"}));
+            results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "not_reviewed"}));
             continue;
         }
         write!(
@@ -186,15 +197,20 @@ fn review_actions(
         io::stdin().lock().read_line(&mut answer)?;
         if answer.trim() != "yes" {
             eprintln!("  Skipped.");
-            results.push(json!({"plan_id": plan_id, "decision": "declined"}));
+            results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "declined"}));
             continue;
         }
         let volume_root = p.plan.items().iter().find_map(|i| match &i.target {
             ResolvedTarget::CleanupAdapter(c) => Some(c.root.clone()),
             _ => None,
         });
-        eprintln!("  Measuring before the action...");
-        let before = sample_system(collector);
+        let cancellation = ActionCancellation::begin()?;
+        let measure_system = p.plan.action_kind() == ActionKind::RequestNormalClose;
+        let before = if measure_system {
+            sample_system(collector, cancellation.flag())
+        } else {
+            Vec::new()
+        };
         let free_before = volume_root.as_deref().and_then(free_bytes);
         let token = approve_locally(&mut p.plan, &session, MAX_APPROVAL_TTL)?;
         let mut plan = p.plan.clone();
@@ -202,15 +218,21 @@ fn review_actions(
             &mut plan,
             &token,
             &session,
-            &AtomicBool::new(false),
+            cancellation.flag(),
             before.last().map(|s| s.id.clone()),
         );
         match outcome {
             Ok(mut result) => {
                 eprintln!("  Result: {}", text::words(&result.overall));
-                eprintln!("  Measuring after the action...");
-                std::thread::sleep(SETTLE_AFTER_ACTION);
-                let after = sample_system(collector);
+                if measure_system && !cancellation.flag().load(Ordering::SeqCst) {
+                    eprintln!("  Measuring after the action...");
+                    std::thread::sleep(SETTLE_AFTER_ACTION);
+                }
+                let after = if measure_system {
+                    sample_system(collector, cancellation.flag())
+                } else {
+                    Vec::new()
+                };
                 let free_after = volume_root.as_deref().and_then(free_bytes);
                 if let Some(last) = after.last() {
                     result.record_after_measurement(last.id.clone());
@@ -222,21 +244,23 @@ fn review_actions(
                     volume_root.map(|_| (free_before, free_after)),
                 );
                 text::verification(&mut io::stderr().lock(), &verification)?;
-                results.push(json!({"plan_id": plan_id, "decision": "approved", "result": result, "verification": verification}));
+                results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "approved", "result": result, "verification": verification}));
             }
             Err(e) => {
                 eprintln!("  Refused: {e}");
                 results.push(
-                    json!({"plan_id": plan_id, "decision": "approved", "error": e.to_string()}),
+                    json!({"plan_id": plan_id, "plan": p.plan, "decision": "approved", "error": e.to_string()}),
                 );
             }
         }
+        cancelled = cancellation.flag().load(Ordering::SeqCst);
     }
     Ok(results)
 }
 const SETTLE_AFTER_ACTION: Duration = Duration::from_secs(2);
-fn sample_system(collector: &mut Collector) -> Vec<Snapshot> {
+fn sample_system(collector: &mut Collector, cancel: &AtomicBool) -> Vec<Snapshot> {
     (0..VERIFY_SAMPLES)
+        .take_while(|_| !cancel.load(Ordering::SeqCst))
         .map(|_| collector.snapshot(false, 1))
         .collect()
 }
@@ -251,7 +275,7 @@ fn write_json(value: &impl Serialize) -> Result<()> {
 }
 /// Authorizes a folder for scanning, with messages that name the folder the user typed.
 fn authorize_folder(storage: &StorageService, root: &Path) -> Result<pcagent_storage::ScopeInfo> {
-    let shown = root.display();
+    let shown = text::path(root);
     match fs::metadata(root) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             return Err(format!("Folder not found: {shown}").into())
@@ -336,7 +360,7 @@ fn print_doctor(
         ("Safety", String::new()),
         (
             "  Default mode",
-            "read-only; nothing is sent without --allow-cloud".to_owned(),
+            "read-only by default; cloud and actions require explicit consent".to_owned(),
         ),
         (
             "  Actions",
@@ -361,9 +385,24 @@ fn print_doctor(
 }
 fn run(args: Args) -> Result<u8> {
     match args.command {
-        Command::Snapshot { limit } | Command::Processes { limit } => {
+        Command::Snapshot { limit } | Command::Processes { limit, .. } => {
             let processes_only = matches!(args.command, Command::Processes { .. });
-            let sample = Collector::new().snapshot(true, usize::from(limit));
+            let sort = match &args.command {
+                Command::Processes { sort_by, .. } => {
+                    pcagent_telemetry::ProcessSort::parse(sort_by).unwrap_or_default()
+                }
+                _ => pcagent_telemetry::ProcessSort::WorkingSet,
+            };
+            let mut collector = Collector::new();
+            if matches!(
+                sort,
+                pcagent_telemetry::ProcessSort::Cpu
+                    | pcagent_telemetry::ProcessSort::IoRead
+                    | pcagent_telemetry::ProcessSort::IoWrite
+            ) {
+                collector.snapshot_sorted(true, usize::from(limit), sort);
+            }
+            let sample = collector.snapshot_sorted(true, usize::from(limit), sort);
             if args.json {
                 write_json(&sample)?;
             } else {
@@ -417,7 +456,7 @@ fn run(args: Args) -> Result<u8> {
                 let report = json!({"schema_version":1,"native_collector_available":cfg!(windows),
                     "compiled_os":std::env::consts::OS,"compiled_arch":std::env::consts::ARCH,
                     "product_target":"Windows 11 x64","windows_version_check":"not_implemented",
-                    "read_only":true,"persistent_history":false,"actions_available":true,
+                    "read_only":true,"persistent_history":false,"actions_available":cfg!(windows),
                     "nebius_key_configured":creds.get("NEBIUS_API_KEY").is_some(),"nebius_model_configured":creds.get("NEBIUS_MODEL_ID").is_some(),
                     "credentials_file_found":creds.file_found(),
                     "cloud_check":match &cloud_result { None=>"not_requested".to_string(),Some(Ok(()))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
@@ -471,11 +510,11 @@ fn run(args: Args) -> Result<u8> {
             let prefs = match &preferences {
                 Some(path) => fs::read_to_string(path)
                     .map_err(|e| {
-                        format!("Cannot read the preferences file {}: {e}", path.display())
+                        format!("Cannot read the preferences file {}: {e}", text::path(path))
                     })
                     .and_then(|json| {
                         Preferences::from_json(&json).map_err(|e| {
-                            format!("Invalid preferences file {}: {e}", path.display())
+                            format!("Invalid preferences file {}: {e}", text::path(path))
                         })
                     })?,
                 None => Preferences::default(),
@@ -532,9 +571,21 @@ fn run(args: Args) -> Result<u8> {
             let policy = Policy::from_env();
             let mut workstation =
                 Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
+            let mut recovery = None;
             if propose_actions {
                 let dir = journal_dir.unwrap_or_else(|| local_data_dir().join("journal"));
-                workstation.enable_action_proposals(ActionDesk::native(Journal::open(dir)?));
+                let journal = Journal::open(dir)?;
+                let recovered = recover(&journal)?;
+                if !recovered.needs_inspection.is_empty()
+                    || recovered.journals_unreadable > 0
+                    || recovered.malformed_lines > 0
+                    || recovered.truncated
+                {
+                    eprintln!("Action journal: {} interrupted items need manual inspection; {} unreadable journals, {} malformed lines. No action was replayed.",
+                        recovered.needs_inspection.len(), recovered.journals_unreadable, recovered.malformed_lines);
+                }
+                recovery = Some(recovered);
+                workstation.enable_action_proposals(ActionDesk::native(journal));
             }
             let report = match &mut model {
                 Some(model) => {
@@ -549,32 +600,40 @@ fn run(args: Args) -> Result<u8> {
                 }
                 None => local_report(&initial),
             };
-            for job in workstation.take_jobs() {
+            let jobs = workstation.take_jobs();
+            for job in &jobs {
                 job.cancel();
+            }
+            for job in jobs {
+                job.wait()?;
             }
             let actions = workstation.take_actions();
             drop(workstation);
-            if args.json {
-                write_json(&report)?;
-            } else {
+            if !args.json {
                 text::report(&mut io::stdout().lock(), &report, verbose)?;
             }
+            let mut results = Vec::new();
             if let Some((desk, pending)) = actions {
                 let protection = PolicyProtection {
                     policy: &policy,
                     prefs: &prefs,
                 };
-                let results =
-                    review_actions(&desk, pending, &protection, &mut collector, args.json)?;
-                if args.json && !results.is_empty() {
-                    write_json(&json!({ "actions": results }))?;
-                }
+                results = review_actions(&desk, pending, &protection, &mut collector, args.json)?;
             }
-            Ok(if report.error.is_none() && report.status == Status::Ok {
-                0
-            } else {
-                3
-            })
+            if args.json {
+                write_json(&diagnosis_json(&report, &results, recovery.as_ref()))?;
+            }
+            let action_failed = results.iter().any(|r| {
+                r.get("error").is_some()
+                    || r.get("result").is_some_and(|v| v["overall"] != "completed")
+            });
+            Ok(
+                if report.error.is_none() && report.status == Status::Ok && !action_failed {
+                    0
+                } else {
+                    3
+                },
+            )
         }
     }
 }
@@ -582,16 +641,85 @@ fn main() -> ExitCode {
     match run(Args::parse()) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("Error: {error}");
+            eprintln!("Error: {}", text::clean(&error.to_string()));
             ExitCode::from(2)
         }
     }
+}
+
+fn diagnosis_json(
+    report: &pcagent_agent::Investigation,
+    actions: &[serde_json::Value],
+    recovery: Option<&pcagent_actions::RecoveryReport>,
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(report).expect("serializable report");
+    value["actions"] = json!(actions);
+    value["recovery"] = json!(recovery);
+    value
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    #[cfg(windows)]
+    #[test]
+    fn json_report_retains_pending_manifest_without_approving_or_executing() {
+        use pcagent_actions::{ActionIntent, Broker, NativeEffects, NativeGuard, DEFAULT_PLAN_TTL};
+        let dir = std::env::temp_dir().join(pcagent_shared::new_id("pcagent-cli-plan-test"));
+        let journal = Journal::open(&dir).unwrap();
+        let policy = Policy::default();
+        let prefs = Preferences::default();
+        let protection = PolicyProtection {
+            policy: &policy,
+            prefs: &prefs,
+        };
+        let targets = pcagent_agent::FixedTargets::default();
+        let effects = NativeEffects::default();
+        let plan = Broker {
+            resolver: &targets,
+            guard: &NativeGuard,
+            protection: &protection,
+            effects: &effects,
+            journal: &journal,
+            synthetic_cache: None,
+            plan_ttl: DEFAULT_PLAN_TTL,
+        }
+        .prepare_plan(&ActionIntent {
+            action_kind: ActionKind::OpenSettingsPage,
+            target_refs: vec!["storagesense".into()],
+            evidence_refs: vec!["ev-fixture".into()],
+        })
+        .unwrap();
+        let desk = ActionDesk::native(journal);
+        let actions = review_actions(
+            &desk,
+            vec![PendingPlan {
+                plan,
+                targets,
+                synthetic_cache: None,
+            }],
+            &protection,
+            &mut Collector::new(),
+            true,
+        )
+        .unwrap();
+        let report = local_report(&Snapshot::empty("fixture"));
+        let text = serde_json::to_string(&diagnosis_json(&report, &actions, None)).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(document["actions"][0]["decision"], "not_reviewed");
+        assert_eq!(document["actions"][0]["plan"]["state"], "awaiting_approval");
+        assert_eq!(
+            document["actions"][0]["plan"]["items"][0]["target_ref"],
+            "storagesense"
+        );
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "no action journal without approval"
+        );
+        fs::remove_dir(&dir).unwrap();
+    }
     #[test]
     fn cli_schema_is_consistent() {
         Args::command().debug_assert();

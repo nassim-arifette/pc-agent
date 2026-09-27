@@ -453,7 +453,12 @@ fn process(
     tracked.counters = Some(now);
     Ok(((pid, created), mem.map(|m| m.0)))
 }
-fn collect_processes(result: &mut Snapshot, collector: &mut Collector, limit: usize) {
+fn collect_processes(
+    result: &mut Snapshot,
+    collector: &mut Collector,
+    limit: usize,
+    sort: crate::ProcessSort,
+) {
     // A fixed upper bound prevents unbounded allocation; a full buffer is explicitly partial.
     let mut pids = vec![0_u32; 16384];
     let capacity_bytes = (pids.len() * size_of::<u32>()) as u32;
@@ -479,9 +484,15 @@ fn collect_processes(result: &mut Snapshot, collector: &mut Collector, limit: us
     for &pid in &pids {
         let row = OwnedHandle::open(pid).and_then(|h| process(&h, pid, collector, processors));
         let row = match row {
-            Ok((key, mem)) => {
+            Ok((key, _mem)) => {
                 seen.insert(key);
-                mem.map(|ws| (key, ws))
+                Ok((
+                    key,
+                    collector
+                        .registry
+                        .get(key)
+                        .and_then(|t| sort.rank(&t.evidence)),
+                ))
             }
             Err(status) => Err(status),
         };
@@ -514,7 +525,7 @@ fn collect_processes(result: &mut Snapshot, collector: &mut Collector, limit: us
     }
     result.process_coverage = coverage;
     result.limitations.extend([
-        "Process list is ranked by readable working set; inaccessible processes may be larger.".into(),
+        format!("Process list is ranked by {}; unknown values sort last and inaccessible processes may be larger.", sort.label()),
         "Working sets include shared pages and must not be summed as exclusive physical RAM.".into(),
         "Process identities are session-scoped (PID plus creation time).".into(),
         "Process CPU and I/O are deltas since this collector's previous observation of the same instance; the first observation is unknown.".into(),
@@ -527,6 +538,7 @@ pub(super) fn collect(
     include_processes: bool,
     limit: usize,
     reuse_cpu: bool,
+    sort: crate::ProcessSort,
 ) -> Snapshot {
     let mut result = Snapshot::empty(&collector.session_id);
     let fresh = start_counters(collector, reuse_cpu);
@@ -534,7 +546,7 @@ pub(super) fn collect(
     collect_memory(&mut result);
     collect_counters(&mut result, collector, fresh && !reuse_cpu);
     if include_processes {
-        collect_processes(&mut result, collector, limit);
+        collect_processes(&mut result, collector, limit, sort);
     }
     result.limitations.push("Short sample: no sustained contention, memory leak or causal diagnosis can be established.".into());
     result

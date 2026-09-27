@@ -1,5 +1,5 @@
 //! The only unsafe boundary: least-privilege handles, no elevation, no forced termination, no
-//! shell interpreter, no permanent deletion.
+//! shell interpreter. Permanent deletion is confined to the approved synthetic cache manifest.
 use crate::{
     explorer_select_arg, same_object, verify_recycled, BaselineProtection, EffectError,
     EffectOutcome, FileIdentity, FileTarget, ProcessIdentity, ProcessTarget, ProtectionCheck,
@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     ptr::{null, null_mut},
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Duration,
 };
 use windows_sys::{
@@ -27,9 +27,10 @@ use windows_sys::{
             WAIT_OBJECT_0,
         },
         Storage::FileSystem::{
-            CreateFileW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-            GetVolumeInformationByHandleW, BY_HANDLE_FILE_INFORMATION, DELETE,
-            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+            CreateFileW, FileDispositionInfo, GetFileInformationByHandle,
+            GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, SetFileInformationByHandle,
+            BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
             FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
             VOLUME_NAME_DOS,
@@ -61,6 +62,42 @@ use windows_sys::{
 };
 
 pub(crate) struct OwnedHandle(HANDLE);
+pub(crate) static ACTION_CANCELLED: AtomicBool = AtomicBool::new(false);
+static ACTION_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+unsafe extern "system" fn action_interrupt(event: u32) -> BOOL {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+    if matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT) {
+        ACTION_CANCELLED.store(true, Ordering::SeqCst);
+        1
+    } else {
+        0
+    }
+}
+pub(crate) fn begin_action_cancellation() -> std::io::Result<()> {
+    if ACTION_HANDLER_INSTALLED.swap(true, Ordering::SeqCst) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "an action is already active",
+        ));
+    }
+    ACTION_CANCELLED.store(false, Ordering::SeqCst);
+    // SAFETY: the static callback only writes an atomic; registration is balanced by Drop.
+    if unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(action_interrupt), 1)
+    } == 0
+    {
+        ACTION_HANDLER_INSTALLED.store(false, Ordering::SeqCst);
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+pub(crate) fn end_action_cancellation() {
+    // SAFETY: unregisters the same static callback installed by begin_action_cancellation.
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(action_interrupt), 0);
+    }
+    ACTION_HANDLER_INSTALLED.store(false, Ordering::SeqCst);
+}
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         // SAFETY: the handle was returned by CreateFileW/OpenProcess and has one owning wrapper.
@@ -142,8 +179,53 @@ fn final_path(h: &OwnedHandle) -> Result<String, Status> {
     Ok(text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned())
 }
 fn same_path(a: &str, b: &str) -> bool {
-    a.trim_end_matches('\\')
-        .eq_ignore_ascii_case(b.trim_end_matches('\\'))
+    a.trim_start_matches(r"\\?\")
+        .trim_end_matches('\\')
+        .eq_ignore_ascii_case(b.trim_start_matches(r"\\?\").trim_end_matches('\\'))
+}
+
+/// Pin each directory from the volume root downwards to block ancestor renames. Attribute-only
+/// reparse changes are still possible: cleanup also matches the complete approved manifest and
+/// performs deletion through the verified file handles, never through a subsequently resolved path.
+pub(crate) fn pin_directories(root: &Path) -> Result<(Vec<OwnedHandle>, FileIdentity), Refusal> {
+    let mut pins = Vec::new();
+    let mut observed = None;
+    for path in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        let h = open_with(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ).map_err(|code| {
+            Refusal::Unverifiable {
+                status: status_of(code),
+            }
+        })?;
+        let id = identity(&h, path).map_err(|status| Refusal::Unverifiable { status })?;
+        if id.is_reparse_point || !id.is_directory {
+            return Err(Refusal::ReparsePoint);
+        }
+        observed = Some(id);
+        pins.push(h);
+    }
+    Ok((pins, observed.ok_or(Refusal::AdapterPreconditionFailed)?))
+}
+
+/// Only the synthetic-cache adapter calls this, with a continuously held verified file pin.
+pub(crate) fn delete_synthetic_file(pin: OwnedHandle) -> std::io::Result<()> {
+    let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: pin owns a DELETE handle; the buffer has the documented structure and size.
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            pin.0,
+            FileDispositionInfo,
+            (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    drop(pin);
+    Ok(())
 }
 /// Identity of the handle's object (reparse flag from attributes only) and its hard link count.
 fn handle_info(h: &OwnedHandle) -> Result<(FileIdentity, u32), Status> {

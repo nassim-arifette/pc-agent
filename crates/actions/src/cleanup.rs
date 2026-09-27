@@ -1,9 +1,13 @@
+use crate::{CleanupTarget, ItemOutcome, Refusal};
 use serde::Serialize;
+use std::sync::atomic::AtomicBool;
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
+#[cfg(windows)]
+use {crate::SkipReason, std::sync::atomic::Ordering};
 
 pub const SYNTHETIC_DEMO_CACHE_ID: &str = "synthetic_demo_cache";
 const MARKER: &str = "PCAGENT_SYNTHETIC_DEMO_CACHE.txt";
@@ -63,12 +67,16 @@ impl SyntheticDemoCache {
             }
             f.sync_all()?;
         }
-        Ok(cache)
+        Self::open(cache.root)
     }
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let cache = Self { root: root.into() };
         cache.verify()?;
-        Ok(cache)
+        let root = fs::canonicalize(cache.root)?;
+        // The action catalog uses ordinary absolute Windows paths, not device paths.
+        #[cfg(windows)]
+        let root = PathBuf::from(root.to_string_lossy().trim_start_matches(r"\\?\"));
+        Ok(Self { root })
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -80,7 +88,8 @@ impl SyntheticDemoCache {
             return Err(bad());
         }
         let marker = self.root.join(MARKER);
-        if !fs::symlink_metadata(&marker)?.is_file() {
+        let meta = fs::symlink_metadata(&marker)?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
             return Err(bad());
         }
         let mut text = String::new();
@@ -96,7 +105,13 @@ impl SyntheticDemoCache {
     fn regular_files(&self) -> io::Result<Vec<(PathBuf, u64)>> {
         self.verify()?;
         let mut out = Vec::new();
-        for entry in fs::read_dir(&self.root)?.take(MAX_ENTRIES) {
+        for (index, entry) in fs::read_dir(&self.root)?.enumerate() {
+            if index >= MAX_ENTRIES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "synthetic cache entry limit exceeded",
+                ));
+            }
             let entry = entry?;
             let meta = fs::symlink_metadata(entry.path())?;
             if meta.is_file() && !meta.file_type().is_symlink() && entry.file_name() != MARKER {
@@ -114,17 +129,159 @@ impl SyntheticDemoCache {
                 .try_fold(0_u64, |acc, (_, n)| acc.checked_add(*n)),
         })
     }
-    pub(crate) fn clean(&self) -> io::Result<CacheInventory> {
-        let mut removed = CacheInventory {
-            files: 0,
-            bytes: Some(0),
-        };
-        for (path, size) in self.regular_files()? {
-            fs::remove_file(path)?;
-            removed.files += 1;
-            removed.bytes = removed.bytes.and_then(|b| b.checked_add(size));
+    pub(crate) fn manifest(&self) -> Result<CleanupTarget, Refusal> {
+        #[cfg(windows)]
+        {
+            Ok(self.pin()?.target)
         }
-        Ok(removed)
+        #[cfg(not(windows))]
+        {
+            Err(Refusal::Unverifiable {
+                status: pcagent_shared::Status::Unsupported,
+            })
+        }
+    }
+    pub(crate) fn validate(&self, expected: &CleanupTarget) -> Result<(), Refusal> {
+        let current = self.manifest()?;
+        if matches_manifest(&current, expected) {
+            Ok(())
+        } else {
+            Err(Refusal::AdapterPreconditionFailed)
+        }
+    }
+    pub(crate) fn clean(&self, expected: &CleanupTarget, cancel: &AtomicBool) -> ItemOutcome {
+        #[cfg(windows)]
+        {
+            let pinned = match self.pin() {
+                Ok(p) if matches_manifest(&p.target, expected) => p,
+                Ok(_) => {
+                    return ItemOutcome::Refused {
+                        reason: Refusal::AdapterPreconditionFailed,
+                    }
+                }
+                Err(reason) => return ItemOutcome::Refused { reason },
+            };
+            let mut removed = CacheInventory {
+                files: 0,
+                bytes: Some(0),
+            };
+            for (file, pin) in pinned.target.manifest.iter().zip(pinned.files) {
+                if cancel.load(Ordering::SeqCst) {
+                    return if removed.files == 0 {
+                        ItemOutcome::Skipped {
+                            reason: SkipReason::Cancelled,
+                        }
+                    } else {
+                        ItemOutcome::Partial {
+                            status: pcagent_shared::Status::Partial,
+                            detail:
+                                "cleanup cancelled; remaining approved files were left in place"
+                                    .into(),
+                            files_removed: removed.files,
+                            bytes_removed: removed.bytes,
+                        }
+                    };
+                }
+                if let Err(e) = crate::windows::delete_synthetic_file(pin) {
+                    return ItemOutcome::Partial {
+                        status: pcagent_shared::Status::Error,
+                        detail: format!(
+                            "cleanup stopped at {} ({:?})",
+                            file.path.display(),
+                            e.kind()
+                        ),
+                        files_removed: removed.files,
+                        bytes_removed: removed.bytes,
+                    };
+                }
+                removed.files += 1;
+                removed.bytes = removed
+                    .bytes
+                    .and_then(|b| b.checked_add(file.identity.size_bytes));
+            }
+            ItemOutcome::Completed {
+                detail: Some(format!("{} synthetic files removed", removed.files)),
+                bytes_removed: removed.bytes,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (expected, cancel);
+            ItemOutcome::Refused {
+                reason: Refusal::Unverifiable {
+                    status: pcagent_shared::Status::Unsupported,
+                },
+            }
+        }
+    }
+}
+
+fn matches_manifest(a: &CleanupTarget, b: &CleanupTarget) -> bool {
+    a.adapter_id == b.adapter_id
+        && a.root == b.root
+        && crate::same_object(&a.root_identity, &b.root_identity)
+        && a.marker == b.marker
+        && a.manifest == b.manifest
+        && a.files == b.files
+        && a.bytes == b.bytes
+}
+
+#[cfg(windows)]
+struct PinnedCache {
+    target: CleanupTarget,
+    _directories: Vec<crate::windows::OwnedHandle>,
+    _marker: crate::windows::OwnedHandle,
+    files: Vec<crate::windows::OwnedHandle>,
+}
+
+#[cfg(windows)]
+impl SyntheticDemoCache {
+    fn pin(&self) -> Result<PinnedCache, Refusal> {
+        use crate::{windows, FileTarget};
+        let (_directories, root_identity) = windows::pin_directories(&self.root)?;
+        let observe = |path: PathBuf| -> Result<FileTarget, Refusal> {
+            let identity = windows::observe_file(&path)
+                .map_err(|status| Refusal::Unverifiable { status })?
+                .ok_or(Refusal::TargetMissing)?;
+            Ok(FileTarget { path, identity })
+        };
+        let marker = observe(self.root.join(MARKER))?;
+        let _marker = windows::pin_verified(&marker)?;
+        let mut manifest = self
+            .regular_files()
+            .map_err(|_| Refusal::AdapterPreconditionFailed)?
+            .into_iter()
+            .map(|(path, _)| observe(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        manifest.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut identities = std::collections::HashSet::new();
+        let mut pins = Vec::with_capacity(manifest.len());
+        for file in &manifest {
+            if file.path.parent() != Some(self.root.as_path())
+                || !identities.insert((file.identity.volume_serial, file.identity.file_id))
+            {
+                return Err(Refusal::AdapterPreconditionFailed);
+            }
+            pins.push(windows::pin_verified(file)?);
+        }
+        let files = manifest.len() as u64;
+        let bytes = manifest
+            .iter()
+            .try_fold(0_u64, |n, f| n.checked_add(f.identity.size_bytes));
+        Ok(PinnedCache {
+            target: CleanupTarget {
+                adapter_id: SYNTHETIC_DEMO_CACHE_ID.into(),
+                root: self.root.clone(),
+                root_identity,
+                marker,
+                manifest,
+                files,
+                bytes,
+            },
+            _directories,
+            _marker,
+            files: pins,
+        })
     }
 }
 fn valid_name(name: &str) -> bool {
