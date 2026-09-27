@@ -50,12 +50,46 @@ pub enum Metric {
     ProcessIoReadBytes,
     ProcessIoWriteBytes,
     ProcessIoOtherBytes,
+    /// Busiest logical processor over the window, from processor utility: work normalized to
+    /// nominal frequency, so turbo can exceed 10 000.
+    CpuBusiestCoreBasisPoints,
+    /// Average seconds per completed read across all physical disks over the window.
+    DiskReadLatencyMicroseconds,
+    DiskWriteLatencyMicroseconds,
+    /// Share of the window during which the aggregated physical disks were idle.
+    DiskIdleBasisPoints,
+    /// Instantaneous outstanding requests at the end of the window; not a rate.
+    DiskQueueLength,
+    /// Pages read from disk to resolve hard faults (includes mapped files, not only paging).
+    HardFaultPagesPerSecondX100,
+    /// Utilization of one GPU engine type (busiest engine of that type) over the window.
+    GpuEngineBasisPoints,
+    /// Busiest GPU engine of any type over the window.
+    GpuBusiestEngineBasisPoints,
 }
 impl Metric {
     pub fn unit(self) -> &'static str {
         match self {
             Self::CpuBusyBasisPoints | Self::ProcessCpuBasisPoints => "basis_points_of_total_cpu",
-            _ => "bytes",
+            Self::CpuBusiestCoreBasisPoints => "basis_points_of_one_logical_processor",
+            Self::DiskReadLatencyMicroseconds | Self::DiskWriteLatencyMicroseconds => {
+                "microseconds"
+            }
+            Self::DiskIdleBasisPoints => "basis_points_of_window",
+            Self::DiskQueueLength => "outstanding_requests",
+            Self::HardFaultPagesPerSecondX100 => "pages_per_second_x100",
+            Self::GpuEngineBasisPoints | Self::GpuBusiestEngineBasisPoints => {
+                "basis_points_of_engine_time"
+            }
+            Self::PhysicalTotalBytes
+            | Self::PhysicalAvailableBytes
+            | Self::SystemCommitBytes
+            | Self::SystemCommitLimitBytes
+            | Self::ProcessWorkingSetBytes
+            | Self::ProcessPrivateCommitBytes
+            | Self::ProcessIoReadBytes
+            | Self::ProcessIoWriteBytes
+            | Self::ProcessIoOtherBytes => "bytes",
         }
     }
 }
@@ -492,6 +526,15 @@ mod tests {
             "basis_points_of_total_cpu"
         );
         assert_eq!(Metric::ProcessIoOtherBytes.unit(), "bytes");
+        assert_eq!(Metric::DiskReadLatencyMicroseconds.unit(), "microseconds");
+        assert_eq!(
+            Metric::HardFaultPagesPerSecondX100.unit(),
+            "pages_per_second_x100"
+        );
+        assert_eq!(
+            serde_json::to_value(Metric::HardFaultPagesPerSecondX100).unwrap(),
+            "hard_fault_pages_per_second_x100"
+        );
         let json = serde_json::to_value(Metric::ProcessIoReadBytes).unwrap();
         assert_eq!(json, "process_io_read_bytes");
     }

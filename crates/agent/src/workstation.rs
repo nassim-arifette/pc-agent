@@ -42,12 +42,19 @@ pub const HISTORY_METRICS: &[&str] = &[
     "physical_available_bytes",
     "system_commit_bytes",
     "cpu_busy_basis_points",
+    "cpu_busiest_core_basis_points",
+    "disk_read_latency_microseconds",
+    "disk_write_latency_microseconds",
+    "disk_idle_basis_points",
+    "disk_queue_length",
+    "hard_fault_pages_per_second_x100",
+    "gpu_busiest_engine_basis_points",
 ];
 
 pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_system_snapshot",
-        description: "Collect fresh system memory and aggregate CPU observations. No changes to the computer.",
+        description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations. No changes to the computer.",
         params: &[],
     },
     ToolSpec {

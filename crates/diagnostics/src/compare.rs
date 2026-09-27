@@ -9,13 +9,19 @@ pub enum Direction {
     HigherIsBetter,
 }
 impl Direction {
+    /// Metrics without a direction are not judged: capacities, instantaneous queue depth, disk
+    /// idle time and GPU utilization depend on how much work was requested.
     pub fn of(metric: Metric) -> Option<Self> {
         match metric {
             Metric::PhysicalAvailableBytes => Some(Self::HigherIsBetter),
             Metric::SystemCommitBytes
             | Metric::CpuBusyBasisPoints
+            | Metric::CpuBusiestCoreBasisPoints
             | Metric::ProcessWorkingSetBytes
-            | Metric::ProcessPrivateCommitBytes => Some(Self::LowerIsBetter),
+            | Metric::ProcessPrivateCommitBytes
+            | Metric::DiskReadLatencyMicroseconds
+            | Metric::DiskWriteLatencyMicroseconds
+            | Metric::HardFaultPagesPerSecondX100 => Some(Self::LowerIsBetter),
             _ => None,
         }
     }
@@ -283,6 +289,37 @@ mod tests {
             )
             .outcome,
             Outcome::NotComparable
+        );
+    }
+    #[test]
+    fn new_counters_have_deliberate_directions() {
+        for m in [
+            Metric::DiskReadLatencyMicroseconds,
+            Metric::DiskWriteLatencyMicroseconds,
+            Metric::HardFaultPagesPerSecondX100,
+            Metric::CpuBusiestCoreBasisPoints,
+        ] {
+            assert_eq!(Direction::of(m), Some(Direction::LowerIsBetter), "{m:?}");
+        }
+        for m in [
+            Metric::DiskIdleBasisPoints,
+            Metric::DiskQueueLength,
+            Metric::GpuEngineBasisPoints,
+            Metric::GpuBusiestEngineBasisPoints,
+        ] {
+            assert_eq!(Direction::of(m), None, "{m:?}");
+        }
+        let lat = Metric::DiskReadLatencyMicroseconds;
+        assert_eq!(
+            compare(
+                lat,
+                "system",
+                &series(lat, &[40_000, 42_000, 41_000], 0),
+                &series(lat, &[4_000, 5_000, 4_500], 10_000),
+                3
+            )
+            .outcome,
+            Outcome::Improved
         );
     }
     #[test]
