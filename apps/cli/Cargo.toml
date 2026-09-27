@@ -15,3 +15,4 @@ pcagent-diagnostics.workspace = true
 pcagent-agent.workspace = true
 pcagent-storage.workspace = true
 pcagent-policy.workspace = true
+pcagent-actions.workspace = true

@@ -17,6 +17,26 @@ and the fingerprint stay local. `ActionIntent::from_model_json` accepts a bounde
 (`deny_unknown_fields`); refs must match `[A-Za-z0-9._:-]{1,128}`, so paths, shell syntax or free
 text such as "fais tout" are rejected and can never produce approval.
 
+## Wiring (`pcagent-agent`, CLI)
+
+`Workstation::enable_action_proposals(ActionDesk)` adds the `prepare_action_plan` tool
+(`crates/agent/src/proposals.rs`); the CLI enables it with `diagnose --allow-cloud --propose-actions`.
+
+- Allowed kinds: `open_in_explorer` (storage `scope_id` + `item_ref`, identity observed by
+  `NativeGuard`), `open_settings_page` (allowlisted page) and `run_cleanup_adapter` (a directory the
+  policy classifies as `pcagent.synthetic_demo_cache` with a verified marker, reopened with
+  `SyntheticDemoCache::open`; refused when `permissions.reversible_only`). `recycle_selected_files`
+  and `request_normal_close` cannot be proposed; recycle remains recommendation-only.
+- Targets are resolved locally into a `FixedTargets` resolver and checked by `PolicyProtection`
+  (baseline + policy protected paths + user exclusions). The model gets `PlanModelView` only; at most
+  `MAX_PENDING_PLANS` (3) per investigation.
+- After the report, the CLI prints each plan with its local target, recovery and preconditions and
+  asks for a typed `yes` on an interactive terminal (stdin and stderr). Only then does it call
+  `approve_locally` and `Broker::execute`. With `--json` or without a terminal nothing runs
+  (`not_reviewed`). Tokens never leave the CLI process.
+- `pcagent demo-cache --mb N` (1–256) creates the marked synthetic cache under
+  `%LOCALAPPDATA%\pcagent\synthetic-demo-cache`.
+
 ## Manifest and state machine
 
 - `ActionPlan` fields follow 17.4. The fingerprint is SHA-256 (`sha2 =0.10.9`, published
