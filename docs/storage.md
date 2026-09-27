@@ -54,11 +54,13 @@ MFT/USN backend (9.2, P1) is not implemented; `ScanBackend` is the seam for it.
 
 ## Privacy
 
-Views carry `path` (full, local only), `redacted_path` (`<scope>/rel/path`, with any component
-equal to the profile directory name replaced by `<user>`) and `item_ref` (`<scan_id>:<n>`, valid for
-one scan, validated strictly by `StorageIndex::resolve`). Call `without_paths()` on
-`LargestItemsPage` / `StorageOverview` before anything leaves the machine. File names remain
-untrusted text and may still be personal; `redacted_path` is minimization, not anonymity.
+Views carry `path` (full, local only), `redacted_path` (relative local names), `item_ref`
+(`<scan_id>:<n>`, strictly resolved for one scan), `alias` (`file-N` or `dir-N`), `alias_path`
+(`<scope>/dir-N/file-M`) and `parent_ref`. Aliases are distinct within a scan; references identify
+them across scopes/scans. Before transmission, use **both** `without_paths()` and `redact_names()`:
+the latter replaces relative names with the alias path. `StorageContext::project_page` adds only
+trusted local classification/context and explicitly authorized basenames. Local report objects
+carry real paths separately and must never be serialized as cloud tool outputs.
 
 ## Public API (for integration)
 
@@ -71,6 +73,7 @@ scan_blocking(&self, scope_id, &ScanOptions, &mut dyn FnMut(&ScanProgress)) -> R
 cancel(&self, scope_id) -> Result<bool, _>;  index(&self, scope_id) -> Result<Arc<StorageIndex>, _>
 get_storage_overview(&self, scope_id) -> Result<StorageOverview, _>
 get_largest_items(&self, scope_id, ItemKind, offset, limit /* 1..=100 */) -> Result<LargestItemsPage, _>
+compare_content(&self, scope_id, &ContentOptions) -> Result<ContentComparison, _> // explicit local consent only
 ScanJob::{cancel, progress, is_finished, wait}
 StorageIndex::{totals, item, resolve, local_path, deduplicated_totals, largest_items, summary}
 dedup_parent_child(&[PathBuf]) -> Vec<PathBuf>;  redact_path(root, path, profile) -> String
@@ -99,6 +102,48 @@ Not implemented: MFT/USN backend, persistent (SQLite) index, incremental trackin
 estimation, VHD/VHDX rules, and treating fully-hydrated cloud files (which are reparse points)
 as attributed; they currently count as `reparse_skipped`.
 
-## Cloud-bound names
+## Context, names and content comparisons
 
-Agent tools apply `redact_names` on top of `without_paths`: only placeholders (`<scope>`, `<user>`) and generic directory names from `GENERIC_NAMES` (e.g. `node_modules`, `target`, `.cache`) stay visible. Every other component becomes `*`, keeping a short extension on the last one (`<scope>/*/*.pdf`).
+`Policy::item_context` returns a role, containing-folder role, recognized personal category,
+application hint and conditional adapter recovery information. All explanatory strings come from
+local rules. Application identification is a registered path-pattern match, not an installed-app
+or ownership check. Backup and Recycle Bin availability remain unknown. This is descriptive
+context, not an action authorization; existing action revalidation still applies. Propagation
+of hidden/system attributes to policy remains open (review S03).
+
+`--share-file-names` is a separate opt-in requiring `--scan-root` and `--preview-cloud` or
+`--allow-cloud`. A finite allowlist contains the largest 20 files and 20 folders per scope and
+their ancestors, at most 200 basenames total and 512 UTF-8 bytes per name. The root name and
+absolute paths are excluded. Preview prints that list and representative tool projections
+without network access. The cloud run prints its actual list to stderr before the first request;
+the flag grants permission for that run. A later invocation performs a fresh scan/list, so it
+can differ from the dry run. Later model-requested scans use aliases only. Names are untrusted
+data, JSON-escaped in previews and sanitized in text. The question remains verbatim input.
+
+`--compare-content` independently authorizes **local reads**. It works in `storage` and
+`diagnose`, including offline. Same-size candidates among the largest 256 indexed files are
+hashed in full with SHA-256, at most 256 MiB/15 seconds by default. Hashes never leave the
+comparator. Reports retain match-group references and coverage; item views show the count and
+up to three other copies, resolved to real paths locally. No folder equality, cross-scope
+comparison, similarity matching, removal, malware detection or corruption validation is included.
+
+Content opens use pinned no-follow ancestor handles/descriptors and validate the root identity,
+file identity, length, modification time, volume and single-link status before/after reading.
+Windows also checks enumeration attributes before opening (including recall-on-open), uses
+no-recall/no-reparse flags and excludes concurrent write/delete access for the read handle.
+Unix uses `openat(NOFOLLOW|NONBLOCK)` and regular-file checks. Unavailable, replaced, linked,
+redirected or changing files do not produce matches. Cancellation/deadline checks happen during
+directory lookup and between read blocks. Single OS calls remain non-interruptible; Unix checks
+are best effort rather than an atomic filesystem snapshot. Files can change after observation.
+
+`diagnose --scan-root` prepares metadata scans locally before the model loop: at most 100,000
+entries/64 MiB estimated index/15 seconds per root, sharing a 30-second preparation deadline.
+Optional content comparisons share that deadline and 256 MiB total; file selection is per scope.
+The model can query existing scans immediately. Local preparation is retained separately from
+model citations; preview uses the same `project_page` function as the tools. Incomplete scans,
+budget/access exclusions, and unchecked files remain visible. A completed comparison does not
+mean every file was read, nor that a file without a detected match is unique.
+
+Wanted limitations: metadata-only default; explicit independent permissions for content reads,
+names and cloud; no generic deletion; local reference resolution. Covered limitations: inferred
+ownership/roles, unverified recovery, bounded and non-atomic comparison, no guaranteed reclaim.

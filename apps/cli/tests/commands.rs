@@ -100,8 +100,129 @@ fn storage_scan_is_read_only_and_reports_items() {
     let out = cli(&["storage", dir.to_str().unwrap(), "--json", "--limit", "5"]);
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["largest"]["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(value["content_comparisons"], serde_json::json!([]));
+    assert_eq!(value["items"][0]["content"]["status"], "not_checked");
     assert_eq!(std::fs::read(dir.join("a.bin")).unwrap().len(), 4096);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn useful_names_are_an_explicit_previewable_opt_in() {
+    let root = std::env::temp_dir().join(format!("pcagent-names-cli-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("private-client")).unwrap();
+    std::fs::write(
+        root.join("private-client/private-file.pdf"),
+        b"secret file contents",
+    )
+    .unwrap();
+    let preview = |shared: bool| {
+        let mut args = vec![
+            "diagnose",
+            "test",
+            "--preview-cloud",
+            "--scan-root",
+            root.to_str().unwrap(),
+        ];
+        if shared {
+            args.push("--share-file-names");
+        }
+        let out = cli(&args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let anonymous = preview(false);
+    assert_eq!(anonymous["sent"], false);
+    assert_eq!(
+        anonymous["file_name_sharing"]["names"],
+        serde_json::json!([])
+    );
+    assert!(!anonymous.to_string().contains("private-client"));
+    assert!(!anonymous.to_string().contains("private-file.pdf"));
+    let shared = preview(true);
+    let names = shared["file_name_sharing"]["names"].as_array().unwrap();
+    assert!(names.iter().any(|n| n["name"] == "private-client"));
+    assert!(names.iter().any(|n| n["name"] == "private-file.pdf"));
+    assert!(!shared
+        .to_string()
+        .contains(root.file_name().unwrap().to_str().unwrap()));
+    assert!(!shared.to_string().contains("secret file contents"));
+    assert!(!cli(&[
+        "diagnose",
+        "test",
+        "--share-file-names",
+        "--scan-root",
+        root.to_str().unwrap()
+    ])
+    .status
+    .success());
+    assert!(!cli(&["diagnose", "test", "--compare-content"])
+        .status
+        .success());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn optional_local_content_comparison_restores_copy_names_and_leaves_files_intact() {
+    let root = std::env::temp_dir().join(format!("pcagent-copies-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for name in ["one.pdf", "two.pdf"] {
+        std::fs::write(root.join(name), b"identical bytes").unwrap();
+    }
+    let out = cli(&[
+        "storage",
+        root.to_str().unwrap(),
+        "--compare-content",
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report["content_comparisons"][0]["groups"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    for item in report["items"].as_array().unwrap() {
+        assert_eq!(item["content"]["status"], "same_content_sha256");
+        assert_eq!(item["other_copy_paths"].as_array().unwrap().len(), 1);
+    }
+    let offline = cli(&[
+        "diagnose",
+        "test",
+        "--offline",
+        "--scan-root",
+        root.to_str().unwrap(),
+        "--compare-content",
+        "--json",
+    ]);
+    let report: serde_json::Value = serde_json::from_slice(&offline.stdout).unwrap();
+    assert_eq!(report["stats"]["inference_calls"], 0);
+    assert!(report["coverage"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["domain"] == "storage"
+            && matches!(d["status"].as_str(), Some("complete" | "partial"))));
+    assert_eq!(
+        report["storage_preparation"]["content_comparisons"][0]["groups"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    for name in ["one.pdf", "two.pdf"] {
+        assert_eq!(std::fs::read(root.join(name)).unwrap(), b"identical bytes");
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn preview_lists_tools_and_counts_scopes_without_paths() {

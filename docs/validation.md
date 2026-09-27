@@ -8,6 +8,12 @@
 - Run CLI commands without any Nebius credentials and verify no implicit cloud mode.
 - Exercise synthetic model replies for tool allowlisting, complete-batch validation, duplicate IDs, forged findings/observation citations, loop budgets and provider errors. Cover extension consent/refusal/caps, preserved conversation and duplicate protection, hardware/storage/history citations, and independent execution/coverage/support states.
 - Check that cloud payloads omit process names, PIDs, creation times, boot IDs and session identifiers.
+- Check distinct file/folder aliases and local path restoration; default storage projections must
+  omit file/directory names. Opt-in names must belong to the previewed finite allowlist; rescans
+  cannot expand it. Exercise CLI previews without credentials and compare default/opt-in modes.
+- Check local content matches, equal-size different content, byte/file/time/cancellation limits,
+  replaced files, hard links, symlink refusal, and Windows cancellation during directory lookup.
+  Compare-content must remain separate from metadata scans, cloud permission and name permission.
 - Build the Windows executable and upload only the binary, not measurements or configuration.
 
 The workflow validates pushes and pull requests with read-only permissions. It checks formatting and the committed lockfile, without pushing changes or replacing the revision under review. A failed job must not be reported as successful validation.

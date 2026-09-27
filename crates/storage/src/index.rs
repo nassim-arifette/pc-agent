@@ -57,6 +57,7 @@ pub(crate) struct Entry {
     pub allocated: u64,
     pub modified_ms: Option<u64>,
     pub links: Option<u32>,
+    pub identity: Option<(u64, u128)>,
     pub flags: u8,
     agg: Agg,
 }
@@ -70,6 +71,7 @@ impl Entry {
             allocated: 0,
             modified_ms: None,
             links: None,
+            identity: None,
             flags: 0,
             agg: Agg::default(),
         }
@@ -135,6 +137,10 @@ impl From<Agg> for Totals {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemView {
     pub item_ref: String,
+    /// Distinct within this scan; never derived from a file or directory name.
+    pub alias: String,
+    pub alias_path: String,
+    pub parent_ref: Option<String>,
     pub kind: ItemKind,
     /// Full local path; `None` in cloud-bound views.
     pub path: Option<String>,
@@ -176,11 +182,11 @@ impl LargestItemsPage {
         self.items.iter_mut().for_each(|i| i.path = None);
         self
     }
-    /// Replaces non-generic names in `redacted_path`; see [`redact_names`].
+    /// Uses distinct, scan-scoped aliases in `redacted_path`.
     pub fn redact_names(mut self) -> Self {
         self.items
             .iter_mut()
-            .for_each(|i| i.redacted_path = redact_names(&i.redacted_path));
+            .for_each(|i| i.redacted_path = i.alias_path.clone());
         self
     }
 }
@@ -291,11 +297,11 @@ impl StorageOverview {
         self.denied.iter_mut().for_each(|i| i.path = None);
         self
     }
-    /// Replaces non-generic names in `redacted_path`; see [`redact_names`].
+    /// Uses distinct, scan-scoped aliases in `redacted_path`.
     pub fn redact_names(mut self) -> Self {
         self.denied
             .iter_mut()
-            .for_each(|i| i.redacted_path = redact_names(&i.redacted_path));
+            .for_each(|i| i.redacted_path = i.alias_path.clone());
         self
     }
 }
@@ -314,7 +320,7 @@ pub struct StorageIndex {
     pub(crate) denied: Vec<usize>,
     pub(crate) denied_truncated: bool,
     pub(crate) root_error: Option<ErrorKind>,
-    files_rank: Vec<usize>,
+    pub(crate) files_rank: Vec<usize>,
     dirs_rank: Vec<usize>,
     pub(crate) status: Status,
 }
@@ -479,6 +485,22 @@ impl StorageIndex {
             .ok_or(StorageError::UnknownItem)
     }
 
+    fn alias(&self, i: usize) -> String {
+        format!("{}-{i}", if self.entries[i].dir { "dir" } else { "file" })
+    }
+
+    fn alias_path(&self, mut i: usize) -> String {
+        let mut names = Vec::new();
+        while i != 0 {
+            names.push(self.alias(i));
+            i = self.entries[i].parent;
+        }
+        std::iter::once("<scope>".to_string())
+            .chain(names.into_iter().rev())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
     pub(crate) fn view(&self, i: usize) -> ItemView {
         let e = &self.entries[i];
         let path = self.path(i);
@@ -492,6 +514,9 @@ impl StorageIndex {
         };
         ItemView {
             item_ref: self.item_ref(i),
+            alias: self.alias(i),
+            alias_path: self.alias_path(i),
+            parent_ref: (i != 0).then(|| self.item_ref(e.parent)),
             kind: if e.dir {
                 ItemKind::Dirs
             } else {
