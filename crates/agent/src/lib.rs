@@ -39,6 +39,8 @@ pub const MAX_ROUNDS: usize = 6;
 pub const MAX_TOOLS: usize = 12;
 pub const MAX_DURATION: Duration = Duration::from_secs(90);
 pub const MAX_QUESTION_BYTES: usize = 4096;
+/// Output tokens allowed per inference request, reasoning included.
+pub const MAX_OUTPUT_TOKENS: u32 = 4096;
 
 #[derive(Debug, Clone, Serialize, Error, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -53,12 +55,19 @@ pub enum AgentError {
     ModelUnavailable,
     #[error("Provider request failed; details and response body were withheld")]
     Network,
+    #[error("Provider did not answer within the time limit")]
+    Timeout,
     #[error("Provider returned HTTP {0}; response body was withheld")]
     Http(u16),
     #[error("Provider response is malformed or exceeds the response-size limit")]
     InvalidResponse,
-    #[error("Provider output was truncated or filtered")]
+    #[error("Provider output was filtered or ended unexpectedly")]
     IncompleteResponse,
+    #[error(
+        "The model used its whole output budget ({} tokens) before answering",
+        MAX_OUTPUT_TOKENS
+    )]
+    OutputLimit,
     #[error("Tool name, arguments or call ID is not allowed")]
     InvalidTool,
     #[error("Repeated tool call ID rejected")]
@@ -93,6 +102,8 @@ pub struct Reply {
     /// Output tokens, reasoning included.
     pub completion_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
+    /// A billed reply that cannot be used: its usage counts, its content and calls are empty.
+    pub rejected: Option<AgentError>,
 }
 /// Whether the model may answer this turn or must call a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +488,9 @@ fn run(
             }
         };
         result.stats.record(&reply);
+        if let Some(error) = reply.rejected {
+            return result.partial(error);
+        }
         if started.elapsed() >= MAX_DURATION {
             return result.partial(AgentError::Budget);
         }
@@ -918,9 +932,29 @@ mod tests {
             content: Some(json!({"finding_ids":[chosen]}).to_string()),
             ..Reply::default()
         };
-        let r = run(vec![snapshot_call(), unreported], Some(pricing));
+        let r = run(vec![snapshot_call(), unreported], Some(pricing.clone()));
         assert_eq!(r.stats.prompt_tokens, None);
         assert!(r.stats.cost.is_none());
+
+        // A reply cut off at the output limit is billed: it ends the investigation, but its
+        // tokens are counted and priced.
+        let cut_off = Reply {
+            prompt_tokens: Some(9),
+            completion_tokens: Some(u64::from(MAX_OUTPUT_TOKENS)),
+            rejected: Some(AgentError::OutputLimit),
+            ..Reply::default()
+        };
+        let r = run(vec![cut_off], Some(pricing));
+        assert_eq!(r.status, Status::Partial);
+        assert_eq!(r.error, Some(AgentError::OutputLimit));
+        assert_eq!(r.stats.inference_calls, 1);
+        assert_eq!(r.stats.tool_calls, 0);
+        assert_eq!(r.stats.completion_tokens, Some(4096));
+        // 9 input tokens at $0.30 and 4,096 output tokens at $0.90 per million.
+        assert_eq!(
+            r.stats.cost.as_ref().map(|c| c.usd.as_str()),
+            Some("0.0036891")
+        );
     }
     #[test]
     fn first_message_is_compact_and_uses_finding_aliases() {
