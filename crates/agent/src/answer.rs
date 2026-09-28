@@ -1,0 +1,1169 @@
+//! The model's answer (contract C1 of docs/plan.md). The model writes the answer itself, in the
+//! language of the question, and ends the investigation by calling `submit_answer`.
+//!
+//! The controller checks the text against what the model actually received:
+//! - citations must name existing observations or findings;
+//! - numbers must come from those results, allowing rounding, unit variants and simple ratios;
+//! - program names must have been sent;
+//! - the text carries no commands, links or HTML.
+//!
+//! Problems go back to the model for a bounded number of repairs. Whatever remains is reported as
+//! unverified, never hidden.
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+pub const SUBMIT_ANSWER: &str = "submit_answer";
+pub const MAX_ANSWER_CHARS: usize = 6_000;
+pub const MAX_FOLLOW_UPS: usize = 3;
+pub const MAX_FOLLOW_UP_CHARS: usize = 200;
+pub const MAX_ACTION_REFS: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+/// Main topic of an answer, for the interface and the evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    Memory,
+    Cpu,
+    Disk,
+    Gpu,
+    ThermalPower,
+    StorageSpace,
+    StartupBackground,
+    UpdatesSystem,
+    SoftwareFault,
+    HardwareLimit,
+    NoProblemFound,
+    InsufficientEvidence,
+    Other,
+}
+const CATEGORIES: [&str; 13] = [
+    "memory",
+    "cpu",
+    "disk",
+    "gpu",
+    "thermal_power",
+    "storage_space",
+    "startup_background",
+    "updates_system",
+    "software_fault",
+    "hardware_limit",
+    "no_problem_found",
+    "insufficient_evidence",
+    "other",
+];
+
+/// The arguments of `submit_answer`, exactly as the model sent them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Submission {
+    answer: String,
+    confidence: Confidence,
+    category: Category,
+    #[serde(default)]
+    action_refs: Vec<String>,
+    #[serde(default)]
+    follow_ups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CitationKind {
+    Observation,
+    Finding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Citation {
+    /// As written in the answer: `O2`, `F1`.
+    pub reference: String,
+    pub kind: CitationKind,
+    /// The local observation ID or finding ID it resolves to.
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueKind {
+    UnknownCitation,
+    MissingCitation,
+    UnsupportedNumber,
+    UnseenName,
+    Command,
+    Link,
+    Html,
+    UnknownAction,
+    TooLong,
+    Empty,
+    /// The arguments do not follow the schema.
+    Malformed,
+    /// `submit_answer` came before any successful inspection.
+    NoInspection,
+    /// `submit_answer` shared its turn with other tool calls.
+    NotAlone,
+    /// The model wrote text instead of calling a tool.
+    NoToolCall,
+}
+impl IssueKind {
+    /// What the model must change, sent with the repair request.
+    fn fix(self) -> &'static str {
+        match self {
+            Self::UnknownCitation => "Cite only references listed in valid_references, written like [O2] or [F1].",
+            Self::MissingCitation => "Cite the observation each number comes from right after it, like [O2].",
+            Self::UnsupportedNumber => "No tool result contains this value, even rounded or as a simple ratio. Use the measured value with its citation, or remove the number.",
+            Self::UnseenName => "No tool result contains this name. Do not guess program names; use the names or references the tools returned.",
+            Self::Command => "Do not give commands to run. Describe the step in words, or propose an action with prepare_action_plan when it is offered.",
+            Self::Link => "Remove links and images.",
+            Self::Html => "Remove HTML; write plain text and short lists.",
+            Self::UnknownAction => "action_refs may only contain plan_id values returned by prepare_action_plan in this investigation.",
+            Self::TooLong => "Shorten the answer to at most 6000 characters.",
+            Self::Empty => "Write the answer.",
+            Self::Malformed => "The arguments do not follow the submit_answer schema: answer, confidence and category are required, and no other field is allowed.",
+            Self::NoInspection => "Call at least one inspection tool before answering.",
+            Self::NotAlone => "Call submit_answer alone, in a turn without other tool calls.",
+            Self::NoToolCall => "Answer by calling submit_answer; do not write the answer as a plain message.",
+        }
+    }
+    /// A problem of the text itself: the answer can still be shown, marked as unverified.
+    fn in_text(self) -> bool {
+        !matches!(
+            self,
+            Self::Malformed | Self::NoInspection | Self::NotAlone | Self::NoToolCall | Self::Empty
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Issue {
+    pub kind: IssueKind,
+    /// The part of the answer concerned, as written.
+    pub excerpt: String,
+}
+impl Issue {
+    pub(crate) fn new(kind: IssueKind, excerpt: impl Into<String>) -> Self {
+        Self {
+            kind,
+            excerpt: excerpt.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Answer {
+    /// Written by the model: restricted Markdown in the language of the question, with inline
+    /// citations like `[O2]`. Untrusted text: render it as text, never as markup.
+    pub text: String,
+    pub confidence: Confidence,
+    pub category: Category,
+    /// Valid citations in order of first appearance.
+    pub citations: Vec<Citation>,
+    /// Plans prepared during this investigation that the answer recommends.
+    pub action_refs: Vec<String>,
+    pub follow_ups: Vec<String>,
+    /// What the controller could not verify in the final text; empty when everything checked out.
+    pub unverified: Vec<Issue>,
+    /// How many times an answer or a tool call was sent back to the model for correction.
+    pub repairs: usize,
+}
+
+/// What the model may cite and what it received, for one check.
+pub(crate) struct Context<'a> {
+    /// Every payload the model received: the first message and each tool reply, as sent.
+    pub received: &'a [Value],
+    /// Citable references: (as written, kind, local target).
+    pub references: &'a [(String, CitationKind, String)],
+    /// `plan_id` values of plans prepared in this investigation.
+    pub plans: &'a [String],
+}
+
+pub(crate) fn definition() -> Value {
+    json!({"type":"function","function":{"name":SUBMIT_ANSWER,
+        "description":"Finish the investigation with your answer. Call it alone, after at least one inspection.",
+        "parameters":{"type":"object","additionalProperties":false,
+            "required":["answer","confidence","category"],
+            "properties":{
+                "answer":{"type":"string","maxLength":MAX_ANSWER_CHARS,
+                    "description":"The answer in the language of the question: the direct answer first, then what the user can do, then what supports it and what remains uncertain. Plain prose and short lists; cite the source of every number right after it, like [O2] or [F1]."},
+                "confidence":{"type":"string","enum":["high","medium","low"],
+                    "description":"How well the measurements support the answer."},
+                "category":{"type":"string","enum":CATEGORIES,
+                    "description":"Main topic of the answer."},
+                "action_refs":{"type":"array","maxItems":MAX_ACTION_REFS,"items":{"type":"string"},
+                    "description":"plan_id values returned by prepare_action_plan in this investigation that the answer recommends."},
+                "follow_ups":{"type":"array","maxItems":MAX_FOLLOW_UPS,
+                    "items":{"type":"string","maxLength":MAX_FOLLOW_UP_CHARS},
+                    "description":"Up to three short follow-up questions or checks the user could ask next, in the language of the question."}}}}})
+}
+
+/// The tool reply that sends an answer back for correction. When a citation is wrong, it lists
+/// the references the answer may use.
+pub(crate) fn repair_request(
+    issues: &[Issue],
+    references: &[(String, CitationKind, String)],
+) -> Value {
+    let problems: Vec<Value> = issues
+        .iter()
+        .map(|i| json!({"kind":i.kind,"excerpt":i.excerpt,"fix":i.kind.fix()}))
+        .collect();
+    let mut request = json!({"accepted":false,"problems":problems,
+        "next":"Correct only these problems and call submit_answer again with the complete answer."});
+    if issues.iter().any(|i| {
+        matches!(
+            i.kind,
+            IssueKind::UnknownCitation | IssueKind::MissingCitation
+        )
+    }) {
+        request["valid_references"] = references.iter().map(|(r, _, _)| r.as_str()).collect();
+    }
+    request
+}
+
+/// The problems of a submission and, when its text could be checked, the answer to show if
+/// the repairs run out.
+pub(crate) type Rejection = (Vec<Issue>, Option<Box<Answer>>);
+
+/// Parses and checks one submission. `Ok` is an answer without problems.
+pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejection> {
+    let Ok(submission) = serde_json::from_str::<Submission>(arguments) else {
+        return Err((vec![Issue::new(IssueKind::Malformed, "")], None));
+    };
+    let mut issues = Vec::new();
+    let mut text = submission.answer.trim().to_owned();
+    if text.is_empty() {
+        return Err((vec![Issue::new(IssueKind::Empty, "")], None));
+    }
+    if text.chars().count() > MAX_ANSWER_CHARS {
+        issues.push(Issue::new(IssueKind::TooLong, ""));
+        text = text.chars().take(MAX_ANSWER_CHARS).collect::<String>() + "…";
+    }
+    let citations = check_citations(&text, ctx, &mut issues);
+    check_numbers(&text, ctx, citations.is_empty(), &mut issues);
+    check_names(&text, ctx, &mut issues);
+    check_markup(&text, &mut issues);
+    let mut action_refs: Vec<String> = Vec::new();
+    for reference in submission.action_refs {
+        if !ctx.plans.contains(&reference) {
+            issues.push(Issue::new(IssueKind::UnknownAction, reference));
+        } else if !action_refs.contains(&reference) && action_refs.len() < MAX_ACTION_REFS {
+            action_refs.push(reference);
+        }
+    }
+    let follow_ups = submission
+        .follow_ups
+        .iter()
+        .map(|f| f.trim())
+        .filter(|f| {
+            let mut probe = Vec::new();
+            check_markup(f, &mut probe);
+            !f.is_empty() && probe.is_empty()
+        })
+        .map(|f| {
+            if f.chars().count() > MAX_FOLLOW_UP_CHARS {
+                f.chars().take(MAX_FOLLOW_UP_CHARS).collect::<String>() + "…"
+            } else {
+                f.to_owned()
+            }
+        })
+        .take(MAX_FOLLOW_UPS)
+        .collect();
+    let answer = Answer {
+        text,
+        confidence: submission.confidence,
+        category: submission.category,
+        citations,
+        action_refs,
+        follow_ups,
+        unverified: Vec::new(),
+        repairs: 0,
+    };
+    if issues.is_empty() {
+        Ok(answer)
+    } else {
+        let shown = Answer {
+            unverified: issues
+                .iter()
+                .filter(|i| i.kind.in_text())
+                .cloned()
+                .collect(),
+            ..answer
+        };
+        Err((issues, Some(Box::new(shown))))
+    }
+}
+
+/// `[O2]`, `[F1]` or `[O2, F1]`; any other bracketed text is ordinary text.
+fn check_citations(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) -> Vec<Citation> {
+    let mut citations: Vec<Citation> = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { break };
+        let inside = &after[..close];
+        rest = &after[close + 1..];
+        let tokens: Vec<&str> = inside
+            .split([',', ';', ' '])
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() || !tokens.iter().all(|t| is_reference(t)) {
+            continue;
+        }
+        for token in tokens {
+            match ctx.references.iter().find(|(r, _, _)| r == token) {
+                Some((reference, kind, target)) => {
+                    if !citations.iter().any(|c| &c.reference == reference) {
+                        citations.push(Citation {
+                            reference: reference.clone(),
+                            kind: *kind,
+                            target: target.clone(),
+                        });
+                    }
+                }
+                None => issues.push(Issue::new(IssueKind::UnknownCitation, format!("[{token}]"))),
+            }
+        }
+    }
+    citations
+}
+
+fn is_reference(token: &str) -> bool {
+    let mut chars = token.chars();
+    matches!(chars.next(), Some('O' | 'F'))
+        && (2..=6).contains(&token.len())
+        && chars.all(|c| c.is_ascii_digit())
+}
+
+fn check_numbers(text: &str, ctx: &Context<'_>, uncited: bool, issues: &mut Vec<Issue>) {
+    let claims = claims(text);
+    if claims.is_empty() {
+        return;
+    }
+    let known = Known::from_received(ctx.received);
+    for claim in &claims {
+        if !known.supports(claim) {
+            issues.push(Issue::new(IssueKind::UnsupportedNumber, &claim.excerpt));
+        }
+    }
+    if uncited {
+        issues.push(Issue::new(IssueKind::MissingCitation, &claims[0].excerpt));
+    }
+}
+
+/// Executable names must appear in what the model received: it cannot know others.
+fn check_names(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) {
+    let received = ctx
+        .received
+        .iter()
+        .map(|v| v.to_string().to_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut from = 0;
+    while let Some(found) = find_ci(&text[from..], ".exe") {
+        let dot = from + found;
+        let end = dot + 4;
+        let start = text[..dot]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'))
+            .last()
+            .map_or(dot, |(i, _)| i);
+        let boundary = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric());
+        let name = &text[start..end];
+        if start < dot && boundary && !received.contains(&name.to_lowercase()) {
+            issues.push(Issue::new(IssueKind::UnseenName, name));
+        }
+        from = end;
+    }
+}
+
+/// Byte offset of an ASCII needle, ignoring ASCII case. An ASCII match always starts on a
+/// character boundary, so the offset can slice the original text.
+fn find_ci(text: &str, needle: &str) -> Option<usize> {
+    let (hay, needle) = (text.as_bytes(), needle.as_bytes());
+    (0..=hay.len().checked_sub(needle.len())?)
+        .find(|&i| hay[i..i + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+/// Words that start a command line; an inline code span beginning with one is a command.
+const COMMANDS: [&str; 40] = [
+    "del",
+    "erase",
+    "rd",
+    "rmdir",
+    "rm",
+    "format",
+    "diskpart",
+    "reg",
+    "bcdedit",
+    "sc",
+    "net",
+    "netsh",
+    "taskkill",
+    "wmic",
+    "powershell",
+    "pwsh",
+    "cmd",
+    "dism",
+    "sfc",
+    "chkdsk",
+    "cleanmgr",
+    "cipher",
+    "takeown",
+    "icacls",
+    "attrib",
+    "shutdown",
+    "schtasks",
+    "winget",
+    "choco",
+    "curl",
+    "wget",
+    "iwr",
+    "irm",
+    "iex",
+    "msiexec",
+    "vssadmin",
+    "powercfg",
+    "bootrec",
+    "fsutil",
+    "mklink",
+];
+const COMMAND_VERBS: [&str; 12] = [
+    "remove-",
+    "stop-",
+    "set-",
+    "new-",
+    "invoke-",
+    "start-",
+    "clear-",
+    "disable-",
+    "enable-",
+    "uninstall-",
+    "install-",
+    "restart-",
+];
+
+fn check_markup(text: &str, issues: &mut Vec<Issue>) {
+    if let Some(at) = text.find("```") {
+        issues.push(Issue::new(IssueKind::Command, excerpt(text, at, 60)));
+    } else {
+        let mut parts = text.split('`');
+        parts.next();
+        while let (Some(code), Some(_)) = (parts.next(), parts.clone().next()) {
+            parts.next();
+            let first = code.split_whitespace().next().unwrap_or("").to_lowercase();
+            let first = first.trim_start_matches(".\\").trim_end_matches(".exe");
+            if COMMANDS.contains(&first) || COMMAND_VERBS.iter().any(|v| first.starts_with(v)) {
+                issues.push(Issue::new(IssueKind::Command, code));
+            }
+        }
+    }
+    for marker in ["](", "![", "http://", "https://", "www."] {
+        if let Some(at) = find_ci(text, marker) {
+            issues.push(Issue::new(IssueKind::Link, excerpt(text, at, 60)));
+            break;
+        }
+    }
+    let bytes = text.as_bytes();
+    if let Some(at) = (0..bytes.len().saturating_sub(1)).find(|&i| {
+        bytes[i] == b'<'
+            && (bytes[i + 1].is_ascii_alphabetic() || matches!(bytes[i + 1], b'/' | b'!'))
+    }) {
+        issues.push(Issue::new(IssueKind::Html, excerpt(text, at, 40)));
+    }
+}
+
+fn excerpt(text: &str, at: usize, max: usize) -> String {
+    text[at..].chars().take(max).collect()
+}
+
+/// A physical dimension, in its canonical unit: bytes, percent, milliseconds, °C, MHz, watts, or
+/// events per second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dim {
+    Bytes,
+    Percent,
+    Millis,
+    Celsius,
+    Megahertz,
+    Watts,
+    PerSecond,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bound {
+    Exact,
+    About,
+    AtMost,
+    AtLeast,
+}
+
+/// A number with a unit written in a text.
+#[derive(Debug, Clone)]
+struct Claim {
+    excerpt: String,
+    dim: Dim,
+    /// Candidate canonical values with their tolerance: a separator or a byte unit can be read
+    /// in two ways (1,234 / 1.234; GB as 10^9 or 2^30).
+    values: Vec<(f64, f64)>,
+    bound: Bound,
+    /// Follows "of", "sur", "/" or "out of": a total others are compared with.
+    total: bool,
+}
+
+/// Relative slack for a number written as measured, and for one introduced by "about".
+const EXACT_SHARE: f64 = 0.05;
+const ABOUT_SHARE: f64 = 0.15;
+
+/// A quantity found in what the model received.
+#[derive(Debug, Clone, Copy)]
+struct Quantity {
+    dim: Dim,
+    value: f64,
+    /// A total others can be a share of.
+    total: bool,
+    /// Installed or physical memory: any memory amount can be stated as a share of it.
+    memory_total: bool,
+    /// Quantities of one object, measured entity or text: shares are only taken within it.
+    group: usize,
+}
+
+/// Every quantity the model received, plus the simple derivations an answer may state: the
+/// share of a total, its complement and what remains of a total.
+struct Known {
+    values: Vec<(Dim, f64)>,
+}
+impl Known {
+    fn from_received(received: &[Value]) -> Self {
+        let mut found: Vec<Quantity> = Vec::new();
+        let mut groups = 0;
+        for value in received {
+            walk(value, None, 0, &mut groups, &mut found);
+        }
+        let mut values: Vec<(Dim, f64)> = found.iter().map(|q| (q.dim, q.value)).collect();
+        for total in found.iter().filter(|q| q.total && q.value > 0.0) {
+            for part in &found {
+                let related = part.group == total.group || total.memory_total;
+                if part.dim != total.dim || part.value > total.value || !related {
+                    continue;
+                }
+                let share = part.value / total.value * 100.0;
+                values.push((Dim::Percent, share));
+                values.push((total.dim, total.value - part.value));
+            }
+        }
+        let complements: Vec<(Dim, f64)> = values
+            .iter()
+            .filter(|(d, v)| *d == Dim::Percent && *v <= 100.0)
+            .map(|(_, v)| (Dim::Percent, 100.0 - v))
+            .collect();
+        values.extend(complements);
+        Self { values }
+    }
+    fn supports(&self, claim: &Claim) -> bool {
+        self.values
+            .iter()
+            .filter(|(dim, _)| *dim == claim.dim)
+            .any(|(_, known)| {
+                claim.values.iter().any(|(value, tolerance)| {
+                    let slack = |share: f64| tolerance.max(share * known.abs()).max(1e-9);
+                    match claim.bound {
+                        Bound::Exact => (value - known).abs() <= slack(EXACT_SHARE),
+                        Bound::About => (value - known).abs() <= slack(ABOUT_SHARE),
+                        Bound::AtMost => *known <= value + slack(EXACT_SHARE),
+                        Bound::AtLeast => *known >= value - slack(EXACT_SHARE),
+                    }
+                })
+            })
+    }
+}
+
+/// Collects quantities from a payload. The unit of a number comes from:
+/// - its key (`…_bytes`, `…_basis_points`, …);
+/// - the unit map of a measurements object;
+/// - the `metric` field of a history;
+/// - the key of a map whose values are all numbers (`windows_ms`).
+///
+/// Numbers written in text fields are parsed like the answer.
+fn walk(
+    value: &Value,
+    unit: Option<&str>,
+    group: usize,
+    groups: &mut usize,
+    out: &mut Vec<Quantity>,
+) {
+    let mut push = |dim: Dim, value: f64, name: &str, group: usize| {
+        let memory = name.contains("physical_total") || name.contains("installed_memory");
+        out.push(Quantity {
+            dim,
+            value,
+            total: is_total(name),
+            memory_total: memory && is_total(name),
+            group,
+        });
+    };
+    match value {
+        Value::Object(map) => {
+            *groups += 1;
+            let own = *groups;
+            if let (Some(Value::Object(values)), Some(Value::Object(units))) =
+                (map.get("values"), map.get("units"))
+            {
+                for metrics in values.values().filter_map(Value::as_object) {
+                    *groups += 1;
+                    for (metric, n) in metrics {
+                        let unit = units.get(metric).and_then(Value::as_str).unwrap_or(metric);
+                        if let (Some(n), Some((dim, factor))) = (n.as_f64(), unit_of(unit)) {
+                            push(dim, n * factor, metric, *groups);
+                        }
+                    }
+                }
+            }
+            let metric = map.get("metric").and_then(Value::as_str);
+            let inherit_all = unit.is_some() && map.values().all(Value::is_number);
+            for (key, child) in map {
+                if key == "values" && map.contains_key("units") {
+                    continue;
+                }
+                let hint = if inherit_all || key == "value" {
+                    unit
+                } else if unit_of(key).is_some() {
+                    Some(key.as_str())
+                } else if key == "points" {
+                    metric
+                } else {
+                    None
+                };
+                walk(child, hint, own, groups, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                walk(item, unit, group, groups, out);
+            }
+        }
+        Value::Number(n) => {
+            if let (Some(n), Some(name)) = (n.as_f64(), unit) {
+                if let Some((dim, factor)) = unit_of(name) {
+                    push(dim, n * factor, name, group);
+                }
+            }
+        }
+        Value::String(text) => {
+            *groups += 1;
+            for claim in claims(text) {
+                for (value, _) in claim.values {
+                    out.push(Quantity {
+                        dim: claim.dim,
+                        value,
+                        total: claim.total,
+                        memory_total: false,
+                        group: *groups,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The dimension and factor to the canonical unit of a payload unit or key name.
+fn unit_of(name: &str) -> Option<(Dim, f64)> {
+    let n = name.to_ascii_lowercase();
+    let is = |unit: &str| n == unit || n.ends_with(&format!("_{unit}"));
+    if is("bytes") {
+        Some((Dim::Bytes, 1.0))
+    } else if n.starts_with("basis_points") || is("basis_points") {
+        Some((Dim::Percent, 0.01))
+    } else if is("microseconds") {
+        Some((Dim::Millis, 0.001))
+    } else if is("milliseconds") || is("ms") {
+        Some((Dim::Millis, 1.0))
+    } else if is("celsius") {
+        Some((Dim::Celsius, 1.0))
+    } else if is("megahertz") {
+        Some((Dim::Megahertz, 1.0))
+    } else if is("milliwatts") {
+        Some((Dim::Watts, 0.001))
+    } else if n.contains("per_second_x100") {
+        Some((Dim::PerSecond, 0.01))
+    } else if is("percent") {
+        Some((Dim::Percent, 1.0))
+    } else {
+        None
+    }
+}
+
+fn is_total(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["total", "limit", "capacity", "installed"]
+        .iter()
+        .any(|w| n.contains(w))
+}
+
+const THOUSANDS_SPACES: [char; 4] = [' ', '\u{a0}', '\u{202f}', '\u{2009}'];
+
+/// Numbers followed by a known unit. Numbers inside identifiers (`F1`, `x86`, `proc-1a2b`) and
+/// numbers without a unit (versions, counts, dates) are not claims.
+fn claims(text: &str) -> Vec<Claim> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (start, c) = chars[i];
+        if !c.is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let prev = i.checked_sub(1).map(|p| chars[p].1);
+        let joined = prev.is_some_and(|p| p.is_alphanumeric() || p == '_')
+            || (prev == Some('-') && i >= 2 && chars[i - 2].1.is_alphanumeric());
+        // Parse digit groups and their separators.
+        let mut groups = vec![String::new()];
+        let mut seps: Vec<char> = Vec::new();
+        let mut j = i;
+        while j < chars.len() {
+            let ch = chars[j].1;
+            if ch.is_ascii_digit() {
+                groups.last_mut().expect("one group").push(ch);
+                j += 1;
+                continue;
+            }
+            let next_digits = chars[j + 1..]
+                .iter()
+                .take_while(|(_, c)| c.is_ascii_digit())
+                .count();
+            let after = chars.get(j + 1 + next_digits).map(|(_, c)| *c);
+            let thousands_space = THOUSANDS_SPACES.contains(&ch)
+                && next_digits == 3
+                && after.is_none_or(|c| !c.is_ascii_digit());
+            if (matches!(ch, '.' | ',') && next_digits > 0) || thousands_space {
+                seps.push(ch);
+                groups.push(String::new());
+                j += 1;
+                continue;
+            }
+            break;
+        }
+        // An identifier continues after the number (`4060ti`, `v2beta`): not a quantity.
+        let glued = chars
+            .get(j)
+            .is_some_and(|(_, c)| c.is_alphanumeric() && !unit_start(text, chars[j].0));
+        if joined || glued {
+            i = j.max(i + 1);
+            while i < chars.len() && (chars[i].1.is_alphanumeric() || chars[i].1 == '_') {
+                i += 1;
+            }
+            continue;
+        }
+        let end_number = chars.get(j).map_or(text.len(), |(p, _)| *p);
+        let readings = readings(&groups, &seps);
+        // The unit: after optional spaces.
+        let mut k = j;
+        while k < chars.len() && THOUSANDS_SPACES.contains(&chars[k].1) && k < j + 2 {
+            k += 1;
+        }
+        let unit_from = chars.get(k).map_or(text.len(), |(p, _)| *p);
+        let unit_text: String = text[unit_from..]
+            .chars()
+            .take_while(|c| c.is_alphabetic() || matches!(c, '%' | '°' | '/' | 'µ'))
+            .collect();
+        let unit_end = unit_from + unit_text.len();
+        let per_second = unit_text.to_lowercase().ends_with("/s")
+            || text[unit_end..].to_lowercase().starts_with(" par seconde")
+            || text[unit_end..].to_lowercase().starts_with(" per second");
+        if let Some((dim, factors)) = unit(&unit_text, per_second) {
+            let bound = bound_before(&text[..start]);
+            let total = total_before(&text[..start]);
+            let values = readings
+                .iter()
+                .flat_map(|(value, decimals)| {
+                    factors
+                        .iter()
+                        .map(move |f| (value * f, 0.5 * 10f64.powi(-(*decimals as i32)) * f))
+                })
+                .collect();
+            out.push(Claim {
+                excerpt: text[start..unit_end.max(end_number)].trim().to_owned(),
+                dim,
+                values,
+                bound,
+                total,
+            });
+            i = k.max(j) + unit_text.chars().count();
+        } else {
+            i = j.max(i + 1);
+        }
+    }
+    out
+}
+
+/// Whether a unit starts at this byte offset, so that `3Go` still reads as a quantity.
+fn unit_start(text: &str, at: usize) -> bool {
+    let word: String = text[at..]
+        .chars()
+        .take_while(|c| c.is_alphabetic() || matches!(c, '%' | '°' | '/' | 'µ'))
+        .collect();
+    unit(&word, word.to_lowercase().ends_with("/s")).is_some()
+}
+
+/// Possible values of a written number with their count of decimals.
+fn readings(groups: &[String], seps: &[char]) -> Vec<(f64, usize)> {
+    let digits = |gs: &[String]| gs.concat();
+    let parse = |s: &str| s.parse::<f64>().ok();
+    let Some(&last) = seps.last() else {
+        return parse(&groups[0]).map(|v| vec![(v, 0)]).unwrap_or_default();
+    };
+    let integer = parse(&digits(groups)).map(|v| (v, 0));
+    if THOUSANDS_SPACES.contains(&last) {
+        return integer.into_iter().collect();
+    }
+    let tail = groups.last().expect("a group per separator");
+    let head = &groups[..groups.len() - 1];
+    let decimal = parse(&format!("{}.{}", digits(head), tail)).map(|v| (v, tail.len()));
+    let same = seps.iter().filter(|&&s| s == last).count();
+    // "1,234" or "1.234": thousands or three decimals. "1,5" or "12.25": decimals. "1.234.567":
+    // thousands.
+    let grouped =
+        tail.len() == 3 && head.iter().skip(1).all(|g| g.len() == 3) && head[0].len() <= 3;
+    match (grouped, same > 1) {
+        (true, true) => integer.into_iter().collect(),
+        (true, false) => integer.into_iter().chain(decimal).collect(),
+        (false, _) => decimal.into_iter().collect(),
+    }
+}
+
+const BINARY: [f64; 5] = [
+    1.0,
+    1024.0,
+    1_048_576.0,
+    1_073_741_824.0,
+    1_099_511_627_776.0,
+];
+const DECIMAL: [f64; 5] = [1.0, 1e3, 1e6, 1e9, 1e12];
+
+/// The dimension of a written unit and its factors to the canonical unit.
+fn unit(written: &str, per_second: bool) -> Option<(Dim, Vec<f64>)> {
+    let lower = written.to_lowercase();
+    let base = lower.trim_end_matches("/s");
+    let bytes = |power: usize| vec![DECIMAL[power], BINARY[power]];
+    let byte_unit = match base {
+        "o" | "b" | "octet" | "octets" | "byte" | "bytes" => Some(vec![1.0]),
+        "ko" | "kb" | "kio" | "kib" => Some(bytes(1)),
+        "mo" | "mb" | "mio" | "mib" => Some(bytes(2)),
+        "go" | "gb" | "gio" | "gib" => Some(bytes(3)),
+        "to" | "tb" | "tio" | "tib" => Some(bytes(4)),
+        _ => None,
+    };
+    if per_second {
+        return match (byte_unit, base) {
+            (Some(factors), _) => Some((Dim::PerSecond, factors)),
+            (None, "" | "page" | "pages" | "e" | "fautes" | "faults") => {
+                Some((Dim::PerSecond, vec![1.0]))
+            }
+            _ => None,
+        };
+    }
+    if let Some(factors) = byte_unit {
+        return Some((Dim::Bytes, factors));
+    }
+    let one = |dim: Dim, factor: f64| Some((dim, vec![factor]));
+    match lower.as_str() {
+        "%" => one(Dim::Percent, 1.0),
+        "ms" => one(Dim::Millis, 1.0),
+        "µs" | "us" => one(Dim::Millis, 0.001),
+        "s" | "sec" | "seconde" | "secondes" | "second" | "seconds" => one(Dim::Millis, 1_000.0),
+        "min" | "minute" | "minutes" => one(Dim::Millis, 60_000.0),
+        "°c" | "°" | "degrés" | "degres" | "degrees" => one(Dim::Celsius, 1.0),
+        "mhz" => one(Dim::Megahertz, 1.0),
+        "ghz" => one(Dim::Megahertz, 1_000.0),
+        "w" | "watt" | "watts" => one(Dim::Watts, 1.0),
+        "mw" => one(Dim::Watts, 0.001),
+        _ => None,
+    }
+}
+
+fn ends_with_word(before: &str, words: &[&str]) -> bool {
+    let lower = before.trim_end().to_lowercase();
+    words.iter().any(|w| {
+        lower.ends_with(w)
+            && lower[..lower.len() - w.len()]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+    })
+}
+
+fn bound_before(before: &str) -> Bound {
+    const AT_MOST: [&str; 14] = [
+        "moins de",
+        "less than",
+        "under",
+        "below",
+        "au plus",
+        "at most",
+        "inférieur à",
+        "inférieure à",
+        "sous",
+        "<",
+        "≤",
+        "jusqu'à",
+        "up to",
+        "max",
+    ];
+    const AT_LEAST: [&str; 14] = [
+        "plus de",
+        "more than",
+        "over",
+        "above",
+        "au moins",
+        "at least",
+        "supérieur à",
+        "supérieure à",
+        ">",
+        "≥",
+        "dépasse",
+        "exceeds",
+        "beyond",
+        "au-delà de",
+    ];
+    const ABOUT: [&str; 14] = [
+        "environ",
+        "about",
+        "around",
+        "approximately",
+        "approx.",
+        "~",
+        "≈",
+        "près de",
+        "roughly",
+        "nearly",
+        "presque",
+        "almost",
+        "autour de",
+        "de l'ordre de",
+    ];
+    if ends_with_word(before, &AT_MOST) {
+        Bound::AtMost
+    } else if ends_with_word(before, &AT_LEAST) {
+        Bound::AtLeast
+    } else if ends_with_word(before, &ABOUT) {
+        Bound::About
+    } else {
+        Bound::Exact
+    }
+}
+
+fn total_before(before: &str) -> bool {
+    ends_with_word(before, &["of", "sur", "/", "out of"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn received() -> Vec<Value> {
+        vec![
+            json!({"question":"Pourquoi mon PC rame ? J'ai 8 Go de RAM.",
+                "initial_observation":{"measurements":{
+                    "values":{"system":{"physical_total_bytes":17_179_869_184_u64,
+                        "physical_available_bytes":1_653_562_163_u64,
+                        "cpu_busy_basis_points":1_740,
+                        "disk_read_latency_microseconds":1_300},
+                        "proc-1a2b3c4d":{"process_working_set_bytes":2_480_000_000_u64}},
+                    "units":{"physical_total_bytes":"bytes","physical_available_bytes":"bytes",
+                        "cpu_busy_basis_points":"basis_points_of_total_cpu",
+                        "disk_read_latency_microseconds":"microseconds",
+                        "process_working_set_bytes":"bytes"}}},
+                "findings":[{"id":"F1","facts":["Hard-fault page reads: 12.4 pages/s."]}]}),
+            json!({"observation_id":"O1","metric":"cpu_busy_basis_points",
+                "points":[{"value":500,"status":"ok"},{"value":900,"status":"ok"}],
+                "observed_interval_ms":2000,
+                "installed_memory_bytes":{"value":17_179_869_184_u64,"status":"ok"},
+                "volume":{"free_bytes":64_000_000_000_u64,"total_bytes":512_000_000_000_u64},
+                "items":[{"name":"chrome.exe"}]}),
+        ]
+    }
+    fn refs() -> Vec<(String, CitationKind, String)> {
+        vec![
+            ("O1".into(), CitationKind::Observation, "obs-real".into()),
+            ("F1".into(), CitationKind::Finding, "finding-real".into()),
+        ]
+    }
+    fn submit(text: &str) -> String {
+        json!({"answer":text,"confidence":"medium","category":"memory"}).to_string()
+    }
+    fn check(text: &str) -> Result<Answer, Rejection> {
+        let received = received();
+        let references = refs();
+        let plans = vec!["plan-1".to_owned()];
+        review(
+            &submit(text),
+            &Context {
+                received: &received,
+                references: &references,
+                plans: &plans,
+            },
+        )
+    }
+    fn kinds(text: &str) -> Vec<IssueKind> {
+        match check(text) {
+            Ok(_) => Vec::new(),
+            Err((issues, _)) => issues.into_iter().map(|i| i.kind).collect(),
+        }
+    }
+
+    #[test]
+    fn measured_numbers_pass_in_either_language_and_unit_convention() {
+        for text in [
+            "Il reste 1,54 Go de mémoire disponible sur 16 Go [O1].",
+            "Only 1.54 GiB of 16 GiB is available [O1].",
+            "Available memory: 1.65 GB [O1], about 1.5 GB.",
+            "Le processeur est occupé à 17,4 % [O1].",
+            "Memory is 90 % in use [O1].",
+            "Used memory is 14.46 GiB [O1].",
+            "Le disque répond en 1,3 ms [O1], sous 3 ms.",
+            "Hard faults: 12.4 pages/s [F1].",
+            "CPU use varied between 5 % and 9 % over 2 s [O1].",
+            "Chrome uses 2.48 GB [O1], about 14 % of the memory.",
+            "C: has 64 GB free of 512 GB [O1], 87.5 % full.",
+            "You said you have 8 Go de RAM; the PC reports 16 Go [O1].",
+            "chrome.exe uses 2.3 GiB [O1].",
+        ] {
+            assert_eq!(kinds(text), Vec::<IssueKind>::new(), "{text}");
+        }
+    }
+
+    #[test]
+    fn invented_numbers_and_missing_citations_are_reported() {
+        assert_eq!(
+            kinds("Windows needs 32 GB [O1]."),
+            [IssueKind::UnsupportedNumber]
+        );
+        assert_eq!(
+            kinds("The CPU runs at 3.2 GHz [O1]."),
+            [IssueKind::UnsupportedNumber]
+        );
+        assert_eq!(
+            kinds("La température atteint 85 °C [O1]."),
+            [IssueKind::UnsupportedNumber]
+        );
+        assert_eq!(
+            kinds("Memory is 90 % in use."),
+            [IssueKind::MissingCitation]
+        );
+        // Counts, versions and identifiers carry no unit and are not checked.
+        assert!(kinds("Windows 11 on an RTX 4060 shows proc-1a2b3c4d [O1].").is_empty());
+    }
+
+    #[test]
+    fn citations_must_exist_and_follow_the_short_form() {
+        assert_eq!(kinds("See [O9]."), [IssueKind::UnknownCitation]);
+        assert_eq!(kinds("See [O1, F7]."), [IssueKind::UnknownCitation]);
+        let answer = check("Mémoire [F1] et processus [O1] ; voir [la note].").unwrap();
+        assert_eq!(
+            answer
+                .citations
+                .iter()
+                .map(|c| c.target.as_str())
+                .collect::<Vec<_>>(),
+            ["finding-real", "obs-real"]
+        );
+    }
+
+    #[test]
+    fn names_must_have_been_received_and_markup_is_refused() {
+        assert_eq!(kinds("Close steam.exe [O1]."), [IssueKind::UnseenName]);
+        assert_eq!(kinds("Run `sfc /scannow` [O1]."), [IssueKind::Command]);
+        assert_eq!(
+            kinds("Run `Remove-Item C:\\temp` [O1]."),
+            [IssueKind::Command]
+        );
+        assert!(kinds("The key `Run` lists startup programs [O1].").is_empty());
+        assert_eq!(kinds("```\ndel /s\n``` [O1]"), [IssueKind::Command]);
+        assert_eq!(kinds("See [docs](https://x.test) [O1]."), [IssueKind::Link]);
+        assert_eq!(kinds("<b>Low memory</b> [O1]."), [IssueKind::Html]);
+        assert!(kinds("Latency stays < 3 ms [O1].").is_empty());
+    }
+
+    #[test]
+    fn schema_and_action_references_are_enforced() {
+        let received = received();
+        let references = refs();
+        let plans = vec!["plan-1".to_owned()];
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &plans,
+        };
+        let malformed = review(
+            r#"{"answer":"x","confidence":"sure","category":"memory"}"#,
+            &ctx,
+        );
+        assert!(matches!(malformed, Err((ref i, None)) if i[0].kind == IssueKind::Malformed));
+        let extra = review(
+            r#"{"answer":"x","confidence":"low","category":"memory","verdict":"ok"}"#,
+            &ctx,
+        );
+        assert!(extra.is_err());
+        let args =
+            json!({"answer":"Free space [O1].","confidence":"low","category":"storage_space",
+            "action_refs":["plan-1","plan-9"],
+            "follow_ups":["  Et le disque D: ?  ","See https://x.test",""]})
+            .to_string();
+        let Err((issues, Some(shown))) = review(&args, &ctx) else {
+            panic!("an unknown plan is a problem");
+        };
+        assert_eq!(issues[0].kind, IssueKind::UnknownAction);
+        assert_eq!(shown.action_refs, ["plan-1"]);
+        assert_eq!(shown.follow_ups, ["Et le disque D: ?"]);
+        assert_eq!(shown.unverified.len(), 1);
+    }
+
+    #[test]
+    fn repair_requests_explain_each_problem() {
+        let request = repair_request(
+            &[Issue::new(IssueKind::UnsupportedNumber, "32 GB")],
+            &refs(),
+        );
+        assert_eq!(request["accepted"], false);
+        assert_eq!(request["problems"][0]["kind"], "unsupported_number");
+        assert_eq!(request["problems"][0]["excerpt"], "32 GB");
+        assert!(request["problems"][0]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("citation"));
+        assert!(request.get("valid_references").is_none());
+        let request = repair_request(&[Issue::new(IssueKind::UnknownCitation, "[O9]")], &refs());
+        assert_eq!(request["valid_references"], json!(["O1", "F1"]));
+    }
+
+    #[test]
+    fn written_numbers_read_like_a_person_writes_them() {
+        let values = |text: &str| -> Vec<f64> {
+            claims(text)
+                .into_iter()
+                .flat_map(|c| c.values.into_iter().map(|(v, _)| v))
+                .collect()
+        };
+        assert_eq!(values("1 234 ms"), [1_234.0]);
+        assert_eq!(values("1\u{202f}234 ms"), [1_234.0]);
+        assert_eq!(values("1,5 ms"), [1.5]);
+        assert_eq!(values("1,234 ms"), [1_234.0, 1.234]);
+        assert_eq!(values("12.25 %"), [12.25]);
+        assert_eq!(values("3Go"), [3e9, 3.0 * 1_073_741_824.0]);
+        assert!(values("x86 and F1 and 2026 and version 2.1").is_empty());
+        assert_eq!(claims("moins de 3 ms")[0].bound, Bound::AtMost);
+        assert_eq!(claims("plus de 2 Go")[0].bound, Bound::AtLeast);
+        assert_eq!(claims("environ 80 %")[0].bound, Bound::About);
+        assert!(claims("9.8% of 15.73 GiB")[1].total);
+    }
+}

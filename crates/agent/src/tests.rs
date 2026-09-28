@@ -56,15 +56,16 @@ fn tools(calls: Vec<ToolCall>) -> Reply {
         ..Reply::default()
     }
 }
-fn done(id: &str) -> Reply {
-    Reply {
-        calls: vec![],
-        content: Some(json!({"finding_ids":[id]}).to_string()),
-        total_tokens: Some(10),
-        prompt_tokens: Some(9),
-        completion_tokens: Some(1),
-        ..Reply::default()
-    }
+fn answer_args(text: &str) -> String {
+    json!({"answer":text,"confidence":"medium","category":"other"}).to_string()
+}
+/// A `submit_answer` call; an investigation needs a distinct call ID for each answer.
+fn submit_with(id: &str, text: &str) -> Reply {
+    tools(vec![call(id, SUBMIT_ANSWER, &answer_args(text))])
+}
+/// An answer citing one finding or observation, without numbers.
+fn done(reference: &str) -> Reply {
+    submit_with("answer", &format!("See [{reference}]."))
 }
 /// The alias the agent gives to the `n`-th finding of the first tool output: aliases number
 /// the initial findings first, then each output's findings in order.
@@ -158,22 +159,52 @@ fn arbitrary_tools_and_arguments_are_rejected() {
 fn validates_all_calls_before_any_execution() {
     let initial = fixture();
     let mut executed = 0;
-    let mut m = script(vec![tools(vec![
-        call("a", "get_processes", "{}"),
-        call("b", "delete_path", "{}"),
-    ])]);
+    let mut m = script(vec![
+        tools(vec![
+            call("a", "get_processes", "{}"),
+            call("b", "delete_path", "{}"),
+        ]),
+        tools(vec![call("c", "get_processes", "{}")]),
+        done("F1"),
+    ]);
     let r = investigate(
         &mut m,
         "test",
         &initial,
         &mut tb(|| {
             executed += 1;
-            fixture()
+            usable_snapshot()
         }),
         |_| {},
     );
-    assert_eq!(executed, 0);
+    // Only the retried valid call ran: a batch with an invalid call runs nothing.
+    assert_eq!(executed, 1);
+    assert!(r.error.is_none(), "{:?}", r.error);
+    assert_eq!(r.answer.unwrap().repairs, 1);
+    let replies: Vec<&Value> = m.messages[1]
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .collect();
+    assert_eq!(replies.len(), 2);
+    assert!(replies[0]["content"].as_str().unwrap().contains("not_run"));
+    assert!(replies[1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("invalid_call"));
+}
+#[test]
+fn invalid_calls_are_retried_a_bounded_number_of_times() {
+    let bad = |i: usize| tools(vec![call(&format!("bad-{i}"), "delete_path", "{}")]);
+    let mut m = script((0..=MAX_REPAIRS).map(bad).collect());
+    let r = investigate(
+        &mut m,
+        "test",
+        &fixture(),
+        &mut tb(|| panic!("nothing runs")),
+        |_| {},
+    );
     assert_eq!(r.error, Some(AgentError::InvalidTool));
+    assert_eq!(m.calls, MAX_REPAIRS + 1);
 }
 #[test]
 fn happy_path_requires_a_real_dispatch_and_existing_finding() {
@@ -197,28 +228,114 @@ fn happy_path_requires_a_real_dispatch_and_existing_finding() {
     });
     assert!(r.error.is_none());
     assert_eq!(r.selected.id, id);
+    assert_eq!(
+        r.answer.unwrap().text,
+        format!("See [{}].", alias_after(&initial, 0))
+    );
     assert_eq!(events, 1);
     assert_eq!(r.stats.inference_calls, 2);
     assert_eq!(r.stats.total_tokens, Some(20));
-    assert_eq!(m.choices, [ToolChoice::Required, ToolChoice::Auto]);
+    // Every turn must call a tool; the answer itself is a tool call.
+    assert_eq!(m.choices, [ToolChoice::Required, ToolChoice::Required]);
 }
 #[test]
-fn fabricated_finding_and_free_form_claims_are_rejected() {
-    let fs = analyze(&fixture());
-    let mut aliases = FindingAliases::default();
-    let first = aliases.alias(&fs[0].id);
-    let pick = |v: serde_json::Value| select(&v.to_string(), &fs, &[], &aliases);
-    assert!(pick(json!({"finding_ids":["invented"]})).is_err());
-    assert!(pick(json!({"finding_ids":[]})).is_err());
-    assert!(pick(json!({"finding_id":first})).is_err());
-    assert!(pick(json!({"finding_ids":[first, first]})).is_err());
-    assert!(pick(json!({"finding_ids":[first],"summary":"PC is faster"})).is_err());
-    // Local IDs never reach the model, so they are never accepted from it.
-    assert!(pick(json!({"finding_ids":[fs[0].id]})).is_err());
-    assert_eq!(
-        pick(json!({"finding_ids":[first]})).unwrap().0[0].id,
-        fs[0].id
+fn answers_are_checked_and_repaired_before_acceptance() {
+    let initial = fixture();
+    let mut next = fixture();
+    for (metric, value) in [
+        (Metric::PhysicalTotalBytes, 17_179_869_184),
+        (Metric::PhysicalAvailableBytes, 1_653_562_163),
+    ] {
+        next.evidence.push(Evidence::measured(
+            metric,
+            "system",
+            value,
+            "fixture",
+            Window::instant(),
+        ));
+    }
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        submit_with("first", "Il ne reste que 3 Go de mémoire [O1]."),
+        submit_with(
+            "second",
+            "Il ne reste que 1,54 Go de mémoire disponible sur 16 Go [O1].",
+        ),
+    ]);
+    let r = investigate(
+        &mut m,
+        "Pourquoi mon PC rame ?",
+        &initial,
+        &mut tb(|| next.clone()),
+        |_| {},
     );
+    let answer = r.answer.expect("accepted after one repair");
+    assert_eq!(answer.repairs, 1);
+    assert!(answer.unverified.is_empty(), "{:?}", answer.unverified);
+    assert_eq!(answer.citations[0].reference, "O1");
+    assert_eq!(
+        r.observation_refs,
+        [r.observations[0].observation_id.clone()]
+    );
+    let repair = m.messages[2].last().unwrap();
+    assert_eq!(repair["role"], "tool");
+    assert!(repair["content"]
+        .as_str()
+        .unwrap()
+        .contains("unsupported_number"));
+    // The model cites short references and never sees local observation IDs.
+    let sent = serde_json::to_string(&m.messages[2]).unwrap();
+    assert!(!sent.contains(&r.observations[0].observation_id));
+    assert!(sent.contains(r#"\"citable_observation_ids\":[\"O1\"]"#));
+}
+#[test]
+fn repairs_are_bounded_and_the_last_answer_is_shown_with_its_problems() {
+    let mut replies = vec![tools(vec![call("a", "get_system_snapshot", "{}")])];
+    replies.extend(
+        (0..=MAX_REPAIRS).map(|i| submit_with(&format!("answer-{i}"), "Windows needs 32 GB [O1].")),
+    );
+    let mut m = script(replies);
+    let r = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
+    assert!(r.error.is_none(), "{:?}", r.error);
+    assert_eq!(r.execution_status, ExecutionStatus::Completed);
+    let answer = r.answer.unwrap();
+    assert_eq!(answer.repairs, MAX_REPAIRS);
+    assert_eq!(answer.unverified.len(), 1);
+    assert_eq!(answer.unverified[0].kind, IssueKind::UnsupportedNumber);
+    assert_eq!(answer.unverified[0].excerpt, "32 GB");
+}
+#[test]
+fn submit_answer_alone_and_only_as_a_tool_call() {
+    let mut executed = 0;
+    let mut m = script(vec![
+        tools(vec![
+            call("a", "get_system_snapshot", "{}"),
+            call("b", SUBMIT_ANSWER, &answer_args("Too early.")),
+        ]),
+        Reply {
+            content: Some("Here is my answer in plain text.".into()),
+            ..Reply::default()
+        },
+        tools(vec![call("c", "get_system_snapshot", "{}")]),
+        done("O1"),
+    ]);
+    let r = investigate(
+        &mut m,
+        "test",
+        &fixture(),
+        &mut tb(|| {
+            executed += 1;
+            usable_snapshot()
+        }),
+        |_| {},
+    );
+    assert_eq!(executed, 1);
+    assert_eq!(r.answer.unwrap().repairs, 2);
+    let alone = m.messages[1].last().unwrap();
+    assert!(alone["content"].as_str().unwrap().contains("not_alone"));
+    let plain = m.messages[2].last().unwrap();
+    assert_eq!(plain["role"], "user");
+    assert!(plain["content"].as_str().unwrap().contains("no_tool_call"));
 }
 #[test]
 fn alternatives_are_existing_findings_ranked_by_the_model() {
@@ -235,8 +352,11 @@ fn alternatives_are_existing_findings_ranked_by_the_model() {
     let mut m = script(vec![
         tools(vec![call("a", "get_processes", "{\"limit\":2}")]),
         Reply {
-            calls: vec![],
-            content: Some(json!({"finding_ids":[alias_after(&initial, 0), "F1"]}).to_string()),
+            calls: vec![call(
+                "answer",
+                SUBMIT_ANSWER,
+                &answer_args(&format!("[{}], then [F1].", alias_after(&initial, 0))),
+            )],
             ..Reply::default()
         },
     ]);
@@ -250,7 +370,11 @@ fn alternatives_are_existing_findings_ranked_by_the_model() {
 #[test]
 fn a_direct_answer_without_tool_execution_is_not_live_validation() {
     let initial = fixture();
-    let mut m = script(vec![done("F1")]);
+    let mut m = script(
+        (0..=MAX_REPAIRS)
+            .map(|i| submit_with(&format!("answer-{i}"), "See [F1]."))
+            .collect(),
+    );
     let r = investigate(
         &mut m,
         "test",
@@ -259,6 +383,8 @@ fn a_direct_answer_without_tool_execution_is_not_live_validation() {
         |_| {},
     );
     assert_eq!(r.error, Some(AgentError::InvalidFinding));
+    assert!(r.answer.is_none());
+    assert_eq!(m.calls, MAX_REPAIRS + 1);
 }
 #[test]
 fn repeated_call_ids_are_not_replayed() {
@@ -281,7 +407,7 @@ fn rounds_and_tools_are_bounded() {
     assert_eq!(m.calls, MAX_ROUNDS);
     assert_eq!(r.error, Some(AgentError::Budget));
     let mut m = script(vec![tools(
-        (0..13)
+        (0..=MAX_TOOLS)
             .map(|i| call(&format!("c{i}"), "get_processes", "{}"))
             .collect(),
     )]);
@@ -369,10 +495,12 @@ fn unsuccessful_inspection_and_context_do_not_unlock_a_conclusion() {
             }],
             output,
         };
-        let mut model = script(vec![tools(vec![call("one", "inspect", "{}")]), done("F1")]);
+        let mut replies = vec![tools(vec![call("one", "inspect", "{}")])];
+        replies.extend((0..=MAX_REPAIRS).map(|i| submit_with(&format!("answer-{i}"), "See [F1].")));
+        let mut model = script(replies);
         let result = investigate(&mut model, "test", &initial, &mut toolbox, |_| {});
         assert_eq!(result.error, Some(AgentError::InvalidFinding));
-        assert_eq!(model.choices, [ToolChoice::Required, ToolChoice::Required]);
+        assert!(model.choices.iter().all(|c| *c == ToolChoice::Required));
         assert_eq!(result.observations.len(), 1);
     }
 }
@@ -407,10 +535,12 @@ fn refreshed_measurements_supersede_older_findings() {
     after.window.started_at_unix_ms = 200;
     after.window.finished_at_unix_ms = 200;
     next.evidence.push(after);
-    let mut model = script(vec![
-        tools(vec![call("fresh", "get_system_snapshot", "{}")]),
-        done(&format!("F{}", position + 1)),
-    ]);
+    let mut replies = vec![tools(vec![call("fresh", "get_system_snapshot", "{}")])];
+    replies.extend(
+        (0..=MAX_REPAIRS)
+            .map(|i| submit_with(&format!("answer-{i}"), &format!("See [F{}].", position + 1))),
+    );
+    let mut model = script(replies);
     let report = investigate(
         &mut model,
         "test",
@@ -418,7 +548,11 @@ fn refreshed_measurements_supersede_older_findings() {
         &mut tb(|| next.clone()),
         |_| {},
     );
-    assert_eq!(report.error, Some(AgentError::InvalidFinding));
+    // A superseded finding still describes an earlier moment: it stays a valid source.
+    let answer = report.answer.as_ref().expect("accepted");
+    assert_eq!(answer.repairs, 0);
+    assert!(answer.unverified.is_empty());
+    assert_eq!(answer.citations[0].target, old.id);
     assert!(report.historical_findings.iter().any(|f| f.id == old.id));
     assert!(!report.findings.iter().any(|f| f.id == old.id));
     assert_eq!(report.evidence.len(), 2);
@@ -690,12 +824,11 @@ fn conclusion_cites_hardware_storage_and_history_without_inventing_a_diagnosis()
                 r#"{"metric":"cpu_busy_basis_points","window_seconds":60}"#,
             ),
         ]),
-        Reply {
-            calls: vec![],
-            content: Some(json!({"finding_ids":[],"observation_ids":refs}).to_string()),
-            total_tokens: Some(10),
-            ..Reply::default()
-        },
+        submit_with(
+            "answer",
+            "Le PC dispose de 8 Gio de mémoire [O1]. Le volume a 4 096 octets libres [O2]. \
+             Le processeur a varié entre 5 % et 9 % [O3].",
+        ),
     ]);
     let report = investigate(
         &mut model,
@@ -706,6 +839,8 @@ fn conclusion_cites_hardware_storage_and_history_without_inventing_a_diagnosis()
     );
     assert_eq!(report.execution_status, ExecutionStatus::Completed);
     assert_eq!(report.observation_refs, refs);
+    // Memory, free space and the CPU range all come from the three tool results.
+    assert!(report.answer.as_ref().unwrap().unverified.is_empty());
     assert_eq!(report.diagnostic_support, Support::Insufficient);
     assert!(report.observations[0]
         .facts
@@ -732,55 +867,48 @@ fn conclusion_cites_hardware_storage_and_history_without_inventing_a_diagnosis()
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(reply["citable_observation_ids"], json!(refs));
+    assert_eq!(reply["citable_observation_ids"], json!(["O1", "O2", "O3"]));
+    assert_eq!(reply["observation_id"], "O3");
 }
 
 #[test]
-fn observation_citations_reject_unknown_duplicate_failed_context_and_free_form_claims() {
-    let findings = analyze(&fixture());
-    let mut output = ToolOutput::from_snapshot(&usable_snapshot());
-    output.cloud["observation_id"] = "obs-test".into();
+fn only_usable_inspections_and_current_findings_can_be_cited() {
+    let mut report = local_report(&fixture());
     let spec = ToolSpec {
         name: "inspect",
         class: ToolClass::Inspection,
         description: "",
         params: &[],
     };
-    let observation = Observation::record(&spec, &mut output);
-    for refs in [vec!["invented"], vec!["obs-test", "obs-test"]] {
-        assert!(select(
-            &json!({"finding_ids":[],"observation_ids":refs}).to_string(),
-            &findings,
-            std::slice::from_ref(&observation),
-            &FindingAliases::default()
-        )
-        .is_err());
-    }
-    assert!(select(
-        &json!({"finding_ids":[],"observation_ids":["obs-test"],"summary":"made-up numbers"})
-            .to_string(),
-        &findings,
-        &[observation],
-        &FindingAliases::default()
-    )
-    .is_err());
     for (class, status, usable) in [
+        (ToolClass::Inspection, Status::Ok, true),
         (ToolClass::Context, Status::Ok, true),
         (ToolClass::Proposal, Status::Ok, true),
         (ToolClass::Inspection, Status::Error, true),
         (ToolClass::Inspection, Status::Partial, false),
     ] {
+        let mut output = ToolOutput::from_snapshot(&usable_snapshot());
         output.status = status;
         output.inspection_complete = usable;
-        let observation = Observation::record(&ToolSpec { class, ..spec }, &mut output);
-        assert!(select(
-            &json!({"finding_ids":[],"observation_ids":["obs-test"]}).to_string(),
-            &findings,
-            &[observation],
-            &FindingAliases::default()
-        )
-        .is_err());
+        report.push_observation(Observation::record(
+            &ToolSpec { class, ..spec },
+            &mut output,
+        ));
     }
+    let references = report.references(&mut FindingAliases::default());
+    let observations: Vec<&str> = references
+        .iter()
+        .filter(|r| r.1 == CitationKind::Observation)
+        .map(|r| r.0.as_str())
+        .collect();
+    assert_eq!(observations, ["O1"]);
+    assert_eq!(
+        references
+            .iter()
+            .filter(|r| r.1 == CitationKind::Finding)
+            .count(),
+        report.findings.len()
+    );
 }
 
 #[test]
@@ -804,7 +932,7 @@ fn execution_completion_is_independent_of_missing_sensors_and_diagnostic_support
 fn cost_needs_complete_usage_and_a_verified_catalog_price() {
     let pricing = fixture_pricing();
     let initial = fixture();
-    let next = fixture();
+    let next = usable_snapshot();
     let id = analyze(&next)[0].id.clone();
     let run = |replies: Vec<Reply>, pricing: Option<Pricing>| {
         let mut m = script(replies);
@@ -830,7 +958,11 @@ fn cost_needs_complete_usage_and_a_verified_catalog_price() {
         .cost
         .is_none());
     let unreported = Reply {
-        content: Some(json!({"finding_ids":[chosen]}).to_string()),
+        calls: vec![call(
+            "answer",
+            SUBMIT_ANSWER,
+            &answer_args(&format!("See [{chosen}].")),
+        )],
         ..Reply::default()
     };
     let r = run(vec![snapshot_call(), unreported], Some(pricing.clone()));
@@ -845,17 +977,28 @@ fn cost_needs_complete_usage_and_a_verified_catalog_price() {
         rejected: Some(AgentError::OutputLimit),
         ..Reply::default()
     };
-    let r = run(vec![cut_off], Some(pricing));
+    // A reply cut off at the output limit is billed: its tokens are counted and priced, and the
+    // request is asked again a bounded number of times.
+    let r = run(
+        vec![cut_off.clone(), snapshot_call(), done(&chosen)],
+        Some(pricing.clone()),
+    );
+    assert!(r.error.is_none(), "{:?}", r.error);
+    assert_eq!(r.stats.inference_calls, 3);
+    assert_eq!(
+        r.stats.completion_tokens,
+        Some(u64::from(MAX_OUTPUT_TOKENS) + 2)
+    );
+    let r = run(vec![cut_off; MAX_REPAIRS + 1], Some(pricing));
     assert_eq!(r.status, Status::Partial);
     assert_eq!(r.error, Some(AgentError::OutputLimit));
-    assert_eq!(r.stats.inference_calls, 1);
+    assert_eq!(r.stats.inference_calls, MAX_REPAIRS + 1);
     assert_eq!(r.stats.tool_calls, 0);
-    assert_eq!(r.stats.completion_tokens, Some(4096));
-    // 9 input tokens at $0.30 and 4,096 output tokens at $0.90 per million.
     assert_eq!(
-        r.stats.cost.as_ref().map(|c| c.usd.as_str()),
-        Some("0.0036891")
+        r.stats.completion_tokens,
+        Some(u64::from(MAX_OUTPUT_TOKENS) * (MAX_REPAIRS as u64 + 1))
     );
+    assert!(r.stats.cost.is_some());
 }
 #[test]
 fn first_message_is_compact_and_uses_finding_aliases() {
