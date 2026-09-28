@@ -3,7 +3,7 @@ import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
-import { disclosure } from "../ask.js";
+import { disclosure, namesShared } from "../ask.js";
 import { getPrefs, setPref } from "../prefs.js";
 import { state, subscribe, refreshInfo } from "../store.js";
 import { badge, button, segmented, toast, toggle } from "../ui.js";
@@ -131,6 +131,7 @@ function aiCard() {
 }
 
 function privacyCard() {
+  const what = h("div", null, disclosure(null));
   return h(
     "section",
     { class: "card card-pad" },
@@ -143,7 +144,16 @@ function privacyCard() {
         state.skipConsent = !on;
       }, t("settings.privacy.ask")),
     ),
-    h("details", { class: "more" }, h("summary", null, icon("chevron"), t("settings.privacy.what")), h("div", null, disclosure(null))),
+    h(
+      "div",
+      { class: "setting-row" },
+      h("div", { class: "setting-text" }, h("strong", null, t("settings.privacy.names")), h("span", { class: "hint" }, t("settings.privacy.namesNote"))),
+      toggle(namesShared(), (on) => {
+        setPref("names", on);
+        fill(what, disclosure(null, on));
+      }, t("settings.privacy.names")),
+    ),
+    h("details", { class: "more" }, h("summary", null, icon("chevron"), t("settings.privacy.what")), what),
   );
 }
 

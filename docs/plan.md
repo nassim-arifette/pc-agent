@@ -228,6 +228,18 @@ choix est mémorisé, modifiable dans les réglages et rappelé dans la zone de 
 - **Fait quand :**
   - des tests prouvent, dans chaque mode, l'absence du nom d'utilisateur et du chemin du profil dans tout ce qui part ;
   - l'aperçu correspond octet pour octet à ce qui est envoyé.
+- **Livré (28 septembre), pour les processus :**
+  - `Sharing` (`Complete` ou `Anonymized`) est porté par la boîte à outils.
+  - En mode complet, chaque charge envoyée reçoit `process_names` : le nom d'exécutable des
+    références qu'elle cite, réduit au dernier composant du chemin et nettoyé, 64 caractères au
+    plus.
+  - La CLI est complète par défaut, avec `--anonymize` en option.
+  - Dans l'app, une case figure dans la boîte de consentement (l'aperçu et le message exact
+    suivent le choix, qui est mémorisé), et un réglage est ajouté dans Confidentialité.
+  - Essai réel : Super nomme le programme (« Windows Terminal… 2,39 Gio [O1] ») au lieu d'une
+    référence opaque.
+  - Reste à faire : les noms de dossiers et de fichiers relatifs aux dossiers connus. Aujourd'hui,
+    ils passent seulement par la liste finie `--share-file-names` de la CLI.
 
 ### Chantier 4 — Nouveaux outils en lecture seule, sans admin (piste B ; E03, E04, S01, S12)
 
@@ -529,7 +541,7 @@ Règles de travail :
 | Contrats C1–C5 | toutes | à faire | |
 | 1 — Le LLM rédige | A | en cours : contrat C1 et vérificateur livrés ; multi-tour, stockage et flux à faire | |
 | 2 — Tous les processus, sans admin | B | à faire | |
-| 3 — Choix de partage | A, C | à faire | |
+| 3 — Choix de partage | A, C | en cours : noms de processus livrés ; noms de fichiers à faire | |
 | 4 — Nouveaux outils | B | à faire | |
 | 5 — Mesurer au bon moment | B, C | à faire | |
 | 6 — Interface de conversation | C | à faire | |
