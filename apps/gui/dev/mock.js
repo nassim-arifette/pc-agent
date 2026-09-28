@@ -301,6 +301,7 @@ export function createMock() {
   const commands = {
     app_info: () => ({ version: "0.1.0", cloud: cloud(), models: [
       { id: "nvidia/nemotron-3-super-120b-a12b", note: "recommended" },
+      { id: "nvidia/Nemotron-3-Ultra-550b-a55b", note: "most_capable" },
       { id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", note: "cheaper_slower" },
       { id: "nvidia/Nemotron-3_5-Lightning", note: "not_recommended" },
     ] }),

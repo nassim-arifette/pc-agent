@@ -1,5 +1,7 @@
 # PC Agent — feuille de route produit, améliorations et limites
 
+> **Archivé le 28 septembre 2026.** Remplacé par [le plan d'octobre](../plan.md), qui fixe la vision produit et l'ordre de travail. Le plan reprend les identifiants du backlog ci-dessous (S, D, I, U, Q, E) ; les priorités et l'ordre de livraison de ce document ne s'appliquent plus.
+
 **Réévaluation : 27 septembre 2026. Base examinée : [main@e8e6c38](https://github.com/nassim-arifette/pc-agent/commit/e8e6c382a228432db57ae0fd7ff7b2b138062eff), après les PR #14 et #15.**
 
 PC Agent doit permettre de **comprendre un ralentissement pendant qu'il se produit** et de **voir rapidement ce qui occupe le PC pour décider quoi conserver, déplacer ou nettoyer**. La vitesse d'inventaire, la qualité des explications et le contrôle des actions sont trois exigences du même produit.
@@ -26,9 +28,9 @@ La base de référence est désormais **un main intégré**. La prolongation d'e
 | Interface et distribution | CLI, `doctor`, modes hors ligne/aperçu, préférences versionnées, artefact Windows en CI ; helpers de tests sans fenêtre de terminal. | Interface Tauri utilisable, réglages guidés, export support expurgé, coffre Windows pour la clé, installation/distribution durable. |
 | Qualité | Tests Windows/Linux, CI sans modification du commit évalué, contrats et protections ciblés, essais modèle documentés sur le PC de développement. | Corpus produit rejouable, benchmark de grands volumes, recettes sur d'autres PC et mesure de l'empreinte totale. |
 
-**Portée de cette réévaluation.** Lecture du document existant, de la [spec](../SPEC_PC_AGENT.md), des contrats et points d'intégration du CLI, de l'agent, des diagnostics, du stockage, de la politique et des actions ; vérification des sources officielles pertinentes. Aucun nouveau benchmark concurrent, entretien utilisateur, scan du PC ou appel live au fournisseur n'a été exécuté pour rédiger ce document. Les validations existantes restent attachées à leur commit ; une CI verte ne valide pas tous les usages réels.
+**Portée de cette réévaluation.** Lecture du document existant, de la [spec](SPEC_PC_AGENT.md), des contrats et points d'intégration du CLI, de l'agent, des diagnostics, du stockage, de la politique et des actions ; vérification des sources officielles pertinentes. Aucun nouveau benchmark concurrent, entretien utilisateur, scan du PC ou appel live au fournisseur n'a été exécuté pour rédiger ce document. Les validations existantes restent attachées à leur commit ; une CI verte ne valide pas tous les usages réels.
 
-Repères : [README](../README.md), [stockage](storage.md), [télémétrie](telemetry.md), [actions](actions.md), [validation](validation.md), [comparaison des modèles](model-comparison.md).
+Repères : [README](../../README.md), [stockage](../storage.md), [télémétrie](../telemetry.md), [actions](../actions.md), [validation](../validation.md), [comparaison des modèles](model-comparison.md).
 
 <a id="priorites"></a>
 
@@ -137,7 +139,7 @@ Les identifiants historiques sont conservés. « Partiel » indique qu'un socle 
 | **S11 · B · L** | **Partiel — doublons vérifiés et choix de copie.** Étendre `--compare-content` au-delà du sous-ensemble actuel. | Comparaisons entre scopes autorisés, sélection guidée, budgets visibles et reprise ; cache de résultats invalidé quand l'identité/contenu change. **Fini quand :** mêmes tailles avec contenus différents, liens physiques, fichiers modifiés, copies nécessaires et chemins exclus sont traités ; conserver une copie est un choix explicite. Dossiers identiques = arborescences et fichiers entièrement couverts, sinon inconnu. Similarité de photos/vidéos en C ; aucune déduplication ou suppression automatique. |
 | **S12 · B · M** | **Partiel — application associée et récupération vérifiées.** Mieux répondre « puis-je supprimer ceci ? ». | Croiser règles de chemin avec installation/manifestes disponibles et documenter les conditions de restauration, régénération ou téléchargement. **Fini quand :** correspondance probable, propriété vérifiée et inconnue sont distinctes ; sauvegarde/copie encore accessible et récupération testée ne sont pas confondues. Le contexte livré reste utile mais ne prouve ni inutilité ni permission de supprimer. |
 
-Points d'appui : [scanner](../crates/storage/src/lib.rs), [contexte agent](../crates/agent/src/storage_context.rs), [Workstation](../crates/agent/src/workstation.rs), [politique](policy.md), [plans](../crates/policy/src/plan.rs), [actions](actions.md).
+Points d'appui : [scanner](../../crates/storage/src/lib.rs), [contexte agent](../../crates/agent/src/storage_context.rs), [Workstation](../../crates/agent/src/workstation.rs), [politique](../policy.md), [plans](../../crates/policy/src/plan.rs), [actions](../actions.md).
 
 ### Diagnostic, explications et décisions
 
@@ -152,7 +154,7 @@ Points d'appui : [scanner](../crates/storage/src/lib.rs), [contexte agent](../cr
 | **D07 · B · M** | **Partiel — vérification représentative.** Vérifier le bénéfice dans l'usage réel. | Allonger les fenêtres utiles avant/après, conserver le contexte de charge et permettre « non comparable ». **Fini quand :** baisse mémoire, espace gagné et fluidité restent des mesures distinctes ; critère technique et ressenti sont séparés. La vérification par type d'action existe déjà et reste obligatoire pour S06. |
 | **D08 · B · M** | **Partiel — conseil matériel conditionnel.** Choisir entre usage, entretien et achat. | Croiser contraintes répétées et applications nécessaires ; distinguer capacité installée, besoin mesuré et compatibilité inconnue. **Fini quand :** cas « ne rien acheter », « mesurer davantage » et « capacité à étudier » présents ; aucune taille conseillée à partir du seul commit. Dépend de D01/D02/D05/Q03. |
 
-Points d'appui : [collecteur](../crates/telemetry/src/lib.rs), [historique](../crates/telemetry/src/history.rs), [diagnostics](../crates/diagnostics/src/lib.rs), [comparateur](../crates/diagnostics/src/compare.rs), [CLI](../apps/cli/src/main.rs).
+Points d'appui : [collecteur](../../crates/telemetry/src/lib.rs), [historique](../../crates/telemetry/src/history.rs), [diagnostics](../../crates/diagnostics/src/lib.rs), [comparateur](../../crates/diagnostics/src/compare.rs), [CLI](../../apps/cli/src/main.rs).
 
 ### Enquête, continuité et coût
 
@@ -164,7 +166,7 @@ Points d'appui : [collecteur](../crates/telemetry/src/lib.rs), [historique](../c
 | **I04 · B · M** | **Partiel — budgets utilisateur de coût et délai.** Choisir la profondeur de l'enquête. | Utiliser le suivi de tokens/coûts et les prolongations déjà intégrés ; ajouter plafonds configurables, cumul visible et estimation prudente de la suite. **Fini quand :** contrôle avant nouvel appel, usage inconnu jamais annoncé gratuit, estimation client distincte de facture fournisseur. Pas de plafond monétaire exact promis sans borne vérifiable. |
 | **I05 · B · M** | **Partiel — erreurs cloud récupérables.** Garder le bénéfice des observations locales. | Différencier configuration/authentification/réseau/limitation ; reprises bornées selon l'erreur et retour local utile. **Fini quand :** bilan conservé, suite compréhensible, pas de boucle de retries ni de rejeu d'action, fournisseur jamais changé implicitement. |
 
-Points d'appui : [agent](../crates/agent/src/lib.rs), [transport](../crates/agent/src/nebius.rs), [journal d'actions](../crates/actions/src/journal.rs).
+Points d'appui : [agent](../../crates/agent/src/lib.rs), [transport](../../crates/agent/src/nebius.rs), [journal d'actions](../../crates/actions/src/journal.rs).
 
 ### Interface, confidentialité et distribution
 
@@ -288,7 +290,7 @@ Le premier panel doit inclure développeurs, joueurs et utilisateurs de portable
 | Comparaison actuelle limitée aux candidats de même taille parmi les 256 plus gros fichiers indexés par scope, avec 256 Mio/15 s par défaut | Pas de recherche exhaustive, pas de comparaison entre scopes/dossiers, aucune unicité conclue pour un fichier non comparé. Préparation `diagnose` : deadline et volume de lectures partagés entre scopes. S11. |
 | Alias/`item_ref` liés à un scan | Résolution locale précise pendant le scan, pas identité persistante entre scans ; S10/Q07/I02. |
 | Noms partagés : au plus 200 basenames sélectionnés automatiquement, racine exclue | Aperçu et envoi sont deux invocations possibles avec scans distincts ; le run cloud affiche sa liste réelle. Rescans sans extension implicite de la liste. Sélection fine et aperçu de la même session restent U05. |
-| Corbeille Windows passant par chemin/PIDL après relâchement du pin | Fenêtre de substitution résiduelle contrôlée et vérification après effet, pas atomicité promise. S06 doit garder cette limite visible ; [détails](actions.md#recycle-binding-spec-113). |
+| Corbeille Windows passant par chemin/PIDL après relâchement du pin | Fenêtre de substitution résiduelle contrôlée et vérification après effet, pas atomicité promise. S06 doit garder cette limite visible ; [détails](../actions.md#recycle-binding-spec-113). |
 | Octets supprimés différents de la variation d'espace libre | Allocation, corbeille et activité concurrente expliquent des écarts ; S01/D07. |
 | Identité de boot fiable absente | Pas de corrélation persistante de processus entre boots ; pas d'action si identité non confirmée. I03. Ce manque ne bloque pas un index stockage fondé sur ses propres identités de volumes/fichiers. |
 | Budget initial parfois insuffisant | Prolongation consentie déjà livrée : +6 tours, +12 outils, +90 s, au plus trois fois ; contexte conservé et temps humain exclu. JSON/non-interactif : bilan partiel avec `continuation`, sans extension automatique. Reprise après fermeture : I03. |
@@ -328,7 +330,7 @@ Le document local `pc-agent-review.md` reste la revue d'origine. Le tableau suiv
 
 Autres corrections conservées : ouvertures relatives sans suivi des liens pour empêcher la sortie du scope, contrôle des fenêtres/références dupliquées avant comparaison, abstention locale plutôt qu'un consommateur mémoire insuffisamment étayé, nettoyage des caractères de contrôle dans les textes de terminal, helpers de tests Windows avec `CREATE_NO_WINDOW`.
 
-**Validation historique, à ne pas confondre avec cette réécriture :** le lot `92b7a28` avait 214 tests Windows et 203 Linux/WSL réussis ; les validations de la [PR #15](https://github.com/nassim-arifette/pc-agent/pull/15) concernent le contexte stockage ajouté ensuite. Le test live fournisseur reste séparé des réponses scriptées. La présente modification documentaire n'annonce aucun nouveau résultat de benchmark ni recette native. La [checklist](validation.md) reste la référence des vérifications encore requises.
+**Validation historique, à ne pas confondre avec cette réécriture :** le lot `92b7a28` avait 214 tests Windows et 203 Linux/WSL réussis ; les validations de la [PR #15](https://github.com/nassim-arifette/pc-agent/pull/15) concernent le contexte stockage ajouté ensuite. Le test live fournisseur reste séparé des réponses scriptées. La présente modification documentaire n'annonce aucun nouveau résultat de benchmark ni recette native. La [checklist](../validation.md) reste la référence des vérifications encore requises.
 
 <a id="sources-recherche"></a>
 

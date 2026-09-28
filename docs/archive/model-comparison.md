@@ -1,5 +1,7 @@
 # Model comparison
 
+> **Archived on 2026-09-28.** These results measure the earlier agent contract, in which the model only selected finding IDs. They do not predict answer quality once the model writes its answers. Nemotron 3 Ultra was not in the catalog when this ran. The new evaluation is work package 7 of [the October plan](../plan.md).
+
 Three NVIDIA Nemotron models from the Nebius Token Factory catalog, compared on the same eight
 typical questions: the default `nvidia/nemotron-3-super-120b-a12b` and two models about five times
 cheaper per token, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` and `nvidia/Nemotron-3_5-Lightning`.
