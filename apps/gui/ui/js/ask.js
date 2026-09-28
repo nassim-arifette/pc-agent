@@ -21,15 +21,20 @@ export function cloudReady() {
   return Boolean(state.info?.cloud?.ready);
 }
 
+/** Whether program names go to the AI: the person's choice, on unless turned off. */
+export function namesShared() {
+  return getPrefs().names !== false;
+}
+
 /** Lists of what AI mode sends and never sends, shared by the consent dialog and Settings. */
-export function disclosure(preview) {
+export function disclosure(preview, names = namesShared()) {
   const sent = [
     t("consent.sent.question"),
     preview ? t("consent.sent.measures", { count: preview.measured }) : null,
     preview ? t("consent.sent.findings", { count: preview.findings }) : null,
-    t("consent.sent.refs"),
+    names ? (preview?.names ? t("consent.sent.names", { count: preview.names }) : t("consent.sent.namesAny")) : t("consent.sent.refs"),
   ].filter(Boolean);
-  const never = [t("consent.never.names"), t("consent.never.paths"), t("consent.never.ids"), t("consent.never.key")];
+  const never = [names ? t("consent.never.pids") : t("consent.never.names"), t("consent.never.paths"), t("consent.never.ids"), t("consent.never.key")];
   return h(
     "div",
     { class: "two-lists" },
@@ -43,17 +48,53 @@ function folderName(path) {
   return trimmed.split(/[\\/]/).pop() || trimmed;
 }
 
-/** Resolves with { cloud, useStorage } or null when the person cancels. */
+/** Resolves with { cloud, useStorage, names } or null when the person cancels. */
 async function consent(question) {
+  let names = namesShared();
   let preview = null;
   try {
-    preview = await call("cloud_preview", { question });
+    preview = await call("cloud_preview", { question, names });
   } catch (error) {
     toast(error.message, "bad");
     return null;
   }
   let useStorage = Boolean(preview.storage_folder);
   let dontAsk = false;
+  // What is sent depends on the names choice: both lists and the exact message are redrawn.
+  const listHost = h("div");
+  const messageHost = h("div");
+  const draw = () => {
+    fill(listHost, disclosure(preview, names));
+    fill(
+      messageHost,
+      h(
+        "details",
+        { class: "more" },
+        h("summary", null, icon("chevron"), t("consent.show")),
+        h("div", null, h("p", { class: "note" }, t("consent.size", { size: bytes(preview.bytes) })), h("pre", { class: "code" }, JSON.stringify(preview.message, null, 2))),
+      ),
+    );
+  };
+  draw();
+  const namesRow = h(
+    "label",
+    { class: "check" },
+    h("input", {
+      type: "checkbox",
+      checked: names,
+      onchange: async (e) => {
+        names = e.target.checked;
+        setPref("names", names);
+        try {
+          preview = await call("cloud_preview", { question, names });
+        } catch (error) {
+          toast(error.message, "bad");
+        }
+        draw();
+      },
+    }),
+    t("consent.names"),
+  );
   return dialog(
     (close) => {
       const storageRow = preview.storage_folder
@@ -73,14 +114,10 @@ async function consent(question) {
       return [
         h("div", { class: "dialog-head" }, h("div", { class: "metric-icon" }, icon("cloud")), h("h2", { class: "dialog-title" }, t("consent.title"))),
         h("p", null, t("consent.lead")),
-        disclosure(preview),
+        listHost,
+        namesRow,
         storageRow,
-        h(
-          "details",
-          { class: "more" },
-          h("summary", null, icon("chevron"), t("consent.show")),
-          h("div", null, h("p", { class: "note" }, t("consent.size", { size: bytes(preview.bytes) })), h("pre", { class: "code" }, JSON.stringify(preview.message, null, 2))),
-        ),
+        messageHost,
         h(
           "label",
           { class: "check" },
@@ -108,7 +145,7 @@ async function consent(question) {
                   state.skipConsent = true;
                   state.lastUseStorage = useStorage;
                 }
-                close({ cloud: true, useStorage });
+                close({ cloud: true, useStorage, names });
               },
             },
             icon("send"),
@@ -130,6 +167,7 @@ export async function ask(question, { cloud }) {
     return;
   }
   let useStorage = false;
+  let names = namesShared();
   if (cloud) {
     if (!cloudReady()) {
       toast(t("mode.cloud.setup"), "bad");
@@ -144,10 +182,11 @@ export async function ask(question, { cloud }) {
       if (!decision) return;
       cloud = decision.cloud;
       useStorage = decision.useStorage;
+      names = decision.names ?? names;
     }
   }
   navigate("investigate");
-  await startInvestigation(text, { cloud, useStorage });
+  await startInvestigation(text, { cloud, useStorage, names });
 }
 
 /**

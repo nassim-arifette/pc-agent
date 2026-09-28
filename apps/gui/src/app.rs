@@ -8,7 +8,7 @@ use crate::{
 use pcagent_agent::{
     credentials::{self, Credentials},
     initial_message, investigate_with_extension, local_report, AgentError, Config,
-    ExtensionRequest, Investigation, Nebius, Workstation, MAX_QUESTION_BYTES,
+    ExtensionRequest, Investigation, Nebius, Sharing, Workstation, MAX_QUESTION_BYTES,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::unix_ms;
@@ -34,7 +34,7 @@ const PAGE: usize = 50;
 /// Requests for the thread that owns the live collector (its native handles stay on it).
 enum Measure {
     Dashboard(mpsc::Sender<view::Dashboard>),
-    Preview(String, mpsc::Sender<Value>),
+    Preview(String, Sharing, mpsc::Sender<Value>),
 }
 
 struct Running {
@@ -72,8 +72,9 @@ fn measure_thread(requests: mpsc::Receiver<Measure>) {
             Measure::Dashboard(reply) => {
                 let _ = reply.send(view::dashboard(&collector.snapshot(true, 8)));
             }
-            Measure::Preview(question, reply) => {
-                let _ = reply.send(initial_message(&question, &collector.snapshot(true, 10)));
+            Measure::Preview(question, sharing, reply) => {
+                let snapshot = collector.snapshot(true, 10);
+                let _ = reply.send(initial_message(&question, &snapshot, sharing));
             }
         }
     }
@@ -111,14 +112,30 @@ struct Preview {
     bytes: usize,
     measured: usize,
     findings: usize,
+    /// Program names in the message; zero when the person chose anonymized sharing.
+    names: usize,
     storage_folder: Option<String>,
+}
+
+/// The person's choice in the interface: program names or opaque references (contract C5).
+fn sharing_of(names: bool) -> Sharing {
+    if names {
+        Sharing::Complete
+    } else {
+        Sharing::Anonymized
+    }
 }
 
 /// The first message exactly as it would be sent, for the consent dialog. Later samples differ.
 #[tauri::command]
-async fn cloud_preview(state: State<'_, AppState>, question: String) -> Result<Preview, String> {
+async fn cloud_preview(
+    state: State<'_, AppState>,
+    question: String,
+    names: bool,
+) -> Result<Preview, String> {
     let question = checked_question(&question)?;
-    let message = ask_measure(&state, |tx| Measure::Preview(question, tx)).await?;
+    let sharing = sharing_of(names);
+    let message = ask_measure(&state, |tx| Measure::Preview(question, sharing, tx)).await?;
     let text = message.to_string();
     let measured = message["initial_observation"]["measurements"]["values"]
         .as_object()
@@ -139,6 +156,7 @@ async fn cloud_preview(state: State<'_, AppState>, question: String) -> Result<P
         bytes: text.len(),
         measured,
         findings: message["findings"].as_array().map_or(0, Vec::len),
+        names: message["process_names"].as_object().map_or(0, |n| n.len()),
         storage_folder: slot.root.clone().filter(|_| scanned),
         message,
     })
@@ -188,6 +206,7 @@ fn start_investigation(
     question: String,
     cloud: bool,
     use_storage: bool,
+    names: bool,
 ) -> Result<u64, String> {
     let question = checked_question(&question)?;
     let mut slot = lock(&state.investigation);
@@ -218,6 +237,8 @@ fn start_investigation(
     thread::Builder::new()
         .name("investigation".into())
         .spawn(move || {
+            // Local analysis, or the model with the person's choice of program names.
+            let cloud = cloud.then(|| sharing_of(names));
             let outcome = investigation(&app, id, &question, cloud, storage, &stop, &answer);
             // Finished before the last event, so the next question can start right away.
             finished.store(true, Ordering::SeqCst);
@@ -237,7 +258,7 @@ fn investigation(
     app: &AppHandle,
     id: u64,
     question: &str,
-    cloud: bool,
+    cloud: Option<Sharing>,
     storage: Arc<StorageService>,
     stop: &Arc<AtomicBool>,
     answer: &Arc<Mutex<Option<mpsc::Sender<bool>>>>,
@@ -264,9 +285,7 @@ fn investigation(
             .filter(|e| e.usable_value().is_some())
             .count(),
     });
-    let report: Investigation = if !cloud {
-        local_report(&initial)
-    } else {
+    let report: Investigation = if let Some(sharing) = cloud {
         let creds = Credentials::load();
         let model = match Config::from_lookup(|name| creds.get(name)).and_then(Nebius::new) {
             Ok(model) => model,
@@ -284,7 +303,8 @@ fn investigation(
         };
         let mut model = ObservedModel::new(model, stop.clone(), emit);
         let (policy, prefs) = (Policy::from_env(), Preferences::default());
-        let workstation = Workstation::new(&mut collector, storage, &policy, &prefs);
+        let mut workstation = Workstation::new(&mut collector, storage, &policy, &prefs);
+        workstation.set_sharing(sharing);
         let mut tools = ObservedTools::new(workstation, |tool: &str| {
             emit(Step::ToolStarted { tool: tool.into() })
         });
@@ -311,6 +331,8 @@ fn investigation(
             let _ = job.wait();
         }
         report
+    } else {
+        local_report(&initial)
     };
     Ok(view::report(&report, question))
 }

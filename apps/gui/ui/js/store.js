@@ -40,7 +40,7 @@ function current(id) {
   return inv.id === id ? inv : null;
 }
 
-export async function startInvestigation(question, { cloud, useStorage }) {
+export async function startInvestigation(question, { cloud, useStorage, names = true }) {
   state.inv = {
     id: null,
     question,
@@ -54,7 +54,7 @@ export async function startInvestigation(question, { cloud, useStorage }) {
   };
   notify("inv");
   try {
-    const id = await call("start_investigation", { question, cloud, useStorage });
+    const id = await call("start_investigation", { question, cloud, useStorage, names: Boolean(names) });
     if (state.inv && state.inv.id == null) state.inv.id = id;
   } catch (error) {
     state.inv.status = "failed";

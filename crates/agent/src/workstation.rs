@@ -174,6 +174,7 @@ pub struct Workstation<'a> {
     actions: Option<ActionDesk>,
     observation_refs: Vec<String>,
     storage_context: crate::StorageContext,
+    sharing: crate::Sharing,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -193,6 +194,7 @@ impl<'a> Workstation<'a> {
             actions: None,
             observation_refs: Vec::new(),
             storage_context: crate::StorageContext::default(),
+            sharing: crate::Sharing::Anonymized,
         }
     }
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
@@ -215,6 +217,10 @@ impl<'a> Workstation<'a> {
         std::mem::take(&mut self.jobs)
     }
     /// Local opt-in settings; no tool can expand name sharing or start content comparison.
+    /// Program names reach the model only in complete sharing, chosen by the user.
+    pub fn set_sharing(&mut self, sharing: crate::Sharing) {
+        self.sharing = sharing;
+    }
     pub fn set_storage_context(&mut self, context: crate::StorageContext) {
         self.storage_context = context;
     }
@@ -497,6 +503,9 @@ impl Workstation<'_> {
 impl Toolbox for Workstation<'_> {
     fn specs(&self) -> &[ToolSpec] {
         &self.specs
+    }
+    fn sharing(&self) -> crate::Sharing {
+        self.sharing
     }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         let scope = args.text("scope_id").unwrap_or_default();
