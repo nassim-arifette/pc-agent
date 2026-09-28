@@ -1,6 +1,9 @@
 //! Human-readable terminal output. Machine-readable output is `--json` and is not produced here.
 use pcagent_actions::Recovery;
-use pcagent_agent::{ActionVerification, Cost, Investigation, Pricing, ToolEvent, VERIFY_SAMPLES};
+use pcagent_agent::{
+    ActionVerification, Answer, CitationKind, Cost, Investigation, IssueKind, Pricing, ToolEvent,
+    VERIFY_SAMPLES,
+};
 use pcagent_shared::{
     format_bytes, format_utc_minute, Evidence, Metric, Origin, ProcessInstance, Snapshot, Status,
 };
@@ -558,43 +561,103 @@ pub fn tool_event(e: &ToolEvent) -> String {
     )
 }
 
-pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Result<()> {
+/// What an unverified part of an answer means, for the reader.
+fn issue_text(kind: IssueKind) -> String {
+    match kind {
+        IssueKind::UnsupportedNumber => "number not found in the measurements".into(),
+        IssueKind::MissingCitation => "numbers without a cited source".into(),
+        IssueKind::UnknownCitation => "cites a source that does not exist".into(),
+        IssueKind::UnseenName => "name not returned by any tool".into(),
+        IssueKind::Command => "contains a command; do not run it without checking".into(),
+        IssueKind::Link => "contains a link".into(),
+        IssueKind::Html => "contains markup".into(),
+        IssueKind::UnknownAction => "refers to an action that was not prepared".into(),
+        IssueKind::TooLong => "cut to the maximum length".into(),
+        other => words(&other),
+    }
+}
+
+/// The model's answer, its checked sources and what could not be verified.
+fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()> {
     let local = |text: &str| localize(text, &r.local_processes);
-    match r.mode.as_str() {
-        "local_rules" => writeln!(out, "Local analysis (nothing was sent to the cloud)")?,
-        "nebius" => writeln!(out, "Cloud-assisted investigation (Nebius)")?,
-        other => writeln!(out, "Mode: {}", clean(other))?,
-    }
-    writeln!(
-        out,
-        "Execution: {} | Sensor coverage: {} | Diagnostic support: {}",
-        words(&r.execution_status),
-        words(&r.coverage.status),
-        r.diagnostic_support.label()
-    )?;
-    for domain in &r.coverage.domains {
-        let target = domain
-            .target
-            .as_ref()
-            .map(|t| format!(" ({})", clean(t)))
-            .unwrap_or_default();
-        writeln!(
-            out,
-            "  {}{target}: {}",
-            words(&domain.domain),
-            words(&domain.status)
-        )?;
-        if verbose {
-            list(out, "    Missing coverage", &domain.missing)?;
-        }
-    }
-    if let Some(error) = &r.error {
-        writeln!(
-            out,
-            "Warning: the investigation did not complete ({error}). Collected observations are retained below."
-        )?;
+    for line in local(&a.text).lines() {
+        writeln!(out, "{}", clean(line))?;
     }
     writeln!(out)?;
+    if !a.unverified.is_empty() {
+        writeln!(out, "Not verified by PC Agent")?;
+        for issue in &a.unverified {
+            writeln!(
+                out,
+                "  - \"{}\": {}",
+                clean(&issue.excerpt),
+                issue_text(issue.kind)
+            )?;
+        }
+    }
+    if !a.citations.is_empty() {
+        writeln!(out, "Sources")?;
+    }
+    for citation in &a.citations {
+        match citation.kind {
+            CitationKind::Observation => {
+                let Some(o) = r
+                    .observations
+                    .iter()
+                    .find(|o| o.observation_id == citation.target)
+                else {
+                    continue;
+                };
+                writeln!(
+                    out,
+                    "  [{}] {} ({})",
+                    citation.reference,
+                    clean(&o.tool),
+                    words(&o.status)
+                )?;
+                for fact in &o.facts {
+                    writeln!(out, "      {}", clean(&local(fact)))?;
+                }
+                storage_context(out, &o.storage_items)?;
+            }
+            CitationKind::Finding => {
+                let earlier = r
+                    .historical_findings
+                    .iter()
+                    .find(|f| f.id == citation.target);
+                if let Some(f) = r
+                    .findings
+                    .iter()
+                    .find(|f| f.id == citation.target)
+                    .or(earlier)
+                {
+                    writeln!(
+                        out,
+                        "  [{}] {}: {}{}",
+                        citation.reference,
+                        f.classification.label(),
+                        local(&f.summary),
+                        if earlier.is_some() {
+                            " (earlier measurement)"
+                        } else {
+                            ""
+                        }
+                    )?;
+                }
+            }
+        }
+    }
+    let follow_ups: Vec<String> = a.follow_ups.iter().map(|f| clean(f)).collect();
+    list(out, "You could ask next", &follow_ups)
+}
+
+/// Observations listed when a report without an answer falls back on everything usable.
+const MAX_SHOWN_OBSERVATIONS: usize = 6;
+
+/// A local analysis, or an investigation that ended without an answer: the selected local
+/// finding with its evidence, hypothesis and limits.
+fn findings(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Result<()> {
+    let local = |text: &str| localize(text, &r.local_processes);
     let f = &r.selected;
     writeln!(out, "{}", f.classification.label())?;
     writeln!(out, "{}", f.summary)?;
@@ -633,7 +696,7 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
         .filter(|o| {
             r.observation_refs.contains(&o.observation_id) || (r.error.is_some() && o.citable)
         })
-        .take(pcagent_agent::MAX_CITED_OBSERVATIONS)
+        .take(MAX_SHOWN_OBSERVATIONS)
     {
         writeln!(
             out,
@@ -676,6 +739,52 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
             "({} not shown; add --verbose to see them.)",
             plural(notes.len() as u64, "collection note", "collection notes")
         )?;
+    }
+    Ok(())
+}
+
+pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Result<()> {
+    match r.mode.as_str() {
+        "local_rules" => writeln!(out, "Local analysis (nothing was sent to the cloud)")?,
+        "nebius" => writeln!(out, "Cloud-assisted investigation (Nebius)")?,
+        other => writeln!(out, "Mode: {}", clean(other))?,
+    }
+    let support = match &r.answer {
+        Some(a) => format!("Confidence: {}", words(&a.confidence)),
+        None => format!("Diagnostic support: {}", r.diagnostic_support.label()),
+    };
+    writeln!(
+        out,
+        "Execution: {} | Sensor coverage: {} | {support}",
+        words(&r.execution_status),
+        words(&r.coverage.status),
+    )?;
+    for domain in &r.coverage.domains {
+        let target = domain
+            .target
+            .as_ref()
+            .map(|t| format!(" ({})", clean(t)))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "  {}{target}: {}",
+            words(&domain.domain),
+            words(&domain.status)
+        )?;
+        if verbose {
+            list(out, "    Missing coverage", &domain.missing)?;
+        }
+    }
+    if let Some(error) = &r.error {
+        writeln!(
+            out,
+            "Warning: the investigation did not complete ({error}). Collected observations are retained below."
+        )?;
+    }
+    writeln!(out)?;
+    match &r.answer {
+        Some(a) => answer(out, r, a)?,
+        None => findings(out, r, verbose)?,
     }
     if r.mode == "local_rules" {
         writeln!(
