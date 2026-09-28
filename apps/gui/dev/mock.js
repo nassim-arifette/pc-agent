@@ -332,10 +332,11 @@ export function createMock() {
       await wait(tick === 0 ? 700 : 120);
       return dashboard();
     },
-    cloud_preview: async ({ question }) => {
+    cloud_preview: async ({ question, names }) => {
       await wait(300);
       const message = { question, initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
-      return { message, bytes: JSON.stringify(message).length * 12, measured: 38, findings: 3, storage_folder: lastScanRoot };
+      if (names) message.process_names = { "proc-1a2b3c4d": "chrome.exe" };
+      return { message, bytes: JSON.stringify(message).length * 12, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot };
     },
     start_investigation: async ({ question, cloud: cloudRun }) => {
       if (running && !running.done) throw new Error("An investigation is already running.");

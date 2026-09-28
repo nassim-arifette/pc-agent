@@ -189,6 +189,10 @@ impl ToolOutput {
 /// Local controller side of the tool boundary. Only read-only tools may be registered.
 pub trait Toolbox {
     fn specs(&self) -> &[ToolSpec];
+    /// Whether the model may receive program names, as the user chose.
+    fn sharing(&self) -> crate::Sharing {
+        crate::Sharing::Anonymized
+    }
     /// Called only with a spec from `specs()` and arguments validated against it.
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput;
     fn definitions(&self) -> Value {
