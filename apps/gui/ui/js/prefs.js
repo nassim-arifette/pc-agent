@@ -3,7 +3,7 @@
 import { setLanguage } from "./i18n.js";
 
 const KEY = "pcagent.prefs.v1";
-const defaults = { theme: "system", language: "system", motion: "system", askBeforeCloud: true, mode: "local" };
+const defaults = { theme: "system", language: "system", motion: "system", askBeforeCloud: true, mode: "local", names: true };
 let prefs = { ...defaults };
 
 export function loadPrefs() {

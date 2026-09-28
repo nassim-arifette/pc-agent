@@ -120,6 +120,9 @@ impl<T: Toolbox, F: FnMut(&str)> Toolbox for ObservedTools<T, F> {
     fn specs(&self) -> &[ToolSpec] {
         self.inner.specs()
     }
+    fn sharing(&self) -> pcagent_agent::Sharing {
+        self.inner.sharing()
+    }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         (self.on_start)(spec.name);
         self.inner.run(spec, args)

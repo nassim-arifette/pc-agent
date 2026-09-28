@@ -10,8 +10,9 @@ use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_agent::{
     initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
     AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,
-    PolicyProtection, Pricing, StorageContext, Workstation, MAX_DURATION, MAX_QUESTION_BYTES,
-    MAX_ROUNDS, MAX_TOOLS, PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
+    PolicyProtection, Pricing, Sharing, StorageContext, Workstation, MAX_DURATION,
+    MAX_QUESTION_BYTES, MAX_ROUNDS, MAX_TOOLS, PREPARE_ACTION_PLAN, VERIFY_SAMPLES,
+    WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{format_bytes, Snapshot, Status};
@@ -118,6 +119,10 @@ enum Command {
         /// Allow selected basenames to be sent; use --preview-cloud to review them offline.
         #[arg(long, requires = "scan_root", conflicts_with = "offline")]
         share_file_names: bool,
+        /// Send opaque process references instead of executable names (for example chrome.exe).
+        /// Paths, PIDs and your user name are never sent either way.
+        #[arg(long, conflicts_with = "offline")]
+        anonymize: bool,
         /// JSON preferences file (exclusions, preserved apps, permissions).
         #[arg(long)]
         preferences: Option<PathBuf>,
@@ -565,10 +570,16 @@ fn run(args: Args) -> Result<u8> {
             scan_root,
             compare_content,
             share_file_names,
+            anonymize,
             preferences,
             propose_actions,
             journal_dir,
         } => {
+            let sharing = if anonymize {
+                Sharing::Anonymized
+            } else {
+                Sharing::Complete
+            };
             if share_file_names && !allow_cloud && !preview_cloud {
                 return Err("--share-file-names requires --preview-cloud or --allow-cloud.".into());
             }
@@ -635,7 +646,7 @@ fn run(args: Args) -> Result<u8> {
             if preview_cloud {
                 write_json(
                     &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
-                    "message":initial_message(&question, &initial),
+                    "message":initial_message(&question, &initial, sharing),
                     "tools":WORKSTATION_TOOLS.iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
                     "authorized_scopes":storage.scopes().len(),
                     "file_name_sharing":prepared.context.sharing_preview(),
@@ -654,6 +665,7 @@ fn run(args: Args) -> Result<u8> {
             let mut workstation =
                 Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
             workstation.set_storage_context(prepared.context.clone());
+            workstation.set_sharing(sharing);
             let mut recovery = None;
             if propose_actions {
                 let dir = journal_dir.unwrap_or_else(|| local_data_dir().join("journal"));
