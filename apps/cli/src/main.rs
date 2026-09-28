@@ -8,9 +8,9 @@ use pcagent_actions::{
 };
 use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_agent::{
-    initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
-    AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,
-    PolicyProtection, Pricing, Sharing, StorageContext, Workstation, MAX_DURATION,
+    converse, initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
+    AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PastTurn,
+    PendingPlan, PolicyProtection, Pricing, Sharing, StorageContext, Workstation, MAX_DURATION,
     MAX_QUESTION_BYTES, MAX_ROUNDS, MAX_TOOLS, PREPARE_ACTION_PLAN, VERIFY_SAMPLES,
     WORKSTATION_TOOLS,
 };
@@ -38,6 +38,7 @@ const EXAMPLES: &str = r#"Examples:
   pcagent snapshot
   pcagent diagnose "Why is my PC slow?"
   pcagent diagnose "Why is my PC slow?" --allow-cloud --verbose
+  pcagent chat --allow-cloud
   pcagent storage "$env:USERPROFILE\Downloads" --limit 10
   pcagent doctor --check-cloud
 
@@ -132,6 +133,19 @@ enum Command {
         /// Directory for the local action journal (default: %LOCALAPPDATA%\pcagent\journal).
         #[arg(long)]
         journal_dir: Option<PathBuf>,
+    },
+    /// Talk with the model about this PC: each question can follow up on the previous answers.
+    /// Type an empty line or `exit` to stop. Nothing is kept after the session ends.
+    Chat {
+        /// Send each question verbatim and minimized observations to Nebius (required).
+        #[arg(long)]
+        allow_cloud: bool,
+        /// Send opaque process references instead of executable names (for example chrome.exe).
+        #[arg(long)]
+        anonymize: bool,
+        /// Also show each completed tool call, evidence IDs and collection notes.
+        #[arg(long)]
+        verbose: bool,
     },
     /// Create the clearly labelled synthetic cache used to demonstrate the cleanup adapter.
     DemoCache {
@@ -758,6 +772,100 @@ fn run(args: Args) -> Result<u8> {
                     3
                 },
             )
+        }
+        Command::Chat {
+            allow_cloud,
+            anonymize,
+            verbose,
+        } => {
+            if !allow_cloud {
+                return Err("chat talks with Nebius: add --allow-cloud to send your questions and minimized measurements.".into());
+            }
+            if args.json {
+                return Err(
+                    "chat is interactive and has no --json mode; use diagnose --json.".into(),
+                );
+            }
+            if !cfg!(windows) {
+                return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
+            }
+            let creds = Credentials::load();
+            let config = Config::from_lookup(|name| creds.get(name))
+                .map_err(|e| cloud_setup_error(e, &creds))?;
+            let mut model = Nebius::new(config)?;
+            let sharing = if anonymize {
+                Sharing::Anonymized
+            } else {
+                Sharing::Complete
+            };
+            let (policy, prefs) = (Policy::from_env(), Preferences::default());
+            let storage = Arc::new(StorageService::new());
+            let mut collector = Collector::new();
+            let mut past: Vec<PastTurn> = Vec::new();
+            println!("Ask about this PC; an empty line or `exit` ends the conversation.");
+            loop {
+                print!("\n> ");
+                io::stdout().flush()?;
+                let mut line = String::new();
+                if io::stdin().lock().read_line(&mut line)? == 0 {
+                    break;
+                }
+                let question = line.trim();
+                if question.is_empty() || ["exit", "quit"].contains(&question) {
+                    break;
+                }
+                if question.len() > MAX_QUESTION_BYTES {
+                    eprintln!(
+                        "The question is longer than {MAX_QUESTION_BYTES} bytes; shorten it."
+                    );
+                    continue;
+                }
+                let initial = collector.snapshot(true, 10);
+                let mut workstation =
+                    Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
+                workstation.set_sharing(sharing);
+                let report = converse(
+                    &mut model,
+                    &past,
+                    question,
+                    &initial,
+                    &mut workstation,
+                    |event| {
+                        if verbose {
+                            eprintln!("{}", text::tool_event(event));
+                        }
+                    },
+                    |partial, request| {
+                        review_extension(
+                            partial,
+                            request,
+                            false,
+                            io::stdin().is_terminal() && io::stderr().is_terminal(),
+                            &mut io::stdin().lock(),
+                            &mut io::stderr().lock(),
+                        )
+                        .unwrap_or(false)
+                    },
+                );
+                let jobs = workstation.take_jobs();
+                for job in &jobs {
+                    job.cancel();
+                }
+                for job in jobs {
+                    job.wait()?;
+                }
+                drop(workstation);
+                println!();
+                text::report(&mut io::stdout().lock(), &report, verbose)?;
+                // Only answered turns are read again; a failed turn adds nothing to follow up on.
+                if let Some(answer) = &report.answer {
+                    past.push(PastTurn {
+                        question: question.to_owned(),
+                        answer: answer.text.clone(),
+                    });
+                }
+            }
+            Ok(0)
         }
     }
 }
