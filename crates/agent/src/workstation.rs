@@ -61,14 +61,14 @@ pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_processes",
         class: crate::tools::ToolClass::Inspection,
-        description: "Collect readable process memory, CPU and I/O contributors as opaque session-scoped identities. No paths, names or commands.",
+        description: "Collect every process's memory, and its CPU and I/O rates over a one-second window, as session-scoped references. One call gives the rates; no paths or commands.",
         params: &[Param {
             name: "limit",
             description: "Maximum process instances to return (default 10).",
             kind: ParamKind::Integer { min: 1, max: MAX_PROCESSES },
             required: false,
         }, Param {
-            name: "sort_by", description: "Resource to rank before limiting results (default working_set). CPU/I/O need a previous sample; I/O ranks bytes per second.",
+            name: "sort_by", description: "Resource to rank before limiting results (default working_set). CPU and I/O are rates over the measurement window; I/O ranks bytes per second.",
             kind: ParamKind::OneOf(&["working_set", "private_commit", "cpu", "io_read", "io_write"]), required: false,
         }],
     },

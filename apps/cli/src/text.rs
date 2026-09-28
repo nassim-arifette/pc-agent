@@ -127,7 +127,13 @@ fn localize(text: &str, processes: &[ProcessInstance]) -> String {
     })
 }
 
-pub fn snapshot(out: &mut impl Write, s: &Snapshot, processes_only: bool) -> io::Result<()> {
+/// `ranked_by` names the resource the process list is sorted by.
+pub fn snapshot(
+    out: &mut impl Write,
+    s: &Snapshot,
+    processes_only: bool,
+    ranked_by: &str,
+) -> io::Result<()> {
     if s.origin != Origin::Live {
         writeln!(out, "Synthetic data, not a live measurement of this PC.")?;
     }
@@ -141,7 +147,7 @@ pub fn snapshot(out: &mut impl Write, s: &Snapshot, processes_only: bool) -> io:
         }
         writeln!(out)?;
     }
-    processes(out, s)?;
+    processes(out, s, ranked_by)?;
     writeln!(out)?;
     list(out, "Notes", &s.limitations)
 }
@@ -297,7 +303,7 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
     rows
 }
 
-fn processes(out: &mut impl Write, s: &Snapshot) -> io::Result<()> {
+fn processes(out: &mut impl Write, s: &Snapshot, ranked_by: &str) -> io::Result<()> {
     let c = &s.process_coverage;
     let mut coverage = vec![format!("{} of {} readable", c.readable, c.enumerated)];
     if c.permission_denied > 0 {
@@ -319,7 +325,7 @@ fn processes(out: &mut impl Write, s: &Snapshot) -> io::Result<()> {
     }
     writeln!(
         out,
-        "Processes: top {} by working set ({})",
+        "Processes: top {} by {ranked_by} ({})",
         s.processes.len(),
         coverage.join(", ")
     )?;

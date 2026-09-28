@@ -435,20 +435,18 @@ fn run(args: Args) -> Result<u8> {
                 }
                 _ => pcagent_telemetry::ProcessSort::WorkingSet,
             };
+            // One snapshot suffices: its one-second window already gives CPU and I/O rates.
             let mut collector = Collector::new();
-            if matches!(
-                sort,
-                pcagent_telemetry::ProcessSort::Cpu
-                    | pcagent_telemetry::ProcessSort::IoRead
-                    | pcagent_telemetry::ProcessSort::IoWrite
-            ) {
-                collector.snapshot_sorted(true, usize::from(limit), sort);
-            }
             let sample = collector.snapshot_sorted(true, usize::from(limit), sort);
             if args.json {
                 write_json(&sample)?;
             } else {
-                text::snapshot(&mut io::stdout().lock(), &sample, processes_only)?;
+                text::snapshot(
+                    &mut io::stdout().lock(),
+                    &sample,
+                    processes_only,
+                    sort.label(),
+                )?;
             }
             Ok(if sample.has_observations() { 0 } else { 3 })
         }
