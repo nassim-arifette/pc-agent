@@ -28,19 +28,14 @@ On a separate Windows 11 x64 test PC, without elevation:
 4. Inspect `diagnose "test question" --preview-cloud`. Confirm the question disclosure and absence of local process metadata.
 5. Configure an actual NVIDIA Nemotron model available in the account. Use `doctor --check-cloud`, then one small opt-in diagnosis with `--allow-cloud --verbose`.
 6. Verify a real provider request, at least one model-selected tool, native collection, a returned tool result, a locally validated finding, an evidence reference and honest insufficient-evidence behavior.
-   The report shows tokens per request and an estimated cost with the catalog price and its read time; `scripts/compare-models.ps1` repeats typical questions per model and writes a CSV ([results of 2026-09-27](model-comparison.md)).
+   The report shows tokens per request and an estimated cost with the catalog price and its read time; `scripts/compare-models.ps1` repeats typical questions per model and writes a CSV ([results of 2026-09-27](archive/model-comparison.md)).
 7. Test bad credentials, unavailable model, disconnected network, malformed responses, a reply cut off at the output limit (`output_limit`, billed tokens still counted), a request timeout (`timeout`), cancellation and missing metrics. Do not put secrets or personal telemetry in issue comments, Actions logs or committed fixtures.
 8. On a PC with an NVIDIA GPU, compare `snapshot` NVIDIA values (temperature, memory, clock, slowdown reasons) with `nvidia-smi --query-gpu=temperature.gpu,memory.used,memory.total,clocks.sm,clocks_event_reasons.active --format=csv`, idle and under load. `memory.used` there excludes the driver reserve (shown as Reserved by `nvidia-smi -q -d MEMORY`), while pcagent reports total minus free, reserve included: 84 MiB against 0 MiB on an idle MX350.
 
 A live provider test incurs provider usage and must be explicitly authorized. No such test is run in CI. A successful catalog lookup is not a successful model tool-calling test.
 
-## Remaining Lot A / next implementation work
+## Next work
 
-- Verify Windows 11 build and architecture instead of only compilation target.
-- Collect a documented boot identity before enabling persistent cross-boot history.
-- Validate the live model and JSON/tool contract on the user's account.
-- Add representative observation windows, missing sensor coverage and diagnostic evaluation fixtures.
-- Evaluate existing process CPU, E/S and process-tree inspection on representative workloads.
-- Evaluate the finding/observation citation contract on representative workloads; causal interpretation and unrestricted synthesis remain out of scope.
-
-Metadata storage scans and controlled actions are implemented with bounded scope; see [storage](storage.md), [actions](actions.md) and [review status](review-status.md). GUI, installer, persistent history, MFT and Tavily remain later work.
+The work order and its acceptance criteria are in [the October plan](plan.md) (in French). This
+checklist is updated as each work package changes the product. Metadata storage scans and controlled
+actions are implemented with bounded scope; see [storage](storage.md) and [actions](actions.md).
