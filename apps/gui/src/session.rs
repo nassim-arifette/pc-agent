@@ -181,9 +181,19 @@ mod tests {
     fn every_request_and_tool_is_reported_in_order() {
         let s = snapshot();
         let done = Reply {
-            content: Some(
-                json!({"finding_ids": [format!("F{}", analyze(&s).len() + 1)]}).to_string(),
-            ),
+            calls: vec![ToolCall {
+                id: "answer".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: pcagent_agent::SUBMIT_ANSWER.into(),
+                    arguments: json!({
+                        "answer": format!("See [F{}].", analyze(&s).len() + 1),
+                        "confidence": "low",
+                        "category": "other"
+                    })
+                    .to_string(),
+                },
+            }],
             prompt_tokens: Some(5_000),
             completion_tokens: Some(20),
             ..Reply::default()

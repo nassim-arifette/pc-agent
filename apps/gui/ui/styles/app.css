@@ -1034,6 +1034,69 @@ button.status-card:hover {
   line-height: 1.55;
   color: var(--text);
 }
+/* The model's written answer: plain reading text, lists and citation chips. */
+.answer-text {
+  margin-top: 14px;
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.answer-text > * + * {
+  margin-top: 10px;
+}
+.answer-text .md-list {
+  margin: 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.answer-text .md-heading {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-2);
+}
+.answer-text code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+.cite {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 1px;
+  padding: 0 6px;
+  min-height: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.5;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+.cite:hover {
+  border-color: var(--accent);
+}
+.cite.static {
+  margin-right: 8px;
+  cursor: default;
+}
+.source.flash {
+  animation: flash 1.2s var(--ease);
+}
+@keyframes flash {
+  0% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
 .answer-block {
   margin-top: 18px;
 }

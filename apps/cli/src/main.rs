@@ -10,8 +10,8 @@ use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_agent::{
     initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
     AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PendingPlan,
-    PolicyProtection, Pricing, StorageContext, Workstation, MAX_QUESTION_BYTES,
-    PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
+    PolicyProtection, Pricing, StorageContext, Workstation, MAX_DURATION, MAX_QUESTION_BYTES,
+    MAX_ROUNDS, MAX_TOOLS, PREPARE_ACTION_PLAN, VERIFY_SAMPLES, WORKSTATION_TOOLS,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{format_bytes, Snapshot, Status};
@@ -673,7 +673,10 @@ fn run(args: Args) -> Result<u8> {
             let mut report = match &mut model {
                 Some(model) => {
                     if io::stderr().is_terminal() {
-                        eprintln!("Investigating with Nebius; initial budget: 6 requests, 12 tools, 90 seconds. An extension requires your confirmation.");
+                        eprintln!(
+                            "Investigating with Nebius; initial budget: {MAX_ROUNDS} requests, {MAX_TOOLS} tools, {} seconds. An extension requires your confirmation.",
+                            MAX_DURATION.as_secs()
+                        );
                     }
                     investigate_with_extension(
                         model,
