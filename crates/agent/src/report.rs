@@ -272,6 +272,8 @@ impl SensorCoverage {
 #[derive(Debug, Clone, Serialize)]
 pub struct Observation {
     pub observation_id: String,
+    /// The short reference the model sees and cites (`O1`, `O2`, …).
+    pub citation: String,
     pub tool: String,
     pub status: Status,
     pub citable: bool,
@@ -333,6 +335,7 @@ impl Observation {
         }
         Self {
             observation_id: id,
+            citation: String::new(),
             tool: spec.name.into(),
             status: output.status,
             citable,

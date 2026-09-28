@@ -128,6 +128,28 @@ function finding(classification, label, support, summary, extra = {}) {
   };
 }
 
+// A written answer as the model returns it, in the language of the question.
+function mockAnswer(question) {
+  const french = /pourquoi|mon |est-ce|[éèàç]/i.test(question);
+  const text = french
+    ? "Ton PC rame surtout parce que la mémoire vive est presque pleine : il ne restait que 1,54 Gio de libre sur 15,73 Gio [O1], et Windows relisait 12,4 pages par seconde depuis le disque pour compenser [F2]. J'en suis moyennement sûr : c'est une mesure d'une seconde.\n\nCe que tu peux faire :\n1. Ferme les onglets de **chrome.exe (PID 4000)** dont tu n'as pas besoin : il occupe 2,31 Gio [O1].\n2. Garde PC Agent ouvert pendant le prochain ralentissement et repose la question, pour confirmer.\n\nLe processeur n'était pas saturé (18,5 % [O1]) et le disque répondait en moins de 3 ms [O1] : ils ne semblent pas en cause."
+    : "Your PC is slow mainly because memory is almost full: only 1.54 GiB of 15.73 GiB was available [O1], and Windows read 12.4 pages per second back from disk to compensate [F2]. I'm moderately sure: this is a one-second measurement.\n\nWhat you can do:\n1. Close the **chrome.exe (PID 4000)** tabs you don't need: it holds 2.31 GiB [O1].\n2. Keep PC Agent open during the next slowdown and ask again to confirm.\n\nThe processor was not saturated (18.5% [O1]) and the disk answered in under 3 ms [O1], so they don't look involved.";
+  return {
+    text,
+    confidence: "medium",
+    category: "memory",
+    citations: [
+      { reference: "O1", kind: "observation", title: "get_system_snapshot", facts: ["Available physical memory: 1.54 GiB of 15.73 GiB (9.8%).", "chrome.exe (PID 4000) used 2.31 GiB of RAM (working set).", "CPU busy: 18.5%.", "Disk read response time: 1.3 ms."] },
+      { reference: "F2", kind: "finding", title: "Heavy hard-fault paging", facts: ["12.4 pages per second were read from disk to resolve hard faults."] },
+    ],
+    follow_ups: french
+      ? ["Quels onglets ou extensions utilisent le plus de mémoire ?", "Ai-je besoin de plus de RAM ?"]
+      : ["Which tabs or extensions use the most memory?", "Do I need more RAM?"],
+    unverified: [],
+    repairs: 0,
+  };
+}
+
 function report(question, cloudRun, error = null) {
   const selected = error
     ? finding("insufficient_evidence", "Insufficient evidence", "insufficient", "The available measurements do not support a conclusion yet.", {
@@ -171,6 +193,7 @@ function report(question, cloudRun, error = null) {
           finding("largest_memory_contributor", "Largest memory contributor", "supported", "chrome.exe (PID 4000) held 2.31 GiB of RAM, the most of any readable program."),
           finding("hard_fault_pressure", "Heavy hard-fault paging", "plausible", "12.4 pages per second were read from disk to resolve hard faults."),
         ],
+    answer: cloudRun && !error ? mockAnswer(question) : null,
     observations: cloudRun && !error
       ? [{ tool: "get_metric_history", status: "ok", facts: ["CPU busy: 12 usable samples, observed range 9.5% to 31.0%.", "Observed interval: 60000 ms."], limitations: [] }]
       : [],
@@ -218,7 +241,7 @@ async function investigate(id, question, cloudRun) {
   if (running.stop) return emit("inv:done", { id, report: report(question, true, "cancelled") });
   await model(1400, 4627, 83);
   if (/fail|échec/i.test(question)) {
-    await model(1600, 9880, 4096, "output_limit");
+    await model(1600, 9880, 8192, "output_limit");
     return emit("inv:done", { id, report: report(question, true, "output_limit") });
   }
   if (running.stop) return emit("inv:done", { id, report: report(question, true, "cancelled") });

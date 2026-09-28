@@ -67,6 +67,10 @@ impl Budget {
             _ => None,
         }
     }
+    /// Whether this checkpoint is over budget, without asking the user for more.
+    pub(crate) fn exhausted(&self, report: &Investigation, checkpoint: &Checkpoint) -> bool {
+        self.reason(report, checkpoint).is_some()
+    }
     /// The callback is local UI consent, never a model tool or a provider instruction.
     pub(crate) fn ensure(
         &mut self,

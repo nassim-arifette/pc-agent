@@ -4,8 +4,8 @@
 //! full paths) may appear here; nothing in this module is sent to a provider.
 use pcagent_agent::{
     credentials::{Credentials, Source},
-    AgentError, Config, Cost, ExecutionStatus, ExtensionRequest, Investigation, Pricing,
-    SensorCoverage, Stats,
+    AgentError, Answer, Category, CitationKind, Confidence, Config, Cost, ExecutionStatus,
+    ExtensionRequest, Investigation, IssueKind, Pricing, SensorCoverage, Stats,
 };
 use pcagent_diagnostics::{Classification, Finding, Support};
 use pcagent_shared::{
@@ -313,6 +313,33 @@ pub struct ErrorView {
     pub message: String,
 }
 #[derive(Debug, Clone, Serialize)]
+pub struct CitationView {
+    /// As written in the answer: `O2`, `F1`.
+    pub reference: String,
+    pub kind: CitationKind,
+    /// The tool that made the observation, or the finding's label.
+    pub title: String,
+    pub facts: Vec<String>,
+    /// A finding a fresher measurement has since replaced: it describes an earlier moment.
+    pub earlier: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct IssueView {
+    pub kind: IssueKind,
+    pub excerpt: String,
+}
+/// The model's answer. `text` is untrusted: the page renders it as text, never as markup.
+#[derive(Debug, Clone, Serialize)]
+pub struct AnswerView {
+    pub text: String,
+    pub confidence: Confidence,
+    pub category: Category,
+    pub citations: Vec<CitationView>,
+    pub follow_ups: Vec<String>,
+    pub unverified: Vec<IssueView>,
+    pub repairs: usize,
+}
+#[derive(Debug, Clone, Serialize)]
 pub struct Report {
     pub question: String,
     pub mode: String,
@@ -320,6 +347,8 @@ pub struct Report {
     pub coverage: SensorCoverage,
     pub support: Support,
     pub error: Option<ErrorView>,
+    /// Absent for a local analysis or an investigation that ended without an answer.
+    pub answer: Option<AnswerView>,
     pub selected: FindingView,
     pub alternatives: Vec<FindingView>,
     /// Observations the model cited, or every usable one when the investigation stopped early.
@@ -395,6 +424,64 @@ pub fn usage(s: &Stats) -> Usage {
         cost: s.cost.as_ref().map(cost),
     }
 }
+fn answer(r: &Investigation, a: &Answer) -> AnswerView {
+    let processes = &r.local_processes;
+    let local = |text: &str| localize(text, processes);
+    let citations = a
+        .citations
+        .iter()
+        .filter_map(|c| {
+            let (title, facts, earlier) = match c.kind {
+                CitationKind::Observation => {
+                    let o = r
+                        .observations
+                        .iter()
+                        .find(|o| o.observation_id == c.target)?;
+                    (
+                        o.tool.clone(),
+                        o.facts.iter().map(|f| local(f)).collect(),
+                        false,
+                    )
+                }
+                CitationKind::Finding => {
+                    let earlier = r.historical_findings.iter().any(|f| f.id == c.target);
+                    let f = r
+                        .findings
+                        .iter()
+                        .chain(&r.historical_findings)
+                        .find(|f| f.id == c.target)?;
+                    let facts = std::iter::once(local(&f.summary))
+                        .chain(f.facts.iter().map(|fact| local(&fact.text)))
+                        .collect();
+                    (f.classification.label().to_owned(), facts, earlier)
+                }
+            };
+            Some(CitationView {
+                reference: c.reference.clone(),
+                kind: c.kind,
+                title,
+                facts,
+                earlier,
+            })
+        })
+        .collect();
+    AnswerView {
+        text: local(&a.text),
+        confidence: a.confidence,
+        category: a.category,
+        citations,
+        follow_ups: a.follow_ups.clone(),
+        unverified: a
+            .unverified
+            .iter()
+            .map(|i| IssueView {
+                kind: i.kind,
+                excerpt: local(&i.excerpt),
+            })
+            .collect(),
+        repairs: a.repairs,
+    }
+}
 pub fn report(r: &Investigation, question: &str) -> Report {
     let processes = &r.local_processes;
     let observations = r
@@ -420,6 +507,7 @@ pub fn report(r: &Investigation, question: &str) -> Report {
             code: error_code(e),
             message: e.to_string(),
         }),
+        answer: r.answer.as_ref().map(|a| answer(r, a)),
         selected: finding(&r.selected, processes),
         alternatives: r
             .alternatives
