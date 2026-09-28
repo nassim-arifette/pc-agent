@@ -450,10 +450,13 @@ fn instructions_mention_proposals_only_when_the_tool_is_offered() {
     let plain = system_prompt(
         SnapshotTools::new(|_, _| fixture()).specs(),
         Sharing::Anonymized,
+        false,
     );
     assert!(plain.ends_with(NO_ACTIONS));
     assert!(!plain.contains("prepare_action_plan"));
-    let with_plans = system_prompt(&[PREPARE_ACTION_PLAN], Sharing::Complete);
+    let with_plans = system_prompt(&[PREPARE_ACTION_PLAN], Sharing::Complete, true);
+    assert!(with_plans.contains("Earlier questions"));
+    assert!(!plain.contains("Earlier questions"));
     assert!(with_plans.contains("process_names"));
     assert!(plain.contains("do not guess"));
     assert!(with_plans.contains("call prepare_action_plan"));
@@ -1168,4 +1171,68 @@ fn names_follow_the_sharing_choice_through_the_investigation() {
             }
         }
     }
+}
+
+#[test]
+fn a_follow_up_reads_earlier_turns_again_without_their_citations() {
+    let past = [
+        PastTurn {
+            question: "Pourquoi mon PC rame ?".into(),
+            answer: "La mémoire est presque pleine : Chrome utilise 2,3 Go [O2] [F1].".into(),
+        },
+        PastTurn {
+            question: "Et Chrome ?".into(),
+            answer: "Voir [la note] et [O1, F2].".into(),
+        },
+    ];
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        // "2,3 Go" only appears in an earlier answer: it counts as received.
+        submit_with(
+            "answer",
+            "Tout à l'heure, Chrome utilisait 2,3 Go ; c'est toujours visible [O1].",
+        ),
+    ]);
+    let r = converse(
+        &mut m,
+        &past,
+        "Et maintenant ?",
+        &fixture(),
+        &mut tb(usable_snapshot),
+        |_| {},
+        |_, _| false,
+    );
+    let answer = r.answer.expect("answered");
+    assert_eq!(answer.repairs, 0, "{:?}", answer.unverified);
+    let first = &m.messages[0];
+    assert_eq!(first[1]["role"], "user");
+    assert_eq!(first[1]["content"], "Pourquoi mon PC rame ?");
+    assert_eq!(first[2]["role"], "assistant");
+    assert_eq!(
+        first[2]["content"],
+        "La mémoire est presque pleine : Chrome utilise 2,3 Go."
+    );
+    assert_eq!(first[4]["content"], "Voir [la note] et.");
+    assert!(first[5]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Et maintenant ?"));
+    assert!(first[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Earlier questions"));
+}
+#[test]
+fn only_the_most_recent_turns_that_fit_are_read_again() {
+    let long = "x".repeat(MAX_PAST_CHARS / 2);
+    let past: Vec<PastTurn> = (0..4)
+        .map(|i| PastTurn {
+            question: format!("q{i}"),
+            answer: long.clone(),
+        })
+        .collect();
+    let kept = recent(&past);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].question, "q3");
+    assert!(recent(&[]).is_empty());
 }
