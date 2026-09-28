@@ -1,6 +1,6 @@
 # PC Agent
 
-A Windows investigation agent with a desktop app and a CLI, read-only by default, with locally approved actions. Based on **PC Agent specification v0.1 (2026-09-25)**. This is an early prototype, not a finished optimizer or a validated hackathon submission.
+A Windows investigation agent with a desktop app and a CLI, read-only by default, with locally approved actions. This is an early prototype, not a finished optimizer or a validated hackathon submission. The product direction and the work plan until the submission are in [the October plan](docs/plan.md) (in French); the original [specification v0.1](docs/archive/SPEC_PC_AGENT.md) is archived.
 
 ## Implemented in this first slice
 
@@ -120,7 +120,7 @@ Only these two names are read from that file, and environment variables take pre
 
 The only endpoint is `https://api.tokenfactory.nebius.com/v1`; HTTPS is required and redirects are disabled. The key stays in the process environment, the credentials file and client memory. The file is plain text protected only by your Windows profile permissions; no credential vault (such as Windows Credential Manager) is implemented yet. Never paste a real key into a repository, issue, terminal recording or chat.
 
-Every cloud diagnosis reports its tokens (input, output, reasoning) per request and an estimated cost: the measured tokens priced at the model's catalog prices, read from `/v1/models?verbose=true` together with the time they were read. Without a price that parses exactly, or with incomplete usage, only the usage is shown (spec 13). `doctor --check-cloud` prints the catalog price. On the development PC on 2026-09-27, 16 diagnoses of eight typical questions with `nvidia/nemotron-3-super-120b-a12b` cost $0.0032 to $0.0134 each (mean $0.0047); the first request weighs 4,500 to 4,800 tokens. [The model comparison](docs/model-comparison.md) keeps Super as the default: Nemotron-3-Nano is 3.4 times cheaper per diagnosis but 4 times slower, with 2 of 8 requests timing out, and Nemotron-3.5-Lightning reached its output limit before choosing a tool in every run. `scripts/compare-models.ps1` reruns the comparison.
+Every cloud diagnosis reports its tokens (input, output, reasoning) per request and an estimated cost: the measured tokens priced at the model's catalog prices, read from `/v1/models?verbose=true` together with the time they were read. Without a price that parses exactly, or with incomplete usage, only the usage is shown (spec 13). `doctor --check-cloud` prints the catalog price. On the development PC on 2026-09-27, 16 diagnoses of eight typical questions with `nvidia/nemotron-3-super-120b-a12b` cost $0.0032 to $0.0134 each (mean $0.0047); the first request weighs 4,500 to 4,800 tokens. [The model comparison](docs/archive/model-comparison.md) keeps Super as the default: Nemotron-3-Nano is 3.4 times cheaper per diagnosis but 4 times slower, with 2 of 8 requests timing out, and Nemotron-3.5-Lightning reached its output limit before choosing a tool in every run. `scripts/compare-models.ps1` reruns the comparison.
 
 ## How the first agent works
 
@@ -174,8 +174,8 @@ Action plans are proposed by the model, approved in the CLI and verified accordi
 
 JSON byte counts remain exact 64-bit integers in Rust. Future JavaScript/IPC consumers must preserve them as BigInt or a lossless representation; a JavaScript Number is not safe for every value.
 
-See [architecture and safety](docs/architecture.md), [validation checklist](docs/validation.md) and [review status: covered and wanted limitations](docs/review-status.md).
+See [architecture and safety](docs/architecture.md), [validation checklist](docs/validation.md) and [review status: covered and wanted limitations](docs/archive/review-status.md).
 
 ## License
 
-No open-source license has been selected yet. Keep this repository private until license and submission requirements have been reviewed.
+MIT — see [LICENSE](LICENSE).

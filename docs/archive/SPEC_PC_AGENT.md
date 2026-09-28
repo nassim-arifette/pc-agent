@@ -1,5 +1,7 @@
 # PC Agent — Spécification fonctionnelle et technique
 
+> **Archivé le 28 septembre 2026.** La vision produit et l'ordre de travail sont désormais fixés par [le plan d'octobre](../plan.md), qui reprend le règlement du hackathon et les principes encore valables (sections 2 et 3 ci-dessous). En particulier, le modèle rédige désormais la réponse et peut recevoir les noms de programmes avec le consentement de l'utilisateur, ce que cette spec excluait. Les numéros de section cités dans les docs techniques renvoient à ce document.
+
 **Version :** 0.1 — 25 septembre 2026  
 **Nom :** PC Agent est un nom de travail, pas une marque validée.  
 **Statut :** spécification de conception ; aucune fonctionnalité, mesure de performance ou validation décrite ici ne doit être présentée comme déjà réalisée.  

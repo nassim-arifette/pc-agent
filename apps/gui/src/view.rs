@@ -20,9 +20,11 @@ use serde::Serialize;
 use serde_json::Value;
 
 /// Models the settings screen offers, with what the 2026-09-27 comparison measured
-/// (docs/model-comparison.md). Any other `nvidia/` Nemotron ID can still be typed.
-pub const MODELS: [(&str, &str); 3] = [
+/// (docs/archive/model-comparison.md); Ultra was added to the catalog later and is not evaluated
+/// yet. Any other `nvidia/` Nemotron ID can still be typed.
+pub const MODELS: [(&str, &str); 4] = [
     ("nvidia/nemotron-3-super-120b-a12b", "recommended"),
+    ("nvidia/Nemotron-3-Ultra-550b-a55b", "most_capable"),
     ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "cheaper_slower"),
     ("nvidia/Nemotron-3_5-Lightning", "not_recommended"),
 ];
