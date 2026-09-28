@@ -58,7 +58,7 @@ counters::{counter_evidence, scaled, clamp_share, busiest_core, gpu_engine_type,
 
 ## Safety boundaries
 
-The crate root is `#![deny(unsafe_code)]`; only the `windows` module allows it, with a `// SAFETY:` comment per block. Handles are RAII-owned and opened with `PROCESS_QUERY_LIMITED_INFORMATION` only. No process memory, command line or file content is read. Buffers are fixed-size; arithmetic on counters is checked. Non-Windows builds return `unsupported` for every native collector and never substitute host data.
+The crate root is `#![deny(unsafe_code)]`; only the `windows` module allows it, with a `// SAFETY:` comment per block. Processes are read from one system list (`NtQuerySystemInformation`) without opening them; the fallback opens handles with `PROCESS_QUERY_LIMITED_INFORMATION` only, RAII-owned. No process memory, command line or file content is read. Buffers are fixed-size; arithmetic on counters is checked. Non-Windows builds return `unsupported` for every native collector and never substitute host data.
 
 ## Validation status
 
