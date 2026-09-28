@@ -7,7 +7,7 @@ import { markdown } from "../markdown.js";
 import { mascotWithBubble } from "../mascot.js";
 import { composer, suggestions, ask, cloudReady } from "../ask.js";
 import { getPrefs } from "../prefs.js";
-import { state, subscribe, stopInvestigation } from "../store.js";
+import { state, subscribe, stopInvestigation, newConversation } from "../store.js";
 import { badge, button, copyText, supportTone } from "../ui.js";
 import { date, duration, number, price, usd } from "../format.js";
 import { navigate } from "../router.js";
@@ -184,7 +184,7 @@ function writtenAnswerCard(inv, error, limits) {
       )
     : null;
   const followUps = a.follow_ups.length
-    ? h("div", { class: "answer-block" }, h("h4", null, icon("sparkle"), t("answer.followups")), h("div", { class: "row wrap" }, a.follow_ups.map((q) => h("button", { class: "chip", type: "button", onClick: () => ask(q, { cloud: inv.cloud }) }, q))))
+    ? h("div", { class: "answer-block" }, h("h4", null, icon("sparkle"), t("answer.followups")), h("div", { class: "row wrap" }, a.follow_ups.map((q) => h("button", { class: "chip", type: "button", onClick: () => ask(q, { cloud: inv.cloud, followUp: true }) }, q))))
     : null;
   const sources = a.citations.length
     ? h(
@@ -214,7 +214,7 @@ function writtenAnswerCard(inv, error, limits) {
     "div",
     { class: "row wrap", style: { "margin-top": "20px" } },
     button(t("answer.copy"), { iconName: "copy", size: "sm", onClick: () => copyText(answerText(inv)) }),
-    button(t("answer.again"), { iconName: "refresh", size: "sm", onClick: () => ask(inv.question, { cloud: inv.cloud }) }),
+    button(t("answer.again"), { iconName: "refresh", size: "sm", onClick: () => ask(inv.question, { cloud: inv.cloud, followUp: true }) }),
   );
   return h(
     "article",
@@ -271,8 +271,8 @@ function answerCard(inv) {
     "div",
     { class: "row wrap", style: { "margin-top": "20px" } },
     button(t("answer.copy"), { iconName: "copy", size: "sm", onClick: () => copyText(reportText(inv)) }),
-    button(t("answer.again"), { iconName: "refresh", size: "sm", onClick: () => ask(inv.question, { cloud: inv.cloud }) }),
-    !inv.cloud && cloudReady() ? button(t("answer.withAi"), { iconName: "sparkle", size: "sm", variant: "primary", onClick: () => ask(inv.question, { cloud: true }) }) : null,
+    button(t("answer.again"), { iconName: "refresh", size: "sm", onClick: () => ask(inv.question, { cloud: inv.cloud, followUp: true }) }),
+    !inv.cloud && cloudReady() ? button(t("answer.withAi"), { iconName: "sparkle", size: "sm", variant: "primary", onClick: () => ask(inv.question, { cloud: true, followUp: true }) }) : null,
   );
   return h(
     "article",
@@ -402,9 +402,15 @@ function failedCard(inv) {
       "div",
       { class: "row wrap", style: { "margin-top": "14px" } },
       setup ? button(t("error.openSettings"), { iconName: "sliders", onClick: () => navigate("settings") }) : null,
-      button(t("error.useLocal"), { iconName: "pc", variant: "primary", onClick: () => ask(inv.question, { cloud: false }) }),
+      button(t("error.useLocal"), { iconName: "pc", variant: "primary", onClick: () => ask(inv.question, { cloud: false, followUp: true }) }),
     ),
   );
+}
+
+/** An earlier turn of the conversation: its question and the answer as it was shown. */
+function turnView(turn) {
+  const past = { question: turn.question, report: turn.report, cloud: turn.report?.mode === "nebius" };
+  return h("section", { class: "turn" }, h("p", { class: "turn-question" }, turn.question), turn.report ? answerCard(past) : null);
 }
 
 export function mount(page) {
@@ -413,17 +419,22 @@ export function mount(page) {
   const liveHint = h("span", { class: "hint" });
   // Built once per run: re-inserting Iris on every step would restart her animations.
   const live = h("div", { class: "card live-line" }, iris.el, h("div", { class: "spacer" }), liveHint);
+  const thread = h("div", { class: "thread" });
+  const question = h("p", { class: "turn-question" });
   const answerHost = h("div", { class: "stack" });
   const side = h("div", { class: "stack" });
+  const current = h("div", { class: "turn" }, question, h("div", { class: "split" }, h("div", { class: "stack" }, live, answerHost), side));
   const stepsCard = h("section", { class: "card card-pad" });
   const followUp = h("div", { class: "section" });
   let shown = null; // what answerHost shows: "pending", a report object, or "failed"
   let headState = "";
+  let threadState = "";
   let lastAnnounced = "";
 
   const renderEmpty = () => {
     shown = null;
     headState = "";
+    threadState = "";
     iris.set("idle");
     iris.say(t("say.idle"));
     const box = composer({ autofocus: true });
@@ -435,8 +446,8 @@ export function mount(page) {
     );
   };
 
-  const renderHead = (inv, running) => {
-    const next = `${inv.id}|${inv.status}|${running}`;
+  const renderHead = (title, inv, running) => {
+    const next = `${title}|${inv?.id}|${inv?.status}|${running}`;
     if (next === headState) return;
     headState = next;
     fill(
@@ -444,8 +455,8 @@ export function mount(page) {
       h(
         "div",
         { style: { "min-width": "0" } },
-        h("div", { class: "row", style: { "margin-bottom": "6px" } }, badge(t(inv.cloud ? "inv.mode.cloud" : "inv.mode.local"), inv.cloud ? "accent" : "", inv.cloud ? "sparkle" : "pc")),
-        h("h1", { class: "question-title" }, inv.question),
+        inv ? h("div", { class: "row", style: { "margin-bottom": "6px" } }, badge(t(inv.cloud ? "inv.mode.cloud" : "inv.mode.local"), inv.cloud ? "accent" : "", inv.cloud ? "sparkle" : "pc")) : null,
+        h("h1", { class: "question-title" }, title),
       ),
       running
         ? button(inv.status === "stopping" ? t("inv.stopping") : t("inv.stop"), {
@@ -457,16 +468,25 @@ export function mount(page) {
         : button(t("inv.new"), {
             iconName: "back",
             onClick: () => {
-              state.inv = null;
+              newConversation();
               renderEmpty();
             },
           }),
     );
   };
 
+  /** Earlier turns: every saved turn except the one shown live below. */
+  const renderThread = (conversation, inv) => {
+    const turns = (conversation?.turns || []).filter((turn) => !inv || turn.report !== inv.report);
+    const next = `${conversation?.id}|${turns.length}|${inv?.id}`;
+    if (next === threadState) return;
+    threadState = next;
+    fill(thread, turns.map(turnView));
+  };
+
   const renderRun = (inv) => {
     const running = inv.status === "running" || inv.status === "stopping";
-    renderHead(inv, running);
+    question.textContent = inv.question;
     iris.set(mascotState(inv));
     iris.say(mascotText(inv));
     liveHint.textContent = running ? t("inv.running") : "";
@@ -476,13 +496,14 @@ export function mount(page) {
         shown = "failed";
         fill(answerHost, failedCard(inv));
         fill(side, stepsCard);
+        fill(followUp, composer({ followUp: true }).el);
       }
     } else if (inv.report) {
       if (shown !== inv.report) {
         shown = inv.report;
         fill(answerHost, answerCard(inv));
         fill(side, stepsCard, coverageCard(inv.report), usageCard(inv.report));
-        fill(followUp, composer().el);
+        fill(followUp, composer({ followUp: true }).el);
       }
     } else if (shown !== "pending") {
       shown = "pending";
@@ -507,22 +528,37 @@ export function mount(page) {
   };
 
   const render = () => {
-    const inv = state.inv;
-    if (!inv) {
-      renderEmpty();
-      return;
+    const conversation = state.conversation;
+    // The running or last turn shows live only in its own conversation.
+    const inv = state.inv && (!conversation || conversation.id == null || state.inv.conversationId == null || state.inv.conversationId === conversation.id) ? state.inv : null;
+    if (!inv && !conversation?.turns?.length) {
+      if (!conversation) {
+        renderEmpty();
+        return;
+      }
     }
     if (!page.contains(head)) {
       shown = null;
       headState = "";
+      threadState = "";
       if (live.firstChild !== iris.el) live.prepend(iris.el);
-      fill(page, head, h("div", { class: "split" }, h("div", { class: "stack" }, live, answerHost), side), followUp);
+      fill(page, head, thread, current, followUp);
     }
-    renderRun(inv);
+    const running = Boolean(inv && (inv.status === "running" || inv.status === "stopping"));
+    renderHead(conversation?.title || inv?.question || t("inv.title"), inv, running);
+    renderThread(conversation, inv);
+    if (inv) {
+      current.hidden = false;
+      renderRun(inv);
+    } else {
+      current.hidden = true;
+      shown = null;
+      if (!followUp.firstChild) fill(followUp, composer({ followUp: true }).el);
+    }
   };
 
   render();
   return subscribe((topic) => {
-    if (topic === "inv" || topic === "info") render();
+    if (topic === "inv" || topic === "info" || topic === "conversation") render();
   });
 }

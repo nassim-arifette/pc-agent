@@ -2436,6 +2436,7 @@ dependencies = [
  "pcagent-policy",
  "pcagent-shared",
  "pcagent-storage",
+ "pcagent-store",
  "pcagent-telemetry",
  "serde",
  "serde_json",

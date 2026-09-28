@@ -6,13 +6,15 @@ use crate::{
     view,
 };
 use pcagent_agent::{
+    converse,
     credentials::{self, Credentials},
-    initial_message, investigate_with_extension, local_report, AgentError, Config,
-    ExtensionRequest, Investigation, Nebius, Sharing, Workstation, MAX_QUESTION_BYTES,
+    initial_message, local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius,
+    PastTurn, Sharing, Workstation, MAX_QUESTION_BYTES,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::unix_ms;
 use pcagent_storage::{ItemKind, ScanOptions, StorageError, StorageService, MAX_PAGE};
+use pcagent_store::{Conversation, ConversationSummary, Store, DEFAULT_RETENTION_DAYS};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
 use serde_json::Value;
@@ -59,6 +61,71 @@ struct AppState {
     scan: Arc<Mutex<ScanSlot>>,
     investigation: Mutex<Option<Running>>,
     next_id: AtomicU64,
+    /// Local conversation history; `None` when its file cannot be opened.
+    history: Arc<Mutex<Option<Store>>>,
+}
+
+/// The history file next to the settings file, with conversations older than the retention
+/// period removed.
+fn open_history() -> Option<Store> {
+    let dir = credentials::file_path()?.parent()?.to_path_buf();
+    let store = Store::open(&dir.join("pcagent.sqlite")).ok()?;
+    let retention_ms = DEFAULT_RETENTION_DAYS * 24 * 3_600_000;
+    let _ = store.prune(unix_ms().saturating_sub(retention_ms));
+    Some(store)
+}
+
+/// What the model reads again of a conversation: each question and the answer the person saw.
+fn past_turns(conversation: &Conversation) -> Vec<PastTurn> {
+    conversation
+        .turns
+        .iter()
+        .filter_map(|turn| {
+            let report = &turn.report;
+            let answer = report["answer"]["text"]
+                .as_str()
+                .or_else(|| report["selected"]["summary"].as_str())?;
+            Some(PastTurn {
+                question: turn.question.clone(),
+                answer: answer.to_owned(),
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn conversations_list(state: State<'_, AppState>) -> Result<Vec<ConversationSummary>, String> {
+    match lock(&state.history).as_ref() {
+        Some(store) => store.list(200).map_err(|e| e.to_string()),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[tauri::command]
+fn conversation_get(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<Conversation>, String> {
+    match lock(&state.history).as_ref() {
+        Some(store) => store.get(&id).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn conversation_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    match lock(&state.history).as_ref() {
+        Some(store) => store.delete(&id).map_err(|e| e.to_string()),
+        None => Ok(false),
+    }
+}
+
+#[tauri::command]
+fn conversations_clear(state: State<'_, AppState>) -> Result<usize, String> {
+    match lock(&state.history).as_ref() {
+        Some(store) => store.clear().map_err(|e| e.to_string()),
+        None => Ok(0),
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -191,6 +258,20 @@ struct ExtensionEvent {
 struct DoneEvent {
     id: u64,
     report: view::Report,
+    /// The conversation the turn was saved in; `None` without a history file.
+    conversation_id: Option<String>,
+}
+#[derive(Serialize)]
+struct Started {
+    id: u64,
+    conversation_id: Option<String>,
+}
+/// The question of one turn, what the model reads again, and where it may go.
+struct Ask<'a> {
+    question: &'a str,
+    past: &'a [PastTurn],
+    /// `None` for a local analysis; otherwise the person's choice of program names.
+    cloud: Option<Sharing>,
 }
 #[derive(Clone, Serialize)]
 struct FailedEvent {
@@ -207,8 +288,26 @@ fn start_investigation(
     cloud: bool,
     use_storage: bool,
     names: bool,
-) -> Result<u64, String> {
+    conversation_id: Option<String>,
+) -> Result<Started, String> {
     let question = checked_question(&question)?;
+    // A follow-up reads its conversation again; a first question starts one.
+    let (conversation_id, past, created) = {
+        let history = lock(&state.history);
+        match history.as_ref() {
+            None => (None, Vec::new(), false),
+            Some(store) => {
+                let existing = match conversation_id {
+                    Some(id) => store.get(&id).map_err(|e| e.to_string())?,
+                    None => None,
+                };
+                match existing {
+                    Some(c) => (Some(c.summary.id.clone()), past_turns(&c), false),
+                    None => (store.create(&question, unix_ms()).ok(), Vec::new(), true),
+                }
+            }
+        }
+    };
     let mut slot = lock(&state.investigation);
     if slot
         .as_ref()
@@ -234,22 +333,62 @@ fn start_investigation(
     } else {
         Arc::new(StorageService::new())
     };
+    let history = state.history.clone();
+    let saved_in = conversation_id.clone();
     thread::Builder::new()
         .name("investigation".into())
         .spawn(move || {
+            let asked_at = unix_ms();
             // Local analysis, or the model with the person's choice of program names.
-            let cloud = cloud.then(|| sharing_of(names));
-            let outcome = investigation(&app, id, &question, cloud, storage, &stop, &answer);
+            let ask = Ask {
+                question: &question,
+                past: &past,
+                cloud: cloud.then(|| sharing_of(names)),
+            };
+            let outcome = investigation(&app, id, &ask, storage, &stop, &answer);
+            // Every finished turn is kept, unless the conversation was deleted meanwhile.
+            let conversation_id = match (&outcome, &saved_in) {
+                (Ok(report), Some(conversation)) => {
+                    let value = serde_json::to_value(report).unwrap_or_default();
+                    lock(&history)
+                        .as_mut()
+                        .and_then(|store| {
+                            store
+                                .add_turn(conversation, &question, asked_at, &value)
+                                .ok()
+                                .flatten()
+                        })
+                        .map(|_| conversation.clone())
+                }
+                // A conversation whose first question could not even start keeps nothing.
+                (Err(_), Some(conversation)) if created => {
+                    if let Some(store) = lock(&history).as_ref() {
+                        let _ = store.delete(conversation);
+                    }
+                    None
+                }
+                _ => None,
+            };
             // Finished before the last event, so the next question can start right away.
             finished.store(true, Ordering::SeqCst);
             let _ = match outcome {
-                Ok(report) => app.emit("inv:done", DoneEvent { id, report }),
+                Ok(report) => app.emit(
+                    "inv:done",
+                    DoneEvent {
+                        id,
+                        report,
+                        conversation_id,
+                    },
+                ),
                 Err((code, message)) => app.emit("inv:failed", FailedEvent { id, code, message }),
             };
         })
         .map_err(|e| format!("Cannot start the investigation: {e}"))?;
     *slot = Some(running);
-    Ok(id)
+    Ok(Started {
+        id,
+        conversation_id,
+    })
 }
 
 /// Runs one investigation, reporting each real step; returns the report, or why it could not
@@ -257,8 +396,7 @@ fn start_investigation(
 fn investigation(
     app: &AppHandle,
     id: u64,
-    question: &str,
-    cloud: Option<Sharing>,
+    ask: &Ask<'_>,
     storage: Arc<StorageService>,
     stop: &Arc<AtomicBool>,
     answer: &Arc<Mutex<Option<mpsc::Sender<bool>>>>,
@@ -285,7 +423,8 @@ fn investigation(
             .filter(|e| e.usable_value().is_some())
             .count(),
     });
-    let report: Investigation = if let Some(sharing) = cloud {
+    let question = ask.question;
+    let report: Investigation = if let Some(sharing) = ask.cloud {
         let creds = Credentials::load();
         let model = match Config::from_lookup(|name| creds.get(name)).and_then(Nebius::new) {
             Ok(model) => model,
@@ -308,8 +447,9 @@ fn investigation(
         let mut tools = ObservedTools::new(workstation, |tool: &str| {
             emit(Step::ToolStarted { tool: tool.into() })
         });
-        let report = investigate_with_extension(
+        let report = converse(
             &mut model,
+            ask.past,
             question,
             &initial,
             &mut tools,
@@ -636,6 +776,7 @@ pub fn run() {
             scan: Arc::new(Mutex::new(ScanSlot::default())),
             investigation: Mutex::new(None),
             next_id: AtomicU64::new(1),
+            history: Arc::new(Mutex::new(open_history())),
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -651,7 +792,11 @@ pub fn run() {
             scan_page,
             reveal,
             save_cloud_settings,
-            test_cloud
+            test_cloud,
+            conversations_list,
+            conversation_get,
+            conversation_delete,
+            conversations_clear
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {

@@ -36,7 +36,7 @@ pub struct ConversationSummary {
     pub title: String,
     pub created_at_unix_ms: u64,
     pub updated_at_unix_ms: u64,
-    pub turns: usize,
+    pub turn_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -197,7 +197,7 @@ impl Store {
                 title: row.get(1)?,
                 created_at_unix_ms: millis(row.get(2)?),
                 updated_at_unix_ms: millis(row.get(3)?),
-                turns: usize::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                turn_count: usize::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -244,7 +244,7 @@ impl Store {
                     title: row.get(1)?,
                     created_at_unix_ms: millis(row.get(2)?),
                     updated_at_unix_ms: millis(row.get(3)?),
-                    turns: usize::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                    turn_count: usize::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
                 })
             },
         )
@@ -292,7 +292,7 @@ mod tests {
         }
         let c = store.get(&id).unwrap().unwrap();
         assert_eq!(c.summary.title, "Pourquoi mon PC rame ?");
-        assert_eq!(c.summary.turns, 2);
+        assert_eq!(c.summary.turn_count, 2);
         assert_eq!(c.summary.updated_at_unix_ms, 2_001);
         assert_eq!(c.turns[1].question, "Et Chrome ?");
         assert_eq!(

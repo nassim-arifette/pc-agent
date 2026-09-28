@@ -158,8 +158,8 @@ async function consent(question) {
   );
 }
 
-/** Starts an investigation from any screen. */
-export async function ask(question, { cloud }) {
+/** Starts an investigation from any screen: a follow-up of the open conversation, or a new one. */
+export async function ask(question, { cloud, followUp = false }) {
   const text = (question || "").trim();
   if (!text) return;
   if (state.inv && (state.inv.status === "running" || state.inv.status === "stopping")) {
@@ -186,17 +186,17 @@ export async function ask(question, { cloud }) {
     }
   }
   navigate("investigate");
-  await startInvestigation(text, { cloud, useStorage, names });
+  await startInvestigation(text, { cloud, useStorage, names, followUp });
 }
 
 /**
  * The composer: a growing text area, the local/AI switch and the send button.
  * `onFocusChange(focused)` lets a view react (Iris listens while you type).
  */
-export function composer({ autofocus = false, onFocusChange, initial = "" } = {}) {
+export function composer({ autofocus = false, onFocusChange, initial = "", followUp = false } = {}) {
   const area = h("textarea", {
     rows: 2,
-    placeholder: t("ask.placeholder"),
+    placeholder: t(followUp ? "ask.followUp" : "ask.placeholder"),
     "aria-label": t("ask.label"),
     maxlength: 4000,
     value: initial,
@@ -235,7 +235,7 @@ export function composer({ autofocus = false, onFocusChange, initial = "" } = {}
   };
   const submit = () => {
     const cloud = getPrefs().mode === "cloud" && cloudReady();
-    ask(area.value, { cloud });
+    ask(area.value, { cloud, followUp });
   };
   area.addEventListener("input", grow);
   area.addEventListener("keydown", (e) => {

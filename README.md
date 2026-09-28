@@ -13,6 +13,7 @@ A Windows investigation agent with a desktop app and a CLI, read-only by default
 | `pcagent diagnose "question" --preview-cloud` | Prints the exact first message locally. Sends nothing. Later tool samples may differ. |
 | `pcagent storage <folder> [--dirs] [--limit N] [--compare-content]` | Metadata scan with distinct file/folder aliases and local role/application/recovery hints. Optional bounded local content comparison; no deletion or link following. |
 | `pcagent diagnose "question" --allow-cloud --verbose` | Bounded Nebius/Nemotron tool loop with local validation and traces of completed inspections. Requires an explicit model ID and API key. |
+| `pcagent chat --allow-cloud` | The same investigation, one question after another: each follow-up reads the earlier questions and answers again. Nothing is kept after the session. |
 
 All commands support `--json`. Output marks missing measurements explicitly rather than substituting zero. Non-Windows builds are useful for portable tests but do **not** collect Linux/macOS metrics as though they were Windows measurements.
 
@@ -27,6 +28,8 @@ storage screen that scans a chosen or dropped folder and lists its largest folde
 settings for the Nebius key and model, theme (light, dark), language (English, French) and
 animations. Iris, the mascot, reflects what is actually happening: measuring, waiting on
 Nemotron, or the kind of result.
+
+Each question starts or continues a conversation. A follow-up reads the earlier questions and answers again, then measures afresh. Conversations are kept only on this PC, in `%APPDATA%\pcagent\pcagent.sqlite` next to the settings, for 90 days. They are listed in the sidebar, and they can be deleted one by one or all at once from Settings.
 
 Local analysis is the default. Before an AI investigation, the window lists what is sent and
 what is never sent, can show the exact first message, and asks for confirmation; budget
