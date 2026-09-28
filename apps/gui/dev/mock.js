@@ -214,6 +214,20 @@ function report(question, cloudRun, error = null) {
 }
 
 let nextId = 1;
+// Saved conversations, as the Rust side keeps them in SQLite.
+const conversations = [];
+let nextConversation = 1;
+function saveTurn(conversationId, question, report) {
+  const c = conversations.find((x) => x.id === conversationId);
+  if (!c) return null;
+  c.turns.push({ id: `turn-${c.turns.length + 1}`, question, asked_at_unix_ms: Date.now(), report });
+  c.updated_at_unix_ms = Date.now();
+  return c.id;
+}
+function done(id, report) {
+  const conversationId = running && running.id === id ? saveTurn(running.conversationId, running.question, report) : null;
+  return emit("inv:done", { id, report, conversation_id: conversationId });
+}
 let running = null;
 
 async function investigate(id, question, cloudRun) {
@@ -224,7 +238,7 @@ async function investigate(id, question, cloudRun) {
   step({ kind: "snapshot_finished", duration_ms: 1012, measured: 38 });
   if (!cloudRun) {
     await wait(250);
-    return emit("inv:done", { id, report: report(question, false) });
+    return done(id, report(question, false));
   }
   let request = 0;
   const model = async (ms, prompt, completion, outcome = "ok") => {
@@ -238,13 +252,13 @@ async function investigate(id, question, cloudRun) {
     await wait(ms * slow);
     step({ kind: "tool_finished", tool: name, status, duration_ms: ms });
   };
-  if (running.stop) return emit("inv:done", { id, report: report(question, true, "cancelled") });
+  if (running.stop) return done(id, report(question, true, "cancelled"));
   await model(1400, 4627, 83);
   if (/fail|échec/i.test(question)) {
     await model(1600, 9880, 8192, "output_limit");
-    return emit("inv:done", { id, report: report(question, true, "output_limit") });
+    return done(id, report(question, true, "output_limit"));
   }
-  if (running.stop) return emit("inv:done", { id, report: report(question, true, "cancelled") });
+  if (running.stop) return done(id, report(question, true, "cancelled"));
   await tool("get_processes", 420);
   await tool("get_metric_history", 180);
   if (/extend|prolong/i.test(question)) {
@@ -257,11 +271,11 @@ async function investigate(id, question, cloudRun) {
       usage: { requests: 6, tool_calls: 6, extensions: 0, prompt_tokens: 30210, completion_tokens: 812, reasoning_tokens: 600, cost: { usd: "0.0098", exact_usd: "0.0097938", price: null } },
     });
     const accepted = await answer;
-    if (!accepted) return emit("inv:done", { id, report: { ...report(question, true, "budget"), execution: "budget_exhausted" } });
+    if (!accepted) return done(id, { ...report(question, true, "budget"), execution: "budget_exhausted" });
   }
-  if (running.stop) return emit("inv:done", { id, report: report(question, true, "cancelled") });
+  if (running.stop) return done(id, report(question, true, "cancelled"));
   await model(1300, 8969, 271);
-  emit("inv:done", { id, report: report(question, true) });
+  done(id, report(question, true));
 }
 
 let scanId = 0;
@@ -338,14 +352,40 @@ export function createMock() {
       if (names) message.process_names = { "proc-1a2b3c4d": "chrome.exe" };
       return { message, bytes: JSON.stringify(message).length * 12, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot };
     },
-    start_investigation: async ({ question, cloud: cloudRun }) => {
+    start_investigation: async ({ question, cloud: cloudRun, conversationId }) => {
       if (running && !running.done) throw new Error("An investigation is already running.");
       const id = nextId++;
-      running = { id, stop: false, answer: null, done: false };
+      let conversation = conversations.find((c) => c.id === conversationId);
+      if (!conversation) {
+        const now = Date.now();
+        conversation = { id: `conv-${nextConversation++}`, title: question.split("\n")[0].slice(0, 80), created_at_unix_ms: now, updated_at_unix_ms: now, turns: [] };
+        conversations.unshift(conversation);
+      }
+      running = { id, stop: false, answer: null, done: false, conversationId: conversation.id, question };
       investigate(id, question, cloudRun).finally(() => {
         running.done = true;
       });
-      return id;
+      return { id, conversation_id: conversation.id };
+    },
+    conversations_list: async () =>
+      conversations
+        .slice()
+        .sort((a, b) => b.updated_at_unix_ms - a.updated_at_unix_ms)
+        .map(({ turns, ...c }) => ({ ...c, turn_count: turns.length })),
+    conversation_get: async ({ id }) => {
+      const c = conversations.find((x) => x.id === id);
+      return c ? { ...c, turn_count: c.turns.length, turns: c.turns.slice() } : null;
+    },
+    conversation_delete: async ({ id }) => {
+      const i = conversations.findIndex((x) => x.id === id);
+      if (i < 0) return false;
+      conversations.splice(i, 1);
+      return true;
+    },
+    conversations_clear: async () => {
+      const n = conversations.length;
+      conversations.length = 0;
+      return n;
     },
     answer_extension: ({ accept }) => {
       running?.answer?.(accept);
