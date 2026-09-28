@@ -540,7 +540,7 @@ Règles de travail :
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Contrats C1–C5 | toutes | à faire | |
 | 1 — Le LLM rédige | A | en cours : contrat C1 et vérificateur livrés ; multi-tour, stockage et flux à faire | |
-| 2 — Tous les processus, sans admin | B | à faire | |
+| 2 — Tous les processus, sans admin | B | fait : 326 processus sur 326 sans admin, taux dès le premier appel ; regroupement par application, services et GPU par processus à faire | |
 | 3 — Choix de partage | A, C | en cours : noms de processus livrés ; noms de fichiers à faire | |
 | 4 — Nouveaux outils | B | à faire | |
 | 5 — Mesurer au bon moment | B, C | à faire | |
