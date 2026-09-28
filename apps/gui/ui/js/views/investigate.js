@@ -3,6 +3,7 @@
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
+import { markdown } from "../markdown.js";
 import { mascotWithBubble } from "../mascot.js";
 import { composer, suggestions, ask, cloudReady } from "../ask.js";
 import { getPrefs } from "../prefs.js";
@@ -96,6 +97,12 @@ function mascotState(inv) {
   const report = inv.report;
   if (!report) return "idle";
   if (report.error?.code === "cancelled") return "idle";
+  if (report.answer) {
+    const category = report.answer.category;
+    if (category === "no_problem_found") return "happy";
+    if (category === "insufficient_evidence" || report.answer.confidence === "low") return "unsure";
+    return "concerned";
+  }
   const cls = report.selected.classification;
   if (cls === "no_contention_observed") return "happy";
   if (cls === "insufficient_evidence" || report.error) return "unsure";
@@ -129,7 +136,109 @@ function supportBadge(support) {
   return el;
 }
 
+function toolLabel(name) {
+  const key = `tool.${name}`;
+  const label = t(key);
+  return label === key ? name : label;
+}
+
+function confidenceBadge(confidence) {
+  const tone = { high: "good", medium: "", low: "warn" }[confidence] ?? "";
+  const el = badge(t(`confidence.${confidence}`), tone, { high: "check", medium: "help", low: "info" }[confidence]);
+  el.title = t("confidence.hint");
+  return el;
+}
+
+/** Opens the sources and points at the cited one. */
+function showCitation(reference) {
+  const target = document.getElementById(`cite-${reference}`);
+  if (!target) return;
+  const details = target.closest("details");
+  if (details) details.open = true;
+  const still = document.documentElement.classList.contains("reduce-motion");
+  target.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
+  target.classList.remove("flash");
+  void target.offsetWidth;
+  target.classList.add("flash");
+}
+
+function answerText(inv) {
+  const a = inv.report.answer;
+  const lines = [`PC Agent — ${inv.question}`, "", a.text];
+  if (a.unverified.length) lines.push("", `${t("answer.unverified")}:`, ...a.unverified.map((i) => `- "${i.excerpt}": ${t(`issue.${i.kind}`)}`));
+  for (const c of a.citations) lines.push("", `[${c.reference}] ${c.kind === "observation" ? toolLabel(c.title) : c.title}`, ...c.facts.map((x) => `- ${x}`));
+  if (inv.report.usage?.cost) lines.push("", `${t("usage.cost")}: ${usd(inv.report.usage.cost.usd)}`);
+  return lines.join("\n");
+}
+
+/** The model's written answer: the text first, then what could not be verified, follow-ups and sources. */
+function writtenAnswerCard(inv, error, limits) {
+  const r = inv.report;
+  const a = r.answer;
+  const unverified = a.unverified.length
+    ? h(
+        "div",
+        { class: "callout warn answer-block" },
+        icon("alert"),
+        h("div", null, h("strong", null, t("answer.unverified")), h("span", { class: "muted" }, t("answer.unverified.note")), h("ul", { class: "bullets" }, a.unverified.map((i) => h("li", null, h("q", null, i.excerpt), ` — ${t(`issue.${i.kind}`)}`)))),
+      )
+    : null;
+  const followUps = a.follow_ups.length
+    ? h("div", { class: "answer-block" }, h("h4", null, icon("sparkle"), t("answer.followups")), h("div", { class: "row wrap" }, a.follow_ups.map((q) => h("button", { class: "chip", type: "button", onClick: () => ask(q, { cloud: inv.cloud }) }, q))))
+    : null;
+  const sources = a.citations.length
+    ? h(
+        "details",
+        { class: "more sources" },
+        h("summary", null, icon("chevron"), t("answer.sources", { count: a.citations.length })),
+        h(
+          "div",
+          { class: "alt-list" },
+          a.citations.map((c) =>
+            h(
+              "div",
+              { class: "alt source", id: `cite-${c.reference}` },
+              h(
+                "div",
+                null,
+                h("strong", null, h("span", { class: "cite static" }, c.reference), c.kind === "observation" ? toolLabel(c.title) : c.title),
+                c.earlier ? h("span", { class: "faint" }, ` · ${t("answer.earlier")}`) : null,
+                h("ul", { class: "bullets" }, c.facts.map((x) => h("li", null, x))),
+              ),
+            ),
+          ),
+        ),
+      )
+    : null;
+  const actions = h(
+    "div",
+    { class: "row wrap", style: { "margin-top": "20px" } },
+    button(t("answer.copy"), { iconName: "copy", size: "sm", onClick: () => copyText(answerText(inv)) }),
+    button(t("answer.again"), { iconName: "refresh", size: "sm", onClick: () => ask(inv.question, { cloud: inv.cloud }) }),
+  );
+  return h(
+    "article",
+    { class: "card answer" },
+    error,
+    h(
+      "div",
+      { class: "answer-head" },
+      h("div", null, h("div", { class: "answer-kicker" }, t(`answer.kicker.${r.mode}`)), h("h2", { class: "answer-title" }, t(`category.${a.category}`))),
+      confidenceBadge(a.confidence),
+    ),
+    h("div", { class: "answer-text" }, markdown(a.text, showCitation)),
+    unverified,
+    followUps,
+    sources,
+    limits.length
+      ? h("details", { class: "more" }, h("summary", null, icon("chevron"), t("answer.limits")), h("div", null, h("ul", { class: "bullets" }, limits.map((x) => h("li", null, x)))))
+      : null,
+    actions,
+  );
+}
+
 function reportText(inv) {
+  if (inv.report.answer) return answerText(inv);
   const r = inv.report;
   const f = r.selected;
   const lines = [
@@ -157,6 +266,7 @@ function answerCard(inv) {
         h("div", null, h("strong", null, t(`error.${r.error.code}`) === `error.${r.error.code}` ? r.error.message : t(`error.${r.error.code}`)), h("span", { class: "muted" }, t("error.kept"))),
       )
     : null;
+  if (r.answer) return writtenAnswerCard(inv, error, r.limitations || []);
   const actions = h(
     "div",
     { class: "row wrap", style: { "margin-top": "20px" } },
@@ -225,8 +335,8 @@ function coverageCard(report) {
       h("dd", null, badge(t(`exec.${report.execution}`), execTone)),
       h("dt", null, t("coverage.sensors")),
       h("dd", null, badge(t(`coverage.${report.coverage.status}`), tone(report.coverage.status))),
-      h("dt", null, t("coverage.support")),
-      h("dd", null, supportBadge(report.support)),
+      h("dt", null, t(report.answer ? "coverage.confidence" : "coverage.support")),
+      h("dd", null, report.answer ? confidenceBadge(report.answer.confidence) : supportBadge(report.support)),
     ),
     h(
       "details",

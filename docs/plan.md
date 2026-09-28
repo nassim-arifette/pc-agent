@@ -79,7 +79,7 @@ Chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en 
 
 ```json
 {
-  "answer": "Markdown restreint, dans la langue de la question, avec des citations [obs-…] et [F1]",
+  "answer": "Markdown restreint, dans la langue de la question, avec des citations [O2] et [F1]",
   "confidence": "high | medium | low",
   "category": "memory | cpu | disk | gpu | thermal_power | storage_space | startup_background | updates_system | software_fault | hardware_limit | no_problem_found | insufficient_evidence | other",
   "action_refs": ["références de propositions créées pendant le tour"],
@@ -91,23 +91,28 @@ Chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en 
   exécuter. Le prompt guide la structure : la réponse directe en une à trois phrases avec le niveau
   de confiance en mots, puis ce que l'utilisateur peut faire, puis sur quoi ça s'appuie et ce qui
   reste incertain.
-- Citations : `[obs-…]` renvoie à un `observation_id` d'une sortie d'outil de la conversation,
-  `[F1]` à un finding local. L'interface les rend cliquables.
+- Citations : `[O2]` renvoie à une observation utilisable de la conversation, `[F1]` à un
+  finding local, y compris un finding remplacé depuis par une mesure plus fraîche (il décrit un
+  moment antérieur). Le modèle ne voit jamais les identifiants locaux. L'interface rend les
+  citations cliquables.
 - `action_refs` : uniquement des propositions créées pendant le tour par `prepare_action_plan`.
   Rien ne s'exécute sans clic.
 - `follow_ups` : affichées comme boutons sous la réponse.
 
-Vérification locale, dans un nouveau module `crates/agent/src/answer.rs` :
+Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/answer.rs) :
 
-1. Chaque citation existe, et chaque observation citée est datée.
+1. Chaque citation existe.
 2. Chaque nombre accompagné d'une unité ou d'un pourcentage (Go, Mo, %, °C, ms, MHz, W, s…) se
-   retrouve dans une observation citée dans la même phrase, à l'arrondi d'affichage près et
-   conversions d'unités comprises. Les nombres de la question sont exemptés.
-3. Chaque nom de programme ou de dossier cité figure dans ce qui a été envoyé au modèle.
-4. Aucune commande à exécuter hors `action_refs`.
-5. En cas d'écart, un tour de réparation reçoit la liste des écarts, dans le budget. Si un écart
-   persiste, la réponse s'affiche avec les phrases concernées marquées « non vérifié », et l'écart
-   est compté par l'évaluation.
+   retrouve dans ce que le modèle a reçu (première observation, sorties d'outils, question), à la
+   précision écrite près. Sont admis : les deux conventions Go/Gio, 5 % d'écart (15 % après
+   « environ »), les bornes (« moins de », « plus de »), la part d'un total, son complément et le
+   reste d'un total. Une réponse qui a des chiffres doit citer au moins une source.
+3. Chaque nom d'exécutable cité figure dans ce qui a été envoyé au modèle.
+4. Aucune commande, aucun lien, aucun HTML.
+5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les citations,
+   la liste des références valides. Au plus 3 réparations par enquête, partagées avec les appels
+   d'outils refusés, le texte sans appel d'outil et les réponses coupées par la limite de sortie.
+   Si un écart persiste, la réponse s'affiche avec les passages concernés marqués « non vérifié ».
 
 ### C2 — Conversation et stockage
 
@@ -176,8 +181,9 @@ choix est mémorisé, modifiable dans les réglages et rappelé dans la zone de 
 - Ajouter `submit_answer` et le vérificateur C1. La sélection d'identifiants (`MAX_SELECTED`,
   `finding_ids`) disparaît.
 - `converse()` et le contexte multi-tour (C2).
-- Budgets par tour, à recalibrer avec l'évaluation. Point de départ : 10 requêtes, 20 outils,
-  120 s, 45 s par requête, 4 096 tokens de sortie (aujourd'hui 6, 12, 90 s, 30 s).
+- Budgets par tour : 10 requêtes, 20 outils, 180 s, 90 s par requête, 8 192 tokens de sortie
+  (avant : 6, 12, 90 s, 30 s, 4 096). Mesuré le 28 septembre : une réponse rédigée de 728 tokens a
+  pris environ 30 s avec Super, et Ultra a raisonné sur 4 450 tokens en une requête.
 - Réponse en flux (`"stream": true`) si Nebius transmet en flux les arguments de `submit_answer` ;
   sinon affichage à la fin, les étapes restant visibles en direct.
 - CLI : `diagnose` affiche la réponse et ses citations ; nouvelle commande `pcagent chat` pour
@@ -414,6 +420,20 @@ sortie). Les quatre annoncent les outils et le raisonnement.
 - L'évaluation compare Ultra et Super sur le contrat C1. Ultra devient le défaut si le gain de
   pertinence justifie le coût : une réponse d'environ 15 000 tokens en entrée coûterait à peu près
   0,02 $.
+- Premiers essais réels avec le contrat C1 (28 septembre, PC de dev, sans les noms de programmes) :
+
+| Modèle | Question | Requêtes / outils | Coût | Durée | Résultat |
+| --- | --- | --- | --- | --- | --- |
+| Super | Pourquoi mon PC rame ? | 2 / 1 | 0,0050 $ | 39 s | Réponse rédigée, chiffres vérifiés, 0 réparation ; « aucune contention claire », propose de mesurer pendant le ralentissement. |
+| Super | Quel programme utilise le plus de mémoire ? | 2 / 1 | 0,0044 $ | 19 s | Juste, mais le processus reste une référence opaque : le chantier 3 est nécessaire. |
+| Ultra | Pourquoi mon PC rame ? | 6 / 19 | 0,115 $ | 36 s | Trouve que C: n'a plus que 0,35 % d'espace libre, ce que Super a manqué, en plus de la pression mémoire ; 2 réparations. |
+
+  Ultra est bien plus complet, pour environ 25 fois le prix. Il rappelle plusieurs fois les mêmes
+  outils, ce qui gonfle le contexte (92 000 tokens envoyés). Deux autres essais Ultra ont échoué et
+  ont conduit à trois corrections du contrat : les citations de findings remplacés sont acceptées,
+  la sortie passe à 8 192 tokens, et une réponse coupée est redemandée une fois. À faire : ne pas
+  renvoyer au modèle un résultat identique à un appel récent, puis laisser l'évaluation trancher le
+  modèle par défaut.
 - La garde qui refuse les modèles non NVIDIA ([`nebius.rs`](../crates/agent/src/nebius.rs)) reste en
   place pour la soumission. Ensuite : fournisseur compatible OpenAI configurable (Kimi, DeepSeek,
   Qwen…) et API Anthropic ou OpenAI.
@@ -505,9 +525,9 @@ Règles de travail :
 
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
-| 0 — Plan, archives, licence | — | en cours | |
+| 0 — Plan, archives, licence | — | fait | #18 |
 | Contrats C1–C5 | toutes | à faire | |
-| 1 — Le LLM rédige | A | à faire | |
+| 1 — Le LLM rédige | A | en cours : contrat C1 et vérificateur livrés ; multi-tour, stockage et flux à faire | |
 | 2 — Tous les processus, sans admin | B | à faire | |
 | 3 — Choix de partage | A, C | à faire | |
 | 4 — Nouveaux outils | B | à faire | |
