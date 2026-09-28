@@ -549,11 +549,18 @@ mod tests {
         assert!(s.process_coverage.enumerated > 0);
         assert!(s.process_coverage.readable > 0);
         assert!(s.processes.iter().all(|p| p.creation_time_filetime > 0));
-        assert!(s
+        // Every process comes from the system list: none is refused, even without admin.
+        assert_eq!(s.process_coverage.permission_denied, 0);
+        assert_eq!(s.process_coverage.readable, s.process_coverage.enumerated);
+        // The readings taken at the start of the one-second window give rates immediately.
+        let first_rates: Vec<_> = s
             .evidence
             .iter()
             .filter(|e| e.metric == Metric::ProcessCpuBasisPoints)
-            .all(|e| e.value.is_none() && e.status == Status::Partial));
+            .filter_map(|e| e.usable_value().map(|v| (v, e.window.duration_ms)))
+            .collect();
+        assert!(!first_rates.is_empty());
+        assert!(first_rates.iter().all(|(v, ms)| *v <= 10_000 && *ms >= 900));
         let s2 = c.snapshot(true, 50);
         for p in &s.processes {
             if let Some(q) = s2

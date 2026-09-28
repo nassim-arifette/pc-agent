@@ -2,6 +2,7 @@
 mod inventory;
 pub(super) mod nvml;
 pub(super) mod pdh;
+mod sysproc;
 mod tree;
 pub(super) use inventory::hardware_inventory;
 pub(super) use tree::process_tree;
@@ -13,7 +14,7 @@ use pcagent_shared::{
     unix_ms, Evidence, GpuDevice, InstanceState, Metric, ProcessCoverage, Snapshot, Status, Window,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     mem::{size_of, zeroed},
     time::Duration,
 };
@@ -108,6 +109,14 @@ fn times(handle: &OwnedHandle) -> Result<(u64, Option<u64>), Status> {
     }
 }
 pub(super) fn revalidate(pid: u32, created: u64) -> InstanceState {
+    // The system list answers for every process, including those that refuse to be opened.
+    if let Ok(list) = sysproc::query() {
+        return match list.iter().find(|p| p.pid == pid) {
+            Some(p) if p.created == created => InstanceState::Running,
+            Some(_) => InstanceState::PidReused,
+            None => InstanceState::Exited,
+        };
+    }
     let handle = match OwnedHandle::open(pid) {
         Ok(h) => h,
         Err(_) if last_error() == ERROR_INVALID_PARAMETER => return InstanceState::Exited,
@@ -327,7 +336,7 @@ fn delta_evidence(
             entity,
             source,
             Status::Partial,
-            "First observation of this instance; a rate needs a second sample of the same instance.",
+            "No earlier reading of this instance in this window; a rate needs two readings of the same instance.",
         ),
         (Ok(()), Some(prev)) => match value(prev, now) {
             Some(v) => Evidence::measured(metric, entity, v, source, window_since(prev, now)),
@@ -343,43 +352,128 @@ fn delta_evidence(
     e.limitations.push(limitation.into());
     e
 }
-fn process(
-    handle: &OwnedHandle,
+/// One reading of a process instance, however it was read.
+struct Reading {
     pid: u32,
+    created: u64,
+    name: Option<String>,
+    memory: Result<(u64, u64), Status>,
+    cpu_100ns: Option<u64>,
+    io: Result<[u64; 3], Status>,
+}
+/// Where each counter of a reading came from, for its evidence.
+struct Sources {
+    working_set: &'static str,
+    private_commit: &'static str,
+    memory: &'static str,
+    cpu: &'static str,
+    io: [&'static str; 3],
+}
+const SYSTEM_LIST: Sources = Sources {
+    working_set: "NtQuerySystemInformation.SystemProcessInformation.WorkingSetSize",
+    private_commit: "NtQuerySystemInformation.SystemProcessInformation.PagefileUsage",
+    memory: "NtQuerySystemInformation.SystemProcessInformation",
+    cpu: "NtQuerySystemInformation.SystemProcessInformation.UserTime+KernelTime",
+    io: [
+        "NtQuerySystemInformation.SystemProcessInformation.ReadTransferCount",
+        "NtQuerySystemInformation.SystemProcessInformation.WriteTransferCount",
+        "NtQuerySystemInformation.SystemProcessInformation.OtherTransferCount",
+    ],
+};
+const PROCESS_HANDLES: Sources = Sources {
+    working_set: "Win32.PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize",
+    private_commit: "Win32.PROCESS_MEMORY_COUNTERS_EX.PrivateUsage",
+    memory: "Win32.K32GetProcessMemoryInfo",
+    cpu: "Win32.GetProcessTimes",
+    io: [
+        "Win32.IO_COUNTERS.ReadTransferCount",
+        "Win32.IO_COUNTERS.WriteTransferCount",
+        "Win32.IO_COUNTERS.OtherTransferCount",
+    ],
+};
+
+/// First readings of every process at the start of the measurement window, so that the first
+/// snapshot of an instance already has its CPU and I/O rates.
+pub(super) struct Baseline {
+    at: Duration,
+    unix_ms: u64,
+    readings: HashMap<Key, (u64, [u64; 3])>,
+}
+impl Baseline {
+    fn take(collector: &Collector) -> Option<Self> {
+        let list = sysproc::query().ok()?;
+        Some(Self {
+            at: collector.started.elapsed(),
+            unix_ms: unix_ms(),
+            readings: list
+                .into_iter()
+                .map(|p| ((p.pid, p.created), (p.cpu_100ns, p.io)))
+                .collect(),
+        })
+    }
+    fn sample(&self, key: Key) -> Option<CounterSample> {
+        self.readings.get(&key).map(|(cpu, io)| CounterSample {
+            cpu_100ns: Some(*cpu),
+            io_bytes: Some(*io),
+            at: self.at,
+            unix_ms: self.unix_ms,
+        })
+    }
+}
+
+/// Opens one process with query-only rights and reads its counters.
+fn read_by_handle(pid: u32) -> Result<Reading, Status> {
+    let handle = OwnedHandle::open(pid)?;
+    let (created, cpu) = times(&handle)?;
+    Ok(Reading {
+        pid,
+        created,
+        name: image_name(&handle),
+        memory: memory(&handle),
+        cpu_100ns: cpu,
+        io: io_counters(&handle),
+    })
+}
+
+/// Records a reading under its session identity and builds its evidence. Rates compare with
+/// the previous reading of the same instance, or with the baseline for a first reading.
+fn track(
     collector: &mut Collector,
+    reading: Reading,
+    sources: &Sources,
     processors: u32,
-) -> Result<(Key, Result<u64, Status>), Status> {
-    let (created, cpu) = times(handle)?;
-    let io = io_counters(handle);
-    let mem = memory(handle);
+    baseline: Option<CounterSample>,
+) -> Key {
     let boot = collector.boot_id.clone();
     let now = CounterSample {
-        cpu_100ns: cpu,
-        io_bytes: io.ok(),
+        cpu_100ns: reading.cpu_100ns,
+        io_bytes: reading.io.as_ref().ok().copied(),
         at: collector.started.elapsed(),
         unix_ms: unix_ms(),
     };
-    let tracked = collector.registry.entry(pid, created, boot.as_deref());
+    let tracked = collector
+        .registry
+        .entry(reading.pid, reading.created, boot.as_deref());
     if tracked.instance.executable_name.is_none() {
-        tracked.instance.executable_name = image_name(handle);
+        tracked.instance.executable_name = reading.name;
     }
     let entity = tracked.instance.entity_ref.clone();
-    let prev = tracked.counters;
+    let prev = tracked.counters.or(baseline);
     let window = Window::instant();
-    let mut evidence = match mem {
+    let mut evidence = match reading.memory {
         Ok((ws, private)) => vec![
             Evidence::measured(
                 Metric::ProcessWorkingSetBytes,
                 &entity,
                 ws,
-                "Win32.PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize",
+                sources.working_set,
                 window.clone(),
             ),
             Evidence::measured(
                 Metric::ProcessPrivateCommitBytes,
                 &entity,
                 private,
-                "Win32.PROCESS_MEMORY_COUNTERS_EX.PrivateUsage",
+                sources.private_commit,
                 window,
             ),
         ],
@@ -391,7 +485,7 @@ fn process(
             Evidence::missing(
                 m,
                 &entity,
-                "Win32.K32GetProcessMemoryInfo",
+                sources.memory,
                 status,
                 "Process memory query failed.",
             )
@@ -405,7 +499,7 @@ fn process(
     evidence.push(delta_evidence(
         Metric::ProcessCpuBasisPoints,
         &entity,
-        "Win32.GetProcessTimes",
+        sources.cpu,
         prev.as_ref().filter(|p| p.cpu_100ns.is_some()),
         &now,
         |p, n| {
@@ -416,26 +510,18 @@ fn process(
                 processors,
             )
         },
-        cpu.map(|_| ()).ok_or(Status::Error),
+        reading.cpu_100ns.map(|_| ()).ok_or(Status::Error),
         &cpu_note,
     ));
     const IO_NOTE: &str =
-        "GetProcessIoCounters includes cached, network and device I/O; not physical disk activity.";
+        "Process I/O counters include cached, network and device I/O; not physical disk activity.";
     for (i, (metric, source)) in [
-        (
-            Metric::ProcessIoReadBytes,
-            "Win32.IO_COUNTERS.ReadTransferCount",
-        ),
-        (
-            Metric::ProcessIoWriteBytes,
-            "Win32.IO_COUNTERS.WriteTransferCount",
-        ),
-        (
-            Metric::ProcessIoOtherBytes,
-            "Win32.IO_COUNTERS.OtherTransferCount",
-        ),
+        Metric::ProcessIoReadBytes,
+        Metric::ProcessIoWriteBytes,
+        Metric::ProcessIoOtherBytes,
     ]
     .into_iter()
+    .zip(sources.io)
     .enumerate()
     {
         evidence.push(delta_evidence(
@@ -445,71 +531,112 @@ fn process(
             prev.as_ref().filter(|p| p.io_bytes.is_some()),
             &now,
             |p, n| n.io_bytes?[i].checked_sub(p.io_bytes?[i]),
-            io.map(|_| ()),
+            reading.io.as_ref().map(|_| ()).map_err(|s| *s),
             IO_NOTE,
         ));
     }
     tracked.evidence = evidence;
     tracked.observed_unix_ms = Some(now.unix_ms);
     tracked.counters = Some(now);
-    Ok(((pid, created), mem.map(|m| m.0)))
+    (reading.pid, reading.created)
 }
-fn collect_processes(
-    result: &mut Snapshot,
-    collector: &mut Collector,
-    limit: usize,
-    sort: crate::ProcessSort,
+
+/// Every process from the system list, or, if that list is unavailable, each process opened
+/// one by one (other users' processes and services may then be missing).
+fn read_processes() -> (
+    Vec<Result<Reading, Status>>,
+    bool,
+    &'static Sources,
+    &'static str,
 ) {
+    if let Ok(list) = sysproc::query() {
+        let readings = list
+            .into_iter()
+            // PID 0 is the idle time of the processors, not a program.
+            .filter(|p| p.pid != 0)
+            .map(|p| {
+                Ok(Reading {
+                    pid: p.pid,
+                    created: p.created,
+                    name: p.name,
+                    memory: Ok((p.working_set, p.private_commit)),
+                    cpu_100ns: Some(p.cpu_100ns),
+                    io: Ok(p.io),
+                })
+            })
+            .collect();
+        return (
+            readings,
+            false,
+            &SYSTEM_LIST,
+            "Every process comes from one system list (NtQuerySystemInformation) without opening any, so services and other users' processes are measured without administrator rights.",
+        );
+    }
     // A fixed upper bound prevents unbounded allocation; a full buffer is explicitly partial.
     let mut pids = vec![0_u32; 16384];
     let capacity_bytes = (pids.len() * size_of::<u32>()) as u32;
     let mut needed = 0_u32;
     // SAFETY: the buffer is writable for capacity_bytes and needed points to a valid DWORD.
     if unsafe { K32EnumProcesses(pids.as_mut_ptr(), capacity_bytes, &mut needed) } == 0 {
-        result.process_coverage.status = last_status();
-        result
-            .limitations
-            .push("Process enumeration failed; coverage is unknown.".into());
-        return;
+        return (
+            vec![Err(last_status())],
+            false,
+            &PROCESS_HANDLES,
+            "Process enumeration failed; coverage is unknown.",
+        );
     }
     pids.truncate((needed as usize / size_of::<u32>()).min(pids.len()));
+    (
+        pids.iter().map(|&pid| read_by_handle(pid)).collect(),
+        needed >= capacity_bytes,
+        &PROCESS_HANDLES,
+        "The system process list was unavailable: processes were opened one by one, and those of services or other users may be missing.",
+    )
+}
+
+fn collect_processes(
+    result: &mut Snapshot,
+    collector: &mut Collector,
+    limit: usize,
+    sort: crate::ProcessSort,
+    baseline: Option<&Baseline>,
+) {
+    let (readings, truncated, sources, note) = read_processes();
     let mut coverage = ProcessCoverage {
         status: Status::Ok,
-        enumerated: pids.len(),
-        enumeration_truncated: needed >= capacity_bytes,
+        enumerated: readings.len(),
+        enumeration_truncated: truncated,
         ..ProcessCoverage::default()
     };
     let processors = processor_count();
     let mut rows = Vec::new();
     let mut seen = HashSet::new();
-    for &pid in &pids {
-        let row = OwnedHandle::open(pid).and_then(|h| process(&h, pid, collector, processors));
-        let row = match row {
-            Ok((key, _mem)) => {
+    let mut listed = HashSet::new();
+    for reading in readings {
+        match reading {
+            Ok(reading) => {
+                listed.insert(reading.pid);
+                let first = baseline.and_then(|b| b.sample((reading.pid, reading.created)));
+                let key = track(collector, reading, sources, processors, first);
                 seen.insert(key);
-                Ok((
+                coverage.readable += 1;
+                rows.push((
                     key,
                     collector
                         .registry
                         .get(key)
                         .and_then(|t| sort.rank(&t.evidence)),
-                ))
-            }
-            Err(status) => Err(status),
-        };
-        match row {
-            Ok(row) => {
-                coverage.readable += 1;
-                rows.push(row);
+                ));
             }
             Err(Status::PermissionDenied) => coverage.permission_denied += 1,
             Err(_) => coverage.unavailable += 1,
         }
     }
+    if coverage.readable == 0 && coverage.unavailable > 0 && coverage.permission_denied == 0 {
+        coverage.status = Status::Error;
+    }
     if !coverage.enumeration_truncated {
-        collector
-            .registry
-            .sweep(&seen, &pids.iter().copied().collect());
+        collector.registry.sweep(&seen, &listed);
     }
     rows.sort_by_key(|row| std::cmp::Reverse(row.1));
     rows.truncate(limit);
@@ -526,10 +653,11 @@ fn collect_processes(
     }
     result.process_coverage = coverage;
     result.limitations.extend([
-        format!("Process list is ranked by {}; unknown values sort last and inaccessible processes may be larger.", sort.label()),
+        note.to_owned(),
+        format!("Process list is ranked by {}; unknown values sort last.", sort.label()),
         "Working sets include shared pages and must not be summed as exclusive physical RAM.".into(),
         "Process identities are session-scoped (PID plus creation time).".into(),
-        "Process CPU and I/O are deltas since this collector's previous observation of the same instance; the first observation is unknown.".into(),
+        "Process CPU and I/O are rates over the measurement window (about one second), or since this collector's previous reading of the same instance.".into(),
         BOOT_NOTE.into(),
     ]);
 }
@@ -543,12 +671,16 @@ pub(super) fn collect(
 ) -> Snapshot {
     let mut result = Snapshot::empty(&collector.session_id);
     let fresh = start_counters(collector, reuse_cpu);
+    // First process readings now: the counters' one-second window then gives their rates.
+    let baseline = (include_processes && fresh && !reuse_cpu)
+        .then(|| Baseline::take(collector))
+        .flatten();
     collect_cpu(&mut result, collector, reuse_cpu);
     collect_memory(&mut result);
     collect_counters(&mut result, collector, fresh && !reuse_cpu);
     collect_nvidia(&mut result, collector);
     if include_processes {
-        collect_processes(&mut result, collector, limit, sort);
+        collect_processes(&mut result, collector, limit, sort, baseline.as_ref());
     }
     result.limitations.push("Short sample: no sustained contention, memory leak or causal diagnosis can be established.".into());
     result
