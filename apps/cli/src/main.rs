@@ -858,11 +858,8 @@ fn run(args: Args) -> Result<u8> {
                 println!();
                 text::report(&mut io::stdout().lock(), &report, verbose)?;
                 // Only answered turns are read again; a failed turn adds nothing to follow up on.
-                if let Some(answer) = &report.answer {
-                    past.push(PastTurn {
-                        question: question.to_owned(),
-                        answer: answer.text.clone(),
-                    });
+                if report.answer.is_some() {
+                    past.push(PastTurn::from_report(question, &report));
                 }
             }
             Ok(0)

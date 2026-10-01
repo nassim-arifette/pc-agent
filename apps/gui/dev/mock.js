@@ -229,6 +229,8 @@ function done(id, report) {
   return emit("inv:done", { id, report, conversation_id: conversationId });
 }
 let running = null;
+let pendingPreview = null;
+let previewSequence = 0;
 
 async function investigate(id, question, cloudRun) {
   const slow = /slow|lent/i.test(question) ? 1.6 : 1;
@@ -346,14 +348,24 @@ export function createMock() {
       await wait(tick === 0 ? 700 : 120);
       return dashboard();
     },
-    cloud_preview: async ({ question, names }) => {
+    cloud_preview: async ({ question, names, conversationId = null }) => {
+      const sequence = ++previewSequence;
       await wait(300);
       const message = { question, initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
       if (names) message.process_names = { "proc-1a2b3c4d": "chrome.exe" };
-      return { message, bytes: JSON.stringify(message).length * 12, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot };
+      const conversation = conversations.find((c) => c.id === conversationId);
+      if (conversation?.turns.length) message.previous_turns = conversation.turns.map((turn) => ({ question: turn.question, answer: "Earlier synthetic observation.", observations: [] }));
+      if (sequence !== previewSequence) throw new Error("A newer sharing preview was requested.");
+      const id = `preview-${sequence}`;
+      pendingPreview = { id, question, names, conversationId };
+      return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot };
     },
-    start_investigation: async ({ question, cloud: cloudRun, conversationId }) => {
+    start_investigation: async ({ request: { question, cloud: cloudRun, names, conversationId = null, previewId } }) => {
       if (running && !running.done) throw new Error("An investigation is already running.");
+      if (cloudRun) {
+        if (!pendingPreview || pendingPreview.id !== previewId || pendingPreview.question !== question || pendingPreview.names !== names || pendingPreview.conversationId !== conversationId) throw new Error("Open the sharing preview again.");
+        pendingPreview = null;
+      }
       const id = nextId++;
       let conversation = conversations.find((c) => c.id === conversationId);
       if (!conversation) {

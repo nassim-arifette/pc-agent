@@ -605,11 +605,29 @@ fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()>
         writeln!(out, "Sources")?;
     }
     for citation in &a.citations {
+        if let Some(old) = r
+            .historical_observations
+            .iter()
+            .find(|o| o.reference == citation.target)
+        {
+            writeln!(
+                out,
+                "  [{}] {} (earlier measurement, Unix ms {})",
+                citation.reference,
+                clean(&old.tool),
+                old.measured_at_unix_ms
+            )?;
+            for fact in &old.facts {
+                writeln!(out, "      {}", clean(fact))?;
+            }
+            continue;
+        }
         match citation.kind {
             CitationKind::Observation => {
                 let Some(o) = r
                     .observations
                     .iter()
+                    .chain(std::iter::once(&r.initial_observation))
                     .find(|o| o.observation_id == citation.target)
                 else {
                     continue;

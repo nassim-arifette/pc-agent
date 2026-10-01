@@ -2,21 +2,22 @@
 //! untrusted input: every argument is validated here, paths and item references are resolved on
 //! this side, and the Nebius key never reaches the page.
 use crate::{
+    preview::{self, PreparedTurn, Reviewed},
     session::{ObservedModel, ObservedTools, Step},
     view,
 };
 use pcagent_agent::{
     converse,
     credentials::{self, Credentials},
-    initial_message, local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius,
-    PastTurn, Sharing, Workstation, MAX_QUESTION_BYTES,
+    local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius, PastTurn, Sharing,
+    Workstation, MAX_QUESTION_BYTES,
 };
 use pcagent_policy::{Policy, Preferences};
-use pcagent_shared::unix_ms;
+use pcagent_shared::{unix_ms, Snapshot};
 use pcagent_storage::{ItemKind, ScanOptions, StorageError, StorageService, MAX_PAGE};
 use pcagent_store::{Conversation, ConversationSummary, Store, DEFAULT_RETENTION_DAYS};
 use pcagent_telemetry::Collector;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
@@ -36,7 +37,7 @@ const PAGE: usize = 50;
 /// Requests for the thread that owns the live collector (its native handles stay on it).
 enum Measure {
     Dashboard(mpsc::Sender<view::Dashboard>),
-    Preview(String, Sharing, mpsc::Sender<Value>),
+    Preview(mpsc::Sender<Snapshot>),
 }
 
 struct Running {
@@ -63,6 +64,8 @@ struct AppState {
     next_id: AtomicU64,
     /// Local conversation history; `None` when its file cannot be opened.
     history: Arc<Mutex<Option<Store>>>,
+    preview: Mutex<Option<PreparedTurn>>,
+    preview_revision: AtomicU64,
 }
 
 /// The history file next to the settings file, with conversations older than the retention
@@ -75,21 +78,13 @@ fn open_history() -> Option<Store> {
     Some(store)
 }
 
-/// What the model reads again of a conversation: each question and the answer the person saw.
+/// Only typed model context is reusable. Legacy display-only reports remain visible locally;
+/// their localized prose has no trustworthy name mapping or measured sources to resend.
 fn past_turns(conversation: &Conversation) -> Vec<PastTurn> {
     conversation
         .turns
         .iter()
-        .filter_map(|turn| {
-            let report = &turn.report;
-            let answer = report["answer"]["text"]
-                .as_str()
-                .or_else(|| report["selected"]["summary"].as_str())?;
-            Some(PastTurn {
-                question: turn.question.clone(),
-                answer: answer.to_owned(),
-            })
-        })
+        .filter_map(|turn| serde_json::from_value(turn.report.get("context")?.clone()).ok())
         .collect()
 }
 
@@ -139,9 +134,9 @@ fn measure_thread(requests: mpsc::Receiver<Measure>) {
             Measure::Dashboard(reply) => {
                 let _ = reply.send(view::dashboard(&collector.snapshot(true, 8)));
             }
-            Measure::Preview(question, sharing, reply) => {
+            Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);
-                let _ = reply.send(initial_message(&question, &snapshot, sharing));
+                let _ = reply.send(snapshot);
             }
         }
     }
@@ -175,6 +170,7 @@ async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, String
 
 #[derive(Serialize)]
 struct Preview {
+    id: String,
     message: Value,
     bytes: usize,
     measured: usize,
@@ -193,16 +189,39 @@ fn sharing_of(names: bool) -> Sharing {
     }
 }
 
-/// The first message exactly as it would be sent, for the consent dialog. Later samples differ.
+/// Freeze the first data message, including historical context, until its matching approval.
 #[tauri::command]
 async fn cloud_preview(
     state: State<'_, AppState>,
     question: String,
     names: bool,
+    conversation_id: Option<String>,
 ) -> Result<Preview, String> {
+    let revision = state.preview_revision.fetch_add(1, Ordering::SeqCst) + 1;
     let question = checked_question(&question)?;
     let sharing = sharing_of(names);
-    let message = ask_measure(&state, |tx| Measure::Preview(question, sharing, tx)).await?;
+    let past = read_past(&state, conversation_id.as_deref())?;
+    let snapshot = ask_measure(&state, Measure::Preview).await?;
+    let (storage_folder, storage_scope) = {
+        let slot = lock(&state.scan);
+        let scanned = slot
+            .scope_id
+            .as_ref()
+            .is_some_and(|scope| !slot.running && state.storage.index(scope).is_ok());
+        (
+            slot.root.clone().filter(|_| scanned),
+            slot.scope_id.clone().filter(|_| scanned),
+        )
+    };
+    let prepared = PreparedTurn::new(
+        question,
+        conversation_id,
+        past,
+        snapshot,
+        sharing,
+        storage_scope,
+    );
+    let message = prepared.message.clone();
     let text = message.to_string();
     let measured = message["initial_observation"]["measurements"]["values"]
         .as_object()
@@ -213,20 +232,33 @@ async fn cloud_preview(
                 .map(|metrics| metrics.len())
                 .sum()
         });
-    let slot = lock(&state.scan);
-    // Only a completed scan can be offered to the model.
-    let scanned = slot
-        .scope_id
-        .as_ref()
-        .is_some_and(|scope| !slot.running && state.storage.index(scope).is_ok());
+    let id = prepared.id.clone();
+    let mut slot = lock(&state.preview);
+    if revision != state.preview_revision.load(Ordering::SeqCst) {
+        return Err("A newer sharing preview was requested.".into());
+    }
+    *slot = Some(prepared);
     Ok(Preview {
+        id,
         bytes: text.len(),
         measured,
         findings: message["findings"].as_array().map_or(0, Vec::len),
         names: message["process_names"].as_object().map_or(0, |n| n.len()),
-        storage_folder: slot.root.clone().filter(|_| scanned),
+        storage_folder,
         message,
     })
+}
+
+fn read_past(state: &AppState, id: Option<&str>) -> Result<Vec<PastTurn>, String> {
+    let Some(id) = id else { return Ok(Vec::new()) };
+    let history = lock(&state.history);
+    let conversation = history
+        .as_ref()
+        .ok_or("Conversation history is unavailable.")?
+        .get(id)
+        .map_err(|e| e.to_string())?
+        .ok_or("This conversation no longer exists.")?;
+    Ok(past_turns(&conversation))
 }
 
 fn checked_question(question: &str) -> Result<String, String> {
@@ -272,6 +304,7 @@ struct Ask<'a> {
     past: &'a [PastTurn],
     /// `None` for a local analysis; otherwise the person's choice of program names.
     cloud: Option<Sharing>,
+    initial: Option<&'a Snapshot>,
 }
 #[derive(Clone, Serialize)]
 struct FailedEvent {
@@ -280,17 +313,68 @@ struct FailedEvent {
     message: String,
 }
 
-#[tauri::command]
-fn start_investigation(
-    app: AppHandle,
-    state: State<'_, AppState>,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartRequest {
     question: String,
     cloud: bool,
     use_storage: bool,
     names: bool,
     conversation_id: Option<String>,
+    preview_id: Option<String>,
+}
+
+#[tauri::command]
+fn start_investigation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: StartRequest,
 ) -> Result<Started, String> {
+    let StartRequest {
+        question,
+        cloud,
+        use_storage,
+        names,
+        conversation_id,
+        preview_id,
+    } = request;
     let question = checked_question(&question)?;
+    let mut slot = lock(&state.investigation);
+    if slot
+        .as_ref()
+        .is_some_and(|r| !r.finished.load(Ordering::SeqCst))
+    {
+        return Err("An investigation is already running.".into());
+    }
+    let prior = read_past(&state, conversation_id.as_deref())?;
+    let prepared = if cloud {
+        let scan = lock(&state.scan);
+        let scope = if use_storage {
+            Some(
+                scan.scope_id
+                    .as_deref()
+                    .filter(|s| !scan.running && state.storage.index(s).is_ok())
+                    .ok_or("The approved scan is no longer available. Open the preview again.")?,
+            )
+        } else {
+            None
+        };
+        Some(preview::take(
+            &mut lock(&state.preview),
+            Reviewed {
+                id: preview_id
+                    .as_deref()
+                    .ok_or("Open the sharing preview before sending.")?,
+                question: &question,
+                conversation_id: conversation_id.as_deref(),
+                past: &prior,
+                sharing: sharing_of(names),
+                storage_scope: scope,
+            },
+        )?)
+    } else {
+        None
+    };
     // A follow-up reads its conversation again; a first question starts one.
     let (conversation_id, past, created) = {
         let history = lock(&state.history);
@@ -308,13 +392,7 @@ fn start_investigation(
             }
         }
     };
-    let mut slot = lock(&state.investigation);
-    if slot
-        .as_ref()
-        .is_some_and(|r| !r.finished.load(Ordering::SeqCst))
-    {
-        return Err("An investigation is already running.".into());
-    }
+    let past = prepared.as_ref().map_or(past, |p| p.past.clone());
     let id = state.next_id.fetch_add(1, Ordering::SeqCst);
     let running = Running {
         id,
@@ -344,6 +422,7 @@ fn start_investigation(
                 question: &question,
                 past: &past,
                 cloud: cloud.then(|| sharing_of(names)),
+                initial: prepared.as_ref().map(|p| &p.snapshot),
             };
             let outcome = investigation(&app, id, &ask, storage, &stop, &answer);
             // Every finished turn is kept, unless the conversation was deleted meanwhile.
@@ -414,7 +493,10 @@ fn investigation(
     let mut collector = Collector::new();
     emit(Step::SnapshotStarted);
     let started = Instant::now();
-    let initial = collector.snapshot(true, 10);
+    let initial = ask
+        .initial
+        .cloned()
+        .unwrap_or_else(|| collector.snapshot(true, 10));
     emit(Step::SnapshotFinished {
         duration_ms: started.elapsed().as_millis() as u64,
         measured: initial
@@ -777,6 +859,8 @@ pub fn run() {
             investigation: Mutex::new(None),
             next_id: AtomicU64::new(1),
             history: Arc::new(Mutex::new(open_history())),
+            preview: Mutex::new(None),
+            preview_revision: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
             app_info,

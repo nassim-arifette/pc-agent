@@ -322,6 +322,7 @@ pub struct CitationView {
     pub facts: Vec<String>,
     /// A finding a fresher measurement has since replaced: it describes an earlier moment.
     pub earlier: bool,
+    pub measured_at_unix_ms: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct IssueView {
@@ -341,6 +342,8 @@ pub struct AnswerView {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
+    /// Original model context and measured sources, before local display substitutions.
+    pub context: pcagent_agent::PastTurn,
     pub question: String,
     pub mode: String,
     pub execution: ExecutionStatus,
@@ -431,11 +434,27 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
         .citations
         .iter()
         .filter_map(|c| {
+            if let Some(old) = r
+                .historical_observations
+                .iter()
+                .find(|o| o.reference == c.target)
+            {
+                return Some(CitationView {
+                    reference: c.reference.clone(),
+                    kind: c.kind,
+                    title: old.tool.clone(),
+                    facts: old.facts.clone(),
+                    earlier: true,
+                    measured_at_unix_ms: (old.measured_at_unix_ms > 0)
+                        .then_some(old.measured_at_unix_ms),
+                });
+            }
             let (title, facts, earlier) = match c.kind {
                 CitationKind::Observation => {
                     let o = r
                         .observations
                         .iter()
+                        .chain(std::iter::once(&r.initial_observation))
                         .find(|o| o.observation_id == c.target)?;
                     (
                         o.tool.clone(),
@@ -462,6 +481,13 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                 title,
                 facts,
                 earlier,
+                measured_at_unix_ms: r
+                    .observations
+                    .iter()
+                    .chain(std::iter::once(&r.initial_observation))
+                    .find(|o| o.observation_id == c.target)
+                    .map(|o| o.measured_at_unix_ms)
+                    .filter(|at| *at > 0),
             })
         })
         .collect();
@@ -498,6 +524,7 @@ pub fn report(r: &Investigation, question: &str) -> Report {
         })
         .collect();
     Report {
+        context: pcagent_agent::PastTurn::from_report(question, r),
         question: question.to_owned(),
         mode: r.mode.clone(),
         execution: r.execution_status,
