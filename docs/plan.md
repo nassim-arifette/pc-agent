@@ -398,12 +398,15 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   - arguments validés ;
   - sortie JSON versionnée dans un fichier temporaire à accès restreint ;
   - 120 s au plus, annulable.
-- Tâches, par ordre d'intérêt :
+- Tâches, par ordre d'intérêt (ordre revu le 1er octobre : la MFT passe avant la santé des disques) :
   1. tailles des caches système (`Windows.old`, cache Windows Update, Optimisation de la
-     distribution, points de restauration) ;
-  2. santé des disques (compteurs de fiabilité, SMART) ;
-  3. chemins complets des processus protégés ;
-  4. scan complet d'un volume par la MFT, selon le contrat de la feuille de route (S09) ;
+     distribution, points de restauration) : souvent les plus gros éléments récupérables, invisibles
+     sans admin ;
+  2. scan complet d'un volume par la MFT, selon le contrat de la feuille de route (S09) : tout C: en
+     quelques secondes, avec des tailles sur disque exactes (liens physiques, fichiers compressés ou
+     creux) testées sur des volumes de test avant tout conseil de suppression ;
+  3. santé des disques (compteurs de fiabilité, SMART) ;
+  4. chemins complets des processus protégés ;
   5. trace ETW de 30 à 60 s pendant le problème (latence DPC/ISR, E/S disque par fichier).
 - Interface : un bouton « Analyse approfondie (administrateur) », proposé par l'utilisateur ou par
   le modèle. La tâche est expliquée avant l'invite de Windows.
@@ -525,8 +528,8 @@ vérifiés parce que le modèle recopie des valeurs brutes (octets, compteurs `_
 | --- | --- |
 | **S1 · 28 sept.–4 oct.** | Contrats C1 à C5 (jours 1 et 2). Chantier 2. Capture, rejeu et ligne de base A et D sur 5 scénarios. Chantier 1 : prompt, `submit_answer`, vérificateur. Maquette de conversation sur données simulées. |
 | **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). |
-| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 à 3. Évaluation 2. |
-| **S4 · 19–25 oct.** | Chantier 11. Chantier 8, tâches 4 et 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. |
+| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 et 2 (caches système, MFT). Évaluation 2. |
+| **S4 · 19–25 oct.** | Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. |
 | **S5 · 26–30 oct.** | Gel le 27. Corrections. README, docs, licence. Vidéo. Release. Soumission avant le 30 octobre à 18 h. |
 
 Repoussé après la soumission :
