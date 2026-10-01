@@ -278,6 +278,7 @@ a {
   cursor: pointer;
 }
 .history-row:hover .history-delete,
+.history-row:focus-within .history-delete,
 .history-delete:focus-visible {
   display: inline-flex;
 }
@@ -290,6 +291,9 @@ a {
 }
 .history-empty {
   padding: 4px 11px;
+}
+.history-browse {
+  display: none;
 }
 .sidebar-foot {
   margin-top: auto;
@@ -403,6 +407,24 @@ button.status-card:hover {
   .status-card {
     justify-content: center;
     padding: 12px 0;
+  }
+  .history-head > span,
+  .history-new > span,
+  .sidebar .history-list,
+  .sidebar .history-empty {
+    display: none;
+  }
+  .history-head {
+    justify-content: center;
+    padding: 0;
+  }
+  .history-new {
+    justify-content: center;
+    width: 100%;
+    min-height: 36px;
+  }
+  .history-browse {
+    display: flex;
   }
   .page {
     padding: 22px 22px 48px;
@@ -1114,6 +1136,9 @@ button.status-card:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+.turn[hidden] {
+  display: none;
 }
 .thread + .turn {
   margin-top: 22px;

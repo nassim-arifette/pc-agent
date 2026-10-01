@@ -98,7 +98,7 @@ function current(id) {
 }
 
 /** Asks in the open conversation when `followUp` is true, otherwise starts a new one. */
-export async function startInvestigation(question, { cloud, useStorage, names = true, followUp = false }) {
+export async function startInvestigation(question, { cloud, useStorage, names = true, followUp = false, previewId = null }) {
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
   if (!followUp || !state.conversation) state.conversation = { id: null, title: question, turns: [] };
   state.inv = {
@@ -116,7 +116,7 @@ export async function startInvestigation(question, { cloud, useStorage, names = 
   notify("conversation");
   notify("inv");
   try {
-    const started = await call("start_investigation", { question, cloud, useStorage, names: Boolean(names), conversationId });
+    const started = await call("start_investigation", { request: { question, cloud, useStorage, names: Boolean(names), conversationId, previewId } });
     if (state.inv && state.inv.id == null) state.inv.id = started.id;
     if (state.inv && state.inv.id === started.id) state.inv.conversationId = started.conversation_id;
     if (state.conversation && state.conversation.id == null) state.conversation.id = started.conversation_id;

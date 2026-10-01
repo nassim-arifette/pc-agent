@@ -107,10 +107,53 @@ function confirmDelete(conversation) {
   });
 }
 
+function historyList(beforeAction = () => {}) {
+  const items = state.conversations || [];
+  return items.length
+    ? h(
+        "ul",
+        { class: "history-list" },
+        items.map((c) =>
+          h(
+            "li",
+            { class: "history-row" },
+            h(
+              "button",
+              {
+                type: "button",
+                class: "history-item",
+                "aria-current": state.conversation?.id === c.id ? "true" : null,
+                title: c.title,
+                onclick: async () => {
+                  beforeAction();
+                  if (await openConversation(c.id)) navigate("investigate");
+                },
+              },
+              h("span", { class: "history-title" }, c.title),
+              h("span", { class: "history-date" }, date(c.updated_at_unix_ms)),
+            ),
+            h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => { beforeAction(); confirmDelete(c); } }, icon("x")),
+          ),
+        ),
+      )
+    : h("p", { class: "hint history-empty" }, t("history.empty"));
+}
+
+/** The compact sidebar opens a readable picker instead of squeezing titles into an icon rail. */
+function browseHistory() {
+  dialog(
+    (close) => [
+      h("div", { class: "dialog-head" }, icon("clock"), h("h2", { class: "dialog-title" }, t("history.title"))),
+      historyList(() => close(null)),
+      h("div", { class: "dialog-actions" }, button(t("common.close"), { onClick: () => close(null) })),
+    ],
+    { label: t("history.title") },
+  );
+}
+
 /** Saved conversations in the sidebar, most recent first. */
 function renderHistory() {
   if (!historyHost) return;
-  const items = state.conversations || [];
   fill(
     historyHost,
     h(
@@ -132,33 +175,8 @@ function renderHistory() {
         h("span", null, t("history.new")),
       ),
     ),
-    items.length
-      ? h(
-          "ul",
-          { class: "history-list" },
-          items.map((c) =>
-            h(
-              "li",
-              { class: "history-row" },
-              h(
-                "button",
-                {
-                  type: "button",
-                  class: "history-item",
-                  "aria-current": state.conversation?.id === c.id ? "true" : null,
-                  title: c.title,
-                  onclick: async () => {
-                    if (await openConversation(c.id)) navigate("investigate");
-                  },
-                },
-                h("span", { class: "history-title" }, c.title),
-                h("span", { class: "history-date" }, date(c.updated_at_unix_ms)),
-              ),
-              h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => confirmDelete(c) }, icon("x")),
-            ),
-          ),
-        )
-      : h("p", { class: "hint history-empty" }, t("history.empty")),
+    h("button", { type: "button", class: "history-browse nav-item", title: t("history.title"), "aria-label": t("history.title"), onclick: browseHistory }, icon("clock")),
+    historyList(),
   );
 }
 

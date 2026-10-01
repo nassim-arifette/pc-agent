@@ -11,6 +11,7 @@
 //! unverified, never hidden.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+mod grounding;
 
 pub const SUBMIT_ANSWER: &str = "submit_answer";
 pub const MAX_ANSWER_CHARS: usize = 6_000;
@@ -73,7 +74,7 @@ pub(crate) struct Submission {
     follow_ups: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CitationKind {
     Observation,
@@ -117,7 +118,7 @@ impl IssueKind {
         match self {
             Self::UnknownCitation => "Cite only references listed in valid_references, written like [O2] or [F1].",
             Self::MissingCitation => "Cite the observation each number comes from right after it, like [O2].",
-            Self::UnsupportedNumber => "No tool result contains this value, even rounded or as a simple ratio. Use the measured value with its citation, or remove the number.",
+            Self::UnsupportedNumber => "The citation does not support this value for the named entity, even rounded or as a simple ratio. Cite the matching measurement immediately after the claim, or remove the number. Questions and previous answers are not measurements.",
             Self::UnseenName => "No tool result contains this name. Do not guess program names; use the names or references the tools returned.",
             Self::Command => "Do not give commands to run. Describe the step in words, or propose an action with prepare_action_plan when it is offered.",
             Self::Link => "Remove links and images.",
@@ -244,7 +245,7 @@ pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejec
         text = text.chars().take(MAX_ANSWER_CHARS).collect::<String>() + "…";
     }
     let citations = check_citations(&text, ctx, &mut issues);
-    check_numbers(&text, ctx, citations.is_empty(), &mut issues);
+    grounding::check_numbers(&text, ctx, &mut issues);
     check_names(&text, ctx, &mut issues);
     check_markup(&text, &mut issues);
     let mut action_refs: Vec<String> = Vec::new();
@@ -332,27 +333,11 @@ fn check_citations(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) -> Ve
     citations
 }
 
-fn is_reference(token: &str) -> bool {
+pub(super) fn is_reference(token: &str) -> bool {
     let mut chars = token.chars();
     matches!(chars.next(), Some('O' | 'F'))
         && (2..=6).contains(&token.len())
         && chars.all(|c| c.is_ascii_digit())
-}
-
-fn check_numbers(text: &str, ctx: &Context<'_>, uncited: bool, issues: &mut Vec<Issue>) {
-    let claims = claims(text);
-    if claims.is_empty() {
-        return;
-    }
-    let known = Known::from_received(ctx.received);
-    for claim in &claims {
-        if !known.supports(claim) {
-            issues.push(Issue::new(IssueKind::UnsupportedNumber, &claim.excerpt));
-        }
-    }
-    if uncited {
-        issues.push(Issue::new(IssueKind::MissingCitation, &claims[0].excerpt));
-    }
 }
 
 /// Executable names must appear in what the model received: it cannot know others.
@@ -510,13 +495,12 @@ enum Bound {
 #[derive(Debug, Clone)]
 struct Claim {
     excerpt: String,
+    end: usize,
     dim: Dim,
     /// Candidate canonical values with their tolerance: a separator or a byte unit can be read
     /// in two ways (1,234 / 1.234; GB as 10^9 or 2^30).
     values: Vec<(f64, f64)>,
     bound: Bound,
-    /// Follows "of", "sur", "/" or "out of": a total others are compared with.
-    total: bool,
 }
 
 /// Relative slack for a number written as measured, and for one introduced by "about".
@@ -592,7 +576,8 @@ impl Known {
 /// - the `metric` field of a history;
 /// - the key of a map whose values are all numbers (`windows_ms`).
 ///
-/// Numbers written in text fields are parsed like the answer.
+/// Prose is not measured evidence. Only the facts of a locally computed finding are parsed
+/// separately by the source resolver.
 fn walk(
     value: &Value,
     unit: Option<&str>,
@@ -612,6 +597,14 @@ fn walk(
     };
     match value {
         Value::Object(map) => {
+            if map.contains_key("value")
+                && map
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s != "ok")
+            {
+                return;
+            }
             *groups += 1;
             let own = *groups;
             if let (Some(Value::Object(values)), Some(Value::Object(units))) =
@@ -630,6 +623,10 @@ fn walk(
             let metric = map.get("metric").and_then(Value::as_str);
             let inherit_all = unit.is_some() && map.values().all(Value::is_number);
             for (key, child) in map {
+                // A wall-clock timestamp is not a latency or measurement duration.
+                if key.ends_with("_unix_ms") {
+                    continue;
+                }
                 if key == "values" && map.contains_key("units") {
                     continue;
                 }
@@ -654,20 +651,6 @@ fn walk(
             if let (Some(n), Some(name)) = (n.as_f64(), unit) {
                 if let Some((dim, factor)) = unit_of(name) {
                     push(dim, n * factor, name, group);
-                }
-            }
-        }
-        Value::String(text) => {
-            *groups += 1;
-            for claim in claims(text) {
-                for (value, _) in claim.values {
-                    out.push(Quantity {
-                        dim: claim.dim,
-                        value,
-                        total: claim.total,
-                        memory_total: false,
-                        group: *groups,
-                    });
                 }
             }
         }
@@ -782,7 +765,6 @@ fn claims(text: &str) -> Vec<Claim> {
             || text[unit_end..].to_lowercase().starts_with(" per second");
         if let Some((dim, factors)) = unit(&unit_text, per_second) {
             let bound = bound_before(&text[..start]);
-            let total = total_before(&text[..start]);
             let values = readings
                 .iter()
                 .flat_map(|(value, decimals)| {
@@ -793,10 +775,10 @@ fn claims(text: &str) -> Vec<Claim> {
                 .collect();
             out.push(Claim {
                 excerpt: text[start..unit_end.max(end_number)].trim().to_owned(),
+                end: unit_end.max(end_number),
                 dim,
                 values,
                 bound,
-                total,
             });
             i = k.max(j) + unit_text.chars().count();
         } else {
@@ -962,10 +944,6 @@ fn bound_before(before: &str) -> Bound {
     }
 }
 
-fn total_before(before: &str) -> bool {
-    ends_with_word(before, &["of", "sur", "/", "out of"])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,7 +951,7 @@ mod tests {
     fn received() -> Vec<Value> {
         vec![
             json!({"question":"Pourquoi mon PC rame ? J'ai 8 Go de RAM.",
-                "initial_observation":{"measurements":{
+                "initial_observation":{"observation_id":"O0","measurements":{
                     "values":{"system":{"physical_total_bytes":17_179_869_184_u64,
                         "physical_available_bytes":1_653_562_163_u64,
                         "cpu_busy_basis_points":1_740,
@@ -983,6 +961,7 @@ mod tests {
                         "cpu_busy_basis_points":"basis_points_of_total_cpu",
                         "disk_read_latency_microseconds":"microseconds",
                         "process_working_set_bytes":"bytes"}}},
+                "process_names":{"proc-1a2b3c4d":"chrome.exe"},
                 "findings":[{"id":"F1","facts":["Hard-fault page reads: 12.4 pages/s."]}]}),
             json!({"observation_id":"O1","metric":"cpu_busy_basis_points",
                 "points":[{"value":500,"status":"ok"},{"value":900,"status":"ok"}],
@@ -994,6 +973,11 @@ mod tests {
     }
     fn refs() -> Vec<(String, CitationKind, String)> {
         vec![
+            (
+                "O0".into(),
+                CitationKind::Observation,
+                "initial-real".into(),
+            ),
             ("O1".into(), CitationKind::Observation, "obs-real".into()),
             ("F1".into(), CitationKind::Finding, "finding-real".into()),
         ]
@@ -1022,21 +1006,129 @@ mod tests {
     }
 
     #[test]
+    fn grounding_a_value_from_another_observation_does_not_support_a_claim() {
+        let received = vec![
+            json!({"observation_id":"O1", "measurements":{
+                "values":{"proc-a":{"process_working_set_bytes":2_000_000_000_u64}},
+                "units":{"process_working_set_bytes":"bytes"}}}),
+            json!({"observation_id":"O2", "measurements":{
+                "values":{"proc-b":{"process_working_set_bytes":500_000_000}},
+                "units":{"process_working_set_bytes":"bytes"}}}),
+        ];
+        let references = vec![
+            ("O1".into(), CitationKind::Observation, "first".into()),
+            ("O2".into(), CitationKind::Observation, "second".into()),
+        ];
+        let result = review(
+            &submit("proc-b utilise 2 Go [O2]."),
+            &Context {
+                received: &received,
+                references: &references,
+                plans: &[],
+            },
+        );
+        assert!(
+            matches!(result, Err((ref issues, _)) if issues.iter().any(|i| i.kind == IssueKind::UnsupportedNumber)),
+            "a citation cannot borrow a value from a different observation: {result:?}"
+        );
+    }
+
+    #[test]
+    fn grounding_named_processes_and_metrics_cannot_borrow_other_values() {
+        let received = vec![json!({"observation_id":"O1", "measurements":{
+            "values":{"proc-a":{"process_working_set_bytes":2_000_000_000_u64},
+                "proc-b":{"process_working_set_bytes":500_000_000},
+                "system":{"cpu_busy_basis_points":1_700},
+                "gpu-nvidia-0":{"gpu_utilization_basis_points":7_200}},
+            "units":{"process_working_set_bytes":"bytes", "cpu_busy_basis_points":"basis_points", "gpu_utilization_basis_points":"basis_points"}},
+            "process_names":{"proc-a":"alpha.exe", "proc-b":"beta.exe"}})];
+        let references = refs();
+        let context = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in ["beta.exe uses 2 GB [O1].", "Le CPU est occupé à 72 % [O1]."] {
+            assert!(
+                matches!(review(&submit(text), &context), Err((ref issues, _)) if issues.iter().any(|i| i.kind == IssueKind::UnsupportedNumber)),
+                "{text}"
+            );
+        }
+        for text in [
+            "beta.exe uses 500 MB [O1].",
+            "Le CPU est occupé à 17 % [O1].",
+            "Le GPU est occupé à 72 % [O1].",
+        ] {
+            assert!(review(&submit(text), &context).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn grounding_finding_facts_keep_their_process_and_metric() {
+        let received = vec![json!({"findings":[{"id":"F1", "facts":[
+            "CPU busy: 17 %.", "GPU utilization: 72 %.",
+            "alpha.exe used 2 GB.", "beta.exe used 500 MB."
+        ]}], "process_names":{"proc-a":"alpha.exe", "proc-b":"beta.exe"}})];
+        let references = refs();
+        let context = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in ["Le CPU est à 72 % [F1].", "beta.exe uses 2 GB [F1]."] {
+            assert!(
+                matches!(review(&submit(text), &context), Err((ref issues, _)) if issues.iter().any(|i| i.kind == IssueKind::UnsupportedNumber)),
+                "{text}"
+            );
+        }
+        for text in ["Le CPU est à 17 % [F1].", "beta.exe uses 500 MB [F1]."] {
+            assert!(review(&submit(text), &context).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn grounding_question_text_is_not_a_measurement() {
+        let mut received = received();
+        received[0]["question"] = json!("Est-ce que le PC utilise 99 Go ?");
+        let references = refs();
+        let result = review(
+            &submit("Le PC utilise 99 Go [O1]."),
+            &Context {
+                received: &received,
+                references: &references,
+                plans: &[],
+            },
+        );
+        assert!(
+            matches!(result, Err((ref issues, _)) if issues.iter().any(|i| i.kind == IssueKind::UnsupportedNumber)),
+            "a question cannot establish a measured value: {result:?}"
+        );
+    }
+
+    #[test]
+    fn grounding_a_citation_in_another_sentence_is_insufficient() {
+        assert!(
+            kinds("La mémoire est presque pleine [O1]. Le CPU est à 17,4 %.")
+                .contains(&IssueKind::MissingCitation)
+        );
+    }
+
+    #[test]
     fn measured_numbers_pass_in_either_language_and_unit_convention() {
         for text in [
-            "Il reste 1,54 Go de mémoire disponible sur 16 Go [O1].",
-            "Only 1.54 GiB of 16 GiB is available [O1].",
-            "Available memory: 1.65 GB [O1], about 1.5 GB.",
-            "Le processeur est occupé à 17,4 % [O1].",
-            "Memory is 90 % in use [O1].",
-            "Used memory is 14.46 GiB [O1].",
-            "Le disque répond en 1,3 ms [O1], sous 3 ms.",
+            "Il reste 1,54 Go de mémoire disponible sur 16 Go [O0].",
+            "Only 1.54 GiB of 16 GiB is available [O0].",
+            "Available memory: 1.65 GB [O0], about 1.5 GB.",
+            "Le processeur est occupé à 17,4 % [O0].",
+            "Memory is 90 % in use [O0].",
+            "Used memory is 14.46 GiB [O0].",
+            "Le disque répond en 1,3 ms [O0], sous 3 ms.",
             "Hard faults: 12.4 pages/s [F1].",
             "CPU use varied between 5 % and 9 % over 2 s [O1].",
-            "Chrome uses 2.48 GB [O1], about 14 % of the memory.",
+            "The largest process uses 2.48 GB [O0], about 14 % of the memory.",
             "C: has 64 GB free of 512 GB [O1], 87.5 % full.",
-            "You said you have 8 Go de RAM; the PC reports 16 Go [O1].",
-            "chrome.exe uses 2.3 GiB [O1].",
+            "The PC reports 16 Go [O0].",
+            "chrome.exe uses 2.3 GiB [O0].",
         ] {
             assert_eq!(kinds(text), Vec::<IssueKind>::new(), "{text}");
         }
@@ -1091,7 +1183,7 @@ mod tests {
         assert_eq!(kinds("```\ndel /s\n``` [O1]"), [IssueKind::Command]);
         assert_eq!(kinds("See [docs](https://x.test) [O1]."), [IssueKind::Link]);
         assert_eq!(kinds("<b>Low memory</b> [O1]."), [IssueKind::Html]);
-        assert!(kinds("Latency stays < 3 ms [O1].").is_empty());
+        assert!(kinds("Latency stays < 3 ms [O0].").is_empty());
     }
 
     #[test]
@@ -1143,7 +1235,7 @@ mod tests {
             .contains("citation"));
         assert!(request.get("valid_references").is_none());
         let request = repair_request(&[Issue::new(IssueKind::UnknownCitation, "[O9]")], &refs());
-        assert_eq!(request["valid_references"], json!(["O1", "F1"]));
+        assert_eq!(request["valid_references"], json!(["O0", "O1", "F1"]));
     }
 
     #[test]
@@ -1164,6 +1256,5 @@ mod tests {
         assert_eq!(claims("moins de 3 ms")[0].bound, Bound::AtMost);
         assert_eq!(claims("plus de 2 Go")[0].bound, Bound::AtLeast);
         assert_eq!(claims("environ 80 %")[0].bound, Bound::About);
-        assert!(claims("9.8% of 15.73 GiB")[1].total);
     }
 }

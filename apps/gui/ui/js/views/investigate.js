@@ -150,8 +150,8 @@ function confidenceBadge(confidence) {
 }
 
 /** Opens the sources and points at the cited one. */
-function showCitation(reference) {
-  const target = document.getElementById(`cite-${reference}`);
+function showCitation(reference, group) {
+  const target = document.getElementById(`${group}-${reference}`);
   if (!target) return;
   const details = target.closest("details");
   if (details) details.open = true;
@@ -172,7 +172,9 @@ function answerText(inv) {
 }
 
 /** The model's written answer: the text first, then what could not be verified, follow-ups and sources. */
+let citationGroup = 0;
 function writtenAnswerCard(inv, error, limits) {
+  const group = `cite-${++citationGroup}`;
   const r = inv.report;
   const a = r.answer;
   const unverified = a.unverified.length
@@ -197,12 +199,13 @@ function writtenAnswerCard(inv, error, limits) {
           a.citations.map((c) =>
             h(
               "div",
-              { class: "alt source", id: `cite-${c.reference}` },
+              { class: "alt source", id: `${group}-${c.reference}` },
               h(
                 "div",
                 null,
                 h("strong", null, h("span", { class: "cite static" }, c.reference), c.kind === "observation" ? toolLabel(c.title) : c.title),
                 c.earlier ? h("span", { class: "faint" }, ` · ${t("answer.earlier")}`) : null,
+                c.measured_at_unix_ms ? h("p", { class: "note" }, t("answer.measuredAt", { date: date(c.measured_at_unix_ms, true) })) : null,
                 h("ul", { class: "bullets" }, c.facts.map((x) => h("li", null, x))),
               ),
             ),
@@ -226,7 +229,7 @@ function writtenAnswerCard(inv, error, limits) {
       h("div", null, h("div", { class: "answer-kicker" }, t(`answer.kicker.${r.mode}`)), h("h2", { class: "answer-title" }, t(`category.${a.category}`))),
       confidenceBadge(a.confidence),
     ),
-    h("div", { class: "answer-text" }, markdown(a.text, showCitation)),
+    h("div", { class: "answer-text" }, markdown(a.text, (reference) => showCitation(reference, group))),
     unverified,
     followUps,
     sources,
