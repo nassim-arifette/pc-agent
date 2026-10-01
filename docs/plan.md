@@ -546,12 +546,12 @@ Règles de travail :
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Contrats C1–C5 | toutes | à faire | |
-| 1 — Le LLM rédige | A | en cours : contrat C1, vérificateur, suivi de conversation (`converse`) et stockage SQLite livrés ; chiffres rattachés à leurs sources et preuves conservées dans les suivis ; réponse en flux et comparaison de qualité à faire | #19, #23 |
+| 1 — Le LLM rédige | A | en cours : contrat C1, vérificateur, suivi de conversation (`converse`) et stockage SQLite livrés ; chiffres rattachés à leurs sources et preuves conservées dans les suivis ; réponse en flux dans la fenêtre (brouillon remplacé par la réponse vérifiée) ; comparaison de qualité à faire | #19, #23, wp1-stream |
 | 2 — Tous les processus, sans admin | B | fait : 326 processus sur 326 sans admin, taux dès le premier appel ; fenêtre de mesure prolongée, regroupement par application, services et GPU par processus à faire | #22 |
 | 3 — Choix de partage | A, C | en cours : noms de processus livrés, aperçu figé et anciens noms retirés des suivis ; noms de fichiers et contrôle C5 du texte libre à faire | #21, #23 |
 | 4 — Nouveaux outils | B | à faire | |
 | 5 — Mesurer au bon moment | B, C | à faire | |
-| 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action et réponse en flux à faire | #23, wp6-interface |
+| 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action à faire | #23, #24 |
 | 7 — Évaluation | D | à faire | |
 | 8 — Admin à la demande | B | à faire | |
 | 9 — Capteurs matériels | B | à faire | |

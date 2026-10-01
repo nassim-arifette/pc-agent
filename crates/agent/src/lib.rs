@@ -8,6 +8,8 @@ pub use answer::{
 };
 mod budget;
 mod conversation;
+mod draft;
+pub use draft::draft_text;
 mod cost;
 pub use conversation::{conversation_message, PastTurn, MAX_PAST_CHARS};
 pub mod credentials;
@@ -149,6 +151,21 @@ pub trait Model {
         choice: ToolChoice,
         timeout: Duration,
     ) -> Result<Reply, AgentError>;
+    /// Like [`Model::complete`], reporting each tool call's arguments as they arrive: `on_call`
+    /// receives the call's name and the arguments received so far, which are incomplete JSON.
+    /// It is for display only; the reply that counts is the one returned. Transports that cannot
+    /// stream report nothing.
+    fn complete_streaming(
+        &mut self,
+        messages: &[Value],
+        tools: &Value,
+        choice: ToolChoice,
+        timeout: Duration,
+        on_call: &mut dyn FnMut(&str, &str),
+    ) -> Result<Reply, AgentError> {
+        let _ = on_call;
+        self.complete(messages, tools, choice, timeout)
+    }
     /// Catalog prices of the model in use, when the provider published verifiable ones.
     fn pricing(&self) -> Option<Pricing> {
         None
