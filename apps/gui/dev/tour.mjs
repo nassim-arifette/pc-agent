@@ -1,38 +1,57 @@
-// Screenshots of every screen in light and dark themes, against the mock (dev/mock.js).
+// Screenshots of the main states in light and dark themes, against the mock (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
-//   node dev/tour.mjs <output folder> [chrome.exe path]
+//   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
 import { launch } from "./cdp.mjs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const out = process.argv[2] || "tour";
-const chrome = process.argv[3];
+const chrome = process.argv[3] || undefined;
+const language = process.argv[4] || "en";
 mkdirSync(out, { recursive: true });
 const base = "http://127.0.0.1:5173/ui/index.html";
 const { proc, page } = await launch(chrome ? { chrome } : {});
 const shot = (name) => page.shot(join(out, `${name}.png`));
+const prefs = JSON.stringify({ language, mode: "cloud" });
 try {
-  await page.viewport(1280, 900);
+  await page.viewport(1280, 800);
   for (const dark of [false, true]) {
     const theme = dark ? "dark" : "light";
     await page.scheme(dark);
-    await page.goto(`${base}#/home`);
-    await page.eval("localStorage.setItem('pcagent.prefs.v1', JSON.stringify({language: 'en', mode: 'local'}))");
-    await page.goto(`${base}?cloud=ready#/home`);
-    await page.waitFor("document.querySelectorAll('.metric-value').length >= 4");
-    await page.sleep(3500);
-    await shot(`home-${theme}`);
-    await page.clickText(".chip", "Why is my PC slow?");
-    await page.waitFor("document.querySelector('.answer-title')", 10000);
-    await shot(`investigate-${theme}`);
+    await page.goto(`${base}#/chat`);
+    await page.eval(`localStorage.setItem('pcagent.prefs.v1', ${JSON.stringify(prefs)}); sessionStorage.clear()`);
+    await page.goto(`${base}?cloud=ready#/chat`);
+    await page.waitFor("document.querySelector('.welcome') && document.querySelector('.status-text.warn')");
+    await page.sleep(400);
+    await shot(`1-home-${theme}`);
+    // Ask, approve the consent dialog, and catch the analysis while it runs.
+    await page.click(".suggestion", 0);
+    await page.waitFor("document.querySelector('.dialog .btn-primary') && !document.querySelector('.dialog .btn-primary').disabled", 10000);
+    await page.sleep(400);
+    await shot(`2-consent-${theme}`);
+    await page.click(".dialog .btn-primary");
+    await page.waitFor("document.querySelector('.progress .step')", 10000);
+    await page.sleep(700);
+    await shot(`3-running-${theme}`);
+    await page.waitFor("document.querySelector('.answer-text .cite')", 20000);
+    await page.sleep(300);
+    await shot(`4-answer-${theme}`);
+    await page.click(".answer-text .cite", 0);
+    await page.waitFor("document.querySelector('.panel.open .source-card.focused')");
+    await page.sleep(350);
+    await shot(`5-sources-${theme}`);
+    await page.click(".status-pill");
+    await page.waitFor("document.querySelector('.panel.open .live-row')");
+    await page.sleep(5600);
+    await shot(`6-live-${theme}`);
     await page.goto(`${base}?cloud=ready#/storage`);
     await page.waitFor("document.querySelectorAll('.chip').length >= 6");
-    await page.clickText(".chip", "Downloads");
+    await page.click(".chip", 0);
     await page.waitFor("document.querySelector('.tabs')", 10000);
-    await shot(`storage-${theme}`);
+    await shot(`7-storage-${theme}`);
     await page.goto(`${base}?cloud=ready#/settings`);
     await page.waitFor("document.querySelector('select')");
-    await shot(`settings-${theme}`);
+    await shot(`8-settings-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {
