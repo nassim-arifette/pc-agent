@@ -1,5 +1,5 @@
 // Application state and the backend's events. Views subscribe to topics ("info", "inv",
-// "scan", "extension") and redraw the parts they own.
+// "conversation", "history", "scan", "extension") and redraw the parts they own.
 import { call, on } from "./api.js";
 
 const listeners = new Set();
@@ -8,8 +8,10 @@ export const state = {
   info: null,
   /** The current investigation, or null. */
   inv: null,
-  /** Investigations of this session, newest first: { question, report, cloud, at }. */
-  history: [],
+  /** The open conversation: { id, title, turns: [{ question, report, at }] }, or null. */
+  conversation: null,
+  /** Saved conversations, most recently updated first. */
+  conversations: [],
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
   /** "Don't ask again until I close PC Agent" was ticked in the consent dialog. */
   skipConsent: false,
@@ -30,6 +32,61 @@ export async function refreshInfo() {
   return state.info;
 }
 
+// ---------- Conversations ----------
+
+function running() {
+  return Boolean(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"));
+}
+
+export async function refreshConversations() {
+  try {
+    state.conversations = await call("conversations_list");
+  } catch {
+    state.conversations = [];
+  }
+  notify("history");
+}
+
+/** Opens a saved conversation; returns false when it no longer exists. */
+export async function openConversation(id) {
+  const saved = await call("conversation_get", { id });
+  if (!saved) {
+    await refreshConversations();
+    return false;
+  }
+  state.conversation = {
+    id: saved.id,
+    title: saved.title,
+    turns: saved.turns.map((turn) => ({ question: turn.question, report: turn.report, at: turn.asked_at_unix_ms })),
+  };
+  // A running turn keeps going; it shows only in its own conversation.
+  if (!running()) state.inv = null;
+  notify("conversation");
+  notify("inv");
+  return true;
+}
+
+/** Leaves the open conversation; the next question starts a new one. */
+export function newConversation() {
+  state.conversation = null;
+  if (!running()) state.inv = null;
+  notify("conversation");
+  notify("inv");
+}
+
+export async function deleteConversation(id) {
+  await call("conversation_delete", { id });
+  if (state.conversation?.id === id) newConversation();
+  await refreshConversations();
+}
+
+export async function clearConversations() {
+  const removed = await call("conversations_clear");
+  newConversation();
+  await refreshConversations();
+  return removed;
+}
+
 // ---------- Investigations ----------
 
 /** Events can arrive before start_investigation returns: the first one names the id. */
@@ -40,11 +97,15 @@ function current(id) {
   return inv.id === id ? inv : null;
 }
 
-export async function startInvestigation(question, { cloud, useStorage, names = true }) {
+/** Asks in the open conversation when `followUp` is true, otherwise starts a new one. */
+export async function startInvestigation(question, { cloud, useStorage, names = true, followUp = false, previewId = null }) {
+  const conversationId = followUp ? (state.conversation?.id ?? null) : null;
+  if (!followUp || !state.conversation) state.conversation = { id: null, title: question, turns: [] };
   state.inv = {
     id: null,
     question,
     cloud,
+    conversationId,
     status: "running",
     steps: [],
     report: null,
@@ -52,10 +113,14 @@ export async function startInvestigation(question, { cloud, useStorage, names = 
     extension: null,
     startedAt: Date.now(),
   };
+  notify("conversation");
   notify("inv");
   try {
-    const id = await call("start_investigation", { question, cloud, useStorage, names: Boolean(names) });
-    if (state.inv && state.inv.id == null) state.inv.id = id;
+    const started = await call("start_investigation", { request: { question, cloud, useStorage, names: Boolean(names), conversationId, previewId } });
+    if (state.inv && state.inv.id == null) state.inv.id = started.id;
+    if (state.inv && state.inv.id === started.id) state.inv.conversationId = started.conversation_id;
+    if (state.conversation && state.conversation.id == null) state.conversation.id = started.conversation_id;
+    refreshConversations();
   } catch (error) {
     state.inv.status = "failed";
     state.inv.failure = { code: "start", message: error.message };
@@ -138,7 +203,7 @@ function onExtension(payload) {
   notify("extension");
 }
 
-function onDone({ id, report }) {
+function onDone({ id, report, conversation_id: conversationId }) {
   const inv = current(id);
   if (!inv) return;
   // A local analysis runs the rules engine on the first measurement; show it as its own step.
@@ -151,9 +216,14 @@ function onDone({ id, report }) {
   inv.extension = null;
   inv.status = "done";
   inv.finishedAt = Date.now();
-  state.history.unshift({ question: inv.question, report, cloud: inv.cloud, at: inv.finishedAt });
-  state.history.length = Math.min(state.history.length, 20);
+  const conversation = state.conversation;
+  if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
+    conversation.id = conversationId ?? conversation.id;
+    conversation.turns.push({ question: inv.question, report, at: inv.finishedAt });
+  }
+  notify("conversation");
   notify("inv");
+  refreshConversations();
 }
 
 function onFailed({ id, code, message }) {

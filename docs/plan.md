@@ -103,10 +103,13 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 
 1. Chaque citation existe.
 2. Chaque nombre accompagné d'une unité ou d'un pourcentage (Go, Mo, %, °C, ms, MHz, W, s…) se
-   retrouve dans ce que le modèle a reçu (première observation, sorties d'outils, question), à la
-   précision écrite près. Sont admis : les deux conventions Go/Gio, 5 % d'écart (15 % après
+   retrouve dans une mesure de la source citée dans le même passage, à la précision écrite près.
+   La question et les anciennes réponses servent de contexte, jamais de preuve mesurée. Les
+   références de processus et les familles de métriques identifiables doivent correspondre à la
+   source ; les ambiguïtés restent signalées. Sont admis : les deux conventions Go/Gio, 5 % d'écart (15 % après
    « environ »), les bornes (« moins de », « plus de »), la part d'un total, son complément et le
-   reste d'un total. Une réponse qui a des chiffres doit citer au moins une source.
+   reste d'un total, au sein de la source citée. Chaque passage chiffré cite sa source. Les limites
+   du contrôle sont décrites dans [answer-verification.md](answer-verification.md).
 3. Chaque nom d'exécutable cité figure dans ce qui a été envoyé au modèle.
 4. Aucune commande, aucun lien, aucun HTML.
 5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les citations,
@@ -539,15 +542,20 @@ Règles de travail :
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Contrats C1–C5 | toutes | à faire | |
-| 1 — Le LLM rédige | A | en cours : contrat C1 et vérificateur livrés ; multi-tour, stockage et flux à faire | |
-| 2 — Tous les processus, sans admin | B | fait : 326 processus sur 326 sans admin, taux dès le premier appel ; regroupement par application, services et GPU par processus à faire | |
-| 3 — Choix de partage | A, C | en cours : noms de processus livrés ; noms de fichiers à faire | |
+| 1 — Le LLM rédige | A | en cours : contrat C1, vérificateur, suivi de conversation (`converse`) et stockage SQLite livrés ; chiffres rattachés à leurs sources et preuves conservées dans les suivis ; réponse en flux et comparaison de qualité à faire | #19, #23 |
+| 2 — Tous les processus, sans admin | B | fait : 326 processus sur 326 sans admin, taux dès le premier appel ; fenêtre de mesure prolongée, regroupement par application, services et GPU par processus à faire | #22 |
+| 3 — Choix de partage | A, C | en cours : noms de processus livrés, aperçu figé et anciens noms retirés des suivis ; noms de fichiers et contrôle C5 du texte libre à faire | #21, #23 |
 | 4 — Nouveaux outils | B | à faire | |
 | 5 — Mesurer au bon moment | B, C | à faire | |
-| 6 — Interface de conversation | C | à faire | |
+| 6 — Interface de conversation | C | en cours : fil, suivis et historique disponibles ; doublon à la réouverture et navigation en petite fenêtre corrigés, GUI Windows testé ; refonte visuelle et panneau de droite à faire | #23 |
 | 7 — Évaluation | D | à faire | |
 | 8 — Admin à la demande | B | à faire | |
 | 9 — Capteurs matériels | B | à faire | |
 | 10 — Modèle | A | à faire | |
 | 11 — Agir depuis la conversation | A, C | à faire | |
 | 12 — Soumission | D | à faire | |
+
+Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
+et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
+sont consignés dans [gui.md](gui.md#validation-status). La comparaison avec Claude reste à faire :
+les tests du contrôleur et du GUI ne valident pas à eux seuls la qualité du modèle.

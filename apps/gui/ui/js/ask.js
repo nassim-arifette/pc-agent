@@ -30,6 +30,7 @@ export function namesShared() {
 export function disclosure(preview, names = namesShared()) {
   const sent = [
     t("consent.sent.question"),
+    preview?.message?.previous_turns?.length ? t("consent.sent.history", { count: preview.message.previous_turns.length }) : null,
     preview ? t("consent.sent.measures", { count: preview.measured }) : null,
     preview ? t("consent.sent.findings", { count: preview.findings }) : null,
     names ? (preview?.names ? t("consent.sent.names", { count: preview.names }) : t("consent.sent.namesAny")) : t("consent.sent.refs"),
@@ -49,17 +50,21 @@ function folderName(path) {
 }
 
 /** Resolves with { cloud, useStorage, names } or null when the person cancels. */
-async function consent(question) {
+async function consent(question, conversationId) {
   let names = namesShared();
   let preview = null;
   try {
-    preview = await call("cloud_preview", { question, names });
+    preview = await call("cloud_preview", { question, names, conversationId });
   } catch (error) {
     toast(error.message, "bad");
     return null;
   }
   let useStorage = Boolean(preview.storage_folder);
   let dontAsk = false;
+  let revision = 0;
+  let pending = false;
+  let closed = false;
+  let sendButton;
   // What is sent depends on the names choice: both lists and the exact message are redrawn.
   const listHost = h("div");
   const messageHost = h("div");
@@ -84,18 +89,27 @@ async function consent(question) {
       checked: names,
       onchange: async (e) => {
         names = e.target.checked;
-        setPref("names", names);
+        const request = ++revision;
+        pending = true;
+        sendButton.disabled = true;
         try {
-          preview = await call("cloud_preview", { question, names });
+          const next = await call("cloud_preview", { question, names, conversationId });
+          if (closed || request !== revision) return;
+          preview = next;
+          pending = false;
+          sendButton.disabled = false;
+          draw();
         } catch (error) {
+          if (closed || request !== revision) return;
+          preview = null;
+          fill(messageHost, h("p", { class: "note" }, error.message));
           toast(error.message, "bad");
         }
-        draw();
       },
     }),
     t("consent.names"),
   );
-  return dialog(
+  const decision = await dialog(
     (close) => {
       const storageRow = preview.storage_folder
         ? h(
@@ -134,18 +148,21 @@ async function consent(question) {
           { class: "dialog-actions" },
           button(t("common.cancel"), { variant: "ghost", onClick: () => close(null) }),
           button(t("consent.local"), { iconName: "pc", onClick: () => close({ cloud: false, useStorage: false }) }),
-          h(
+          sendButton = h(
             "button",
             {
               type: "button",
               class: "btn btn-primary",
               "data-autofocus": true,
               onclick: () => {
+                if (pending || !preview) return;
+                setPref("names", names);
                 if (dontAsk) {
                   state.skipConsent = true;
                   state.lastUseStorage = useStorage;
+                  state.lastStorageFolder = useStorage ? preview.storage_folder : null;
                 }
-                close({ cloud: true, useStorage, names });
+                close({ cloud: true, useStorage, names, previewId: preview.id });
               },
             },
             icon("send"),
@@ -156,10 +173,12 @@ async function consent(question) {
     },
     { label: t("consent.title"), dismissValue: null },
   );
+  closed = true;
+  return decision;
 }
 
-/** Starts an investigation from any screen. */
-export async function ask(question, { cloud }) {
+/** Starts an investigation from any screen: a follow-up of the open conversation, or a new one. */
+export async function ask(question, { cloud, followUp = false }) {
   const text = (question || "").trim();
   if (!text) return;
   if (state.inv && (state.inv.status === "running" || state.inv.status === "stopping")) {
@@ -168,6 +187,8 @@ export async function ask(question, { cloud }) {
   }
   let useStorage = false;
   let names = namesShared();
+  let previewId = null;
+  const conversationId = followUp ? (state.conversation?.id ?? null) : null;
   if (cloud) {
     if (!cloudReady()) {
       toast(t("mode.cloud.setup"), "bad");
@@ -175,28 +196,36 @@ export async function ask(question, { cloud }) {
       return;
     }
     if (state.skipConsent) {
-      // A scanned folder is shared only if the person ticked it in a consent dialog.
-      useStorage = state.lastUseStorage ?? false;
+      try {
+        const preview = await call("cloud_preview", { question: text, names, conversationId });
+        previewId = preview.id;
+        // Session consent applies to the folder actually approved, not a later different scan.
+        useStorage = Boolean(state.lastUseStorage && preview.storage_folder && preview.storage_folder === state.lastStorageFolder);
+      } catch (error) {
+        toast(error.message, "bad");
+        return;
+      }
     } else {
-      const decision = await consent(text);
+      const decision = await consent(text, conversationId);
       if (!decision) return;
       cloud = decision.cloud;
       useStorage = decision.useStorage;
       names = decision.names ?? names;
+      previewId = decision.previewId ?? null;
     }
   }
   navigate("investigate");
-  await startInvestigation(text, { cloud, useStorage, names });
+  await startInvestigation(text, { cloud, useStorage, names, followUp, previewId });
 }
 
 /**
  * The composer: a growing text area, the local/AI switch and the send button.
  * `onFocusChange(focused)` lets a view react (Iris listens while you type).
  */
-export function composer({ autofocus = false, onFocusChange, initial = "" } = {}) {
+export function composer({ autofocus = false, onFocusChange, initial = "", followUp = false } = {}) {
   const area = h("textarea", {
     rows: 2,
-    placeholder: t("ask.placeholder"),
+    placeholder: t(followUp ? "ask.followUp" : "ask.placeholder"),
     "aria-label": t("ask.label"),
     maxlength: 4000,
     value: initial,
@@ -235,7 +264,7 @@ export function composer({ autofocus = false, onFocusChange, initial = "" } = {}
   };
   const submit = () => {
     const cloud = getPrefs().mode === "cloud" && cloudReady();
-    ask(area.value, { cloud });
+    ask(area.value, { cloud, followUp });
   };
   area.addEventListener("input", grow);
   area.addEventListener("keydown", (e) => {

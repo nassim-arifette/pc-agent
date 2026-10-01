@@ -4,10 +4,20 @@ import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { connect } from "./api.js";
 import { loadPrefs } from "./prefs.js";
-import { state, subscribe, refreshInfo, wireEvents, answerExtension } from "./store.js";
+import {
+  state,
+  subscribe,
+  refreshInfo,
+  wireEvents,
+  answerExtension,
+  refreshConversations,
+  openConversation,
+  newConversation,
+  deleteConversation,
+} from "./store.js";
 import { createMark } from "./mascot.js";
 import { dialog, button, dialogOpen } from "./ui.js";
-import { usd } from "./format.js";
+import { usd, date } from "./format.js";
 import { modelName } from "./models.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import * as home from "./views/home.js";
@@ -26,6 +36,7 @@ const NAV = [
 let main = null;
 let nav = null;
 let statusHost = null;
+let historyHost = null;
 let unmount = null;
 let mountedRoute = null;
 
@@ -78,10 +89,102 @@ function renderNav() {
   );
 }
 
+function confirmDelete(conversation) {
+  dialog(
+    (close) => [
+      h("div", { class: "dialog-head" }, h("div", { class: "metric-icon warn" }, icon("x")), h("h2", { class: "dialog-title" }, t("history.delete.title"))),
+      h("p", null, t("history.delete.body", { title: conversation.title })),
+      h(
+        "div",
+        { class: "dialog-actions" },
+        button(t("common.cancel"), { variant: "ghost", onClick: () => close(false) }),
+        button(t("history.delete"), { variant: "danger", iconName: "x", onClick: () => close(true) }),
+      ),
+    ],
+    { label: t("history.delete.title"), dismissValue: false },
+  ).then((yes) => {
+    if (yes) deleteConversation(conversation.id);
+  });
+}
+
+function historyList(beforeAction = () => {}) {
+  const items = state.conversations || [];
+  return items.length
+    ? h(
+        "ul",
+        { class: "history-list" },
+        items.map((c) =>
+          h(
+            "li",
+            { class: "history-row" },
+            h(
+              "button",
+              {
+                type: "button",
+                class: "history-item",
+                "aria-current": state.conversation?.id === c.id ? "true" : null,
+                title: c.title,
+                onclick: async () => {
+                  beforeAction();
+                  if (await openConversation(c.id)) navigate("investigate");
+                },
+              },
+              h("span", { class: "history-title" }, c.title),
+              h("span", { class: "history-date" }, date(c.updated_at_unix_ms)),
+            ),
+            h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => { beforeAction(); confirmDelete(c); } }, icon("x")),
+          ),
+        ),
+      )
+    : h("p", { class: "hint history-empty" }, t("history.empty"));
+}
+
+/** The compact sidebar opens a readable picker instead of squeezing titles into an icon rail. */
+function browseHistory() {
+  dialog(
+    (close) => [
+      h("div", { class: "dialog-head" }, icon("clock"), h("h2", { class: "dialog-title" }, t("history.title"))),
+      historyList(() => close(null)),
+      h("div", { class: "dialog-actions" }, button(t("common.close"), { onClick: () => close(null) })),
+    ],
+    { label: t("history.title") },
+  );
+}
+
+/** Saved conversations in the sidebar, most recent first. */
+function renderHistory() {
+  if (!historyHost) return;
+  fill(
+    historyHost,
+    h(
+      "div",
+      { class: "history-head" },
+      h("span", null, t("history.title")),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "history-new",
+          title: t("history.new"),
+          onclick: () => {
+            newConversation();
+            navigate("home");
+          },
+        },
+        icon("sparkle"),
+        h("span", null, t("history.new")),
+      ),
+    ),
+    h("button", { type: "button", class: "history-browse nav-item", title: t("history.title"), "aria-label": t("history.title"), onclick: browseHistory }, icon("clock")),
+    historyList(),
+  );
+}
+
 function renderShell() {
   const app = document.getElementById("app");
   nav = h("nav", { class: "nav", "aria-label": t("nav.label") });
   statusHost = h("div");
+  historyHost = h("div", { class: "history" });
   main = h("main", { class: "main", id: "main", tabindex: "-1" });
   fill(
     app,
@@ -90,12 +193,14 @@ function renderShell() {
       { class: "sidebar" },
       h("div", { class: "brand" }, createMark(), h("div", { class: "brand-text" }, h("div", { class: "brand-name" }, "PC Agent"), h("div", { class: "brand-sub" }, t("app.tagline")))),
       nav,
+      historyHost,
       h("div", { class: "sidebar-foot" }, statusHost, h("p", { class: "foot-note hint" }, t("foot.privacy"))),
     ),
     main,
   );
   renderNav();
   renderStatus();
+  renderHistory();
 }
 
 function route(force = false) {
@@ -158,6 +263,7 @@ async function boot() {
   subscribe((topic) => {
     if (topic === "info") renderStatus();
     if (topic === "inv") renderNav();
+    if (topic === "history" || topic === "conversation") renderHistory();
     if (topic === "extension") extensionDialog();
   });
   window.addEventListener("hashchange", () => route());
@@ -176,6 +282,7 @@ async function boot() {
     }
   });
   route(true);
+  refreshConversations();
   try {
     await refreshInfo();
   } catch {
