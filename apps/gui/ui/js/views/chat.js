@@ -41,7 +41,11 @@ function head(text) {
 
 function stepLabel(step) {
   if (step.type === "snapshot") return t("step.snapshot");
-  if (step.type === "model") return step.state === "failed" ? t("step.model.failed") : step.final ? t("step.model.final") : t("step.model");
+  if (step.type === "model") {
+    if (step.state === "failed") return t("step.model.failed");
+    if (step.state === "running") return t(step.writing ? "step.model.writing" : "step.model.running");
+    return step.final ? t("step.model.final") : t("step.model");
+  }
   if (step.type === "local") return t("step.local");
   return toolLabel(step.tool);
 }
@@ -298,18 +302,44 @@ export function mount(page) {
     );
   };
 
+  let draftHost = null;
+
+  /** The answer while the model writes it: plain text with numbered chips, replaced by the
+   * checked answer when the run ends. */
+  const renderDraft = () => {
+    const inv = liveInv();
+    if (!draftHost || !inv) return;
+    if (!inv.draft) {
+      fill(draftHost);
+      return;
+    }
+    const order = new Map();
+    const label = (reference) => {
+      if (!order.has(reference)) order.set(reference, order.size + 1);
+      return order.get(reference);
+    };
+    fill(
+      draftHost,
+      h("div", { class: "answer-text draft", "aria-live": "off" }, markdown(inv.draft, null, label)),
+      h("p", { class: "draft-note" }, h("span", { class: "spinner" }), t("chat.draft")),
+    );
+  };
+
   const renderLive = () => {
     const inv = liveInv();
-    window.clearInterval(elapsedTimer);
     if (!inv) {
+      window.clearInterval(elapsedTimer);
       liveKey = "";
+      draftHost = null;
       fill(liveHost);
       return;
     }
     const running = inv.status === "running" || inv.status === "stopping";
-    const key = `${inv.id}|${inv.status}|${inv.steps.map((s) => s.state).join(",")}`;
+    const key = `${inv.id}|${inv.status}|${inv.steps.map((s) => `${s.state}${s.writing ? "w" : ""}`).join(",")}`;
     if (key !== liveKey) {
       liveKey = key;
+      window.clearInterval(elapsedTimer);
+      draftHost = h("div", { class: "draft-host" });
       const elapsed = h("span", { class: "faint tabular" });
       const tickElapsed = () => {
         elapsed.textContent = duration(Date.now() - inv.startedAt);
@@ -337,6 +367,7 @@ export function mount(page) {
             h("div", { class: "progress-head" }, h("strong", null, t(inv.status === "stopping" ? "inv.stopping" : "chat.progress")), h("span", { class: "faint" }, "·"), elapsed),
             inv.steps.length ? stepList(inv.steps) : h("div", { class: "step running" }, h("span", { class: "spinner" }), h("span", { class: "step-label" }, t("step.snapshot.running"))),
           ),
+          draftHost,
         ];
       }
       const enter = enteredId !== inv.id;
@@ -350,6 +381,7 @@ export function mount(page) {
           h("div", { class: "assistant" }, head(running ? `${inv.cloud ? meta(null, null) : t("chat.local")} · ${t("chat.running")}` : meta(null, inv)), ...content),
         ),
       );
+      renderDraft();
       if (running) elapsedTimer = window.setInterval(tickElapsed, 1000);
       const running_ = [...inv.steps].reverse().find((s) => s.state === "running");
       const say = running ? (running_ ? stepLabel(running_) : t("step.snapshot.running")) : "";
@@ -378,6 +410,11 @@ export function mount(page) {
   window.addEventListener("pcagent:mode", renderFootnote);
   const unsubscribe = subscribe((topic) => {
     if (topic === "inv" || topic === "conversation") render();
+    else if (topic === "draft") {
+      const stick = nearBottom();
+      renderDraft();
+      if (stick) toBottom();
+    }
     else if (topic === "info") {
       box?.refresh();
       renderFootnote();

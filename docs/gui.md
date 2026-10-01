@@ -14,7 +14,9 @@ demand):
   narrow window).
 - **Conversation**: a welcome screen with the composer and four suggested questions (one names a
   drive that is almost full), then the thread. While a run is going, its real steps appear with
-  their durations and Stop replaces Send. An answer shows the model's text with numbered citation
+  their durations and Stop replaces Send. Nebius replies are streamed: the answer appears as the
+  model writes it, marked as a draft whose figures are checked when it finishes, then the reviewed
+  answer replaces it. An answer shows the model's text with numbered citation
   chips, the model, duration and cost, the steps and cited measurements, follow-up questions, Copy,
   Ask again, and whether every figure was checked against the measurements. A local analysis shows
   the rules' best finding and offers to ask the AI.

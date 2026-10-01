@@ -285,8 +285,18 @@ async function investigate(id, question, cloudRun) {
     if (!accepted) return done(id, { ...report(question, true, "budget"), execution: "budget_exhausted" });
   }
   if (running.stop) return done(id, report(question, true, "cancelled"));
-  await model(1300, 8969, 271);
-  done(id, report(question, true));
+  // The last request writes the answer: its text arrives in pieces, like Nebius's stream.
+  const final = report(question, true);
+  request += 1;
+  step({ kind: "model_started", request });
+  await wait(500 * slow);
+  const text = final.answer?.text || "";
+  for (let end = 12; end < text.length + 12; end += 12) {
+    step({ kind: "answer_draft", request, text: text.slice(0, end) });
+    await wait(70 * slow);
+  }
+  step({ kind: "model_finished", request, duration_ms: 1300, prompt_tokens: 8969, completion_tokens: 271, outcome: "ok" });
+  done(id, final);
 }
 
 let scanId = 0;
