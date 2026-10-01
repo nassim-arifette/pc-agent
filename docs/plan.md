@@ -290,6 +290,11 @@ illisible sans admin) :
 - « Enregistrer pendant le problème » : bouton dans la zone de saisie et outil `record_activity`.
   L'enregistrement prend un relevé par seconde pendant 30 à 120 s, avec des marqueurs de début et de
   fin, puis l'analyse suit. Le modèle peut le proposer dans `follow_ups`.
+- Événements détectés localement à partir de ces échantillons : seulement des anomalies (pic de
+  processeur, activité disque élevée, mémoire saturée), datées et attribuées à un programme quand
+  les échantillons par processus le permettent (« Firefox 87 % pendant 3 min »). Un retour à la
+  normale n'est pas un événement. Ils alimentent la vue Historique (chantier 6, phase 2) et le
+  modèle via `get_metric_history`.
 - Démarrage avec Windows dans la zone de notification, pour un historique continu (prévu ce mois-ci).
   L'utilisateur l'active lui-même, et le coût est affiché ; objectif : moins de 0,5 % de CPU et
   50 Mo de RAM.
@@ -331,6 +336,36 @@ illisible sans admin) :
   - le parcours question → réponse → suivi → fermeture → réouverture avec l'historique fonctionne ;
   - la QA visuelle passe en clair et en sombre, en français et en anglais, en fenêtre étroite ;
   - la CSP stricte est inchangée et aucun HTML venu des données n'est injecté.
+
+#### Phase 2 — application de bureau (proposée le 1er octobre)
+
+Après la première campagne d'évaluation. Les données de ces vues existent déjà ou viennent des
+chantiers 5 et 8.
+
+- Rail vertical à gauche, libellé sous chaque icône : Chat, Historique, PC en direct, Stockage,
+  Surveillances (place réservée, voir « Après la soumission »), Réglages en bas. Pas d'avatar ni
+  de compte : l'app est locale.
+- Barre secondaire selon la vue : conversations (Chat), périodes et problèmes enregistrés
+  (Historique), ressources et processus suivis (PC en direct), disques et dossiers analysés
+  (Stockage).
+- Inspecteur à droite :
+  - permanent mais repliable dans les vues de données, où l'on sélectionne un élément ;
+  - à la demande dans le Chat, comme aujourd'hui.
+  - Deux actions aux rôles distincts : **Expliquer** répond avec ce qui est déjà mesuré (rapide,
+    peu cher) ; **Enquêter** ouvre une conversation ciblée sur l'élément, où le modèle lance ses
+    outils, coût annoncé.
+- Vues :
+  - **PC en direct** pleine largeur : cartes par ressource, activité récente, tableau des processus
+    regroupés par application (chantier 2), recherche et tri.
+  - **Stockage** : disques, carte en rectangles (treemap), arbre et liste ; un dossier choisi
+    d'abord, tout C: avec la MFT (chantier 8, tâche 2).
+  - **Historique des performances** : périodes, petits graphiques empilés sur le même axe de temps
+    (pas quatre courbes de natures différentes sur un seul axe), événements marqués sur la frise,
+    bouton « Enregistrer un problème » (chantier 5).
+- Une couleur par ressource dans les graphiques est la seule exception à l'accent unique ; elles
+  restent distinguables en clair et en sombre.
+- **Fait quand :** depuis chaque vue, un élément sélectionné mène à une explication ou à une enquête
+  citée, et la QA visuelle passe comme pour la phase 1.
 
 ### Chantier 7 — Évaluation face à Claude et ChatGPT (piste D ; Q02)
 
@@ -528,11 +563,16 @@ vérifiés parce que le modèle recopie des valeurs brutes (octets, compteurs `_
 | --- | --- |
 | **S1 · 28 sept.–4 oct.** | Contrats C1 à C5 (jours 1 et 2). Chantier 2. Capture, rejeu et ligne de base A et D sur 5 scénarios. Chantier 1 : prompt, `submit_answer`, vérificateur. Maquette de conversation sur données simulées. |
 | **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). |
-| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 et 2 (caches système, MFT). Évaluation 2. |
-| **S4 · 19–25 oct.** | Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. |
+| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 6, phase 2 : rail, PC en direct, inspecteur avec Expliquer et Enquêter. Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 et 2 (caches système, MFT). Évaluation 2. |
+| **S4 · 19–25 oct.** | Chantier 6, phase 2 : Stockage en treemap, Historique minimal (session et « Enregistrer un problème »). Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. |
 | **S5 · 26–30 oct.** | Gel le 27. Corrections. README, docs, licence. Vidéo. Release. Soumission avant le 30 octobre à 18 h. |
 
 Repoussé après la soumission :
+- Surveillances (vue réservée dans le rail) : règles locales (« prévenir si C: passe sous 20 Go »,
+  « surveiller Firefox », « GPU au-dessus de 90 °C »), notifications Windows, historique des alertes.
+  Un bilan hebdomadaire reste local, ou n'appelle l'IA que sur un clic : aucune requête cloud
+  automatique ;
+- historique au-delà de 7 jours et enregistrement automatique quand un ralentissement est détecté ;
 - spécialistes (un ou deux agents dédiés, par exemple stockage ou jeu), seulement si l'évaluation
   montre des familles de tâches réellement séparables ;
 - LoRA ou distillation d'un modèle NVIDIA plus petit sur des traces de qualité consenties et
@@ -546,7 +586,9 @@ Repoussé après la soumission :
 - alertes (E09) ;
 - antivirus (E10) ;
 - corruption (E11) ;
-- doublons étendus (S11).
+- doublons étendus (S11) ;
+- capteurs par le pilote de LibreHardwareMonitor dans le collecteur élevé (chantier 9) ;
+- fournisseurs de modèles hors NVIDIA, compatibles OpenAI ou API Anthropic (chantier 10).
 
 ## 6. Répartition entre Claude et Codex
 
