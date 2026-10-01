@@ -69,3 +69,16 @@ export function usd(value) {
   if (value == null) return "";
   return language() === "fr" ? `${value.replace(".", ",")} $` : `$${value}`;
 }
+
+/** "14:02" today, otherwise the date and time. */
+export function clock(unixMs) {
+  if (unixMs == null) return "";
+  const at = new Date(unixMs);
+  if (at.toDateString() !== new Date().toDateString()) return date(unixMs, true);
+  return new Intl.DateTimeFormat(locale(), { hour: "2-digit", minute: "2-digit" }).format(at);
+}
+
+/** "Label: value" in English, "Label : value" in French. */
+export function labelled(label, value) {
+  return `${label}${language() === "fr" ? " : " : ": "}${value}`;
+}

@@ -21,13 +21,14 @@ Scans read metadata only and may run in background workers during an investigati
 
 ## Desktop app
 
-`pcagent-gui` (`apps/gui`, Tauri 2) runs the same core in a window: live memory, processor, disk
-and NVIDIA graphics cards; investigations that show each step as it really runs, with a Stop
-button, the answer's support level, what argues against it and what could not be checked; a
-storage screen that scans a chosen or dropped folder and lists its largest folders and files; and
-settings for the Nebius key and model, theme (light, dark), language (English, French) and
-animations. Iris, the mascot, reflects what is actually happening: measuring, waiting on
-Nemotron, or the kind of result.
+`pcagent-gui` (`apps/gui`, Tauri 2) runs the same core in a window built around the conversation:
+a sidebar with the saved conversations, the thread of questions and written answers, and a context
+panel that stays closed until it is needed. A citation chip opens the measurement it refers to, the
+*PC status* pill opens live memory, processor, drives and graphics cards, and the storage links open
+the last folder analysis. While an investigation runs, each real step appears with its duration and
+a Stop button. Every answer says which model wrote it, what it cost and whether its figures were
+checked against the measurements. Settings cover the Nebius key and model, theme (light, dark),
+language (English, French) and animations.
 
 Each question starts or continues a conversation. A follow-up reads the earlier questions and answers again, then measures afresh. Conversations are kept only on this PC, in `%APPDATA%\pcagent\pcagent.sqlite` next to the settings, for 90 days. They are listed in the sidebar, and they can be deleted one by one or all at once from Settings.
 
@@ -36,8 +37,8 @@ what is never sent, can show the exact first message, and asks for confirmation;
 extensions are asked the same way, with the cost so far. The key is stored by the Rust side in
 the same `%APPDATA%\pcagent\.env` file as the CLI and never reaches the page.
 
-![Home screen with Iris, the question box and live measurements](docs/images/gui-home.png)
-![An investigation in the dark theme: steps, answer and coverage](docs/images/gui-investigate-dark.png)
+![Welcome screen: the question box, suggested questions and the PC status](docs/images/gui-home.png)
+![An answer in the dark theme, with its cited measurements open in the panel](docs/images/gui-conversation-dark.png)
 
 *Screenshots with the design mock's synthetic data.*
 

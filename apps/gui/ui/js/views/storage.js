@@ -3,7 +3,6 @@ import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call, onDrop } from "../api.js";
-import { mascotWithBubble } from "../mascot.js";
 import { ask, cloudReady } from "../ask.js";
 import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
@@ -21,7 +20,6 @@ function isDriveRoot(path) {
 }
 
 export function mount(page) {
-  const iris = mascotWithBubble({ size: 96, side: true, label: t("mascot.label") });
   const picker = h("section", { class: "dropzone" });
   const body = h("div", { class: "section" });
   let tab = "dirs";
@@ -191,7 +189,7 @@ export function mount(page) {
   };
 
   // The scanning card is built once and its counters updated in place: rebuilding it on every
-  // progress event would restart Iris's animations and hide her speech bubble.
+  // progress event would make the counters flicker.
   let shownStatus = null;
   let scanUi = null;
   const buildScanning = () => {
@@ -203,7 +201,7 @@ export function mount(page) {
     const card = h(
       "section",
       { class: "card card-pad" },
-      h("div", { class: "row wrap", style: { "justify-content": "space-between" } }, iris.el, button(t("storage.cancel"), { variant: "danger", iconName: "stop", onClick: () => cancelScan() })),
+      h("div", { class: "row wrap", style: { "justify-content": "space-between" } }, h("span", { class: "hint" }, t("say.storage.scan")), button(t("storage.cancel"), { variant: "danger", iconName: "stop", onClick: () => cancelScan() })),
       title,
       h("div", { class: "indeterminate" }),
       h(
@@ -231,8 +229,6 @@ export function mount(page) {
       if (shownStatus !== "scanning") {
         scanUi = buildScanning();
         fill(body, scanUi.card);
-        iris.set("working");
-        iris.say(t("say.storage.scan"));
       }
       const p = scan.progress;
       scanUi.title.textContent = t("storage.scanning", { folder: scan.root || "" });
@@ -245,18 +241,13 @@ export function mount(page) {
     }
     shownStatus = status;
     if (status === "idle") {
-      iris.set("idle");
-      iris.say(t("say.storage.idle"));
-      fill(body, h("section", { class: "card live-line" }, iris.el));
+      fill(body, h("p", { class: "hint" }, t("say.storage.idle")));
       return;
     }
     if (status === "failed") {
-      iris.set("error");
-      iris.say(t("say.storage.failed"));
-      fill(body, h("section", { class: "card card-pad" }, h("div", { class: "row" }, iris.el), h("div", { class: "callout bad", style: { "margin-top": "12px" } }, icon("alert"), h("div", null, scan.error))));
+      fill(body, h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("say.storage.failed")), h("span", null, scan.error))));
       return;
     }
-    iris.set("happy");
     fill(
       body,
       h(

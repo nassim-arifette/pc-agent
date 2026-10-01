@@ -4,33 +4,41 @@ A Tauri 2 window over the same Rust core as the `pcagent` CLI (spec 6). Every me
 finding, scan and Nebius request goes through the crates the CLI uses; the window adds no
 diagnostic logic of its own.
 
-## Screens
+## Layout
 
-- **Home**: Iris, a question box with a *On this PC* / *With AI* switch, four suggested questions,
-  and live cards for memory, processor, disk and NVIDIA graphics refreshed every 3 s while the window
-  is visible (pause button). A value that could not be measured says so, with its reason on hover;
-  nothing becomes zero. The busiest processes by working set are listed below.
-- **Investigate**: the question, each step as it really runs (measurement, Nemotron request with
-  its tokens, each tool), a Stop button, and the answer: heading, support level, what was measured,
-  the hypothesis marked as not proven, what argues against it, what could not be checked, the next
-  step, other possibilities, cited observations and limits. Side cards show execution, coverage and
-  support separately, and for AI runs the requests, tokens and estimated cost with the dated catalog
-  price.
-- **Storage**: pick a folder (dialog, quick picks, or drop one on the window), watch the scan
-  counters, then browse the largest folders and files with their size bar, modification date and
-  *Show in Explorer*. Coverage explains a partial scan (denied folders, locked files, cloud files not
-  downloaded, links not followed, changes during the scan). Nothing is deleted from this screen.
-- **Settings**: Nebius model and key, connection test with the catalog price, privacy (ask before
-  each AI investigation), theme, language and animations.
+One window, three areas, after the hybrid direction chosen on 2026-10-01 (chat first, context on
+demand):
 
-## Iris, the mascot
+- **Sidebar**: *New conversation*, a search box, saved conversations grouped by day, then
+  *Storage*, *Settings* and the model with the current sharing choice. It folds away (button or
+  narrow window).
+- **Conversation**: a welcome screen with the composer and four suggested questions (one names a
+  drive that is almost full), then the thread. While a run is going, its real steps appear with
+  their durations and Stop replaces Send. An answer shows the model's text with numbered citation
+  chips, the model, duration and cost, the steps and cited measurements, follow-up questions, Copy,
+  Ask again, and whether every figure was checked against the measurements. A local analysis shows
+  the rules' best finding and offers to ask the AI.
+- **Context panel**, closed by default. It opens on the right tab from what the person is looking
+  at: a citation chip (*Sources*, with that measurement highlighted), the *PC status* pill (*Live
+  PC*), *Analyze a folder* or *Storage* (*Storage*). *Sources* also keeps each answer's limits and
+  its requests, tokens and price. *Live PC* refreshes every 5 s while the window is visible
+  (pause button) and draws short sparklines. Below 1100 px the panel floats over the conversation.
 
-An SVG robot drawn in `ui/js/mascot.js` and animated in `ui/styles/mascot.css`. Its state always
-mirrors something real: idle, listening while the question box has focus, working while a tool or
-a scan runs, thinking while a Nemotron request is in flight, happy when nothing measured is
-strained or a scan finishes, unsure for insufficient evidence, concerned when a finding needs
-attention, and asleep after three idle minutes. It never animates work that is not happening
-(spec 6.2). Reduced motion (Windows setting or *Animations: Off*) stops every loop.
+The *PC status* pill in the top bar names the most important thing in a few words: a drive under
+5 % or 5 GiB free, memory at 90 % or more, a processor at 90 % or more, or a slowed graphics card.
+These thresholds are hints for the status line, not findings.
+
+The full *Storage* and *Settings* screens open in the conversation area. Storage picks or drops a
+folder, follows the scan and lists the largest folders and files; nothing is deleted there.
+
+## Visual system
+
+Warm neutrals, a single accent (*Encre* `#3B5BDB`, `#8FA2F5` in dark), Segoe UI Variable and 1 px
+strokes rather than shadows, close to Windows 11. Colours are tokens in `ui/styles/tokens.css`,
+light and dark. Iris, the former mascot, is reduced to a mark (`ui/js/brand.js`): an accent tile
+with two eyes that signs answers and never animates on its own. The design exploration and the
+clickable prototype live on a private design canvas; the decisions are recorded in
+[the plan](plan.md).
 
 ## Consent and privacy
 
@@ -62,7 +70,7 @@ ui/ (HTML, CSS, JS modules, no build step) ──invoke──▶ src/app.rs (Tau
   ends, and so Stop refuses the next model request (`AgentError::Cancelled`). A request already sent
   cannot be recalled. Portable and unit-tested.
 - `src/app.rs` (Windows only) holds the Tauri commands. One thread owns the live collector for the
-  Home cards; each investigation and each scan runs on its own thread and reports through events.
+  live measurements (and, every 30 s, the drives' free space); each investigation and each scan runs on its own thread and reports through events.
   The Storage screen and investigations share one `StorageService`, so a completed scan can be
   reused by the model without rescanning.
 - The page is untrusted input: commands validate every argument, paths and item references are
@@ -86,7 +94,8 @@ The first build compiles Tauri and needs about 3 GB for `target\`. On other plat
 only prints a message; the portable view and session code is still built and tested in CI.
 The CI keeps a `pcagent-gui-windows-x64` artifact: an unsigned prototype, not an installer.
 
-Keyboard: `Ctrl+1` to `Ctrl+4` switch screens, `Ctrl+K` jumps to the question box, `Enter` sends
+Keyboard: `Ctrl+1` to `Ctrl+3` open the conversation, Storage and Settings, `Ctrl+N` starts a new
+conversation, `Ctrl+K` jumps to the question box, `Ctrl+J` shows or hides the panel, `Enter` sends
 and `Shift+Enter` adds a line, `Esc` closes a dialog.
 
 ## Design review without the app
@@ -97,13 +106,14 @@ browser:
 ```powershell
 cd apps\gui
 python -m http.server 5173 --bind 127.0.0.1
-# open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none)
+# open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
-screenshots of each screen in light and dark themes (`node dev/tour.mjs <folder>` while the server
-runs). The mock lives outside `ui/`, so the app never embeds it.
+screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage,
+settings) in light and dark themes (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the
+server runs). The mock lives outside `ui/`, so the app never embeds it.
 
 ## Validation status
 
@@ -124,6 +134,9 @@ runs). The mock lives outside `ui/`, so the app never embeds it.
 - Found on that PC: the GeForce MX350 sometimes refuses its load (NVML error 999) while its
   temperature and memory are readable; the card then shows the temperature and says the load is
   not reported.
+- Redesign on 2026-10-01: the tour in French and English, light and dark, at 1280 × 800 and 860 ×
+  640, plus a follow-up question, the sources of two answers and reopening from the history; no
+  JavaScript errors. Not yet checked in the release Windows app.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 
