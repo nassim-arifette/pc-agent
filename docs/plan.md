@@ -348,12 +348,23 @@ chantiers 5 et 8.
 - Barre secondaire selon la vue : conversations (Chat), périodes et problèmes enregistrés
   (Historique), ressources et processus suivis (PC en direct), disques et dossiers analysés
   (Stockage).
-- Inspecteur à droite :
+- Inspecteur à droite : les détails de l'élément sélectionné (chiffres, tendance, types de fichiers…),
+  sans gros boutons d'action.
   - permanent mais repliable dans les vues de données, où l'on sélectionne un élément ;
   - à la demande dans le Chat, comme aujourd'hui.
-  - Deux actions aux rôles distincts : **Expliquer** répond avec ce qui est déjà mesuré (rapide,
-    peu cher) ; **Enquêter** ouvre une conversation ciblée sur l'élément, où le modèle lance ses
-    outils, coût annoncé.
+- Barre d'actions sur la sélection (maquette du 1er octobre) : cliquer sur un élément (une carte
+  « Mémoire », une application, un bloc « Téléchargements », un événement) fait apparaître une petite
+  barre collée à lui, la même dans toutes les vues :
+  - **Expliquer** répond avec ce qui est déjà mesuré (rapide, peu cher) ; la réponse s'affiche dans
+    l'inspecteur, sans quitter la vue, avec un lien « Enquêter pour aller plus loin » ;
+  - **Enquêter** ouvre dans le Chat une conversation ciblée sur l'élément, où le modèle lance ses
+    outils, coût annoncé ;
+  - **Surveiller**, affiché grisé tant que les Surveillances n'existent pas (après la soumission).
+  - La barre se place au-dessus ou en dessous de l'élément selon la place, ne masque jamais ce qu'il
+    montre, et disparaît au clic ailleurs ou avec Échap. Mêmes actions au clavier (`E` pour
+    Expliquer, `Entrée` pour Enquêter) et au clic droit, pour l'accessibilité.
+- Les réponses du Chat renvoient vers les vues : « Voir Firefox dans PC en direct », « Ouvrir
+  l'événement de mardi ».
 - Vues :
   - **PC en direct** pleine largeur : cartes par ressource, activité récente, tableau des processus
     regroupés par application (chantier 2), recherche et tri.
@@ -364,8 +375,11 @@ chantiers 5 et 8.
     bouton « Enregistrer un problème » (chantier 5).
 - Une couleur par ressource dans les graphiques est la seule exception à l'accent unique ; elles
   restent distinguables en clair et en sombre.
+- Maquettes de référence : page « Application de bureau » du canevas de design (privé), avec PC en
+  direct (« Mémoire » sélectionnée puis expliquée), Stockage (« Téléchargements » sélectionné),
+  Historique (un événement sélectionné) et le Chat avec le rail.
 - **Fait quand :** depuis chaque vue, un élément sélectionné mène à une explication ou à une enquête
-  citée, et la QA visuelle passe comme pour la phase 1.
+  citée, au clic comme au clavier, et la QA visuelle passe comme pour la phase 1.
 
 ### Chantier 7 — Évaluation face à Claude et ChatGPT (piste D ; Q02)
 
