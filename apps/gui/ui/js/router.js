@@ -1,9 +1,11 @@
-// Hash routes: #/home, #/investigate, #/storage, #/settings.
-export const ROUTES = ["home", "investigate", "storage", "settings"];
+// Hash routes: #/chat, #/storage, #/settings. The old #/home and #/investigate open the chat.
+export const ROUTES = ["chat", "storage", "settings"];
+const ALIASES = { home: "chat", investigate: "chat" };
 
 export function currentRoute() {
   const name = window.location.hash.replace(/^#\/?/, "");
-  return ROUTES.includes(name) ? name : "home";
+  const route = ALIASES[name] || name;
+  return ROUTES.includes(route) ? route : "chat";
 }
 
 export function navigate(name) {

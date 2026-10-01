@@ -9,8 +9,8 @@ use pcagent_agent::{
 };
 use pcagent_diagnostics::{Classification, Finding, Support};
 use pcagent_shared::{
-    format_bytes, gpu_slowdown_reasons, unix_ms, Evidence, Metric, ProcessCoverage,
-    ProcessInstance, Snapshot, Status,
+    format_bytes, gpu_slowdown_reasons, unix_ms, Evidence, HardwareInventory, Metric,
+    ProcessCoverage, ProcessInstance, Snapshot, Status, VolumeKind,
 };
 use pcagent_storage::{
     Coverage, ItemKind, ItemView, LargestItemsPage, ScanProgress, ScanSummary, StorageOverview,
@@ -143,7 +143,37 @@ pub struct Dashboard {
     pub gpu_busiest_engine: Measure,
     pub processes: Vec<ProcessRow>,
     pub process_coverage: ProcessCoverage,
+    /// Fixed volumes with their free space; filled from the hardware inventory by the caller.
+    pub volumes: Vec<VolumeView>,
     pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VolumeView {
+    pub root: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub free_ratio: f64,
+}
+
+/// Fixed and RAM volumes whose size and free space were both read; others are left out rather
+/// than shown as empty.
+pub fn volumes(inventory: &HardwareInventory) -> Vec<VolumeView> {
+    let Some(list) = inventory.volumes.value.as_ref() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|v| matches!(v.kind, VolumeKind::Fixed | VolumeKind::RamDisk))
+        .filter_map(|v| {
+            let (total, free) = (v.total_bytes?, v.free_bytes?);
+            (total > 0).then(|| VolumeView {
+                root: v.root.clone(),
+                total_bytes: total,
+                free_bytes: free.min(total),
+                free_ratio: free.min(total) as f64 / total as f64,
+            })
+        })
+        .collect()
 }
 
 pub fn process_name(p: &ProcessInstance) -> String {
@@ -258,6 +288,7 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
         gpu_busiest_engine: sys(Metric::GpuBusiestEngineBasisPoints),
         processes,
         process_coverage: s.process_coverage.clone(),
+        volumes: Vec::new(),
         limitations: s.limitations.clone(),
     }
 }
@@ -807,6 +838,55 @@ mod tests {
         assert_eq!(d.gpu_engines[0].kind, "3d");
         assert_eq!(d.processes[0].name, "editor.exe");
         assert_eq!(d.processes[0].working_set.value, Some(3 << 30));
+    }
+
+    #[test]
+    fn volumes_keep_fixed_drives_with_both_sizes() {
+        use pcagent_shared::{new_id, Observed, Origin, VolumeInfo, SCHEMA_VERSION};
+        let volume = |root: &str, kind, total, free| VolumeInfo {
+            root: root.into(),
+            kind,
+            total_bytes: total,
+            free_bytes: free,
+            available_to_caller_bytes: free,
+            source: "fixture".into(),
+            status: Status::Ok,
+            limitations: Vec::new(),
+        };
+        fn missing<T>() -> Observed<T> {
+            Observed::missing("fixture", Status::Unsupported)
+        }
+        let inventory = HardwareInventory {
+            schema_version: SCHEMA_VERSION,
+            id: new_id("inventory"),
+            origin: Origin::Live,
+            status: Status::Ok,
+            collected_at_unix_ms: 0,
+            os_version: missing(),
+            architecture: missing(),
+            logical_processors: missing(),
+            installed_memory_bytes: missing(),
+            volumes: Observed::ok(
+                vec![
+                    volume("C:\\", VolumeKind::Fixed, Some(1000), Some(250)),
+                    volume("D:\\", VolumeKind::Fixed, Some(1000), None),
+                    volume("E:\\", VolumeKind::Removable, Some(1000), Some(900)),
+                ],
+                "fixture",
+            ),
+            gpu_adapters: missing(),
+            limitations: Vec::new(),
+        };
+        let list = volumes(&inventory);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].root, "C:\\");
+        assert_eq!(list[0].free_ratio, 0.25);
+        // No inventory at all: nothing, never an empty drive.
+        let unknown = HardwareInventory {
+            volumes: missing(),
+            ..inventory
+        };
+        assert!(volumes(&unknown).is_empty());
     }
 
     #[test]

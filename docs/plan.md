@@ -535,6 +535,10 @@ Règles de travail :
 4. **Démarrage avec Windows** pour l'historique continu : ce mois-ci (chantier 5).
 5. **Technique de l'interface :** décidée pendant la refonte ; un framework est permis (chantier 6).
 6. **Modèle :** Nemotron 3 Ultra est candidat par défaut, à confirmer par l'évaluation (chantier 10).
+7. **Interface (1er octobre) :** la conversation d'abord, avec un panneau de contexte fermé par
+   défaut qui s'ouvre depuis une citation, l'état du PC ou le stockage. Accent unique Encre
+   (`#3B5BDB`), Iris réduite à une marque fixe, coût affiché sous chaque réponse. La refonte garde
+   le JavaScript sans build : aucun framework n'a été nécessaire.
 
 ## 8. Suivi
 
@@ -547,7 +551,7 @@ Règles de travail :
 | 3 — Choix de partage | A, C | en cours : noms de processus livrés, aperçu figé et anciens noms retirés des suivis ; noms de fichiers et contrôle C5 du texte libre à faire | #21, #23 |
 | 4 — Nouveaux outils | B | à faire | |
 | 5 — Mesurer au bon moment | B, C | à faire | |
-| 6 — Interface de conversation | C | en cours : fil, suivis et historique disponibles ; doublon à la réouverture et navigation en petite fenêtre corrigés, GUI Windows testé ; refonte visuelle et panneau de droite à faire | #23 |
+| 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action et réponse en flux à faire | #23, wp6-interface |
 | 7 — Évaluation | D | à faire | |
 | 8 — Admin à la demande | B | à faire | |
 | 9 — Capteurs matériels | B | à faire | |

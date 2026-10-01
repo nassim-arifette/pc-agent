@@ -1,5 +1,5 @@
 // Application state and the backend's events. Views subscribe to topics ("info", "inv",
-// "conversation", "history", "scan", "extension") and redraw the parts they own.
+// "conversation", "history", "scan", "extension", "live", "panel") and redraw the parts they own.
 import { call, on } from "./api.js";
 
 const listeners = new Set();
@@ -15,6 +15,10 @@ export const state = {
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
   /** "Don't ask again until I close PC Agent" was ticked in the consent dialog. */
   skipConsent: false,
+  /** Live measurements shared by the status pill and the panel, with a short history for sparklines. */
+  live: { dash: null, error: null, paused: false, history: [] },
+  /** The context panel: closed by default, opened on a tab, optionally pointing at one source. */
+  panel: { open: false, tab: "sources", focus: null },
 };
 
 export function subscribe(listener) {
@@ -30,6 +34,61 @@ export async function refreshInfo() {
   state.info = await call("app_info");
   notify("info");
   return state.info;
+}
+
+// ---------- Context panel ----------
+
+/** Opens the panel on a tab; `focus` = { turn, reference } points at one cited source. */
+export function openPanel(tab, focus = null) {
+  state.panel = { open: true, tab, focus };
+  notify("panel");
+}
+
+export function closePanel() {
+  state.panel = { ...state.panel, open: false, focus: null };
+  notify("panel");
+}
+
+export function togglePanel() {
+  if (state.panel.open) closePanel();
+  else openPanel(state.panel.tab);
+}
+
+// ---------- Live measurements ----------
+
+const LIVE_MS = 5000;
+const HISTORY = 24;
+let liveTimer = null;
+
+async function liveTick() {
+  window.clearTimeout(liveTimer);
+  const live = state.live;
+  if (!live.paused && !document.hidden) {
+    try {
+      live.dash = await call("dashboard");
+      live.error = null;
+      live.history.push(live.dash);
+      if (live.history.length > HISTORY) live.history.shift();
+    } catch (error) {
+      live.error = error.message;
+    }
+    notify("live");
+  }
+  liveTimer = window.setTimeout(liveTick, LIVE_MS);
+}
+
+/** Measures every 5 s while the window is visible; the first sample comes right away. */
+export function startLive() {
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) liveTick();
+  });
+  liveTick();
+}
+
+export function setLivePaused(paused) {
+  state.live.paused = paused;
+  notify("live");
+  if (!paused) liveTick();
 }
 
 // ---------- Conversations ----------
