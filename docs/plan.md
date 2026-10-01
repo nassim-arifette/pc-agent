@@ -381,6 +381,10 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
 
   Notation à l'aveugle par le porteur du projet, doublée d'un juge LLM qui applique la même grille.
 - Les commandes lancées par Claude Code (configuration D) alimentent la liste des outils manquants.
+- Traces réelles : chaque investigation peut être enregistrée localement comme scénario rejouable
+  (questions, appels d'outils, réponses, coût, durée), avec le consentement de la personne. Les
+  traces brutes ne quittent pas le PC et ne servent à un entraînement (voir « Après la
+  soumission ») qu'avec un consentement explicite et une version anonymisée (contrat C5).
 - Résultats datés dans `docs/eval.md`.
 - **Fait quand :**
   - la ligne de base A et D existe dès la semaine 1, puis une campagne a lieu chaque fin de semaine ;
@@ -484,17 +488,52 @@ sortie). Les quatre annoncent les outils et le raisonnement.
   la réponse citée, l'action validée, l'avant/après.
 - Test complet sur un second PC Windows 11, jamais fait jusqu'ici (voir le README).
 
+### Chantier 13 — Optimiser le harness (piste A)
+
+Mesuré avec les traces du chantier 7 ; chaque changement est gardé seulement si l'évaluation
+s'améliore ou reste égale pour un coût moindre. Constat de départ (1er octobre, Super, réponse en
+flux) : 6 requêtes et 56 500 tokens d'entrée pour une question, soit 0,023 $, et 8 passages non
+vérifiés parce que le modèle recopie des valeurs brutes (octets, compteurs `_x100`).
+
+- Sorties d'outils lisibles : chaque mesure donne sa valeur brute et sa forme lisible (« 2,1 Gio »,
+  « 2 383 pages/s ») pour que le modèle cite des chiffres que le vérificateur reconnaît.
+- Anti-appels redondants : un résultat identique à un appel récent n'est pas renvoyé en entier,
+  seulement une référence à l'observation existante (déjà repéré avec Ultra au chantier 10).
+- Contexte : les anciens résultats d'outils sont résumés au-delà d'un seuil ; les descriptions
+  d'outils et le prompt système sont raccourcis sans perdre de règle ; cache de prompt si Nebius le
+  propose.
+- Budgets (requêtes, outils, durée, tokens de sortie) réglés d'après les traces, pas au jugé.
+- **Fait quand :** pour un score égal ou meilleur, les tokens par réponse et les passages non
+  vérifiés baissent nettement sur la campagne d'évaluation suivante.
+
+### Chantier 14 — Escalade Super → Ultra (piste A)
+
+- Super répond par défaut. Ultra reprend la même question, avec les observations déjà mesurées,
+  quand l'évaluation montre que c'est rentable, par exemple :
+  - des passages restent non vérifiés après les réparations ;
+  - la confiance est faible ou la catégorie est « pas assez d'éléments » ;
+  - le budget est épuisé sans réponse.
+- Les seuils viennent de l'évaluation (chantier 7), jamais d'une intuition.
+- L'interface dit qu'Ultra a repris la question et affiche le coût des deux modèles. Réglages :
+  « automatique », « toujours Super », « toujours Ultra ».
+- **Fait quand :** sur la campagne d'évaluation, la qualité approche celle d'Ultra seul pour un
+  coût moyen nettement inférieur.
+
 ## 5. Calendrier
 
 | Semaine | Travail |
 | --- | --- |
 | **S1 · 28 sept.–4 oct.** | Contrats C1 à C5 (jours 1 et 2). Chantier 2. Capture, rejeu et ligne de base A et D sur 5 scénarios. Chantier 1 : prompt, `submit_answer`, vérificateur. Maquette de conversation sur données simulées. |
-| **S2 · 5–11 oct.** | Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). |
-| **S3 · 12–18 oct.** | Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 à 3. Évaluation 2. |
+| **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). |
+| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 à 3. Évaluation 2. |
 | **S4 · 19–25 oct.** | Chantier 11. Chantier 8, tâches 4 et 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. |
 | **S5 · 26–30 oct.** | Gel le 27. Corrections. README, docs, licence. Vidéo. Release. Soumission avant le 30 octobre à 18 h. |
 
 Repoussé après la soumission :
+- spécialistes (un ou deux agents dédiés, par exemple stockage ou jeu), seulement si l'évaluation
+  montre des familles de tâches réellement séparables ;
+- LoRA ou distillation d'un modèle NVIDIA plus petit sur des traces de qualité consenties et
+  anonymisées, qui pourrait à terme tourner en local ;
 - index persistant et journal USN (S10) ;
 - export expurgé (U01) ;
 - coffre Windows pour la clé (U04) ;
@@ -540,6 +579,13 @@ Règles de travail :
    (`#3B5BDB`), Iris réduite à une marque fixe, coût affiché sous chaque réponse. La refonte garde
    le JavaScript sans build : aucun framework n'a été nécessaire.
 
+## 7 bis. Priorités ajoutées (1er octobre)
+
+1. Mesurer d'abord : `pcagent-eval` et les traces réelles passent avant tout nouvel agent.
+2. Optimiser le harness (chantier 13), puis l'escalade Super → Ultra (chantier 14).
+3. Spécialistes, LoRA et distillation seulement après la soumission, et seulement si l'évaluation les
+   justifie.
+
 ## 8. Suivi
 
 | Chantier | Piste | État | PR |
@@ -558,6 +604,8 @@ Règles de travail :
 | 10 — Modèle | A | à faire | |
 | 11 — Agir depuis la conversation | A, C | à faire | |
 | 12 — Soumission | D | à faire | |
+| 13 — Optimiser le harness | A | à faire | |
+| 14 — Escalade Super → Ultra | A | à faire | |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
