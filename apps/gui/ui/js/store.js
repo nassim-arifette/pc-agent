@@ -224,7 +224,19 @@ function onStep({ id, at_unix_ms: at, step }) {
       break;
     case "model_started":
       inv.steps.push({ key: `model-${step.request}`, type: "model", state: "running", at });
+      // A new request may write a new answer; an earlier draft was not accepted.
+      inv.draft = null;
       break;
+    case "answer_draft": {
+      inv.draft = step.text;
+      const writing = inv.steps.find((s) => s.key === `model-${step.request}`);
+      if (writing && !writing.writing) {
+        writing.writing = true;
+        notify("inv");
+      }
+      notify("draft");
+      return;
+    }
     case "model_finished":
       update(inv, `model-${step.request}`, {
         state: step.outcome === "ok" ? "done" : "failed",

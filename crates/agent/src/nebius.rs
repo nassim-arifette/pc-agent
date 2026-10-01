@@ -1,12 +1,14 @@
-use super::{AgentError, Model, Pricing, Reply, ToolCall, ToolChoice, MAX_OUTPUT_TOKENS};
+use super::{
+    AgentError, FunctionCall, Model, Pricing, Reply, ToolCall, ToolChoice, MAX_OUTPUT_TOKENS,
+};
 use reqwest::{
-    blocking::{Client, RequestBuilder},
+    blocking::{Client, RequestBuilder, Response},
     redirect::Policy,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use std::{
-    io::{self, Read},
+    io::{self, BufRead, BufReader, Read},
     time::{Duration, Instant},
 };
 
@@ -14,6 +16,8 @@ const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
 /// The verbose catalog also publishes per-token prices, which date-stamped cost estimates use.
 const CATALOG_URL: &str = "https://api.tokenfactory.nebius.com/v1/models?verbose=true";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
+const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
 
 /// Intentionally does not implement Debug or Serialize: API keys must not enter logs.
 pub struct Config {
@@ -91,11 +95,8 @@ impl Nebius {
             pricing: None,
         })
     }
-    fn read_json<T: DeserializeOwned>(
-        &self,
-        request: RequestBuilder,
-        timeout: Duration,
-    ) -> Result<T, AgentError> {
+    /// Sends with the key and a deadline that covers reading the whole body.
+    fn send(&self, request: RequestBuilder, timeout: Duration) -> Result<Response, AgentError> {
         if timeout.is_zero() {
             return Err(AgentError::Budget);
         }
@@ -107,6 +108,14 @@ impl Nebius {
         if !response.status().is_success() {
             return Err(AgentError::Http(response.status().as_u16()));
         }
+        Ok(response)
+    }
+    fn read_json<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+        timeout: Duration,
+    ) -> Result<T, AgentError> {
+        let response = self.send(request, timeout)?;
         if response
             .content_length()
             .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
@@ -231,6 +240,154 @@ fn parse_reply(envelope: Envelope) -> Reply {
         ..billed
     }
 }
+/// One server-sent event of a streamed completion.
+#[derive(Deserialize)]
+struct Chunk {
+    #[serde(default)]
+    choices: Vec<ChunkChoice>,
+    usage: Option<Usage>,
+}
+#[derive(Deserialize)]
+struct ChunkChoice {
+    #[serde(default)]
+    index: usize,
+    delta: Option<Delta>,
+    finish_reason: Option<String>,
+}
+#[derive(Deserialize)]
+struct Delta {
+    content: Option<String>,
+    tool_calls: Option<Vec<CallDelta>>,
+}
+#[derive(Deserialize)]
+struct CallDelta {
+    index: usize,
+    id: Option<String>,
+    function: Option<FunctionDelta>,
+}
+#[derive(Deserialize)]
+struct FunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+#[derive(Default)]
+struct PartialCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+/// At most this many tool calls in one streamed reply.
+const MAX_STREAMED_CALLS: usize = 64;
+
+/// Rebuilds the reply envelope from server-sent events, reporting each tool call's arguments as
+/// they grow. A stream that ends early or carries a malformed event yields an envelope that
+/// `parse_reply` rejects, keeping whatever usage was reported.
+fn read_stream(
+    reader: impl Read,
+    on_call: &mut dyn FnMut(&str, &str),
+) -> Result<Envelope, AgentError> {
+    let mut lines = BufReader::new(reader.take((MAX_STREAM_BYTES + 1) as u64));
+    let mut read = 0usize;
+    let mut line = String::new();
+    let mut content: Option<String> = None;
+    let mut calls: Vec<PartialCall> = Vec::new();
+    let mut finish: Option<String> = None;
+    let mut usage = None;
+    let mut seen = false;
+    let mut malformed = false;
+    loop {
+        line.clear();
+        let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
+        if n == 0 {
+            break;
+        }
+        read += n;
+        if read > MAX_STREAM_BYTES {
+            return Err(AgentError::InvalidResponse);
+        }
+        // Blank separators, comments and event names carry no data.
+        let Some(data) = line.trim_end().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim_start();
+        if data == "[DONE]" {
+            break;
+        }
+        let Ok(chunk) = serde_json::from_str::<Chunk>(data) else {
+            malformed = true;
+            break;
+        };
+        if chunk.usage.is_some() {
+            usage = chunk.usage;
+        }
+        for choice in chunk.choices {
+            if choice.index != 0 {
+                malformed = true;
+                continue;
+            }
+            seen = true;
+            if let Some(reason) = choice.finish_reason {
+                finish = Some(reason);
+            }
+            let Some(delta) = choice.delta else { continue };
+            if let Some(text) = delta.content {
+                content.get_or_insert_with(String::new).push_str(&text);
+            }
+            for part in delta.tool_calls.unwrap_or_default() {
+                if part.index > calls.len() || part.index >= MAX_STREAMED_CALLS {
+                    malformed = true;
+                    continue;
+                }
+                if part.index == calls.len() {
+                    calls.push(PartialCall::default());
+                }
+                let call = &mut calls[part.index];
+                if let Some(id) = part.id {
+                    call.id.push_str(&id);
+                }
+                if let Some(function) = part.function {
+                    if let Some(name) = function.name {
+                        call.name.push_str(&name);
+                    }
+                    if let Some(arguments) = function.arguments {
+                        call.arguments.push_str(&arguments);
+                        on_call(&call.name, &call.arguments);
+                    }
+                }
+            }
+        }
+    }
+    let identified = calls.iter().all(|c| !c.id.is_empty() && !c.name.is_empty());
+    if !seen || malformed || !identified {
+        return Ok(Envelope {
+            choices: Vec::new(),
+            usage,
+        });
+    }
+    let tool_calls: Vec<ToolCall> = calls
+        .into_iter()
+        .map(|c| ToolCall {
+            id: c.id,
+            kind: "function".into(),
+            function: FunctionCall {
+                name: c.name,
+                arguments: c.arguments,
+            },
+        })
+        .collect();
+    Ok(Envelope {
+        choices: vec![Choice {
+            message: Message {
+                content,
+                tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+            },
+            // A stream cut before its last event never says why it finished.
+            finish_reason: finish.unwrap_or_default(),
+        }],
+        usage,
+    })
+}
+
 impl Model for Nebius {
     fn complete(
         &mut self,
@@ -238,6 +395,16 @@ impl Model for Nebius {
         tools: &Value,
         choice: ToolChoice,
         timeout: Duration,
+    ) -> Result<Reply, AgentError> {
+        self.complete_streaming(messages, tools, choice, timeout, &mut |_, _| {})
+    }
+    fn complete_streaming(
+        &mut self,
+        messages: &[Value],
+        tools: &Value,
+        choice: ToolChoice,
+        timeout: Duration,
+        on_call: &mut dyn FnMut(&str, &str),
     ) -> Result<Reply, AgentError> {
         let started = Instant::now();
         if !self.catalog_checked {
@@ -250,15 +417,17 @@ impl Model for Nebius {
             ToolChoice::Auto => "auto",
             ToolChoice::Required => "required",
         };
+        // Streamed so the answer can be shown while it is written; usage comes in the last event.
         let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
-            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,"temperature":0.0,"stream":false});
-        let response = self.read_json(
+            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,"temperature":0.0,
+            "stream":true,"stream_options":{"include_usage":true}});
+        let response = self.send(
             self.client
                 .post(format!("{BASE_URL}/chat/completions"))
                 .json(&body),
             remaining,
         )?;
-        Ok(parse_reply(response))
+        Ok(parse_reply(read_stream(response, on_call)?))
     }
     fn pricing(&self) -> Option<Pricing> {
         self.pricing.clone()
@@ -401,6 +570,82 @@ mod tests {
         assert_eq!(body_error(&io::Error::other(silent)), AgentError::Timeout);
         assert_eq!(body_error(&io::Error::other("reset")), AgentError::Network);
     }
+    /// Server-sent events as the provider writes them, ending with the `[DONE]` marker.
+    fn stream(events: &[Value]) -> String {
+        let mut out: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
+        out.push_str("data: [DONE]\n\n");
+        out
+    }
+    fn replay(body: &str) -> Reply {
+        parse_reply(read_stream(body.as_bytes(), &mut |_, _| {}).unwrap())
+    }
+
+    #[test]
+    fn a_streamed_tool_call_is_rebuilt_and_reported_as_it_grows() {
+        let body = stream(&[
+            json!({"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,
+                "id":"c1","type":"function","function":{"name":"submit_answer","arguments":""}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+                "function":{"arguments":"{\"text\":\"Vo"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+                "function":{"arguments":"tre PC\"}"}}]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}),
+        ]);
+        let mut seen = Vec::new();
+        let envelope = read_stream(body.as_bytes(), &mut |name, args| {
+            seen.push(format!("{name}:{args}"))
+        })
+        .unwrap();
+        let reply = parse_reply(envelope);
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls.len(), 1);
+        assert_eq!(reply.calls[0].id, "c1");
+        assert_eq!(reply.calls[0].function.arguments, "{\"text\":\"Votre PC\"}");
+        assert_eq!(reply.total_tokens, Some(15));
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2], "submit_answer:{\"text\":\"Votre PC\"}");
+    }
+
+    #[test]
+    fn a_stream_cut_short_or_malformed_is_rejected_with_its_usage() {
+        let usage = json!({"choices":[],
+            "usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}});
+        let start = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
+            "type":"function","function":{"name":"get_processes","arguments":"{"}}]}}]});
+        // No finish reason: the stream ended early and nothing is executed.
+        let cut = replay(&stream(&[start.clone(), usage]));
+        assert_eq!(cut.rejected, Some(AgentError::IncompleteResponse));
+        assert!(cut.calls.is_empty());
+        assert_eq!(cut.total_tokens, Some(15));
+        // A truncated reply still says so.
+        let long = json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]});
+        assert_eq!(
+            replay(&stream(&[start.clone(), long])).rejected,
+            Some(AgentError::OutputLimit)
+        );
+        // An event that is not JSON, or a call without an id, is never executed.
+        let broken = format!("data: {start}\n\ndata: {{oops\n\n");
+        assert_eq!(replay(&broken).rejected, Some(AgentError::InvalidResponse));
+        let anonymous = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+            "function":{"name":"x","arguments":"{}"}}]},"finish_reason":"tool_calls"}]});
+        assert_eq!(
+            replay(&stream(&[anonymous])).rejected,
+            Some(AgentError::InvalidResponse)
+        );
+        assert_eq!(replay("").rejected, Some(AgentError::InvalidResponse));
+    }
+
+    #[test]
+    fn plain_text_replies_stream_too() {
+        let reply = replay(&stream(&[
+            json!({"choices":[{"index":0,"delta":{"content":"Hel"}}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}]}),
+        ]));
+        assert_eq!(reply.content.as_deref(), Some("Hello"));
+        assert!(reply.calls.is_empty());
+        assert_eq!(reply.total_tokens, None);
+    }
+
     #[test]
     fn error_messages_never_include_a_provider_response_body() {
         assert_eq!(

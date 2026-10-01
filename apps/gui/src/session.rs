@@ -3,7 +3,8 @@
 //! asks to stop. Nothing here changes what the agent may do.
 use crate::view::error_code;
 use pcagent_agent::{
-    AgentError, Args, Model, Pricing, Reply, ToolChoice, ToolOutput, ToolSpec, Toolbox,
+    draft_text, AgentError, Args, Model, Pricing, Reply, ToolChoice, ToolOutput, ToolSpec, Toolbox,
+    SUBMIT_ANSWER,
 };
 use pcagent_shared::Status;
 use serde::Serialize;
@@ -15,6 +16,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+/// Drafts are sent to the window at most this often.
+const DRAFT_EVERY: Duration = Duration::from_millis(80);
 
 /// One real step of an investigation, in the order it happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -35,6 +39,12 @@ pub enum Step {
         completion_tokens: Option<u64>,
         /// `ok`, or the error code of a failed or rejected reply.
         outcome: String,
+    },
+    /// The answer as far as the model has written it. Shown while it streams, never checked:
+    /// the reviewed answer replaces it when the run ends.
+    AnswerDraft {
+        request: usize,
+        text: String,
     },
     ToolStarted {
         tool: String,
@@ -78,7 +88,26 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
         let request = self.requests;
         (self.on_step)(Step::ModelStarted { request });
         let started = Instant::now();
-        let result = self.inner.complete(messages, tools, choice, timeout);
+        let on_step = &mut self.on_step;
+        let mut shown = String::new();
+        let mut last = None::<Instant>;
+        let mut on_call = |name: &str, arguments: &str| {
+            if name != SUBMIT_ANSWER || last.is_some_and(|at| at.elapsed() < DRAFT_EVERY) {
+                return;
+            }
+            let Some(text) = draft_text(arguments) else {
+                return;
+            };
+            if text.trim().is_empty() || text == shown {
+                return;
+            }
+            last = Some(Instant::now());
+            shown.clone_from(&text);
+            on_step(Step::AnswerDraft { request, text });
+        };
+        let result = self
+            .inner
+            .complete_streaming(messages, tools, choice, timeout, &mut on_call);
         let (prompt_tokens, completion_tokens, outcome) = match &result {
             Ok(reply) => (
                 reply.prompt_tokens,
@@ -239,6 +268,82 @@ mod tests {
                 "end 2 Some(5000) ok"
             ]
         );
+    }
+
+    /// Streams each call's arguments in three pieces before returning the reply.
+    struct Streaming(VecDeque<Reply>);
+    impl Model for Streaming {
+        fn complete(
+            &mut self,
+            m: &[Value],
+            t: &Value,
+            c: ToolChoice,
+            d: Duration,
+        ) -> Result<Reply, AgentError> {
+            self.complete_streaming(m, t, c, d, &mut |_, _| {})
+        }
+        fn complete_streaming(
+            &mut self,
+            _: &[Value],
+            _: &Value,
+            _: ToolChoice,
+            _: Duration,
+            on_call: &mut dyn FnMut(&str, &str),
+        ) -> Result<Reply, AgentError> {
+            let reply = self.0.pop_front().ok_or(AgentError::Network)?;
+            for call in &reply.calls {
+                let args = &call.function.arguments;
+                for end in [args.len() / 3, 2 * args.len() / 3, args.len()] {
+                    on_call(&call.function.name, &args[..end]);
+                }
+            }
+            Ok(reply)
+        }
+    }
+
+    #[test]
+    fn the_answer_streams_as_drafts_but_tool_calls_do_not() {
+        let answer = Reply {
+            calls: vec![ToolCall {
+                id: "answer".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: SUBMIT_ANSWER.into(),
+                    arguments:
+                        json!({"text": "Votre PC ralentit parce que la mémoire est pleine."})
+                            .to_string(),
+                },
+            }],
+            ..Reply::default()
+        };
+        let mut steps = Vec::new();
+        let mut model = ObservedModel::new(
+            Streaming(VecDeque::from([tool_call(), answer])),
+            Arc::new(AtomicBool::new(false)),
+            |step| steps.push(step),
+        );
+        for _ in 0..2 {
+            model
+                .complete(
+                    &[],
+                    &json!([]),
+                    ToolChoice::Required,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+        }
+        let drafts: Vec<(usize, String)> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::AnswerDraft { request, text } => Some((*request, text.clone())),
+                _ => None,
+            })
+            .collect();
+        // Only the answer's request drafts; the first piece is shown at once, later ones are
+        // throttled, and a draft is always a prefix of the text.
+        assert!(!drafts.is_empty());
+        assert!(drafts.iter().all(|(request, text)| *request == 2
+            && "Votre PC ralentit parce que la mémoire est pleine.".starts_with(text.as_str())));
     }
 
     #[test]
