@@ -35,10 +35,11 @@ attention, and asleep after three idle minutes. It never animates work that is n
 ## Consent and privacy
 
 - Local analysis is the default. *With AI* requires a configured key and model.
-- Before an AI investigation, a dialog lists what is sent (the question verbatim, the number of
-  measurements and candidate findings, anonymous `proc-…` references, and scan sizes with names
-  hidden when a scanned folder is shared) and what is never sent, and can show the exact first
-  message. *Don't ask again until I close PC Agent* lasts for the session only; it is never saved.
+- Before an AI investigation, a dialog previews the exact first data message, including the bounded
+  conversation history and its retained observations. Program names follow the person's choice.
+  The reviewed snapshot is frozen in a single-use ticket; sending waits for preview updates and
+  rejects a mismatched or expired ticket. Subsequent tool results follow the same sharing settings.
+  *Don't ask again until I close PC Agent* lasts for the session only; it is never saved.
 - A folder scanned in Storage is offered to the model only when that box is ticked; otherwise the
   investigation gets an empty storage service.
 - When the budget runs out, the window asks before extending it and shows the cost so far.
@@ -111,6 +112,15 @@ runs). The mock lives outside `ui/`, so the app never embeds it.
 - Visual review on 2026-09-28 with the mock in light, dark, English, French and narrow windows, and
   on the real app on the development PC: live cards, a local investigation, a folder scan and one AI
   investigation with Nemotron 3 Super ($0.0040).
+- Conversation corrections on 2026-09-28: 13 browser checks at 1280 and 720 pixels cover preview
+  refresh races, failed previews, cancellation, two answers, citation targets and reopening history.
+  No JavaScript errors were reported. Review found and fixed a duplicate last answer when opening
+  a saved conversation and unreadable history in the compact sidebar; a dialog now exposes the
+  full conversation list there.
+- The same corrective batch passed eight checks against the release Windows app through its
+  actual Tauri bridge: real local measurements, two saved turns, history after a page reload,
+  previewed history, names toggling and cancellation. Its temporary profile used a dummy credential;
+  no provider request was made. These checks do not replace a live model comparison.
 - Found on that PC: the GeForce MX350 sometimes refuses its load (NVML error 999) while its
   temperature and memory are readable; the card then shows the temperature and says the load is
   not reported.
@@ -120,5 +130,7 @@ runs). The mock lives outside `ui/`, so the app never embeds it.
 ## Known gaps
 
 Action proposals and approvals are CLI-only for now. Finding texts come from the core in English,
-also when the interface is in French. There is no history across sessions, no tray icon and no
-installer.
+also when the interface is in French. Conversation history is stored locally in SQLite; older
+display-only reports remain readable but are not reused as evidence. There is no tray icon or
+installer. See [answer verification](answer-verification.md) for covered and intentional limits of
+the evidence checks and sharing previews.

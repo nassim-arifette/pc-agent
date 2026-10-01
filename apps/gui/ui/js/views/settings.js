@@ -5,7 +5,7 @@ import { t } from "../i18n.js";
 import { call } from "../api.js";
 import { disclosure, namesShared } from "../ask.js";
 import { getPrefs, setPref } from "../prefs.js";
-import { state, subscribe, refreshInfo } from "../store.js";
+import { state, subscribe, refreshInfo, clearConversations } from "../store.js";
 import { badge, button, segmented, toast, toggle } from "../ui.js";
 import { price } from "../format.js";
 import { modelName } from "../models.js";
@@ -130,6 +130,26 @@ function aiCard() {
   );
 }
 
+function historyRow() {
+  const status = h("span", { class: "hint" });
+  const clear = button(t("settings.history.clear"), {
+    iconName: "x",
+    size: "sm",
+    disabled: !(state.conversations || []).length,
+    onClick: async () => {
+      const removed = await clearConversations();
+      status.textContent = t("settings.history.cleared", { count: removed });
+      clear.disabled = true;
+    },
+  });
+  return h(
+    "div",
+    { class: "setting-row" },
+    h("div", { class: "setting-text" }, h("strong", null, t("settings.history.title")), h("span", { class: "hint" }, t("settings.history.note")), status),
+    clear,
+  );
+}
+
 function privacyCard() {
   const what = h("div", null, disclosure(null));
   return h(
@@ -153,6 +173,7 @@ function privacyCard() {
         fill(what, disclosure(null, on));
       }, t("settings.privacy.names")),
     ),
+    historyRow(),
     h("details", { class: "more" }, h("summary", null, icon("chevron"), t("settings.privacy.what")), what),
   );
 }

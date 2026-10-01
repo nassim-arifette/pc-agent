@@ -176,6 +176,125 @@ a {
   box-shadow: 0 0 0 4px var(--accent-soft);
   animation: pulse 1.4s var(--ease) infinite;
 }
+/* Saved conversations: they take the free height of the sidebar and scroll. */
+.history {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 0 11px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.history-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 560;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.history-new:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent-text);
+}
+.history-new .icon {
+  width: 13px;
+  height: 13px;
+}
+.history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.history-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.history-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 30px 7px 11px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+.history-item:hover,
+.history-item[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.history-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13.5px;
+  font-weight: 540;
+}
+.history-date {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.history-delete {
+  position: absolute;
+  right: 4px;
+  display: none;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.history-row:hover .history-delete,
+.history-row:focus-within .history-delete,
+.history-delete:focus-visible {
+  display: inline-flex;
+}
+.history-delete:hover {
+  color: var(--bad);
+}
+.history-delete .icon {
+  width: 14px;
+  height: 14px;
+}
+.history-empty {
+  padding: 4px 11px;
+}
+.history-browse {
+  display: none;
+}
 .sidebar-foot {
   margin-top: auto;
   display: flex;
@@ -288,6 +407,24 @@ button.status-card:hover {
   .status-card {
     justify-content: center;
     padding: 12px 0;
+  }
+  .history-head > span,
+  .history-new > span,
+  .sidebar .history-list,
+  .sidebar .history-empty {
+    display: none;
+  }
+  .history-head {
+    justify-content: center;
+    padding: 0;
+  }
+  .history-new {
+    justify-content: center;
+    width: 100%;
+    min-height: 36px;
+  }
+  .history-browse {
+    display: flex;
   }
   .page {
     padding: 22px 22px 48px;
@@ -986,6 +1123,38 @@ button.status-card:hover {
 }
 
 /* ---------- Investigation ---------- */
+/* A conversation: earlier turns, then the live one. */
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.thread:empty {
+  display: none;
+}
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.turn[hidden] {
+  display: none;
+}
+.thread + .turn {
+  margin-top: 22px;
+}
+.turn-question {
+  align-self: flex-end;
+  max-width: min(78%, 680px);
+  padding: 10px 15px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .question-title {
   font-size: 24px;
   font-weight: 650;
