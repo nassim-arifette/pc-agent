@@ -1,4 +1,6 @@
-// Entry point: preferences, the Rust bridge, the shell and the router.
+// Entry point: preferences, the Rust bridge, the window layout and the router. The layout is a
+// history sidebar, the conversation (or Storage, Settings) and a context panel that stays closed
+// until a citation, the PC status or a storage link opens it.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -14,91 +16,47 @@ import {
   openConversation,
   newConversation,
   deleteConversation,
+  startLive,
+  openPanel,
+  closePanel,
+  togglePanel,
 } from "./store.js";
-import { createMark } from "./mascot.js";
+import { mountPanel } from "./panel.js";
+import { health } from "./live.js";
 import { dialog, button, dialogOpen } from "./ui.js";
-import { usd, date } from "./format.js";
+import { usd } from "./format.js";
 import { modelName } from "./models.js";
+import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
-import * as home from "./views/home.js";
-import * as investigate from "./views/investigate.js";
+import * as chat from "./views/chat.js";
 import * as storage from "./views/storage.js";
 import * as settings from "./views/settings.js";
 
-const VIEWS = { home, investigate, storage, settings };
-const NAV = [
-  { route: "home", icon: "home", label: "nav.home" },
-  { route: "investigate", icon: "sparkle", label: "nav.investigate" },
-  { route: "storage", icon: "drive", label: "nav.storage" },
-  { route: "settings", icon: "sliders", label: "nav.settings" },
-];
+const VIEWS = { chat, storage, settings };
+const narrow = window.matchMedia("(max-width: 900px)");
 
+let app = null;
 let main = null;
-let nav = null;
-let statusHost = null;
-let historyHost = null;
+let sidebarHost = null;
+let topbar = null;
+let panelHost = null;
 let unmount = null;
 let mountedRoute = null;
+let sidebarOpen = !narrow.matches;
+let filter = "";
 
-function renderStatus() {
-  if (!statusHost) return;
-  const cloud = state.info?.cloud;
-  let dot = "neutral";
-  let title = t("status.local.title");
-  let text = t("status.local.text");
-  if (cloud?.ready) {
-    dot = "good";
-    title = t("status.cloud.title");
-    text = modelName(cloud.model_id);
-  } else if (cloud && (cloud.key_configured || cloud.model_id)) {
-    dot = "warn";
-    title = t("status.problem.title");
-    text = t("status.problem.text");
-  }
-  fill(
-    statusHost,
-    h(
-      "button",
-      { type: "button", class: "status-card", title, onclick: () => navigate("settings") },
-      h("span", { class: ["dot", dot] }),
-      h("span", { class: "status-text" }, h("strong", null, title), h("span", null, text)),
-    ),
-  );
-}
-
-function renderNav() {
-  const route = currentRoute();
-  const running = state.inv && (state.inv.status === "running" || state.inv.status === "stopping");
-  fill(
-    nav,
-    NAV.map((item) =>
-      h(
-        "button",
-        {
-          type: "button",
-          class: "nav-item",
-          "aria-current": item.route === route ? "page" : null,
-          title: t(item.label),
-          onclick: () => navigate(item.route),
-        },
-        icon(item.icon),
-        h("span", { class: "nav-label" }, t(item.label)),
-        item.route === "investigate" && running ? h("span", { class: "nav-badge", "aria-label": t("inv.running") }) : null,
-      ),
-    ),
-  );
-}
+// ---------- Sidebar ----------
 
 function confirmDelete(conversation) {
   dialog(
     (close) => [
-      h("div", { class: "dialog-head" }, h("div", { class: "metric-icon warn" }, icon("x")), h("h2", { class: "dialog-title" }, t("history.delete.title"))),
+      h("h2", { class: "dialog-title" }, t("history.delete.title")),
       h("p", null, t("history.delete.body", { title: conversation.title })),
       h(
         "div",
         { class: "dialog-actions" },
-        button(t("common.cancel"), { variant: "ghost", onClick: () => close(false) }),
-        button(t("history.delete"), { variant: "danger", iconName: "x", onClick: () => close(true) }),
+        button(t("common.cancel"), { onClick: () => close(false) }),
+        button(t("history.delete"), { variant: "danger", onClick: () => close(true) }),
       ),
     ],
     { label: t("history.delete.title"), dismissValue: false },
@@ -107,100 +65,193 @@ function confirmDelete(conversation) {
   });
 }
 
-function historyList(beforeAction = () => {}) {
-  const items = state.conversations || [];
-  return items.length
-    ? h(
-        "ul",
-        { class: "history-list" },
-        items.map((c) =>
-          h(
-            "li",
-            { class: "history-row" },
-            h(
-              "button",
-              {
-                type: "button",
-                class: "history-item",
-                "aria-current": state.conversation?.id === c.id ? "true" : null,
-                title: c.title,
-                onclick: async () => {
-                  beforeAction();
-                  if (await openConversation(c.id)) navigate("investigate");
-                },
-              },
-              h("span", { class: "history-title" }, c.title),
-              h("span", { class: "history-date" }, date(c.updated_at_unix_ms)),
-            ),
-            h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => { beforeAction(); confirmDelete(c); } }, icon("x")),
-          ),
-        ),
-      )
-    : h("p", { class: "hint history-empty" }, t("history.empty"));
+/** Conversations grouped by when they were last updated. */
+function groups(items) {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const today = startOfDay.getTime();
+  const day = 24 * 3600 * 1000;
+  const buckets = [
+    { label: "history.today", from: today },
+    { label: "history.yesterday", from: today - day },
+    { label: "history.week", from: today - 7 * day },
+    { label: "history.older", from: -Infinity },
+  ].map((b) => ({ ...b, items: [] }));
+  for (const c of items) buckets.find((b) => c.updated_at_unix_ms >= b.from).items.push(c);
+  return buckets.filter((b) => b.items.length);
 }
 
-/** The compact sidebar opens a readable picker instead of squeezing titles into an icon rail. */
-function browseHistory() {
-  dialog(
-    (close) => [
-      h("div", { class: "dialog-head" }, icon("clock"), h("h2", { class: "dialog-title" }, t("history.title"))),
-      historyList(() => close(null)),
-      h("div", { class: "dialog-actions" }, button(t("common.close"), { onClick: () => close(null) })),
-    ],
-    { label: t("history.title") },
-  );
-}
-
-/** Saved conversations in the sidebar, most recent first. */
-function renderHistory() {
-  if (!historyHost) return;
-  fill(
-    historyHost,
+function historyView() {
+  const needle = filter.trim().toLowerCase();
+  const items = (state.conversations || []).filter((c) => !needle || c.title.toLowerCase().includes(needle));
+  if (!items.length) return h("p", { class: "history-empty" }, t(needle ? "sidebar.noMatch" : "history.empty"));
+  return groups(items).map((group) =>
     h(
       "div",
-      { class: "history-head" },
-      h("span", null, t("history.title")),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "history-new",
-          title: t("history.new"),
-          onclick: () => {
-            newConversation();
-            navigate("home");
-          },
-        },
-        icon("sparkle"),
-        h("span", null, t("history.new")),
+      { class: "history-group" },
+      h("div", { class: "history-label" }, t(group.label)),
+      group.items.map((c) =>
+        h(
+          "div",
+          { class: "history-row" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: "history-item",
+              "aria-current": state.conversation?.id === c.id && currentRoute() === "chat" ? "true" : null,
+              title: c.title,
+              onclick: async () => {
+                if (await openConversation(c.id)) navigate("chat");
+                if (narrow.matches) setSidebar(false);
+              },
+            },
+            c.title,
+          ),
+          h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => confirmDelete(c) }, icon("x")),
+        ),
       ),
     ),
-    h("button", { type: "button", class: "history-browse nav-item", title: t("history.title"), "aria-label": t("history.title"), onclick: browseHistory }, icon("clock")),
-    historyList(),
   );
 }
 
-function renderShell() {
-  const app = document.getElementById("app");
-  nav = h("nav", { class: "nav", "aria-label": t("nav.label") });
-  statusHost = h("div");
-  historyHost = h("div", { class: "history" });
-  main = h("main", { class: "main", id: "main", tabindex: "-1" });
-  fill(
-    app,
-    h(
-      "aside",
-      { class: "sidebar" },
-      h("div", { class: "brand" }, createMark(), h("div", { class: "brand-text" }, h("div", { class: "brand-name" }, "PC Agent"), h("div", { class: "brand-sub" }, t("app.tagline")))),
-      nav,
-      historyHost,
-      h("div", { class: "sidebar-foot" }, statusHost, h("p", { class: "foot-note hint" }, t("foot.privacy"))),
-    ),
-    main,
+function modelStatus() {
+  const cloud = state.info?.cloud;
+  let tone = "neutral";
+  let title = t("status.local.title");
+  let text = t("status.local.text");
+  if (cloud?.ready) {
+    tone = "good";
+    title = modelName(cloud.model_id);
+    text = t(namesShared() ? "status.names.shared" : "status.names.hidden");
+  } else if (cloud && (cloud.key_configured || cloud.model_id)) {
+    tone = "warn";
+    title = t("status.problem.title");
+    text = t("status.problem.text");
+  }
+  return h(
+    "button",
+    { type: "button", class: "model-status", onclick: () => navigate("settings") },
+    h("span", { class: ["dot", tone] }),
+    h("span", { class: "model-text" }, h("strong", null, title), h("span", null, text)),
   );
-  renderNav();
-  renderStatus();
-  renderHistory();
+}
+
+let historyHost = null;
+let footHost = null;
+
+function renderSidebar() {
+  const search = h("input", {
+    type: "search",
+    class: "search-input",
+    placeholder: t("sidebar.search"),
+    "aria-label": t("sidebar.searchLabel"),
+    value: filter,
+    oninput: (e) => {
+      filter = e.target.value;
+      fill(historyHost, historyView());
+    },
+  });
+  historyHost = h("nav", { class: "history", "aria-label": t("history.title") });
+  footHost = h("div", { class: "sidebar-foot" });
+  fill(
+    sidebarHost,
+    h(
+      "div",
+      { class: "sidebar-inner" },
+      h(
+        "div",
+        { class: "sidebar-top" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "new-chat",
+            title: `${t("sidebar.new")} (Ctrl+N)`,
+            onclick: () => {
+              newConversation();
+              navigate("chat");
+              if (narrow.matches) setSidebar(false);
+            },
+          },
+          icon("plus"),
+          h("span", null, t("sidebar.new")),
+        ),
+        h("button", { type: "button", class: "icon-btn", title: t("sidebar.hide"), "aria-label": t("sidebar.hide"), onclick: () => setSidebar(false) }, icon("sidebar")),
+      ),
+      h("label", { class: "search" }, icon("search"), search),
+      historyHost,
+      footHost,
+    ),
+  );
+  fill(historyHost, historyView());
+  renderFoot();
+}
+
+function renderFoot() {
+  if (!footHost) return;
+  const route = currentRoute();
+  const nav = (name, iconName, label) =>
+    h("button", { type: "button", class: "nav-row", "aria-current": route === name ? "page" : null, onclick: () => navigate(name) }, icon(iconName), h("span", null, t(label)));
+  fill(footHost, nav("storage", "drive", "nav.storage"), nav("settings", "sliders", "nav.settings"), modelStatus());
+}
+
+function setSidebar(open) {
+  sidebarOpen = open;
+  app.classList.toggle("sidebar-closed", !open);
+  sidebarHost.inert = !open;
+  renderTopbar();
+}
+
+// ---------- Top bar ----------
+
+function renderTopbar() {
+  if (!topbar) return;
+  const route = currentRoute();
+  const status = health(state.live.dash);
+  const liveOpen = state.panel.open && state.panel.tab === "live";
+  const title = route === "chat" ? state.conversation?.title || "" : "";
+  fill(
+    topbar,
+    sidebarOpen ? null : h("button", { type: "button", class: "icon-btn", title: t("sidebar.show"), "aria-label": t("sidebar.show"), onclick: () => setSidebar(true) }, icon("sidebar")),
+    h("div", { class: "topbar-title", title }, title),
+    h("span", { class: "spacer" }),
+    h(
+      "button",
+      {
+        type: "button",
+        class: ["status-pill", liveOpen ? "pressed" : ""],
+        "aria-pressed": String(liveOpen),
+        title: t("health.open"),
+        onclick: () => (liveOpen ? closePanel() : openPanel("live")),
+      },
+      h("span", { class: ["dot", status.tone] }),
+      h("span", null, t("health.label")),
+      h("span", { class: "faint" }, "·"),
+      h("span", { class: ["status-text", status.tone] }, status.text),
+    ),
+    h(
+      "button",
+      { type: "button", class: ["icon-btn", state.panel.open ? "pressed" : ""], title: `${t("panel.toggle")} (Ctrl+J)`, "aria-label": t("panel.toggle"), "aria-pressed": String(state.panel.open), onclick: togglePanel },
+      icon("panel"),
+    ),
+  );
+}
+
+// ---------- Layout and routes ----------
+
+function renderShell() {
+  app = document.getElementById("app");
+  sidebarHost = h("aside", { class: "sidebar", "aria-label": t("history.title") });
+  topbar = h("header", { class: "topbar" });
+  main = h("main", { class: "main", id: "main", tabindex: "-1" });
+  panelHost = h("aside", { class: "panel", "aria-label": t("panel.label") });
+  fill(app, sidebarHost, h("div", { class: "workspace" }, topbar, main), panelHost);
+  app.classList.toggle("sidebar-closed", !sidebarOpen);
+  sidebarHost.inert = !sidebarOpen;
+  renderSidebar();
+  renderTopbar();
+  mountPanel(panelHost);
 }
 
 function route(force = false) {
@@ -208,11 +259,13 @@ function route(force = false) {
   if (!force && name === mountedRoute) return;
   unmount?.();
   mountedRoute = name;
-  const page = h("div", { class: "page" });
+  const page = h("div", { class: ["page", `page-${name}`] });
   fill(main, page);
   main.scrollTop = 0;
   unmount = VIEWS[name].mount(page) || null;
-  renderNav();
+  renderFoot();
+  renderTopbar();
+  if (historyHost) fill(historyHost, historyView());
 }
 
 /** Redraws everything, e.g. after the language changes. */
@@ -231,11 +284,11 @@ function extensionDialog() {
   const cost = ext.usage?.cost ? usd(ext.usage.cost.usd) : t("extension.cost.unknown");
   dialog(
     (close) => [
-      h("div", { class: "dialog-head" }, h("div", { class: "metric-icon warn" }, icon("clock")), h("h2", { class: "dialog-title" }, t("extension.title"))),
+      h("h2", { class: "dialog-title" }, t("extension.title")),
       h("p", null, t(`extension.reason.${ext.request.reason}`)),
       h(
         "p",
-        { class: "note", style: { "margin-top": "8px" } },
+        { class: "note" },
         t("extension.body", {
           requests: ext.usage.requests,
           cost,
@@ -248,7 +301,7 @@ function extensionDialog() {
         "div",
         { class: "dialog-actions" },
         button(t("extension.stop"), { onClick: () => close(false) }),
-        button(t("extension.continue"), { variant: "primary", iconName: "play", onClick: () => close(true) }),
+        button(t("extension.continue"), { variant: "primary", onClick: () => close(true) }),
       ),
     ],
     { label: t("extension.title"), dismissValue: false },
@@ -261,32 +314,45 @@ async function boot() {
   renderShell();
   wireEvents();
   subscribe((topic) => {
-    if (topic === "info") renderStatus();
-    if (topic === "inv") renderNav();
-    if (topic === "history" || topic === "conversation") renderHistory();
+    if (topic === "info") renderFoot();
+    if (topic === "history" || topic === "conversation") {
+      if (historyHost) fill(historyHost, historyView());
+      renderTopbar();
+    }
+    if (topic === "live" || topic === "panel") renderTopbar();
     if (topic === "extension") extensionDialog();
   });
   window.addEventListener("hashchange", () => route());
   window.addEventListener("pcagent:redraw", redraw);
+  window.addEventListener("pcagent:mode", renderFoot);
+  narrow.addEventListener("change", () => setSidebar(!narrow.matches));
   document.addEventListener("keydown", (e) => {
-    // Ctrl+1..4 switch screens; Ctrl+K jumps to the question box.
-    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    if (!e.ctrlKey || e.altKey || e.metaKey || dialogOpen()) return;
+    const key = e.key.toLowerCase();
     const index = Number(e.key) - 1;
     if (index >= 0 && index < ROUTES.length) {
       e.preventDefault();
       navigate(ROUTES[index]);
-    } else if (e.key.toLowerCase() === "k") {
+    } else if (key === "k") {
       e.preventDefault();
-      if (currentRoute() !== "home" && currentRoute() !== "investigate") navigate("home");
+      navigate("chat");
       window.setTimeout(() => document.querySelector(".ask textarea")?.focus(), 60);
+    } else if (key === "n") {
+      e.preventDefault();
+      newConversation();
+      navigate("chat");
+    } else if (key === "j") {
+      e.preventDefault();
+      togglePanel();
     }
   });
   route(true);
+  startLive();
   refreshConversations();
   try {
     await refreshInfo();
   } catch {
-    // The status card keeps its local default.
+    // The status keeps its local default.
   }
 }
 

@@ -40,6 +40,10 @@ function cloud() {
   return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "nvidia/nemotron-3-super-120b-a12b", model_source: "file", ready: true, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
 }
 
+function volume(root, totalGiB, freeGiB) {
+  return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
+}
+
 let tick = 0;
 function dashboard() {
   tick += 1;
@@ -107,6 +111,11 @@ function dashboard() {
       cpu: tick === 1 ? missing("partial", "First observation.") : m(Math.round(jitter(300, 300)), "3.0%"),
     })),
     process_coverage: { status: "partial", enumerated: 231, readable: 214, permission_denied: 17, unavailable: 0, returned: 7, enumeration_truncated: false },
+    // ?disk=ok gives C: room to breathe; by default it is almost full, like the development PC.
+    volumes: [
+      volume("C:\\", 255, params.get("disk") === "ok" ? 61 : 0.3),
+      volume("D:\\", 476, 135),
+    ],
     limitations: ["Working sets can share pages; they do not add up to physical memory in use."],
   };
 }

@@ -127,12 +127,29 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Free space changes slowly; the inventory is read again at most this often.
+const VOLUMES_MAX_AGE: Duration = Duration::from_secs(30);
+
 fn measure_thread(requests: mpsc::Receiver<Measure>) {
     let mut collector = Collector::new();
+    let mut volumes: Option<(Instant, Vec<view::VolumeView>)> = None;
     for request in requests {
         match request {
             Measure::Dashboard(reply) => {
-                let _ = reply.send(view::dashboard(&collector.snapshot(true, 8)));
+                let mut dashboard = view::dashboard(&collector.snapshot(true, 8));
+                if volumes
+                    .as_ref()
+                    .is_none_or(|(at, _)| at.elapsed() > VOLUMES_MAX_AGE)
+                {
+                    volumes = Some((
+                        Instant::now(),
+                        view::volumes(&collector.hardware_inventory()),
+                    ));
+                }
+                if let Some((_, list)) = &volumes {
+                    dashboard.volumes = list.clone();
+                }
+                let _ = reply.send(dashboard);
             }
             Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);

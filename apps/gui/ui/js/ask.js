@@ -5,17 +5,10 @@ import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { call } from "./api.js";
 import { getPrefs, setPref } from "./prefs.js";
-import { state, startInvestigation } from "./store.js";
-import { button, dialog, segmented, toast } from "./ui.js";
+import { state, startInvestigation, stopInvestigation } from "./store.js";
+import { button, dialog, toast } from "./ui.js";
 import { bytes } from "./format.js";
 import { navigate } from "./router.js";
-
-export const SUGGESTIONS = [
-  { key: "suggest.slow", icon: "activity" },
-  { key: "suggest.ram", icon: "memory" },
-  { key: "suggest.space", icon: "drive" },
-  { key: "suggest.upgrade", icon: "cpu" },
-];
 
 export function cloudReady() {
   return Boolean(state.info?.cloud?.ready);
@@ -182,7 +175,7 @@ export async function ask(question, { cloud, followUp = false }) {
   const text = (question || "").trim();
   if (!text) return;
   if (state.inv && (state.inv.status === "running" || state.inv.status === "stopping")) {
-    navigate("investigate");
+    navigate("chat");
     return;
   }
   let useStorage = false;
@@ -214,57 +207,71 @@ export async function ask(question, { cloud, followUp = false }) {
       previewId = decision.previewId ?? null;
     }
   }
-  navigate("investigate");
+  navigate("chat");
   await startInvestigation(text, { cloud, useStorage, names, followUp, previewId });
 }
 
-/**
- * The composer: a growing text area, the local/AI switch and the send button.
- * `onFocusChange(focused)` lets a view react (Iris listens while you type).
- */
-export function composer({ autofocus = false, onFocusChange, initial = "", followUp = false } = {}) {
+/** The composer: a growing text area, the analysis mode, and Send or Stop while a run is going. */
+export function composer({ autofocus = false, followUp = false, big = false } = {}) {
   const area = h("textarea", {
-    rows: 2,
+    rows: big ? 3 : 1,
     placeholder: t(followUp ? "ask.followUp" : "ask.placeholder"),
     "aria-label": t("ask.label"),
     maxlength: 4000,
-    value: initial,
   });
   const grow = () => {
     area.style.setProperty("height", "auto");
-    area.style.setProperty("height", `${Math.min(area.scrollHeight, 180)}px`);
+    area.style.setProperty("height", `${Math.min(area.scrollHeight, 200)}px`);
   };
-  const modeHost = h("div");
-  const note = h("span", { class: "ask-note" });
-  const renderMode = () => {
+  const modeHost = h("span", { class: "mode-host" });
+  const sendHost = h("span", { class: "send-host" });
+  const running = () => Boolean(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"));
+  const submit = () => {
+    if (running()) return;
+    const cloud = getPrefs().mode === "cloud" && cloudReady();
+    const text = area.value;
+    if (!text.trim()) return;
+    area.value = "";
+    grow();
+    ask(text, { cloud, followUp });
+  };
+  const refresh = () => {
     const ready = cloudReady();
-    let mode = getPrefs().mode === "cloud" && ready ? "cloud" : "local";
+    const cloud = getPrefs().mode === "cloud" && ready;
     fill(
       modeHost,
-      segmented(
-        [
-          { value: "local", label: t("mode.local"), icon: "pc", title: t("mode.local.note") },
-          { value: "cloud", label: t("mode.cloud"), icon: ready ? "sparkle" : "lock", title: ready ? t("mode.cloud.note") : t("mode.cloud.setup"), locked: !ready },
-        ],
-        mode,
-        (value) => {
-          if (value === "cloud" && !ready) {
-            toast(t("mode.cloud.setup"), "bad");
-            navigate("settings");
-            return;
-          }
-          setPref("mode", value);
-          renderMode();
+      h(
+        "button",
+        {
+          type: "button",
+          class: "mode-pill",
+          title: t("mode.pill.title"),
+          onclick: () => {
+            if (!cloud && !ready) {
+              toast(t("mode.cloud.setup"), "bad");
+              navigate("settings");
+              return;
+            }
+            setPref("mode", cloud ? "local" : "cloud");
+            refresh();
+            window.dispatchEvent(new Event("pcagent:mode"));
+          },
         },
-        t("mode.label"),
+        icon(cloud ? "shield" : "pc"),
+        cloud ? h("span", null, t("mode.pill.cloud")) : h("span", null, t("mode.pill.local")),
+        cloud ? h("span", { class: "faint" }, `· ${t(namesShared() ? "mode.pill.names" : "mode.pill.hidden")}`) : null,
       ),
     );
-    note.textContent = t(mode === "cloud" ? "mode.cloud.note" : "mode.local.note");
-    return mode;
-  };
-  const submit = () => {
-    const cloud = getPrefs().mode === "cloud" && cloudReady();
-    ask(area.value, { cloud, followUp });
+    fill(
+      sendHost,
+      running()
+        ? h(
+            "button",
+            { type: "button", class: "send stop", title: t("inv.stop"), "aria-label": t("inv.stop"), disabled: state.inv.status === "stopping", onclick: () => stopInvestigation() },
+            icon("stop"),
+          )
+        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), onclick: submit }, icon("send")),
+    );
   };
   area.addEventListener("input", grow);
   area.addEventListener("keydown", (e) => {
@@ -273,14 +280,19 @@ export function composer({ autofocus = false, onFocusChange, initial = "", follo
       submit();
     }
   });
-  area.addEventListener("focus", () => onFocusChange?.(true));
-  area.addEventListener("blur", () => onFocusChange?.(false));
-  renderMode();
+  refresh();
   const el = h(
     "div",
-    { class: "ask" },
+    { class: ["ask", big ? "big" : ""] },
     area,
-    h("div", { class: "ask-bar" }, modeHost, note, h("span", { class: "spacer" }), button(t("ask.send"), { variant: "primary", iconName: "send", onClick: submit })),
+    h(
+      "div",
+      { class: "ask-bar" },
+      h("button", { type: "button", class: "icon-btn", title: t("ask.folder"), "aria-label": t("ask.folder"), onclick: () => navigate("storage") }, icon("folder")),
+      modeHost,
+      h("span", { class: "spacer" }),
+      sendHost,
+    ),
   );
   if (autofocus) requestAnimationFrame(() => area.focus());
   return {
@@ -291,15 +303,6 @@ export function composer({ autofocus = false, onFocusChange, initial = "", follo
       grow();
       area.focus();
     },
-    refresh: renderMode,
+    refresh,
   };
-}
-
-/** Suggestion chips; clicking one asks right away in the chosen mode. */
-export function suggestions(onPick) {
-  return h(
-    "div",
-    { class: "suggestions" },
-    SUGGESTIONS.map((s) => h("button", { type: "button", class: "chip", onclick: () => onPick(t(s.key)) }, icon(s.icon), t(s.key))),
-  );
 }
