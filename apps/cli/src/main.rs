@@ -8,11 +8,11 @@ use pcagent_actions::{
 };
 use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_agent::{
-    converse, initial_message, investigate_with_extension, local_report, verify_action, ActionDesk,
+    converse_with_privacy, initial_message_with_privacy, local_report, verify_action, ActionDesk,
     AgentError, Config, ExecutionStatus, ExtensionRequest, Investigation, Nebius, PastTurn,
-    PendingPlan, PolicyProtection, Pricing, Sharing, StorageContext, Workstation, MAX_DURATION,
-    MAX_QUESTION_BYTES, MAX_ROUNDS, MAX_TOOLS, PREPARE_ACTION_PLAN, VERIFY_SAMPLES,
-    WORKSTATION_TOOLS,
+    PendingPlan, PolicyProtection, Pricing, PrivacyContext, Sharing, StorageContext, Toolbox,
+    Workstation, MAX_DURATION, MAX_QUESTION_BYTES, MAX_ROUNDS, MAX_TOOLS, PREPARE_ACTION_PLAN,
+    VERIFY_SAMPLES,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{format_bytes, Snapshot, Status};
@@ -60,6 +60,44 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Run a closed-schema read-only tool locally, without a provider request.
+    Inspect {
+        tool: String,
+        #[arg(long, default_value = "{}")]
+        arguments: String,
+        #[arg(long)]
+        anonymize: bool,
+        /// Local history database; defaults to the desktop app's database.
+        #[arg(long)]
+        database: Option<PathBuf>,
+    },
+    /// Read persisted measurements, including windows before the last app restart.
+    History {
+        #[arg(long, default_value = "cpu_busy_basis_points")]
+        metric: String,
+        #[arg(long, default_value = "system")]
+        entity_ref: String,
+        #[arg(long, default_value_t = 3600, value_parser=clap::value_parser!(u64).range(1..=604_800))]
+        window_seconds: u64,
+        #[arg(long)]
+        end_unix_ms: Option<u64>,
+        #[arg(long)]
+        database: Option<PathBuf>,
+    },
+    /// Record a problem at one-second cadence, then print its local measurements.
+    Record {
+        #[arg(long, default_value_t = 30, value_parser=clap::value_parser!(u64).range(30..=120))]
+        seconds: u64,
+        #[arg(long)]
+        database: Option<PathBuf>,
+    },
+    /// Collect at five-second cadence and report the sampler's measured footprint.
+    Sample {
+        #[arg(long, default_value_t = 60, value_parser=clap::value_parser!(u64).range(10..=3600))]
+        seconds: u64,
+        #[arg(long)]
+        database: Option<PathBuf>,
+    },
     /// Measure memory, CPU, disk and GPU now and list the biggest processes.
     Snapshot {
         /// Number of processes to show (1-50).
@@ -101,7 +139,7 @@ enum Command {
         /// Explicitly keep this investigation offline (also the default).
         #[arg(long, conflicts_with = "allow_cloud")]
         offline: bool,
-        /// Send the question verbatim and minimized observations to Nebius for this run.
+        /// Send the sanitized question and minimized observations to Nebius for this run.
         #[arg(long)]
         allow_cloud: bool,
         /// Inspect the initial cloud payload locally, without sending it. Later samples may differ.
@@ -118,7 +156,7 @@ enum Command {
         #[arg(long, requires = "scan_root")]
         compare_content: bool,
         /// Allow selected basenames to be sent; use --preview-cloud to review them offline.
-        #[arg(long, requires = "scan_root", conflicts_with = "offline")]
+        #[arg(long, requires = "scan_root", conflicts_with_all = ["offline", "anonymize"])]
         share_file_names: bool,
         /// Send opaque process references instead of executable names (for example chrome.exe).
         /// Paths, PIDs and your user name are never sent either way.
@@ -135,9 +173,10 @@ enum Command {
         journal_dir: Option<PathBuf>,
     },
     /// Talk with the model about this PC: each question can follow up on the previous answers.
-    /// Type an empty line or `exit` to stop. Nothing is kept after the session ends.
+    /// Type an empty line or `exit` to stop. Conversation text stays in this session;
+    /// local performance samples use the same persistent history as the desktop app.
     Chat {
-        /// Send each question verbatim and minimized observations to Nebius (required).
+        /// Send each sanitized question and minimized observations to Nebius (required).
         #[arg(long)]
         allow_cloud: bool,
         /// Send opaque process references instead of executable names (for example chrome.exe).
@@ -159,6 +198,19 @@ fn local_data_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("pcagent")
+}
+
+fn history_path(path: Option<PathBuf>) -> Result<PathBuf> {
+    path.or_else(|| {
+        pcagent_agent::credentials::file_path()
+            .and_then(|path| path.parent().map(|dir| dir.join("pcagent.sqlite")))
+    })
+    .ok_or_else(|| "The local history location is unknown; use --database.".into())
+}
+fn cli_sampler(path: Option<PathBuf>) -> Result<pcagent_store::sampler::Sampler> {
+    Ok(pcagent_store::sampler::Sampler::start(&history_path(
+        path,
+    )?)?)
 }
 
 /// No reading stdin or emitting an extra report in machine-readable/batch mode.
@@ -441,6 +493,100 @@ fn print_doctor(
 }
 fn run(args: Args) -> Result<u8> {
     match args.command {
+        Command::Inspect {
+            tool,
+            arguments,
+            anonymize,
+            database,
+        } => {
+            let mut collector = Collector::new();
+            let (policy, prefs) = (Policy::from_env(), Preferences::default());
+            let mut workstation = Workstation::new(
+                &mut collector,
+                Arc::new(StorageService::new()),
+                &policy,
+                &prefs,
+            );
+            workstation.set_sharing(if anonymize {
+                Sharing::Anonymized
+            } else {
+                Sharing::Complete
+            });
+            let spec = *workstation
+                .specs()
+                .iter()
+                .find(|spec| spec.name == tool)
+                .ok_or("Unknown read-only tool.")?;
+            let arguments = spec.validate(&arguments)?;
+            let sampler = if pcagent_agent::history_tools::TOOLS
+                .iter()
+                .any(|spec| spec.name == tool)
+            {
+                Some(cli_sampler(database)?)
+            } else {
+                None
+            };
+            if let Some(sampler) = &sampler {
+                workstation.set_history(sampler.clone(), Arc::new(AtomicBool::new(false)));
+            }
+            let output = workstation.run(&spec, &arguments);
+            write_json(&output.cloud)?;
+            Ok(if matches!(output.status, Status::Ok | Status::Partial) {
+                0
+            } else {
+                3
+            })
+        }
+        Command::History {
+            metric,
+            entity_ref,
+            window_seconds,
+            end_unix_ms,
+            database,
+        } => {
+            let metric = serde_json::from_value::<pcagent_shared::Metric>(json!(metric))?;
+            let end = end_unix_ms.unwrap_or_else(pcagent_shared::unix_ms);
+            if end > pcagent_shared::unix_ms() {
+                return Err("History cannot read a future window.".into());
+            }
+            let store = pcagent_store::Store::open(&history_path(database)?)?;
+            let result = store.metric_history(&pcagent_store::HistoryQuery {
+                metric,
+                entity_ref,
+                from_unix_ms: end.saturating_sub(window_seconds * 1000),
+                to_unix_ms: end,
+            })?;
+            write_json(&result)?;
+            Ok(0)
+        }
+        Command::Record { seconds, database } => {
+            let sampler = cli_sampler(database)?;
+            let recording = sampler.record(seconds, &AtomicBool::new(false))?;
+            let end = recording
+                .ended_at_unix_ms
+                .unwrap_or_else(pcagent_shared::unix_ms);
+            let history = sampler.history(&pcagent_store::HistoryQuery {
+                metric: pcagent_shared::Metric::CpuBusyBasisPoints,
+                entity_ref: "system".into(),
+                from_unix_ms: recording.started_at_unix_ms,
+                to_unix_ms: end.max(recording.started_at_unix_ms + 1),
+            })?;
+            let process_activity = sampler.process_peaks(
+                recording.started_at_unix_ms,
+                end.max(recording.started_at_unix_ms + 1),
+                10,
+            )?;
+            write_json(&json!({"recording":recording,"history":history,
+                    "process_activity":process_activity,"sampler":sampler.status()}))?;
+            Ok(0)
+        }
+        Command::Sample { seconds, database } => {
+            let sampler = cli_sampler(database)?;
+            std::thread::sleep(Duration::from_secs(seconds));
+            sampler.stop();
+            write_json(&sampler.status())?;
+            Ok(0)
+        }
         Command::Snapshot { limit } | Command::Processes { limit, .. } => {
             let processes_only = matches!(args.command, Command::Processes { .. });
             let sort = match &args.command {
@@ -637,8 +783,12 @@ fn run(args: Args) -> Result<u8> {
             if allow_cloud && !cfg!(windows) {
                 return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
             }
+            let creds = Credentials::load();
+            let mut privacy = PrivacyContext::local();
+            if let Some(secret) = creds.get("NEBIUS_API_KEY") {
+                privacy.protect_secret(&secret);
+            }
             let mut model = if allow_cloud {
-                let creds = Credentials::load();
                 let config = Config::from_lookup(|name| creds.get(name))
                     .map_err(|e| cloud_setup_error(e, &creds))?;
                 Some(Nebius::new(config)?)
@@ -648,18 +798,19 @@ fn run(args: Args) -> Result<u8> {
             let mut collector = Collector::new();
             let initial = collector.snapshot(true, 10);
             let policy = Policy::from_env();
-            let prepared = storage_view::prepare(
+            let prepared = storage_view::prepare_with_privacy(
                 &storage,
                 &policy,
                 &prefs,
                 share_file_names,
                 compare_content,
+                &privacy,
             )?;
             if preview_cloud {
                 write_json(
-                    &json!({"sent":false,"notice":"Question is sent verbatim only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
-                    "message":initial_message(&question, &initial, sharing),
-                    "tools":WORKSTATION_TOOLS.iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
+                    &json!({"sent":false,"notice":"The sanitized question is sent only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
+                    "message":initial_message_with_privacy(&question, &initial, sharing, &privacy),
+                    "tools":Workstation::tool_specs().iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
                     "authorized_scopes":storage.scopes().len(),
                     "file_name_sharing":prepared.context.sharing_preview(),
                     "storage_tool_previews":prepared.preview}),
@@ -678,6 +829,9 @@ fn run(args: Args) -> Result<u8> {
                 Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
             workstation.set_storage_context(prepared.context.clone());
             workstation.set_sharing(sharing);
+            if allow_cloud {
+                workstation.set_history(cli_sampler(None)?, Arc::new(AtomicBool::new(false)));
+            }
             let mut recovery = None;
             if propose_actions {
                 let dir = journal_dir.unwrap_or_else(|| local_data_dir().join("journal"));
@@ -702,11 +856,13 @@ fn run(args: Args) -> Result<u8> {
                             MAX_DURATION.as_secs()
                         );
                     }
-                    investigate_with_extension(
+                    converse_with_privacy(
                         model,
+                        &[],
                         &question,
                         &initial,
                         &mut workstation,
+                        &privacy,
                         |event| {
                             if verbose {
                                 eprintln!("{}", text::tool_event(event));
@@ -793,6 +949,11 @@ fn run(args: Args) -> Result<u8> {
             let config = Config::from_lookup(|name| creds.get(name))
                 .map_err(|e| cloud_setup_error(e, &creds))?;
             let mut model = Nebius::new(config)?;
+            let mut privacy = PrivacyContext::local();
+            if let Some(secret) = creds.get("NEBIUS_API_KEY") {
+                privacy.protect_secret(&secret);
+            }
+            let sampler = cli_sampler(None)?;
             let sharing = if anonymize {
                 Sharing::Anonymized
             } else {
@@ -824,12 +985,14 @@ fn run(args: Args) -> Result<u8> {
                 let mut workstation =
                     Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
                 workstation.set_sharing(sharing);
-                let report = converse(
+                workstation.set_history(sampler.clone(), Arc::new(AtomicBool::new(false)));
+                let report = converse_with_privacy(
                     &mut model,
                     &past,
                     question,
                     &initial,
                     &mut workstation,
+                    &privacy,
                     |event| {
                         if verbose {
                             eprintln!("{}", text::tool_event(event));

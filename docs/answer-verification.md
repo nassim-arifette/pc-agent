@@ -33,7 +33,24 @@ disables sending until the matching preview is ready; older asynchronous respons
 
 Known program names in previous questions, answers and retained payloads are projected again under
 the current sharing choice. Executable basenames and their common short forms are replaced in
-anonymized history. The local dictionary also retains names of programs that have exited.
+anonymized history. The local dictionary also retains names of programs that have exited, and
+previously shared service, application and storage names. Changing to anonymized mode removes the
+name dictionaries and named storage fields from retained observations as well as the known names
+from previous prose and the next question.
+
+`PrivacyContext` freezes the local profile, user and machine names and known environment credentials
+with the consent ticket. `conversation_message_with_privacy` and `converse_with_privacy` use that
+same context. Every initial message, retained source and subsequent tool result passes through the
+same final text filter. Repair messages and echoed model tool arguments are filtered too; model
+output is never trusted merely because it came from a provider. This metadata has no serialization
+implementation and its debug representation withholds the identifiers.
+
+Complete mode allows sanitized display names and file paths relative to a known folder
+(`%USERPROFILE%`, `%LOCALAPPDATA%`, etc.) or the locally authorized scope (`%SCOPE%`). It never
+discloses a raw drive/profile prefix or a UNC server. Storage name authorization remains finite
+and scan-specific: a rescan does not inherit it. `StorageContext::sharing_preview` shows the exact
+names and relative paths that the tool may disclose. GUI callers must explicitly request file-name
+sharing; the existing program-name choice alone does not authorize that additional disclosure.
 
 The preview describes the **first data message**. The model then chooses read-only tools; their
 future results cannot be included in that initial preview. The dialog states that subsequent
@@ -46,6 +63,20 @@ automatically to a different folder.
   through the existing bounded repair loop and remains marked if it cannot be repaired.
 - A failed, stale or mismatched preview blocks cloud submission; it does not silently collect a
   different first snapshot or switch sharing mode.
+- Collectors continue to use positive field allowlists. Sensitive structured fields (command
+  lines, content, usernames, machine identifiers and credentials) are discarded by the final guard.
+  Free-text filtering removes known local identities/secrets, email addresses, common credential
+  formats, obvious commands, labeled pasted file content, code fences and private-key blocks.
+  Arbitrary unlabelled prose cannot reliably be classified as a personal name, file content or an
+  unknown secret; the exact sanitized preview remains the user's opportunity to inspect the text.
+  No collector reads file content in order to prepare a cloud payload.
+- Executable-name validation uses the names actually disclosed in structured tool results. A name
+  appearing only in the user's question or in previous prose is not proof that the program exists.
+- Activity rates distinguish bytes per second from page/event counts per second. Memory increases
+  and decreases must use the matching delta measurement; a current working-set value cannot prove
+  growth, and a measured delta cannot stand in for current usage.
+- Explicit CPU and GPU claims also constrain temperature, frequency and power readings. A firmware
+  thermal-zone value cannot certify a temperature attributed to either processor family.
 - Older stored display-only reports remain readable locally. They are not replayed as model
   context because they have neither original measured sources nor a reliable name dictionary.
 - The replay budget includes serialized evidence and name metadata, not only question/answer text.
@@ -66,9 +97,10 @@ automatically to a different folder.
   expressions. Ambiguous phrasing can require a rewrite; comprehensive semantic attribution is
   still an evaluation target, particularly for multiple metrics in one sentence.
 - Unitless versions, dates and counts are not automatically checked by the quantity parser.
-- This is not general anonymization of free-form user text. The current question is still sent
-  verbatim; the history projection replaces known collected program names. Broader C5 enforcement
-  for secrets or personal information manually pasted into questions remains to be implemented.
+- This is not general anonymization of free-form user text. Current questions, retained context,
+  tool output and repair echoes pass through the frozen privacy filter, but arbitrary unknown
+  secrets, personal names and unlabelled pasted content cannot reliably be identified. The
+  sanitized preview must remain visible before consent.
 - Per-request previews of later tool results and a complete outbound-data inspection interface
   remain future work. They must preserve the model's ability to choose its tools.
 - A replay comparison against Claude remains part of work package 7. Scripted regression tests

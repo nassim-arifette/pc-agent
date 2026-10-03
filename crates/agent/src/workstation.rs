@@ -8,16 +8,15 @@ use crate::proposals::{
 use crate::tools::{Args, Param, ParamKind, ToolOutput, ToolSpec, Toolbox, MAX_PROCESSES};
 use pcagent_actions::{ActionKind, FileTarget, ResolvedTarget, SyntheticDemoCache};
 use pcagent_policy::{Attributes, CandidateInput, Policy, Preferences, SYNTHETIC_CACHE_ID};
-use pcagent_shared::{Metric, Origin, Status};
+use pcagent_shared::{Origin, Status};
 use pcagent_storage::{ItemKind, ScanJob, ScanOptions, StorageError, StorageService};
 use pcagent_telemetry::Collector;
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 const SCOPE: Param = Param {
@@ -175,6 +174,8 @@ pub struct Workstation<'a> {
     observation_refs: Vec<String>,
     storage_context: crate::StorageContext,
     sharing: crate::Sharing,
+    history: Option<crate::history_tools::HistoryTools>,
+    allowed_scopes: Option<Vec<String>>,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -190,11 +191,13 @@ impl<'a> Workstation<'a> {
             prefs,
             scan_options: ScanOptions::default(),
             jobs: Vec::new(),
-            specs: WORKSTATION_TOOLS.to_vec(),
+            specs: Self::tool_specs(),
             actions: None,
             observation_refs: Vec::new(),
             storage_context: crate::StorageContext::default(),
             sharing: crate::Sharing::Anonymized,
+            history: None,
+            allowed_scopes: None,
         }
     }
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
@@ -221,8 +224,29 @@ impl<'a> Workstation<'a> {
     pub fn set_sharing(&mut self, sharing: crate::Sharing) {
         self.sharing = sharing;
     }
+    pub fn tool_specs() -> Vec<ToolSpec> {
+        WORKSTATION_TOOLS
+            .iter()
+            .filter(|s| !matches!(s.name, "get_metric_history" | "get_hardware_inventory"))
+            .chain(crate::system_tools::TOOLS)
+            .chain(crate::history_tools::TOOLS)
+            .chain(crate::activity_tools::TOOLS)
+            .copied()
+            .collect()
+    }
+    pub fn set_history(
+        &mut self,
+        sampler: pcagent_store::sampler::Sampler,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.history = Some(crate::history_tools::HistoryTools { sampler, stop });
+    }
     pub fn set_storage_context(&mut self, context: crate::StorageContext) {
         self.storage_context = context;
+    }
+    /// Restrict a turn to the scopes approved in its exact local preview.
+    pub fn set_allowed_scopes(&mut self, scopes: Vec<String>) {
+        self.allowed_scopes = Some(scopes);
     }
 }
 
@@ -243,17 +267,6 @@ fn storage_error(e: StorageError) -> ToolOutput {
 }
 fn to_value(v: &impl Serialize) -> Value {
     serde_json::to_value(v).expect("serializable tool output")
-}
-/// Keeps only the listed top-level keys of a serialized value.
-fn allow(v: &impl Serialize, keys: &[&str]) -> Value {
-    let Value::Object(mut map) = to_value(v) else {
-        return Value::Null;
-    };
-    Value::Object(
-        keys.iter()
-            .filter_map(|k| map.remove(*k).map(|v| ((*k).into(), v)))
-            .collect::<Map<_, _>>(),
-    )
 }
 fn kind(args: &Args) -> ItemKind {
     if args.text("kind") == Some("dirs") {
@@ -399,61 +412,6 @@ impl Workstation<'_> {
             .markers()
             .any(|m| fs::symlink_metadata(dir.join(m)).is_ok_and(|md| md.is_file()))
     }
-    fn metric_history(&self, args: &Args) -> ToolOutput {
-        let Some(metric) = args
-            .text("metric")
-            .and_then(|m| serde_json::from_value::<Metric>(Value::String(m.into())).ok())
-        else {
-            return output(Status::Error, json!({"error": "unknown metric"}));
-        };
-        let window = Duration::from_secs(args.integer("window_seconds").unwrap_or(60));
-        let s = self.collector.metric_history(metric, window);
-        let mut out = output(
-            s.status,
-            allow(
-                &s,
-                &[
-                    "metric",
-                    "unit",
-                    "origin",
-                    "status",
-                    "requested_window_ms",
-                    "observed_interval_ms",
-                    "retention",
-                    "points",
-                    "gaps",
-                    "limitations",
-                ],
-            ),
-        );
-        out.inspection_complete = s
-            .points
-            .iter()
-            .any(|p| p.value.is_some() && matches!(p.status, Status::Ok | Status::Partial));
-        out
-    }
-    fn inventory(&self) -> ToolOutput {
-        let i = self.collector.hardware_inventory();
-        let volumes = i.volumes.value.as_ref().map(|v| {
-            v.iter()
-                .map(|v| {
-                    json!({"kind": v.kind, "total_bytes": v.total_bytes, "free_bytes": v.free_bytes,
-                    "available_to_caller_bytes": v.available_to_caller_bytes, "status": v.status})
-                })
-                .collect::<Vec<_>>()
-        });
-        let mut out = output(
-            i.status,
-            json!({"status": i.status, "origin": i.origin, "collected_at_unix_ms": i.collected_at_unix_ms, "os_version": i.os_version,
-                "architecture": i.architecture, "logical_processors": i.logical_processors,
-                "installed_memory_bytes": i.installed_memory_bytes,
-                "volumes": {"value": volumes, "status": i.volumes.status, "source": i.volumes.source},
-                "gpu_adapters": i.gpu_adapters, "limitations": i.limitations}),
-        );
-        out.inspection_complete =
-            i.logical_processors.value.is_some() || i.installed_memory_bytes.value.is_some();
-        out
-    }
     fn cleanup_candidates(&self, scope: &str, args: &Args) -> ToolOutput {
         let page =
             match self
@@ -509,86 +467,108 @@ impl Toolbox for Workstation<'_> {
     }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         let scope = args.text("scope_id").unwrap_or_default();
-        let mut out = match spec.name {
-            "get_system_snapshot" => ToolOutput::from_snapshot(&self.collector.snapshot(false, 1)),
-            "get_processes" => {
-                let limit = usize_arg(args, "limit", MAX_PROCESSES as usize);
-                let sort = args
-                    .text("sort_by")
-                    .and_then(pcagent_telemetry::ProcessSort::parse)
-                    .unwrap_or_default();
-                ToolOutput::from_snapshot(&self.collector.snapshot_sorted(true, limit, sort))
-            }
-            "get_process_details" => {
-                self.process_details(args.text("entity_ref").unwrap_or_default())
-            }
-            "get_process_tree" => self.process_tree(),
-            "get_metric_history" => self.metric_history(args),
-            "get_hardware_inventory" => self.inventory(),
-            "list_storage_scopes" => {
-                let scopes: Vec<Value> = self
+        if !scope.is_empty()
+            && self
+                .allowed_scopes
+                .as_ref()
+                .is_some_and(|scopes| !scopes.iter().any(|s| s == scope))
+        {
+            return output(
+                Status::PermissionDenied,
+                json!({"scope_id":scope,"error":"Scope was not approved for this turn."}),
+            );
+        }
+        let extension = crate::system_tools::run(spec, args, self.sharing)
+            .or_else(|| crate::history_tools::run(spec, args, self.history.as_ref(), self.sharing))
+            .or_else(|| crate::activity_tools::run(spec, args, self.collector, self.sharing));
+        let mut out = if let Some(out) = extension {
+            out
+        } else {
+            match spec.name {
+                "get_system_snapshot" => {
+                    ToolOutput::from_snapshot(&self.collector.snapshot(false, 1))
+                }
+                "get_processes" => {
+                    let limit = usize_arg(args, "limit", MAX_PROCESSES as usize);
+                    let sort = args
+                        .text("sort_by")
+                        .and_then(pcagent_telemetry::ProcessSort::parse)
+                        .unwrap_or_default();
+                    ToolOutput::from_snapshot(&self.collector.snapshot_sorted(true, limit, sort))
+                }
+                "get_process_details" => {
+                    self.process_details(args.text("entity_ref").unwrap_or_default())
+                }
+                "get_process_tree" => self.process_tree(),
+
+                "list_storage_scopes" => {
+                    let scopes: Vec<Value> = self
                     .storage
                     .scopes()
                     .iter()
+                    .filter(|s| self.allowed_scopes.as_ref().is_none_or(|allowed| allowed.contains(&s.scope_id)))
                     .map(|s| json!({ "scope_id": s.scope_id, "scan_available": self.storage.index(&s.scope_id).is_ok() }))
                     .collect();
-                output(Status::Ok, json!({ "scopes": scopes }))
-            }
-            "get_storage_overview" => match self.storage.get_storage_overview(scope) {
-                Ok(o) => {
-                    let o = o.without_paths().redact_names();
-                    let status = o.scan.as_ref().map_or(Status::Partial, |s| s.status);
-                    let mut cloud = to_value(&o);
-                    if let Some(map) = cloud.as_object_mut() {
-                        map.remove("redacted_root");
-                    }
-                    let mut out = output(status, cloud);
-                    out.inspection_complete = o.scan.is_some() || o.volume.free_bytes.is_some();
-                    out
+                    output(Status::Ok, json!({ "scopes": scopes }))
                 }
-                Err(e) => storage_error(e),
-            },
-            "start_storage_scan" => match self.storage.start_storage_scan(scope, self.scan_options)
-            {
-                Ok(job) => {
-                    self.jobs.push(job);
-                    output(
-                        Status::Ok,
-                        json!({"scope_id": scope, "started": true,
-                        "note": "Poll get_storage_overview; results appear when the scan completes."}),
-                    )
-                }
-                Err(e) => storage_error(e),
-            },
-            "get_largest_items" => {
-                let (offset, limit) = (usize_arg(args, "offset", 0), usize_arg(args, "limit", 20));
-                match self
-                    .storage
-                    .get_largest_items(scope, kind(args), offset, limit)
-                {
-                    Ok(p) => {
-                        let (cloud, local) =
-                            self.storage_context
-                                .project_page(&p, self.policy, self.prefs);
-                        let mut out = output(p.scan_status, cloud);
-                        out.storage_items = local;
-                        out.inspection_complete =
-                            p.scan_status == Status::Ok || !p.items.is_empty();
+                "get_storage_overview" => match self.storage.get_storage_overview(scope) {
+                    Ok(o) => {
+                        let o = o.without_paths().redact_names();
+                        let status = o.scan.as_ref().map_or(Status::Partial, |s| s.status);
+                        let mut cloud = to_value(&o);
+                        if let Some(map) = cloud.as_object_mut() {
+                            map.remove("redacted_root");
+                        }
+                        let mut out = output(status, cloud);
+                        out.inspection_complete = o.scan.is_some() || o.volume.free_bytes.is_some();
                         out
                     }
                     Err(e) => storage_error(e),
+                },
+                "start_storage_scan" => {
+                    match self.storage.start_storage_scan(scope, self.scan_options) {
+                        Ok(job) => {
+                            self.jobs.push(job);
+                            output(
+                                Status::Ok,
+                                json!({"scope_id": scope, "started": true,
+                        "note": "Poll get_storage_overview; results appear when the scan completes."}),
+                            )
+                        }
+                        Err(e) => storage_error(e),
+                    }
                 }
+                "get_largest_items" => {
+                    let (offset, limit) =
+                        (usize_arg(args, "offset", 0), usize_arg(args, "limit", 20));
+                    match self
+                        .storage
+                        .get_largest_items(scope, kind(args), offset, limit)
+                    {
+                        Ok(p) => {
+                            let (cloud, local) =
+                                self.storage_context
+                                    .project_page(&p, self.policy, self.prefs);
+                            let mut out = output(p.scan_status, cloud);
+                            out.storage_items = local;
+                            out.inspection_complete =
+                                p.scan_status == Status::Ok || !p.items.is_empty();
+                            out
+                        }
+                        Err(e) => storage_error(e),
+                    }
+                }
+                "get_cleanup_candidates" => self.cleanup_candidates(scope, args),
+                "prepare_action_plan" => match self.propose(args) {
+                    Ok(v) => output(Status::Ok, v),
+                    Err(e) => output(Status::Error, json!({ "error": e })),
+                },
+                "get_user_preferences" => output(
+                    Status::Ok,
+                    to_value(&self.policy.user_preferences_view(self.prefs)),
+                ),
+                _ => output(Status::Error, json!({"error": "unregistered tool"})),
             }
-            "get_cleanup_candidates" => self.cleanup_candidates(scope, args),
-            "prepare_action_plan" => match self.propose(args) {
-                Ok(v) => output(Status::Ok, v),
-                Err(e) => output(Status::Error, json!({ "error": e })),
-            },
-            "get_user_preferences" => output(
-                Status::Ok,
-                to_value(&self.policy.user_preferences_view(self.prefs)),
-            ),
-            _ => output(Status::Error, json!({"error": "unregistered tool"})),
         };
         // Preserve the target even on errors, so one failed scope cannot disappear from coverage.
         if !scope.is_empty() {
@@ -606,6 +586,7 @@ impl Toolbox for Workstation<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pcagent_shared::Metric;
     use std::fs;
 
     fn run(ws: &mut Workstation<'_>, name: &str, args: &str) -> ToolOutput {
@@ -615,10 +596,35 @@ mod tests {
     }
     #[test]
     fn every_tool_is_dispatched_and_definitions_are_unique() {
-        let mut names: Vec<_> = WORKSTATION_TOOLS.iter().map(|s| s.name).collect();
+        let specs = Workstation::tool_specs();
+        let mut names: Vec<_> = specs.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), WORKSTATION_TOOLS.len());
+        assert_eq!(names.len(), specs.len());
+        for name in [
+            "get_process_activity",
+            "get_startup_programs",
+            "get_services",
+            "get_recent_events",
+            "get_system_state",
+            "get_power_and_thermal",
+            "get_installed_apps",
+            "get_hardware_inventory",
+            "get_cleanup_opportunities",
+            "query_system",
+            "record_activity",
+            "get_metric_history",
+            "get_activity_events",
+        ] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.name == name)
+                .expect("registered phase-one tool");
+            assert_eq!(
+                spec.definition()["function"]["parameters"]["additionalProperties"],
+                false
+            );
+        }
         let (mut c, policy, prefs) = (Collector::new(), Policy::default(), Preferences::default());
         let mut ws = Workstation::new(&mut c, Arc::new(StorageService::new()), &policy, &prefs);
         for spec in WORKSTATION_TOOLS {
@@ -632,9 +638,34 @@ mod tests {
     }
     #[test]
     fn history_metrics_parse_as_shared_metrics() {
-        for m in HISTORY_METRICS {
+        for m in HISTORY_METRICS.iter().chain(crate::history_tools::METRICS) {
             assert!(serde_json::from_value::<Metric>(json!(m)).is_ok(), "{m}");
         }
+    }
+    #[test]
+    fn a_turn_cannot_read_another_previously_authorized_scope() {
+        let dir = std::env::temp_dir().join(pcagent_shared::new_id("scope-selection"));
+        fs::create_dir_all(dir.join("first")).unwrap();
+        fs::create_dir_all(dir.join("second")).unwrap();
+        let storage = Arc::new(StorageService::new());
+        let first = storage.authorize(&dir.join("first")).unwrap().scope_id;
+        let second = storage.authorize(&dir.join("second")).unwrap().scope_id;
+        let (mut collector, policy, prefs) =
+            (Collector::new(), Policy::default(), Preferences::default());
+        let mut tools = Workstation::new(&mut collector, storage, &policy, &prefs);
+        tools.set_allowed_scopes(vec![first.clone()]);
+        let listed = run(&mut tools, "list_storage_scopes", "{}");
+        assert_eq!(listed.cloud["scopes"].as_array().unwrap().len(), 1);
+        assert_eq!(listed.cloud["scopes"][0]["scope_id"], first);
+        let rejected = run(
+            &mut tools,
+            "get_storage_overview",
+            &json!({"scope_id":second}).to_string(),
+        );
+        assert_eq!(rejected.status, Status::PermissionDenied);
+        assert!(tools.observation_refs.is_empty());
+        drop(tools);
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn storage_tools_keep_full_paths_and_file_names_of_the_root_local() {

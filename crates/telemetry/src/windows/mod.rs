@@ -1,7 +1,9 @@
 //! The only unsafe boundary: documented, read-only Windows API calls.
+pub(crate) mod activity;
 mod inventory;
 pub(super) mod nvml;
 pub(super) mod pdh;
+pub(crate) mod services;
 mod sysproc;
 mod tree;
 pub(super) use inventory::hardware_inventory;
@@ -30,9 +32,10 @@ use windows_sys::Win32::{
         },
         SystemInformation::{GetSystemTimeAsFileTime, GetTickCount64},
         Threading::{
-            GetActiveProcessorCount, GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes,
-            GetSystemTimes, OpenProcess, QueryFullProcessImageNameW, ALL_PROCESSOR_GROUPS,
-            IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetActiveProcessorCount, GetCurrentProcess, GetCurrentThread, GetExitCodeProcess,
+            GetProcessIoCounters, GetProcessTimes, GetSystemTimes, GetThreadTimes, OpenProcess,
+            QueryFullProcessImageNameW, ALL_PROCESSOR_GROUPS, IO_COUNTERS,
+            PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
 };
@@ -63,6 +66,41 @@ impl Drop for OwnedHandle {
 }
 fn filetime(t: FILETIME) -> u64 {
     (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)
+}
+
+pub(super) fn resource_usage() -> crate::ResourceUsage {
+    // SAFETY: current-thread/process pseudo-handles are borrowed, never closed; outputs are
+    // valid plain-data structures with the declared lengths. Both APIs are read-only.
+    unsafe {
+        let (mut created, mut exited, mut kernel, mut user): (
+            FILETIME,
+            FILETIME,
+            FILETIME,
+            FILETIME,
+        ) = (zeroed(), zeroed(), zeroed(), zeroed());
+        let thread_cpu_100ns = (GetThreadTimes(
+            GetCurrentThread(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        ) != 0)
+            .then(|| filetime(kernel).checked_add(filetime(user)))
+            .flatten();
+        let mut memory: PROCESS_MEMORY_COUNTERS = zeroed();
+        memory.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let process_working_set_bytes =
+            (K32GetProcessMemoryInfo(GetCurrentProcess(), &mut memory, memory.cb) != 0)
+                .then_some(memory.WorkingSetSize as u64);
+        crate::ResourceUsage {
+            thread_cpu_100ns,
+            process_working_set_bytes,
+            logical_processors: match processor_count() {
+                0 => None,
+                count => Some(count),
+            },
+        }
+    }
 }
 fn last_error() -> u32 {
     // SAFETY: thread-local error retrieval has no memory preconditions.
@@ -458,7 +496,14 @@ fn track(
         tracked.instance.executable_name = reading.name;
     }
     let entity = tracked.instance.entity_ref.clone();
-    let prev = tracked.counters.or(baseline);
+    // A requested fresh window wins over an older registry sample. Background sampling uses
+    // the registry only while its interval is bounded; a long sleep cannot dilute a new spike
+    // into hours of unrelated activity.
+    let prev = baseline.or(tracked.counters).filter(|p| {
+        now.at
+            .checked_sub(p.at)
+            .is_some_and(|elapsed| elapsed <= Duration::from_secs(60))
+    });
     let window = Window::instant();
     let mut evidence = match reading.memory {
         Ok((ws, private)) => vec![

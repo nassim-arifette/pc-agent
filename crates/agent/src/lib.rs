@@ -2,22 +2,29 @@
 //! the controller checks every citation, number and name of that answer against what the tools
 //! returned. The model never supplies permissions, commands or executed actions.
 #![forbid(unsafe_code)]
+pub mod activity_tools;
 mod answer;
 pub use answer::{
     Answer, Category, Citation, CitationKind, Confidence, Issue, IssueKind, SUBMIT_ANSWER,
 };
 mod budget;
 mod conversation;
+mod privacy;
+pub use privacy::PrivacyContext;
 mod draft;
 pub use draft::draft_text;
 mod cost;
-pub use conversation::{conversation_message, PastTurn, MAX_PAST_CHARS};
+pub use conversation::{
+    conversation_message, conversation_message_with_privacy, PastTurn, MAX_PAST_CHARS,
+};
 pub mod credentials;
+pub mod history_tools;
 mod nebius;
 mod payload;
 mod proposals;
 mod report;
 mod storage_context;
+pub mod system_tools;
 pub use storage_context::{
     ContentContext, LocalStorageItem, SharedName, StorageContext, MAX_SHARED_NAMES,
 };
@@ -194,9 +201,7 @@ pub fn cloud_entity_allowed(entity_ref: &str) -> bool {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     };
     entity_ref == "system"
-        || entity_ref
-            .strip_prefix("proc-")
-            .is_some_and(|r| !r.is_empty())
+        || is_process_ref(entity_ref)
         || entity_ref.strip_prefix("gpu-engine-").is_some_and(generic)
         || entity_ref.strip_prefix("gpu-nvidia-").is_some_and(|index| {
             (1..=2).contains(&index.len()) && index.bytes().all(|b| b.is_ascii_digit())
@@ -241,17 +246,7 @@ pub const MAX_SHARED_NAME_CHARS: usize = 64;
 /// An executable name as the model may receive it: the last path component, without control
 /// or bidirectional-formatting characters, bounded in length.
 fn shared_name(name: &str) -> Option<String> {
-    let base = name.rsplit(['\\', '/']).next().unwrap_or(name);
-    let clean: String = base
-        .chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-        })
-        .take(MAX_SHARED_NAME_CHARS)
-        .collect();
-    let clean = clean.trim().to_owned();
-    (!clean.is_empty()).then_some(clean)
+    PrivacyContext::local().shared_name(name)
 }
 
 fn is_process_ref(text: &str) -> bool {
@@ -280,14 +275,18 @@ fn process_refs(value: &Value, out: &mut BTreeSet<String>) {
 
 /// Adds `process_names` to a payload: the executable name of each process reference it
 /// mentions, when the local collector knows it.
-fn share_process_names(payload: &mut Value, processes: &[ProcessInstance]) {
+fn share_process_names(
+    payload: &mut Value,
+    processes: &[ProcessInstance],
+    privacy: &PrivacyContext,
+) {
     let mut refs = BTreeSet::new();
     process_refs(payload, &mut refs);
     let names: serde_json::Map<String, Value> = refs
         .into_iter()
         .filter_map(|r| {
             let process = processes.iter().find(|p| p.entity_ref == r)?;
-            let name = shared_name(process.executable_name.as_deref()?)?;
+            let name = privacy.shared_name(process.executable_name.as_deref()?)?;
             Some((r, Value::String(name)))
         })
         .collect();
@@ -300,12 +299,23 @@ fn share_process_names(payload: &mut Value, processes: &[ProcessInstance]) {
 /// candidate findings under short aliases and, when shared, program names.
 /// `diagnose --preview-cloud` and the desktop app's preview show this.
 pub fn initial_message(question: &str, initial: &Snapshot, sharing: Sharing) -> Value {
+    initial_message_with_privacy(question, initial, sharing, &PrivacyContext::local())
+}
+
+/// The first data message using the identifiers frozen with a consent preview.
+pub fn initial_message_with_privacy(
+    question: &str,
+    initial: &Snapshot,
+    sharing: Sharing,
+    privacy: &PrivacyContext,
+) -> Value {
     first_message(
         question,
         initial,
         &analyze(initial),
         &mut FindingAliases::default(),
         sharing,
+        privacy,
     )
 }
 fn first_message(
@@ -314,6 +324,7 @@ fn first_message(
     findings: &[Finding],
     aliases: &mut FindingAliases,
     sharing: Sharing,
+    privacy: &PrivacyContext,
 ) -> Value {
     let candidates: Vec<ModelFinding<'_>> =
         findings.iter().map(|f| aliases.model_finding(f)).collect();
@@ -322,9 +333,28 @@ fn first_message(
         "findings":candidates,"current_finding_ids":current});
     message["initial_observation"]["observation_id"] = json!("O0");
     if sharing == Sharing::Complete {
-        share_process_names(&mut message, &initial.processes);
+        share_process_names(&mut message, &initial.processes, privacy);
+    } else {
+        let names = process_name_map(&initial.processes, privacy);
+        privacy::anonymize(&mut message, &names);
     }
+    privacy.sanitize_value(&mut message);
     message
+}
+
+fn process_name_map(
+    processes: &[ProcessInstance],
+    privacy: &PrivacyContext,
+) -> BTreeMap<String, String> {
+    processes
+        .iter()
+        .filter_map(|process| {
+            Some((
+                process.entity_ref.clone(),
+                privacy.shared_name(process.executable_name.as_deref()?)?,
+            ))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -540,6 +570,9 @@ impl Investigation {
     }
     /// Ends with the last checkable answer when there is one, otherwise with a partial report.
     fn finish(self, fallback: Option<Answer>, repairs: usize, error: AgentError) -> Self {
+        if error == AgentError::Cancelled {
+            return self.partial(error);
+        }
         match fallback {
             Some(answer) => self.answered(answer, repairs),
             None => self.partial(error),
@@ -756,6 +789,30 @@ pub fn converse(
     question: &str,
     initial: &Snapshot,
     toolbox: &mut impl Toolbox,
+    on_event: impl FnMut(&ToolEvent),
+    on_extension: impl FnMut(&Investigation, &ExtensionRequest) -> bool,
+) -> Investigation {
+    converse_with_privacy(
+        model,
+        past,
+        question,
+        initial,
+        toolbox,
+        &PrivacyContext::local(),
+        on_event,
+        on_extension,
+    )
+}
+
+/// Run using the same frozen privacy metadata as the exact first-message consent preview.
+#[allow(clippy::too_many_arguments)]
+pub fn converse_with_privacy(
+    model: &mut impl Model,
+    past: &[PastTurn],
+    question: &str,
+    initial: &Snapshot,
+    toolbox: &mut impl Toolbox,
+    privacy: &PrivacyContext,
     mut on_event: impl FnMut(&ToolEvent),
     mut on_extension: impl FnMut(&Investigation, &ExtensionRequest) -> bool,
 ) -> Investigation {
@@ -767,12 +824,24 @@ pub fn converse(
     }
     let mut aliases = FindingAliases::default();
     let sharing = toolbox.sharing();
-    let first = first_message(question, initial, &result.findings, &mut aliases, sharing);
-    let (first, historical) = conversation::prepare(first, past, sharing);
+    let first = first_message(
+        question,
+        initial,
+        &result.findings,
+        &mut aliases,
+        sharing,
+        privacy,
+    );
+    let (first, historical) = conversation::prepare(first, past, sharing, privacy);
     result.historical_observations = historical;
-    result.conversation_names = conversation::recent(past)
+    result.conversation_names = past
         .iter()
-        .flat_map(|turn| turn.program_names.clone())
+        .flat_map(|turn| {
+            turn.program_names
+                .iter()
+                .chain(&turn.shared_names)
+                .map(|(key, name)| (key.clone(), name.clone()))
+        })
         .collect();
     let follow_up = first.get("previous_turns").is_some();
     let mut messages = vec![json!({"role":"system",
@@ -801,6 +870,33 @@ pub fn converse(
             messages.push(json!({"role":"system","content":"The user explicitly extended the investigation budget. Continue from the existing observations and tool replies. Tool permissions and action approval requirements are unchanged."}));
         }
         result.stats.inference_calls += 1;
+        // Model text echoed during repair is untrusted too. Never reflect a guessed local
+        // identifier or a quoted command/credential in a later provider request.
+        for message in &mut messages {
+            if message["role"] == "assistant" || message["role"] == "tool" {
+                if let Some(text) = message["content"].as_str() {
+                    message["content"] = if let Ok(mut value) = serde_json::from_str::<Value>(text)
+                    {
+                        privacy.sanitize_value(&mut value);
+                        json!(value.to_string())
+                    } else {
+                        json!(privacy.sanitize_text(text))
+                    };
+                }
+                if let Some(calls) = message["tool_calls"].as_array_mut() {
+                    for call in calls {
+                        if let Some(text) = call["function"]["arguments"].as_str() {
+                            if let Ok(mut value) = serde_json::from_str::<Value>(text) {
+                                privacy.sanitize_value(&mut value);
+                                call["function"]["arguments"] = json!(value.to_string());
+                            } else {
+                                call["function"]["arguments"] = json!("{}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let reply = match model.complete(
             &messages,
             &definitions,
@@ -965,7 +1061,13 @@ pub fn converse(
             let fresh = output.findings.clone();
             result.append(output);
             if sharing == Sharing::Complete {
-                share_process_names(&mut cloud, &result.local_processes);
+                share_process_names(&mut cloud, &result.local_processes, privacy);
+            }
+            privacy::collect_shared_names(&cloud, &mut result.conversation_names);
+            if sharing == Sharing::Anonymized {
+                let mut names = result.conversation_names.clone();
+                names.extend(process_name_map(&result.local_processes, privacy));
+                privacy::anonymize(&mut cloud, &names);
             }
             if let Some(object) = cloud.as_object_mut() {
                 // The model cites short references; local observation IDs stay here.
@@ -991,6 +1093,7 @@ pub fn converse(
                         .collect::<Vec<_>>()),
                 );
             }
+            privacy.sanitize_value(&mut cloud);
             messages.push(json!({"role":"tool","tool_call_id":call.id,
                 "content":serde_json::to_string(&cloud).expect("serializable observation")}));
             received.push(cloud);

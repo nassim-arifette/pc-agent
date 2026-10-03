@@ -26,7 +26,8 @@ pcagent-telemetry.workspace = true
 pcagent-policy.workspace = true
 pcagent-actions.workspace = true
 pcagent-store.workspace = true
-tauri = { version = "=2.12.0", features = [] }
+pcagent-inspect.workspace = true
+tauri = { version = "=2.12.0", features = ["tray-icon"] }
 tauri-plugin-dialog = "=2.8.0"
 
 [build-dependencies]
