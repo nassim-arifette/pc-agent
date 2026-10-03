@@ -176,6 +176,101 @@ pub fn volumes(inventory: &HardwareInventory) -> Vec<VolumeView> {
         .collect()
 }
 
+/// One target of a proposed action, as the person reviews it. Local paths may appear: this is
+/// the local window, and the person must see exactly what would be touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TargetView {
+    pub kind: String,
+    pub label: String,
+    pub files: Option<u64>,
+    pub bytes: Option<u64>,
+}
+/// A proposal awaiting a decision in the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlanView {
+    pub plan_id: String,
+    pub kind: String,
+    pub targets: Vec<TargetView>,
+    pub recovery: String,
+    pub checks: Vec<String>,
+    /// `None` until the person declines or runs it; then `declined`, `running`, the outcome or
+    /// `refused`.
+    pub decision: Option<String>,
+}
+/// What an approved action did, with the measured before/after comparison.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionOutcome {
+    pub plan_id: String,
+    pub overall: String,
+    pub items: Value,
+    pub verification: Value,
+}
+
+fn snake(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+pub fn plan(plan: &pcagent_actions::ActionPlan, decision: Option<&str>) -> PlanView {
+    use pcagent_actions::ResolvedTarget;
+    let targets = plan
+        .items()
+        .iter()
+        .map(|item| match &item.target {
+            ResolvedTarget::File(f) => TargetView {
+                kind: "file".into(),
+                label: f.path.display().to_string(),
+                files: Some(1),
+                bytes: None,
+            },
+            ResolvedTarget::SettingsPage { page } => TargetView {
+                kind: "settings_page".into(),
+                label: page.uri().into(),
+                files: None,
+                bytes: None,
+            },
+            ResolvedTarget::CleanupAdapter(c) => TargetView {
+                kind: "cleanup".into(),
+                label: c.root.display().to_string(),
+                files: Some(c.files),
+                bytes: c.bytes,
+            },
+            ResolvedTarget::Process(t) => TargetView {
+                kind: "process".into(),
+                label: format!(
+                    "{} (PID {})",
+                    t.executable_name.as_deref().unwrap_or("process"),
+                    t.identity.pid
+                ),
+                files: None,
+                bytes: None,
+            },
+        })
+        .collect();
+    PlanView {
+        plan_id: plan.plan_id().to_owned(),
+        kind: snake(&plan.action_kind()),
+        targets,
+        recovery: snake(&plan.recovery()),
+        checks: plan.preconditions().iter().map(snake).collect(),
+        decision: decision.map(str::to_owned),
+    }
+}
+
+pub fn outcome(
+    result: &pcagent_actions::ActionResult,
+    verification: &pcagent_agent::ActionVerification,
+) -> ActionOutcome {
+    ActionOutcome {
+        plan_id: result.plan_id.clone(),
+        overall: snake(&result.overall),
+        items: serde_json::to_value(&result.items).unwrap_or_default(),
+        verification: serde_json::to_value(verification).unwrap_or_default(),
+    }
+}
+
 /// A Windows service hosted by one of an application's processes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceView {

@@ -7,12 +7,12 @@ import { t, classificationLabel } from "../i18n.js";
 import { markdown } from "../markdown.js";
 import { mark } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "../ask.js";
-import { state, subscribe, openPanel } from "../store.js";
+import { state, subscribe, openPanel, runPlan, declinePlan } from "../store.js";
 import { showSource } from "../panel.js";
 import { health } from "../live.js";
 import { numbering, citationTitle, toolLabel } from "../citations.js";
-import { copyText } from "../ui.js";
-import { duration, labelled, usd } from "../format.js";
+import { button, copyText, dialog } from "../ui.js";
+import { bytes, duration, labelled, usd } from "../format.js";
 import { modelName } from "../models.js";
 import { navigate } from "../router.js";
 
@@ -142,6 +142,95 @@ function iconButton(name, label, onClick) {
   return h("button", { type: "button", class: "icon-btn", title: label, "aria-label": label, onclick: onClick }, icon(name));
 }
 
+// ---------- Action proposals ----------
+// The model only proposes. Each card says exactly what would happen; "Review and confirm" lists
+// every target before anything runs, and the result is measured afterwards.
+
+const KIND_ICONS = { recycle_selected_files: "x", run_cleanup_adapter: "x", open_settings_page: "sliders", open_in_explorer: "folder", request_normal_close: "stop" };
+
+function planTitle(plan) {
+  const key = `action.kind.${plan.kind}`;
+  const label = t(key);
+  return label === key ? plan.kind : label;
+}
+
+function planSummary(plan) {
+  const files = plan.targets.reduce((n, x) => n + (x.files || 0), 0);
+  const size = plan.targets.reduce((n, x) => n + (x.bytes || 0), 0);
+  const parts = [];
+  if (files) parts.push(t(files === 1 ? "action.files.one" : "action.files", { count: files }));
+  if (size) parts.push(bytes(size));
+  parts.push(t(`action.recovery.${plan.recovery}`));
+  return parts.join(" · ");
+}
+
+function outcomeText(plan) {
+  if (plan.decision === "running") return t("action.running");
+  if (plan.decision === "declined") return t("action.declined");
+  if (plan.decision === "refused") return plan.error ? `${t("action.refused")} ${plan.error}` : t("action.refused");
+  const gained = plan.outcome?.verification?.volume?.gained_bytes;
+  const base = t(`action.outcome.${plan.decision}`);
+  return gained ? `${base} ${t("action.gained", { size: bytes(gained) })}` : base;
+}
+
+async function review(turn, plan) {
+  const go = await dialog(
+    (close) => [
+      h("h2", { class: "dialog-title" }, planTitle(plan)),
+      h("p", null, t("action.review.lead")),
+      h(
+        "ul",
+        { class: "plan-targets" },
+        plan.targets.map((x) =>
+          h("li", null, h("span", { class: "mono" }, x.label), x.files || x.bytes ? h("span", { class: "faint" }, ` · ${[x.files ? t("action.files", { count: x.files }) : null, x.bytes ? bytes(x.bytes) : null].filter(Boolean).join(", ")}`) : null),
+        ),
+      ),
+      h("p", { class: "note" }, labelled(t("action.recovery"), t(`action.recovery.${plan.recovery}`))),
+      h("p", { class: "note" }, t("action.review.checks")),
+      h(
+        "div",
+        { class: "dialog-actions" },
+        button(t("common.cancel"), { onClick: () => close(false) }),
+        button(t("action.run"), { variant: "primary", onClick: () => close(true) }),
+      ),
+    ],
+    { label: planTitle(plan), dismissValue: false },
+  );
+  if (go) runPlan(turn, plan);
+}
+
+function actionCards(turn, current) {
+  const plans = turn.plans || [];
+  if (!plans.length) return null;
+  return h(
+    "div",
+    { class: "action-cards" },
+    h("span", { class: "caption" }, t("action.proposed")),
+    h(
+      "div",
+      { class: "action-list" },
+      plans.map((plan) => {
+        const open = !plan.decision && current;
+        return h(
+          "div",
+          { class: ["action-card", plan.decision ? `is-${plan.decision}` : ""] },
+          h("span", { class: "action-icon" }, icon(plan.decision === "completed" ? "check" : KIND_ICONS[plan.kind] || "flag")),
+          h("div", { class: "action-text" }, h("strong", null, planTitle(plan)), h("span", null, plan.decision ? outcomeText(plan) : planSummary(plan))),
+          open
+            ? h(
+                "div",
+                { class: "row" },
+                h("button", { type: "button", class: "link-btn", onclick: () => declinePlan(turn, plan) }, t("action.dismiss")),
+                h("button", { type: "button", class: "btn btn-sm", onclick: () => review(turn, plan) }, t("action.review")),
+              )
+            : null,
+        );
+      }),
+    ),
+    h("span", { class: "note" }, icon("shield"), t("action.note")),
+  );
+}
+
 /** One answered turn. `inv` is the live run that produced it, when still known. */
 function turnView(turn, index, { last, inv, cloud }) {
   const report = turn.report;
@@ -178,7 +267,7 @@ function turnView(turn, index, { last, inv, cloud }) {
     "section",
     { class: "turn" },
     bubble(turn.question),
-    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, body, followUps, footer),
+    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, body, actionCards(turn, last), followUps, footer),
   );
 }
 
@@ -288,7 +377,9 @@ export function mount(page) {
   const renderTurns = () => {
     const turns = state.conversation?.turns || [];
     const inv = state.inv;
-    const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}`;
+    // Action proposals load after the turn and change when decided: they are part of the key.
+    const plans = turns.map((turn) => (turn.plans || []).map((p) => p.decision || "-").join("")).join("|");
+    const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}|${plans}`;
     if (key === turnsKey) return;
     turnsKey = key;
     fill(

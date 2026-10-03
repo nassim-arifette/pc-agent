@@ -335,12 +335,49 @@ function finish(inv, turn, conversationId, failure) {
     const conversation = state.conversation;
     if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
       conversation.id = conversationId ?? conversation.id;
-      conversation.turns.push({ id: turn.id, question: inv.question, report, at: inv.finishedAt });
+      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [] };
+      conversation.turns.push(saved);
+      if (report.mode === "nebius" && turn.id) loadPlans(saved);
     }
   }
   notify("conversation");
   notify("inv");
   refreshConversations();
+}
+
+/** Proposals of a finished turn; only the last turn's can still run. */
+async function loadPlans(turn) {
+  try {
+    turn.plans = await call("action_plans", { turnId: turn.id });
+  } catch {
+    turn.plans = [];
+  }
+  if (turn.plans.length) notify("conversation");
+}
+
+/** Runs one reviewed proposal after the person's click; resolves with its measured outcome. */
+export async function runPlan(turn, plan) {
+  plan.decision = "running";
+  notify("conversation");
+  try {
+    plan.outcome = await call("action_run", { turnId: turn.id, planId: plan.plan_id });
+    plan.decision = plan.outcome.overall;
+  } catch (error) {
+    plan.decision = "refused";
+    plan.error = error.message;
+  }
+  notify("conversation");
+  return plan;
+}
+
+export async function declinePlan(turn, plan) {
+  try {
+    await call("action_decline", { turnId: turn.id, planId: plan.plan_id });
+  } catch {
+    // Already decided or no longer current: the card still shows it as set aside.
+  }
+  plan.decision = "declined";
+  notify("conversation");
 }
 
 function onDone({ turn_id: turnId, conversation_id: conversationId, turn }) {
