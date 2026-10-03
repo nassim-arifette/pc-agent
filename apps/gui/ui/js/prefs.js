@@ -3,7 +3,8 @@
 import { setLanguage } from "./i18n.js";
 
 const KEY = "pcagent.prefs.v1";
-const defaults = { theme: "system", language: "system", motion: "system", askBeforeCloud: true, mode: "local", names: true };
+// English by default (the submission's language); Settings still offers the system language and French.
+const defaults = { theme: "system", language: "en", motion: "system", askBeforeCloud: true, mode: "local", names: true };
 let prefs = { ...defaults };
 
 export function loadPrefs() {
