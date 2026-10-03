@@ -60,6 +60,21 @@ impl Args {
             _ => None,
         }
     }
+    /// The validated arguments as a JSON object, keys in a stable order.
+    pub fn to_value(&self) -> Value {
+        Value::Object(
+            self.0
+                .iter()
+                .map(|(k, v)| {
+                    let value = match v {
+                        ArgValue::Integer(n) => Value::from(*n),
+                        ArgValue::Text(t) => Value::from(t.as_str()),
+                    };
+                    ((*k).to_owned(), value)
+                })
+                .collect(),
+        )
+    }
 }
 
 impl ToolSpec {

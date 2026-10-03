@@ -152,9 +152,14 @@ Reports distinguish `execution_status` (`completed`, `budget_exhausted`, `failed
 
 ## Workspace
 
+`pcagent-eval` provides consented local capture, strict replay, and a read-only MCP stdio server
+for comparing models against the same recorded situation. Replay is offline by default. See
+[the evaluation guide](docs/eval.md) for D: build paths, trace handling, campaigns and grading.
+
 ```text
 apps/cli/             argument parsing and rendering
 apps/gui/             desktop window (Tauri 2): commands and events in Rust, interface in ui/ (docs/gui.md)
+apps/eval/            local scenario capture, replay, model traces and MCP stdio (docs/eval.md)
 crates/shared/        versioned observations, units, statuses and process identities
 crates/telemetry/     read-only Windows adapters; unsupported results elsewhere
 crates/diagnostics/   conservative deterministic candidate findings

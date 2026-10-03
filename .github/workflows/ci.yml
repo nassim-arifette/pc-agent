@@ -29,15 +29,23 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build Windows CLI and desktop app
+      - name: Build Windows CLI, desktop app and evaluator
         if: runner.os == 'Windows'
-        run: cargo build --release --locked -p pcagent -p pcagent-gui
+        run: cargo build --release --locked -p pcagent -p pcagent-gui -p pcagent-eval
       - name: Keep Windows executable (no telemetry or keys)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pcagent-windows-x64
           path: target/release/pcagent.exe
+          if-no-files-found: error
+          retention-days: 7
+      - name: Keep Windows evaluator (no captures or results)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pcagent-eval-windows-x64
+          path: target/release/pcagent-eval.exe
           if-no-files-found: error
           retention-days: 7
       - name: Keep Windows desktop app (no telemetry or keys)

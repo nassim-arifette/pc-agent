@@ -657,7 +657,7 @@ Règles de travail :
 | 4 — Nouveaux outils | B | logique terminée : outils fermés, collecte native bornée, couverture et projections C4/C5 ; tests synthétiques et traces locales (voir docs/system-inspection.md) | wp1-phase1-logic |
 | 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
 | 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action à faire | #23, #24 |
-| 7 — Évaluation | D | à faire | |
+| 7 — Évaluation | D | en cours : `pcagent-eval` livré (capture de tous les outils de phase 1, rejeu strict, traces locales, MCP pour Claude) ; première campagne réelle à faire | wp7-eval |
 | 8 — Admin à la demande | B | à faire | |
 | 9 — Capteurs matériels | B | à faire | |
 | 10 — Modèle | A | à faire | |
