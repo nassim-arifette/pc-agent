@@ -224,6 +224,75 @@ function report(question, cloudRun, error = null) {
   };
 }
 
+
+// ---------- Persistent history (Sampler) ----------
+// Synthetic five-second samples over the last week with a night-time gap, three anomalies and an
+// optional recording. Shapes follow pcagent_store: points, gaps, events and process names.
+const historyStart = Date.now() - 7 * 24 * 3600 * 1000;
+const historyEvents = [
+  { id: "ev-1", kind: "cpu_busy", hoursAgo: 30, minutes: 3, peak: 8700, metric: "cpu_busy_basis_points", unit: "basis_points_of_total_cpu", contributor: "proc-11aa22bb", name: "firefox.exe" },
+  { id: "ev-2", kind: "disk_latency", hoursAgo: 52, minutes: 12, peak: 64000, metric: "disk_latency_microseconds", unit: "microseconds", contributor: "proc-33cc44dd", name: "TiWorker.exe" },
+  { id: "ev-3", kind: "memory_pressure", hoursAgo: 3, minutes: 6, peak: 9700, metric: "physical_used_basis_points", unit: "basis_points", contributor: "proc-11aa22bb", name: "firefox.exe" },
+];
+let historyCleared = false;
+let recording = null;
+let startupEnabled = false;
+function historyValue(metric, at) {
+  const hours = (Date.now() - at) / 3600000;
+  const wave = Math.sin(at / 900000) * 0.5 + Math.sin(at / 170000) * 0.3;
+  const near = (e) => Math.abs(hours - e.hoursAgo) < e.minutes / 60;
+  const ev = (kind) => historyEvents.find((e) => e.kind === kind && near(e));
+  switch (metric) {
+    case "cpu_busy_basis_points":
+      return ev("cpu_busy") ? 8500 : Math.round(1800 + wave * 900);
+    case "physical_total_bytes":
+      return Math.round(15.73 * GiB);
+    case "physical_available_bytes":
+      return ev("memory_pressure") ? Math.round(0.45 * GiB) : Math.round((3.2 + wave * 0.9) * GiB);
+    case "disk_idle_basis_points":
+      return ev("disk_latency") ? 2500 : Math.round(9300 + wave * 300);
+    case "gpu_busiest_engine_basis_points":
+      return Math.round(700 + wave * 500);
+    default:
+      return Math.round(1000 + wave * 500);
+  }
+}
+function historySeries(metric, from, to) {
+  // At most 120 points, like the agent's projection; one night without measurements.
+  const count = 120;
+  const step = Math.max(5000, Math.floor((to - from) / count));
+  const gapFrom = Date.now() - 20 * 3600 * 1000;
+  const gapTo = gapFrom + 7 * 3600 * 1000;
+  const points = [];
+  for (let at = from; at <= to; at += step) {
+    const inGap = (at >= gapFrom && at < gapTo) || at < historyStart || historyCleared;
+    points.push({ unix_ms: at, value: inGap ? null : historyValue(metric, at), min: null, max: null, status: inGap ? "unsupported" : "ok", measured_samples: inGap ? 0 : 1, expected_samples: 1, resolution_ms: step, observed_duration_ms: inGap ? 0 : step, origin: "synthetic_fixture" });
+  }
+  const gaps = historyCleared ? [{ from_unix_ms: from, to_unix_ms: to, reason: "not_sampled" }] : gapTo > from && gapFrom < to ? [{ from_unix_ms: Math.max(from, gapFrom), to_unix_ms: Math.min(to, gapTo), reason: "not_sampled" }] : [];
+  const events = historyCleared
+    ? []
+    : historyEvents
+        .map((e) => {
+          const end = Date.now() - e.hoursAgo * 3600000;
+          return { id: e.id, kind: e.kind, entity_ref: "system", started_at_unix_ms: end - e.minutes * 60000, ended_at_unix_ms: end, peak: e.peak, metric: e.metric, unit: e.unit, active: false, contributor_ref: e.contributor, contributor_value: null, contributor_metric: null, contributor_unit: null, origin: "synthetic_fixture" };
+        })
+        .filter((e) => e.ended_at_unix_ms >= from && e.started_at_unix_ms <= to);
+  const names = Object.fromEntries(historyEvents.map((e) => [e.contributor, e.name]));
+  return { metric, entity_ref: "system", unit: "", status: gaps.length ? "partial" : "ok", origin: "synthetic_fixture", from_unix_ms: from, to_unix_ms: to, points, gaps, events, process_names: names, sources: ["synthetic"], limitations: [] };
+}
+function samplerStatus() {
+  if (recording && recording.ended_at_unix_ms == null) {
+    const elapsed = Date.now() - recording.started_at_unix_ms;
+    recording.samples = Math.floor(elapsed / 1000);
+    if (elapsed >= recording.duration_seconds * 1000) {
+      recording.ended_at_unix_ms = recording.started_at_unix_ms + recording.duration_seconds * 1000;
+      recording.status = "completed";
+    }
+  }
+  const active = recording && recording.ended_at_unix_ms == null ? recording : null;
+  return { running: true, samples: historyCleared ? 12 : 98213, last_sample_unix_ms: Date.now() - 2000, recording: active, error: null, thread_cpu_basis_points: 160, total_cpu_basis_points: 20, logical_processors: 8, resource_window_ms: 60000, host_working_set_bytes: 96 * MiB, cpu_target_basis_points: 50, memory_target_bytes: 50 * MiB };
+}
+
 let nextId = 1;
 // Saved conversations, as the Rust side keeps them in SQLite.
 const conversations = [];
@@ -401,6 +470,32 @@ export function createMock() {
     dashboard: async () => {
       await wait(tick === 0 ? 700 : 120);
       return dashboard();
+    },
+    history_status: () => samplerStatus(),
+    metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
+      await wait(150);
+      return historySeries(metric, fromUnixMs, toUnixMs);
+    },
+    record_activity_start: ({ durationSeconds }) => {
+      if (recording && recording.ended_at_unix_ms == null) throw new Error("A recording is already running.");
+      // ?recording=short makes the test recordings last 3 seconds.
+      const seconds = params.get("recording") === "short" ? 3 : durationSeconds;
+      recording = { id: `rec-${Date.now()}`, started_at_unix_ms: Date.now(), ended_at_unix_ms: null, duration_seconds: seconds, status: "recording", samples: 0, markers: [{ at_unix_ms: Date.now(), kind: "start" }] };
+      return { ...recording };
+    },
+    record_activity_cancel: ({ recordingId }) => {
+      if (!recording || recording.id !== recordingId || recording.ended_at_unix_ms != null) throw new Error("This recording is over.");
+      recording.ended_at_unix_ms = Date.now();
+      recording.status = "cancelled";
+    },
+    history_clear: () => {
+      historyCleared = true;
+      return 98213;
+    },
+    startup_get: () => startupEnabled,
+    startup_set: ({ enabled }) => {
+      startupEnabled = Boolean(enabled);
+      return startupEnabled;
     },
     privacy_get: () => ({ ...privacy }),
     privacy_set: ({ settings }) => {

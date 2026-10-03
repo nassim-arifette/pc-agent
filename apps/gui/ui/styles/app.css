@@ -469,6 +469,7 @@ a {
 }
 .page-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
@@ -1335,6 +1336,7 @@ a {
 }
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1600,6 +1602,7 @@ a {
 }
 .segmented button {
   height: 30px;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2220,4 +2223,178 @@ details.more > div {
 }
 .check .hint {
   font-weight: 400;
+}
+
+/* ---------- History ---------- */
+.history-card {
+  margin-bottom: 16px;
+}
+.hist-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 14px;
+  min-height: 62px;
+  border-bottom: 1px solid var(--stroke);
+}
+.hist-row-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.hist-row-label strong {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.history-chart {
+  width: 100%;
+  height: 54px;
+  display: block;
+}
+.history-chart polyline {
+  fill: none;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+.history-chart circle {
+  stroke: none;
+}
+.history-chart .history-mark {
+  fill: var(--warn);
+  opacity: 0.12;
+}
+.history-chart.res-cpu polyline { stroke: var(--res-cpu); }
+.history-chart.res-cpu circle { fill: var(--res-cpu); }
+.history-chart.res-mem polyline { stroke: var(--res-mem); }
+.history-chart.res-mem circle { fill: var(--res-mem); }
+.history-chart.res-disk polyline { stroke: var(--res-disk); }
+.history-chart.res-disk circle { fill: var(--res-disk); }
+.history-chart.res-gpu polyline { stroke: var(--res-gpu); }
+.history-chart.res-gpu circle { fill: var(--res-gpu); }
+.history-empty-row {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.history-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-left: 134px;
+  padding-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.event-row {
+  border-radius: var(--radius-sm);
+}
+.event-row.selected {
+  background: var(--accent-soft);
+}
+.event-main {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+}
+.event-main:hover {
+  background: var(--hover);
+}
+.event-row.selected .event-main:hover {
+  background: transparent;
+}
+.event-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.event-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.event-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.event-text span {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.event-time {
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.event-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px 10px 54px;
+}
+.event-actions .note {
+  flex: 1;
+}
+.callout.recording {
+  align-items: center;
+  border-color: transparent;
+  background: var(--bad-soft);
+}
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 99px;
+  background: var(--bad);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.rec-bar {
+  width: 220px;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 99px;
+  background: var(--track);
+  overflow: hidden;
+}
+.rec-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--bad);
+  transition: width 1s linear;
+}
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0 0 10px;
+  font-size: 13.5px;
+}
+.kv dt {
+  color: var(--text-2);
+}
+.kv dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.warn-text {
+  color: var(--warn);
 }

@@ -39,7 +39,7 @@ export function duration(ms) {
   if (seconds < 60) return `${number(seconds, seconds < 10 ? 1 : 0)} s`;
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
-  return `${minutes} min ${rest} s`;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
 export function ago(unixMs) {
