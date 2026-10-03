@@ -8,6 +8,8 @@ const CITATION = /\[((?:[OF]\d{1,5})(?:\s*[,;]\s*[OF]\d{1,5})*)\]/g;
 
 function chip(reference, onCite, label) {
   const text = label?.(reference) ?? reference;
+  // Without a handler (a draft still being written) the chip is a plain mark, not a button.
+  if (!onCite) return h("span", { class: "cite static", "aria-label": t("cite.label", { n: text }) }, String(text));
   return h("button", { class: "cite", type: "button", dataset: { ref: reference }, "aria-label": t("cite.label", { n: text }), onClick: () => onCite?.(reference) }, String(text));
 }
 

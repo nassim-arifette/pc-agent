@@ -6,8 +6,7 @@ import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
 import { markdown } from "../markdown.js";
 import { mark } from "../brand.js";
-import { composer, ask, cloudReady } from "../ask.js";
-import { getPrefs } from "../prefs.js";
+import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "../ask.js";
 import { state, subscribe, openPanel } from "../store.js";
 import { showSource } from "../panel.js";
 import { health } from "../live.js";
@@ -120,7 +119,7 @@ function localFinding(question, report) {
     h("p", null, f.summary),
     f.facts.length ? h("ul", { class: "md-list" }, f.facts.map((x) => h("li", null, x))) : null,
     f.next_step ? h("p", null, labelled(t("answer.next"), f.next_step)) : null,
-    cloudReady() ? h("div", { class: "row" }, h("button", { type: "button", class: "btn", onclick: () => ask(question, { cloud: true, followUp: true }) }, icon("sparkle"), t("chat.askAi"))) : null,
+    cloudReady() ? h("div", { class: "row" }, h("button", { type: "button", class: "btn", onclick: () => askWithAi(question) }, icon("sparkle"), t("chat.askAi"))) : null,
   );
 }
 
@@ -164,14 +163,14 @@ function turnView(turn, index, { last, inv, cloud }) {
   const body = !report ? null : a ? writtenAnswer(report, index) : localFinding(turn.question, report);
   const followUps =
     last && a?.follow_ups?.length && !(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"))
-      ? h("div", { class: "follow-ups" }, a.follow_ups.map((q) => h("button", { type: "button", class: "chip", onclick: () => ask(q, { cloud, followUp: true }) }, q)))
+      ? h("div", { class: "follow-ups" }, a.follow_ups.map((q) => h("button", { type: "button", class: "chip", onclick: () => ask(q, { followUp: true }) }, q)))
       : null;
   const footer = report
     ? h(
         "div",
         { class: "answer-foot" },
         iconButton("copy", t("answer.copy"), () => copyText(a ? answerText(turn.question, report) : findingText(turn.question, report))),
-        iconButton("refresh", t("answer.again"), () => ask(turn.question, { cloud, followUp: true })),
+        iconButton("refresh", t("answer.again"), () => ask(turn.question, { followUp: true })),
         verification(report),
       )
     : null;
@@ -193,7 +192,7 @@ const SUGGESTIONS = [
 ];
 
 function wantsCloud() {
-  return getPrefs().mode === "cloud" && cloudReady();
+  return effectiveMode() !== "local";
 }
 
 export function mount(page) {
@@ -240,7 +239,7 @@ export function mount(page) {
       items.map((s) =>
         h(
           "button",
-          { type: "button", class: "suggestion", onclick: () => ask(s.text, { cloud: wantsCloud() }) },
+          { type: "button", class: "suggestion", onclick: () => ask(s.text) },
           h("span", { class: ["suggestion-icon", s.warn ? "warn" : ""] }, icon(s.icon)),
           s.text,
         ),
@@ -356,7 +355,7 @@ export function mount(page) {
             "div",
             { class: "row" },
             setup ? h("button", { type: "button", class: "btn", onclick: () => navigate("settings") }, icon("sliders"), t("error.openSettings")) : null,
-            h("button", { type: "button", class: "btn", onclick: () => ask(inv.question, { cloud: false, followUp: true }) }, icon("pc"), t("error.useLocal")),
+            h("button", { type: "button", class: "btn", onclick: () => askLocally(inv.question) }, icon("pc"), t("error.useLocal")),
           ),
         ];
       } else {
@@ -415,7 +414,7 @@ export function mount(page) {
       renderDraft();
       if (stick) toBottom();
     }
-    else if (topic === "info") {
+    else if (topic === "info" || topic === "privacy") {
       box?.refresh();
       renderFootnote();
     } else if (topic === "live" && mode === "home") renderSuggestions();
