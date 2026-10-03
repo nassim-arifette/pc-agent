@@ -1,0 +1,535 @@
+{
+  "schema_version": 1,
+  "name": "synthetic-storage-full",
+  "question": "Why is my system drive almost full?",
+  "captured_at_unix_ms": 1790899200000,
+  "initial": {
+    "schema_version": 1,
+    "evidence": [
+      {
+        "value": 8589934592,
+        "metric": "physical_total_bytes",
+        "unit": "bytes",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-physical_total_bytes"
+      },
+      {
+        "value": 4294967296,
+        "metric": "physical_available_bytes",
+        "unit": "bytes",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-physical_available_bytes"
+      },
+      {
+        "value": 6442450944,
+        "metric": "system_commit_bytes",
+        "unit": "bytes",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-system_commit_bytes"
+      },
+      {
+        "value": 17179869184,
+        "metric": "system_commit_limit_bytes",
+        "unit": "bytes",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-system_commit_limit_bytes"
+      },
+      {
+        "value": 1200,
+        "metric": "cpu_busy_basis_points",
+        "unit": "basis_points_of_total_cpu",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-cpu_busy_basis_points"
+      },
+      {
+        "value": 1200,
+        "metric": "cpu_busiest_core_basis_points",
+        "unit": "basis_points_of_one_logical_processor",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-cpu_busiest_core_basis_points"
+      },
+      {
+        "value": 1000,
+        "metric": "disk_read_latency_microseconds",
+        "unit": "microseconds",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-disk_read_latency_microseconds"
+      },
+      {
+        "value": 1000,
+        "metric": "disk_write_latency_microseconds",
+        "unit": "microseconds",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-disk_write_latency_microseconds"
+      },
+      {
+        "value": 9800,
+        "metric": "disk_idle_basis_points",
+        "unit": "basis_points_of_window",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-disk_idle_basis_points"
+      },
+      {
+        "value": 0,
+        "metric": "disk_queue_length",
+        "unit": "outstanding_requests",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-disk_queue_length"
+      },
+      {
+        "value": 0,
+        "metric": "hard_fault_pages_per_second_x100",
+        "unit": "pages_per_second_x100",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-hard_fault_pages_per_second_x100"
+      },
+      {
+        "value": 100,
+        "metric": "gpu_busiest_engine_basis_points",
+        "unit": "basis_points_of_engine_time",
+        "origin": "synthetic_fixture",
+        "entity_ref": "system",
+        "status": "ok",
+        "source": "synthetic evaluation fixture",
+        "limitations": [],
+        "window": {
+          "started_at_unix_ms": 1790899200000,
+          "duration_ms": 1000,
+          "finished_at_unix_ms": 1790899201000
+        },
+        "id": "ev-storage-full-gpu_busiest_engine_basis_points"
+      }
+    ],
+    "id": "snapshot-storage-full",
+    "processes": [],
+    "session_id": "synthetic-fixture",
+    "limitations": [
+      "Synthetic fixture; not a measurement of a real PC."
+    ],
+    "process_coverage": {
+      "readable": 0,
+      "enumeration_truncated": false,
+      "enumerated": 0,
+      "returned": 0,
+      "status": "unsupported",
+      "permission_denied": 0,
+      "unavailable": 0
+    },
+    "origin": "synthetic_fixture"
+  },
+  "calls": [
+    {
+      "tool": "get_system_snapshot",
+      "duration_ms": 1000,
+      "recorded_at_unix_ms": 1790899200000,
+      "arguments": {},
+      "output": {
+        "inspection_complete": true,
+        "cloud": {
+          "process_coverage": {
+            "readable": 0,
+            "enumeration_truncated": false,
+            "enumerated": 0,
+            "returned": 0,
+            "status": "unsupported",
+            "permission_denied": 0,
+            "unavailable": 0
+          },
+          "limitations": [
+            "Synthetic fixture; not a measurement of a real PC."
+          ],
+          "measured_at_unix_ms": 1790899201000,
+          "origin": "synthetic_fixture",
+          "measurements": {
+            "units": {
+              "physical_total_bytes": "bytes",
+              "physical_available_bytes": "bytes",
+              "system_commit_bytes": "bytes",
+              "system_commit_limit_bytes": "bytes",
+              "cpu_busy_basis_points": "basis_points_of_total_cpu",
+              "cpu_busiest_core_basis_points": "basis_points_of_one_logical_processor",
+              "disk_read_latency_microseconds": "microseconds",
+              "disk_write_latency_microseconds": "microseconds",
+              "disk_idle_basis_points": "basis_points_of_window",
+              "disk_queue_length": "outstanding_requests",
+              "hard_fault_pages_per_second_x100": "pages_per_second_x100",
+              "gpu_busiest_engine_basis_points": "basis_points_of_engine_time"
+            },
+            "values": {
+              "system": {
+                "physical_total_bytes": 8589934592,
+                "physical_available_bytes": 4294967296,
+                "system_commit_bytes": 6442450944,
+                "system_commit_limit_bytes": 17179869184,
+                "cpu_busy_basis_points": 1200,
+                "cpu_busiest_core_basis_points": 1200,
+                "disk_read_latency_microseconds": 1000,
+                "disk_write_latency_microseconds": 1000,
+                "disk_idle_basis_points": 9800,
+                "disk_queue_length": 0,
+                "hard_fault_pages_per_second_x100": 0,
+                "gpu_busiest_engine_basis_points": 100
+              }
+            }
+          },
+          "schema_version": 1
+        },
+        "findings": [],
+        "limitations": [],
+        "status": "ok",
+        "processes": [],
+        "evidence": [
+          {
+            "value": 8589934592,
+            "metric": "physical_total_bytes",
+            "unit": "bytes",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-physical_total_bytes"
+          },
+          {
+            "value": 4294967296,
+            "metric": "physical_available_bytes",
+            "unit": "bytes",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-physical_available_bytes"
+          },
+          {
+            "value": 6442450944,
+            "metric": "system_commit_bytes",
+            "unit": "bytes",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-system_commit_bytes"
+          },
+          {
+            "value": 17179869184,
+            "metric": "system_commit_limit_bytes",
+            "unit": "bytes",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-system_commit_limit_bytes"
+          },
+          {
+            "value": 1200,
+            "metric": "cpu_busy_basis_points",
+            "unit": "basis_points_of_total_cpu",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-cpu_busy_basis_points"
+          },
+          {
+            "value": 1200,
+            "metric": "cpu_busiest_core_basis_points",
+            "unit": "basis_points_of_one_logical_processor",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-cpu_busiest_core_basis_points"
+          },
+          {
+            "value": 1000,
+            "metric": "disk_read_latency_microseconds",
+            "unit": "microseconds",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-disk_read_latency_microseconds"
+          },
+          {
+            "value": 1000,
+            "metric": "disk_write_latency_microseconds",
+            "unit": "microseconds",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-disk_write_latency_microseconds"
+          },
+          {
+            "value": 9800,
+            "metric": "disk_idle_basis_points",
+            "unit": "basis_points_of_window",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-disk_idle_basis_points"
+          },
+          {
+            "value": 0,
+            "metric": "disk_queue_length",
+            "unit": "outstanding_requests",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-disk_queue_length"
+          },
+          {
+            "value": 0,
+            "metric": "hard_fault_pages_per_second_x100",
+            "unit": "pages_per_second_x100",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-hard_fault_pages_per_second_x100"
+          },
+          {
+            "value": 100,
+            "metric": "gpu_busiest_engine_basis_points",
+            "unit": "basis_points_of_engine_time",
+            "origin": "synthetic_fixture",
+            "entity_ref": "system",
+            "status": "ok",
+            "source": "synthetic evaluation fixture",
+            "limitations": [],
+            "window": {
+              "started_at_unix_ms": 1790899200000,
+              "duration_ms": 1000,
+              "finished_at_unix_ms": 1790899201000
+            },
+            "id": "ev-storage-full-gpu_busiest_engine_basis_points"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "list_storage_scopes",
+      "arguments": {},
+      "output": {
+        "inspection_complete": false,
+        "cloud": {
+          "scopes": [
+            {
+              "scan_available": false,
+              "scope_id": "scope-fixture"
+            }
+          ]
+        },
+        "findings": [],
+        "limitations": [],
+        "status": "ok",
+        "processes": [],
+        "evidence": []
+      }
+    },
+    {
+      "tool": "get_storage_overview",
+      "arguments": {
+        "scope_id": "scope-fixture"
+      },
+      "output": {
+        "inspection_complete": true,
+        "cloud": {
+          "limitations": [
+            "Volume capacity only; no folder scan."
+          ],
+          "scan_running": false,
+          "volume": {
+            "free_bytes": 1073741824,
+            "status": "ok",
+            "total_bytes": 274877906944
+          },
+          "scope_id": "scope-fixture",
+          "scan": null
+        },
+        "findings": [],
+        "limitations": [],
+        "status": "partial",
+        "processes": [],
+        "evidence": []
+      }
+    }
+  ],
+  "notes": [
+    "Synthetic volume with little free space; no scan or deletion candidate was captured."
+  ],
+  "sharing": "anonymized",
+  "tool_names": [
+    "get_system_snapshot",
+    "get_processes",
+    "get_hardware_inventory",
+    "list_storage_scopes",
+    "get_storage_overview"
+  ]
+}

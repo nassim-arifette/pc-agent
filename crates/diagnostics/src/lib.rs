@@ -7,9 +7,9 @@ use pcagent_shared::{
     NVML_HW_POWER_BRAKE_SLOWDOWN, NVML_HW_SLOWDOWN, NVML_HW_THERMAL_SLOWDOWN,
     NVML_SW_THERMAL_SLOWDOWN, SCHEMA_VERSION,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Classification {
     LowAvailableMemory,
@@ -47,7 +47,7 @@ impl Classification {
     }
 }
 /// Evidence support levels (spec 8.3). Not statistical probabilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Support {
     Supported,
@@ -64,12 +64,12 @@ impl Support {
     }
 }
 /// A locally generated statement whose numbers all come from referenced evidence.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fact {
     pub text: String,
     pub evidence_refs: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub schema_version: u32,
     pub id: String,

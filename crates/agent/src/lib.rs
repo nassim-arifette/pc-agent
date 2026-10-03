@@ -14,6 +14,7 @@ pub use privacy::PrivacyContext;
 mod draft;
 pub use draft::draft_text;
 mod cost;
+pub mod replay;
 pub use conversation::{
     conversation_message, conversation_message_with_privacy, PastTurn, MAX_PAST_CHARS,
 };
@@ -34,9 +35,11 @@ mod workstation;
 use budget::{Budget, Checkpoint};
 pub use budget::{BudgetLimit, ExtensionRequest, MAX_EXTENSIONS};
 pub use cost::{estimate as estimate_cost, Cost, Pricing};
+pub use history_tools::METRICS as HISTORY_TOOL_METRICS;
 pub use nebius::{Config, Nebius};
 pub use payload::{measurements, FindingAliases, Measurements, ModelFinding, NotMeasured};
 use pcagent_diagnostics::{analyze, Classification, Finding, Support};
+pub use pcagent_inspect::QUERY_NAMES as SYSTEM_QUERY_NAMES;
 use pcagent_shared::{
     Evidence, Origin, ProcessCoverage, ProcessInstance, Snapshot, Status, SCHEMA_VERSION,
 };
