@@ -1,6 +1,8 @@
 //! Bounded conversation memory. Only retained local observations can support old numerical
 //! claims; displayed prose never becomes evidence. Sharing is reapplied on every turn.
-use crate::{initial_message, shared_name, CitationKind, Investigation, Sharing};
+use crate::{
+    initial_message_with_privacy, shared_name, CitationKind, Investigation, PrivacyContext, Sharing,
+};
 use pcagent_shared::Snapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,6 +31,10 @@ pub struct PastTurn {
     /// Basenames only; local metadata for reapplying the sharing choice, never sent wholesale.
     #[serde(default)]
     pub program_names: BTreeMap<String, String>,
+    /// All permitted names in prior tool results, including files, services and applications.
+    /// Kept locally so switching to anonymized mode removes them from previous prose too.
+    #[serde(default)]
+    pub shared_names: BTreeMap<String, String>,
 }
 
 impl PastTurn {
@@ -53,9 +59,12 @@ impl PastTurn {
             ..Self::default()
         };
         for (reference, name) in &report.conversation_names {
-            turn.program_names
+            turn.shared_names
                 .entry(reference.clone())
                 .or_insert_with(|| name.clone());
+        }
+        for observation in &report.observations {
+            crate::privacy::collect_shared_names(&observation.observation, &mut turn.shared_names);
         }
         if let Some(answer) = &report.answer {
             for citation in &answer.citations {
@@ -123,7 +132,24 @@ pub fn conversation_message(
     initial: &Snapshot,
     sharing: Sharing,
 ) -> Value {
-    prepare(initial_message(question, initial, sharing), past, sharing).0
+    conversation_message_with_privacy(past, question, initial, sharing, &PrivacyContext::local())
+}
+
+/// The exact first data message, using metadata frozen by the local consent ticket.
+pub fn conversation_message_with_privacy(
+    past: &[PastTurn],
+    question: &str,
+    initial: &Snapshot,
+    sharing: Sharing,
+    privacy: &PrivacyContext,
+) -> Value {
+    prepare(
+        initial_message_with_privacy(question, initial, sharing, privacy),
+        past,
+        sharing,
+        privacy,
+    )
+    .0
 }
 
 pub(crate) fn recent(past: &[PastTurn]) -> &[PastTurn] {
@@ -143,12 +169,27 @@ pub(crate) fn prepare(
     mut first: Value,
     past: &[PastTurn],
     sharing: Sharing,
+    privacy: &PrivacyContext,
 ) -> (Value, Vec<PastObservation>) {
     let now = first["initial_observation"]["measured_at_unix_ms"]
         .as_u64()
         .unwrap_or(0);
     let mut turns = Vec::new();
     let mut retained = Vec::new();
+    let mut known_names: BTreeMap<String, String> = past
+        .iter()
+        .flat_map(|turn| {
+            turn.program_names
+                .iter()
+                .chain(&turn.shared_names)
+                .map(|(key, name)| (key.clone(), name.clone()))
+        })
+        .collect();
+    for turn in past {
+        for observation in &turn.observations {
+            crate::privacy::collect_shared_names(&observation.payload, &mut known_names);
+        }
+    }
     for turn in recent(past) {
         let mut answer = turn.answer.clone();
         let mut sources = Vec::new();
@@ -187,22 +228,27 @@ pub(crate) fn prepare(
                 }
             }
             if sharing == Sharing::Anonymized {
-                redact_value(payload, &turn.program_names);
+                crate::privacy::anonymize(payload, &known_names);
             }
+            privacy.sanitize_value(payload);
             sources.push(payload.clone());
             retained.push(source);
         }
         answer = remap_citations(&answer, &aliases);
         let mut question = turn.question.clone();
         if sharing == Sharing::Anonymized {
-            question = redact(&question, &turn.program_names);
-            answer = redact(&answer, &turn.program_names);
+            question = crate::privacy::anonymize_text(&question, &known_names);
+            answer = crate::privacy::anonymize_text(&answer, &known_names);
         }
         turns.push(json!({"question":question,"answer":answer,"observations":sources}));
     }
     if !turns.is_empty() {
         first["previous_turns"] = json!(turns);
     }
+    if sharing == Sharing::Anonymized {
+        crate::privacy::anonymize(&mut first, &known_names);
+    }
+    privacy.sanitize_value(&mut first);
     (first, retained)
 }
 
@@ -254,56 +300,5 @@ fn remap_citations(text: &str, aliases: &BTreeMap<String, String>) -> String {
         rest = &after[close + 1..];
     }
     out.push_str(rest);
-    out
-}
-
-fn redact_value(value: &mut Value, names: &BTreeMap<String, String>) {
-    match value {
-        Value::String(s) => *s = redact(s, names),
-        Value::Array(items) => items.iter_mut().for_each(|v| redact_value(v, names)),
-        Value::Object(map) => map.values_mut().for_each(|v| redact_value(v, names)),
-        _ => {}
-    }
-}
-
-fn redact(text: &str, names: &BTreeMap<String, String>) -> String {
-    let mut names: Vec<_> = names
-        .values()
-        .flat_map(|name| {
-            let mut forms = vec![name.clone()];
-            if name.to_ascii_lowercase().ends_with(".exe") && name.len() > 6 {
-                forms.push(name[..name.len() - 4].to_owned());
-            }
-            forms
-        })
-        .collect();
-    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
-    names.dedup();
-    let mut out = text.to_owned();
-    for name in names {
-        let folded = name.to_lowercase();
-        let length = name.chars().count();
-        let mut replaced = String::new();
-        let mut at = 0;
-        while at < out.len() {
-            let tail = &out[at..];
-            let end = tail
-                .char_indices()
-                .nth(length)
-                .map_or(tail.len(), |(i, _)| i);
-            let word = |c: char| c.is_alphanumeric() || c == '_';
-            let boundary = out[..at].chars().next_back().is_none_or(|c| !word(c))
-                && tail[end..].chars().next().is_none_or(|c| !word(c));
-            if boundary && tail[..end].to_lowercase() == folded {
-                replaced.push_str("[program]");
-                at += end;
-            } else {
-                let c = tail.chars().next().expect("non-empty tail");
-                replaced.push(c);
-                at += c.len_utf8();
-            }
-        }
-        out = replaced;
-    }
     out
 }

@@ -76,6 +76,16 @@ pub enum Metric {
     ProcessIoReadBytes,
     ProcessIoWriteBytes,
     ProcessIoOtherBytes,
+    /// Separate non-negative directions of a memory change over one identity-safe window.
+    ProcessWorkingSetIncreaseBytes,
+    ProcessWorkingSetDecreaseBytes,
+    ProcessPrivateCommitIncreaseBytes,
+    ProcessPrivateCommitDecreaseBytes,
+    ProcessIoReadBytesPerSecond,
+    ProcessIoWriteBytesPerSecond,
+    ProcessIoOtherBytesPerSecond,
+    /// Busiest observed physical GPU engine for this process or application, never a sum of engines.
+    ProcessGpuBasisPoints,
     /// Busiest logical processor over the window, from processor utility: work normalized to
     /// nominal frequency, so turbo can exceed 10 000.
     CpuBusiestCoreBasisPoints,
@@ -148,9 +158,12 @@ impl Metric {
             Self::DiskIdleBasisPoints => "basis_points_of_window",
             Self::DiskQueueLength => "outstanding_requests",
             Self::HardFaultPagesPerSecondX100 => "pages_per_second_x100",
-            Self::GpuEngineBasisPoints | Self::GpuBusiestEngineBasisPoints => {
-                "basis_points_of_engine_time"
-            }
+            Self::GpuEngineBasisPoints
+            | Self::GpuBusiestEngineBasisPoints
+            | Self::ProcessGpuBasisPoints => "basis_points_of_engine_time",
+            Self::ProcessIoReadBytesPerSecond
+            | Self::ProcessIoWriteBytesPerSecond
+            | Self::ProcessIoOtherBytesPerSecond => "bytes_per_second",
             Self::GpuUtilizationBasisPoints => "basis_points_of_sample_period",
             Self::GpuTemperatureCelsius => "degrees_celsius",
             Self::GpuSmClockMegahertz => "megahertz",
@@ -164,6 +177,10 @@ impl Metric {
             | Self::SystemCommitLimitBytes
             | Self::ProcessWorkingSetBytes
             | Self::ProcessPrivateCommitBytes
+            | Self::ProcessWorkingSetIncreaseBytes
+            | Self::ProcessWorkingSetDecreaseBytes
+            | Self::ProcessPrivateCommitIncreaseBytes
+            | Self::ProcessPrivateCommitDecreaseBytes
             | Self::ProcessIoReadBytes
             | Self::ProcessIoWriteBytes
             | Self::ProcessIoOtherBytes => "bytes",
@@ -183,6 +200,14 @@ impl Metric {
             Self::ProcessIoReadBytes => "I/O read",
             Self::ProcessIoWriteBytes => "I/O write",
             Self::ProcessIoOtherBytes => "I/O other",
+            Self::ProcessWorkingSetIncreaseBytes => "Working-set increase",
+            Self::ProcessWorkingSetDecreaseBytes => "Working-set decrease",
+            Self::ProcessPrivateCommitIncreaseBytes => "Private-commit increase",
+            Self::ProcessPrivateCommitDecreaseBytes => "Private-commit decrease",
+            Self::ProcessIoReadBytesPerSecond => "I/O read rate",
+            Self::ProcessIoWriteBytesPerSecond => "I/O write rate",
+            Self::ProcessIoOtherBytesPerSecond => "I/O other rate",
+            Self::ProcessGpuBasisPoints => "Busiest observed process GPU engine",
             Self::CpuBusiestCoreBasisPoints => "Busiest core",
             Self::DiskReadLatencyMicroseconds => "Disk read latency",
             Self::DiskWriteLatencyMicroseconds => "Disk write latency",
@@ -209,11 +234,18 @@ impl Metric {
             | Self::SystemCommitLimitBytes
             | Self::ProcessWorkingSetBytes
             | Self::ProcessPrivateCommitBytes
+            | Self::ProcessWorkingSetIncreaseBytes
+            | Self::ProcessWorkingSetDecreaseBytes
+            | Self::ProcessPrivateCommitIncreaseBytes
+            | Self::ProcessPrivateCommitDecreaseBytes
             | Self::ProcessIoReadBytes
             | Self::ProcessIoWriteBytes
             | Self::ProcessIoOtherBytes
             | Self::GpuMemoryUsedBytes
             | Self::GpuMemoryTotalBytes => format_bytes(value),
+            Self::ProcessIoReadBytesPerSecond
+            | Self::ProcessIoWriteBytesPerSecond
+            | Self::ProcessIoOtherBytesPerSecond => format!("{}/s", format_bytes(value)),
             Self::GpuUtilizationBasisPoints => format!("{:.1}%", value as f64 / 100.0),
             Self::GpuTemperatureCelsius => format!("{value} °C"),
             Self::GpuSmClockMegahertz => format!("{value} MHz"),
@@ -227,6 +259,7 @@ impl Metric {
             | Self::CpuBusiestCoreBasisPoints
             | Self::DiskIdleBasisPoints
             | Self::GpuEngineBasisPoints
+            | Self::ProcessGpuBasisPoints
             | Self::GpuBusiestEngineBasisPoints => format!("{:.1}%", value as f64 / 100.0),
             Self::DiskReadLatencyMicroseconds | Self::DiskWriteLatencyMicroseconds => {
                 format!("{:.1} ms", value as f64 / 1_000.0)

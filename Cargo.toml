@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "apps/gui", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/storage", "crates/policy", "crates/actions", "crates/store"]
+members = ["apps/cli", "apps/gui", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect"]
 resolver = "2"
 
 [workspace.package]
@@ -19,7 +19,8 @@ clap = { version = "=4.5.50", features = ["derive"] }
 # SQLite compiled into the binary: no system library to install.
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_IO", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Performance", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Wdk_System_SystemInformation"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_IO", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Performance", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Wdk_System_SystemInformation", "Win32_System_Services", "Win32_System_EventLog", "Win32_System_Power", "Win32_System_Ioctl", "Win32_System_Memory"] }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_UpdateAgent", "Win32_System_Wmi", "Win32_System_Variant", "Win32_System_Ole", "Win32_Security"] }
 pcagent-shared = { path = "crates/shared" }
 pcagent-telemetry = { path = "crates/telemetry" }
 pcagent-diagnostics = { path = "crates/diagnostics" }
@@ -28,7 +29,13 @@ pcagent-storage = { path = "crates/storage" }
 pcagent-policy = { path = "crates/policy" }
 pcagent-actions = { path = "crates/actions" }
 pcagent-store = { path = "crates/store" }
+pcagent-inspect = { path = "crates/inspect" }
 
 [profile.release]
 lto = "thin"
 strip = true
+
+# Generated Win32/COM bindings are large; keep workspace debugging while avoiding dependency
+# debug-info exhaustion on the Windows development machine (also inherited by test builds).
+[profile.dev.package.windows]
+debug = 0

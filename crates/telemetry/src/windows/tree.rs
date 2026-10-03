@@ -1,4 +1,4 @@
-use super::{last_error, last_status, times, OwnedHandle, BOOT_NOTE};
+use super::{last_error, last_status, sysproc, times, OwnedHandle, BOOT_NOTE};
 use crate::Collector;
 use pcagent_shared::{
     new_id, unix_ms, ProcessTree, ProcessTreeNode, Status, Window, SCHEMA_VERSION,
@@ -64,31 +64,53 @@ pub(crate) fn process_tree(collector: &mut Collector) -> ProcessTree {
         truncated: false,
         limitations: vec![
             "Parent PIDs are recorded at child creation and are not updated when the parent exits; relations are validated by creation time.".into(),
-            "Enumeration and creation-time reads are not atomic; a process may exit or its PID be reused in between.".into(),
+            "The system process list supplies creation times without opening processes. Toolhelp32 plus query-only handles is used only if that list is unavailable.".into(),
             "Observation only: a relation never authorizes acting on a process or its descendants.".into(),
             BOOT_NOTE.into(),
         ],
     };
-    let (rows, truncated) = match entries() {
-        Ok(r) => r,
-        Err(status) => {
-            tree.status = status;
-            tree.limitations
-                .push("Toolhelp32 process snapshot failed.".into());
-            tree.window = Window::finish(started, clock);
-            return tree;
+    let (rows, truncated, creation_times) = if let Ok(list) = sysproc::query() {
+        let times = list
+            .iter()
+            .map(|p| (p.pid, p.created))
+            .collect::<std::collections::HashMap<_, _>>();
+        let rows = list
+            .into_iter()
+            .filter(|p| p.pid != 0)
+            .map(|p| (p.pid, p.parent_pid, p.name.unwrap_or_default()))
+            .collect::<Vec<_>>();
+        tree.limitations.push("System Idle Process is a pseudo-process and is excluded from parent/application relations.".into());
+        (rows, false, Some(times))
+    } else {
+        match entries() {
+            Ok((rows, truncated)) => (rows, truncated, None),
+            Err(status) => {
+                tree.status = status;
+                tree.limitations
+                    .push("Both native process-list collectors failed.".into());
+                tree.window = Window::finish(started, clock);
+                return tree;
+            }
         }
     };
     let boot = collector.boot_id.clone();
     let mut seen = HashSet::new();
     for (pid, parent_pid, name) in rows.iter().cloned() {
-        let created = OwnedHandle::open(pid).and_then(|h| times(&h));
+        let created = match &creation_times {
+            Some(times) => times
+                .get(&pid)
+                .copied()
+                .filter(|&created| created != 0)
+                .map(|created| (created, None))
+                .ok_or(Status::Partial),
+            None => OwnedHandle::open(pid).and_then(|h| times(&h)),
+        };
         let (entity_ref, creation, status) = match created {
             Ok((created, _)) => {
                 seen.insert((pid, created));
                 let t = collector.registry.entry(pid, created, boot.as_deref());
                 if t.instance.executable_name.is_none() {
-                    t.instance.executable_name = Some(name.clone());
+                    t.instance.executable_name = (!name.is_empty()).then(|| name.clone());
                 }
                 (
                     Some(t.instance.entity_ref.clone()),
@@ -103,7 +125,7 @@ pub(crate) fn process_tree(collector: &mut Collector) -> ProcessTree {
             parent_pid,
             entity_ref,
             creation_time_filetime: creation,
-            executable_name: Some(name),
+            executable_name: (!name.is_empty()).then_some(name),
             status,
         });
     }

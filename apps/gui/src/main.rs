@@ -7,7 +7,11 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod preview;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod protocol;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod session;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod settings;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod view;
 

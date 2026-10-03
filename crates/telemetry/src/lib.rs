@@ -1,21 +1,53 @@
 //! Read-only collectors. Non-Windows targets report unsupported, not fixture data.
 #![deny(unsafe_code)]
+pub mod activity;
 pub mod counters;
 pub mod gpu;
 pub mod history;
 mod identity;
+pub mod services;
 pub mod tree;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;
 
+pub use activity::{
+    ActivityCoverage, ActivityProcess, ApplicationActivity, ProcessActivity, ProcessRole,
+    DEFAULT_ACTIVITY_WINDOW_SECONDS,
+};
 pub use history::{HistoryConfig, MetricHistory, Reading, RecordError, SystemSample};
 use identity::{Lookup, Registry};
 use pcagent_shared::{
     new_id, unix_ms, HardwareInventory, InstanceState, Metric, MetricSeries, Origin,
     ProcessDetails, ProcessTree, Snapshot, Status, SCHEMA_VERSION,
 };
+pub use services::{service_processes, ServiceProcess, ServiceProcesses};
 use std::time::{Duration, Instant};
+
+/// Local measurement of this sampler thread's CPU time and the host process's working set.
+/// The working set covers the whole process, not memory attributable to the sampler alone.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct ResourceUsage {
+    pub thread_cpu_100ns: Option<u64>,
+    pub process_working_set_bytes: Option<u64>,
+    /// Active logical processors across all processor groups, for total-capacity percentages.
+    pub logical_processors: Option<u32>,
+}
+
+pub fn current_resource_usage() -> ResourceUsage {
+    #[cfg(windows)]
+    {
+        windows::resource_usage()
+    }
+    #[cfg(not(windows))]
+    {
+        ResourceUsage {
+            thread_cpu_100ns: None,
+            process_working_set_bytes: None,
+            logical_processors: None,
+        }
+    }
+}
 
 /// Evidence older than this is reported `stale` by `process_details`.
 pub const DETAILS_FRESHNESS: Duration = Duration::from_secs(30);
@@ -157,6 +189,36 @@ impl Collector {
         let result = unsupported_snapshot(&self.session_id);
         self.record(&result);
         result
+    }
+    /// Background sample with bounded process rows. The first call warms up CPU/PDH counters;
+    /// later calls reuse their previous readings and do not sleep for a measurement window.
+    pub fn sample_processes(&mut self, limit: usize, sort: ProcessSort) -> Snapshot {
+        #[cfg(windows)]
+        let result = windows::collect(self, true, limit.clamp(1, 50), true, sort);
+        #[cfg(not(windows))]
+        let result = {
+            let _ = (limit, sort);
+            unsupported_snapshot(&self.session_id)
+        };
+        self.record(&result);
+        result
+    }
+    /// Fresh CPU, memory growth, I/O and GPU observations for processes and applications.
+    /// The requested window is bounded to 1..=30 seconds; callers default to 3 seconds.
+    pub fn process_activity(&mut self, window_seconds: u64, limit: usize) -> ProcessActivity {
+        #[cfg(windows)]
+        {
+            windows::activity::collect(
+                self,
+                window_seconds.clamp(1, activity::MAX_ACTIVITY_WINDOW_SECONDS),
+                limit.clamp(1, 50),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (window_seconds, limit);
+            ProcessActivity::unavailable(&self.session_id, Status::Unsupported, UNSUPPORTED)
+        }
     }
     fn record(&mut self, snapshot: &Snapshot) {
         let sample = SystemSample::from_snapshot(
