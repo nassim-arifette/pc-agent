@@ -68,10 +68,12 @@ pub use workstation::{Workstation, HISTORY_METRICS, WORKSTATION_TOOLS};
 
 pub const MAX_ROUNDS: usize = 10;
 pub const MAX_TOOLS: usize = 20;
-pub const MAX_DURATION: Duration = Duration::from_secs(180);
-/// Longest wait for one provider reply. A written answer of about 700 output tokens took 30 s with
-/// Nemotron 3 Super on 2026-09-28.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+/// The model is given time to reason: the person can stop a turn at any moment.
+pub const MAX_DURATION: Duration = Duration::from_secs(600);
+/// Longest wait for one provider reply, reasoning included. A written answer of about 700 output
+/// tokens took 30 s with Nemotron 3 Super on 2026-09-28; on 2026-10-03 one Super request was still
+/// unanswered after 90 s.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 pub const MAX_QUESTION_BYTES: usize = 4096;
 /// Output tokens allowed per inference request, reasoning included. Nemotron 3 Ultra reasoned
 /// for 4,450 tokens in one request on 2026-09-28.
