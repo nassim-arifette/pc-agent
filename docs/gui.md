@@ -24,7 +24,10 @@ demand):
   at: a citation chip (*Sources*, with that measurement highlighted), the *PC status* pill (*Live
   PC*), *Analyze a folder* or *Storage* (*Storage*). *Sources* also keeps each answer's limits and
   its requests, tokens and price. *Live PC* refreshes every 5 s while the window is visible
-  (pause button) and draws short sparklines. Below 1100 px the panel floats over the conversation.
+  (pause button) and draws short sparklines. Below them, programs are grouped by application
+  (`process_activity`, a 2-second window measured every 10 s only while the tab is visible), with
+  their own sums, sortable by memory or processor; opening a group shows its services and its
+  processes with their own values, so a group is never mistaken for one process. Below 1100 px the panel floats over the conversation.
 
 The *PC status* pill in the top bar names the most important thing in a few words: a drive under
 5 % or 5 GiB free, memory at 90 % or more, a processor at 90 % or more, or a slowed graphics card.

@@ -43,6 +43,7 @@ const PAGE: usize = 50;
 /// Requests for the thread that owns the live collector (its native handles stay on it).
 enum Measure {
     Dashboard(mpsc::Sender<view::Dashboard>),
+    Activity(mpsc::Sender<view::ActivityView>),
     Preview(mpsc::Sender<Snapshot>),
 }
 
@@ -263,6 +264,10 @@ fn measure_thread(requests: mpsc::Receiver<Measure>) {
                 }
                 let _ = reply.send(dashboard);
             }
+            Measure::Activity(reply) => {
+                // Two seconds between samples: long enough for rates, short enough to feel live.
+                let _ = reply.send(view::activity(&collector.process_activity(2, 50)));
+            }
             Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);
                 let _ = reply.send(snapshot);
@@ -295,6 +300,12 @@ fn app_info() -> view::AppInfo {
 #[tauri::command]
 async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, String> {
     ask_measure(&state, Measure::Dashboard).await
+}
+
+/// Application groups, their members and services over a short fresh window (local only).
+#[tauri::command]
+async fn process_activity(state: State<'_, AppState>) -> Result<view::ActivityView, String> {
+    ask_measure(&state, Measure::Activity).await
 }
 
 #[derive(Serialize)]
@@ -1192,6 +1203,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             dashboard,
+            process_activity,
             cloud_preview,
             start_investigation,
             answer_extension,
