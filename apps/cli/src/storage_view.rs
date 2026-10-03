@@ -1,5 +1,5 @@
 //! Storage preparation shared by the cloud preview and the actual investigation.
-use pcagent_agent::StorageContext;
+use pcagent_agent::{PrivacyContext, StorageContext};
 use pcagent_policy::{Policy, Preferences};
 use pcagent_storage::{ContentOptions, ItemKind, ScanOptions, StorageService};
 use serde_json::{json, Value};
@@ -13,12 +13,13 @@ pub struct PreparedStorage {
 
 /// User-supplied roots only. All preparation shares a 30-second cooperative deadline and
 /// content comparisons share a 256 MiB read budget. Metadata reads never imply content consent.
-pub fn prepare(
+pub fn prepare_with_privacy(
     service: &StorageService,
     policy: &Policy,
     prefs: &Preferences,
     share_names: bool,
     compare_content: bool,
+    privacy: &PrivacyContext,
 ) -> crate::Result<PreparedStorage> {
     let started = Instant::now();
     let remaining = || Duration::from_secs(30).saturating_sub(started.elapsed());
@@ -36,7 +37,7 @@ pub fn prepare(
         service.scan_blocking(&scope.scope_id, &options, &mut |_| {})?;
         let index = service.index(&scope.scope_id)?;
         if share_names {
-            context.authorize_useful_names(&index)?;
+            context.authorize_useful_names_with_privacy(&index, privacy)?;
         }
         if compare_content {
             let comparison = service.compare_content(
@@ -66,12 +67,14 @@ pub fn prepare(
             .as_object_mut()
             .expect("overview")
             .remove("redacted_root");
+        privacy.sanitize_value(&mut overview);
         prepared
             .preview
             .push(json!({"tool":"get_storage_overview", "payload":overview}));
         for kind in [ItemKind::Files, ItemKind::Dirs] {
             let page = service.get_largest_items(&scope.scope_id, kind, 0, 20)?;
-            let (cloud, local) = prepared.context.project_page(&page, policy, prefs);
+            let (mut cloud, local) = prepared.context.project_page(&page, policy, prefs);
+            privacy.sanitize_value(&mut cloud);
             prepared
                 .preview
                 .push(json!({"tool":"get_largest_items", "payload":cloud}));
@@ -157,7 +160,15 @@ mod tests {
         let scope = service.authorize(&root).unwrap().scope_id;
         let policy = Policy::default();
         let prefs = Preferences::default();
-        let prepared = prepare(&service, &policy, &prefs, true, false).unwrap();
+        let mut privacy = PrivacyContext::local();
+        privacy.protect_secret("report-private");
+        let prepared =
+            prepare_with_privacy(&service, &policy, &prefs, true, false, &privacy).unwrap();
+        assert!(!prepared
+            .context
+            .sharing_preview()
+            .to_string()
+            .contains("report-private"));
         let expected = prepared
             .preview
             .iter()
@@ -180,7 +191,9 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("observation_id");
+        privacy.sanitize_value(&mut actual.cloud);
         assert_eq!(actual.cloud, expected);
+        assert!(!actual.cloud.to_string().contains("report-private"));
         assert!(actual.storage_items[0].path.ends_with("report-private.pdf"));
         assert!(!actual.cloud.to_string().contains("private bytes"));
         drop(tools);

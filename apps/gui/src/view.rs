@@ -368,6 +368,7 @@ pub struct AnswerView {
     pub category: Category,
     pub citations: Vec<CitationView>,
     pub follow_ups: Vec<String>,
+    pub action_refs: Vec<String>,
     pub unverified: Vec<IssueView>,
     pub repairs: usize,
 }
@@ -387,6 +388,7 @@ pub struct Report {
     pub alternatives: Vec<FindingView>,
     /// Observations the model cited, or every usable one when the investigation stopped early.
     pub observations: Vec<ObservationView>,
+    pub tool_events: Vec<pcagent_agent::ToolEvent>,
     pub limitations: Vec<String>,
     /// Absent for a local analysis, which makes no provider request.
     pub usage: Option<Usage>,
@@ -528,6 +530,7 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
         category: a.category,
         citations,
         follow_ups: a.follow_ups.clone(),
+        action_refs: a.action_refs.clone(),
         unverified: a
             .unverified
             .iter()
@@ -573,6 +576,7 @@ pub fn report(r: &Investigation, question: &str) -> Report {
             .map(|f| finding(f, processes))
             .collect(),
         observations,
+        tool_events: r.tool_events.clone(),
         limitations: r.limitations.clone(),
         usage: (r.mode != "local_rules").then(|| usage(&r.stats)),
         continuation: r.continuation.clone(),

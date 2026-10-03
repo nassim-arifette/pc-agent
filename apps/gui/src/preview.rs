@@ -1,5 +1,7 @@
 //! A local, single-use consent ticket binds the reviewed message to its immutable inputs.
-use pcagent_agent::{conversation_message, PastTurn, Sharing};
+use pcagent_agent::{
+    conversation_message_with_privacy, PastTurn, PrivacyContext, Sharing, StorageContext,
+};
 use pcagent_shared::{new_id, Snapshot};
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -15,10 +17,25 @@ pub struct PreparedTurn {
     pub sharing: Sharing,
     pub message: Value,
     pub storage_scope: Option<String>,
+    pub privacy: PrivacyContext,
+    pub storage_context: StorageContext,
+    pub file_names: bool,
     created: Instant,
 }
 
 impl PreparedTurn {
+    /// Protect a credential supplied by the host before showing the first-message preview.
+    pub fn protect_secret(&mut self, secret: &str) {
+        self.privacy.protect_secret(secret);
+        self.message = conversation_message_with_privacy(
+            &self.past,
+            &self.question,
+            &self.snapshot,
+            self.sharing,
+            &self.privacy,
+        );
+    }
+
     pub fn new(
         question: String,
         conversation_id: Option<String>,
@@ -27,7 +44,9 @@ impl PreparedTurn {
         sharing: Sharing,
         storage_scope: Option<String>,
     ) -> Self {
-        let message = conversation_message(&past, &question, &snapshot, sharing);
+        let privacy = PrivacyContext::local();
+        let message =
+            conversation_message_with_privacy(&past, &question, &snapshot, sharing, &privacy);
         Self {
             id: new_id("preview"),
             question,
@@ -37,6 +56,9 @@ impl PreparedTurn {
             sharing,
             message,
             storage_scope,
+            privacy,
+            storage_context: StorageContext::default(),
+            file_names: false,
             created: Instant::now(),
         }
     }
@@ -49,6 +71,7 @@ pub struct Reviewed<'a> {
     pub past: &'a [PastTurn],
     pub sharing: Sharing,
     pub storage_scope: Option<&'a str>,
+    pub file_names: bool,
 }
 
 /// Consume only a matching ticket. No provider request or fresh collection occurs here.
@@ -67,6 +90,7 @@ pub fn take(
         || pending.conversation_id.as_deref() != reviewed.conversation_id
         || pending.past != reviewed.past
         || pending.sharing != reviewed.sharing
+        || pending.file_names != reviewed.file_names
         || reviewed
             .storage_scope
             .is_some_and(|s| pending.storage_scope.as_deref() != Some(s))
@@ -81,7 +105,9 @@ pub fn take(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pcagent_agent::{converse, AgentError, Model, Reply, SnapshotTools, ToolChoice};
+    use pcagent_agent::{
+        converse_with_privacy, AgentError, Model, Reply, SnapshotTools, ToolChoice,
+    };
     use pcagent_shared::{Evidence, Metric, Window};
 
     fn snapshot(value: u64) -> Snapshot {
@@ -117,6 +143,7 @@ mod tests {
             past,
             sharing: Sharing::Anonymized,
             storage_scope: Some("scope-1"),
+            file_names: false,
         }
     }
 
@@ -141,12 +168,13 @@ mod tests {
         let p = take(&mut slot, reviewed(&id, &past)).unwrap();
         let mut model = Capture(Vec::new());
         let mut tools = SnapshotTools::new(|_, _| snapshot(9_000_000_000));
-        converse(
+        converse_with_privacy(
             &mut model,
             &p.past,
             &p.question,
             &p.snapshot,
             &mut tools,
+            &p.privacy,
             |_| {},
             |_, _| false,
         );
@@ -161,7 +189,7 @@ mod tests {
 
     #[test]
     fn stale_or_mismatched_consent_never_returns_a_capture() {
-        for changed in 0..7 {
+        for changed in 0..8 {
             let mut p = pending();
             if changed == 6 {
                 p.created = Instant::now() - MAX_AGE - Duration::from_secs(1);
@@ -175,9 +203,34 @@ mod tests {
                 3 => input.past = &[],
                 4 => input.sharing = Sharing::Complete,
                 5 => input.storage_scope = Some("scope-2"),
+                7 => input.file_names = true,
                 _ => {}
             }
             assert!(take(&mut Some(p), input).is_err(), "case {changed}");
         }
+    }
+
+    #[test]
+    fn a_file_loaded_credential_is_filtered_before_the_preview_is_published() {
+        let mut p = PreparedTurn::new(
+            "Why is opaque-fixture-key present?".into(),
+            None,
+            Vec::new(),
+            snapshot(1),
+            Sharing::Complete,
+            None,
+        );
+        p.protect_secret("opaque-fixture-key");
+        assert!(!p.message.to_string().contains("opaque-fixture-key"));
+        assert_eq!(
+            p.message,
+            conversation_message_with_privacy(
+                &p.past,
+                &p.question,
+                &p.snapshot,
+                p.sharing,
+                &p.privacy
+            )
+        );
     }
 }

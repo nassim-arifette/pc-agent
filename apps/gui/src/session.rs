@@ -80,7 +80,8 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
         choice: ToolChoice,
         timeout: Duration,
     ) -> Result<Reply, AgentError> {
-        // A request already sent cannot be recalled; stopping takes effect at the next one.
+        // A request already sent cannot be recalled, but its eventual answer and tool calls
+        // must not complete a stopped turn. Preserve any billed usage when it returns.
         if self.stop.load(Ordering::SeqCst) {
             return Err(AgentError::Cancelled);
         }
@@ -89,10 +90,14 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
         (self.on_step)(Step::ModelStarted { request });
         let started = Instant::now();
         let on_step = &mut self.on_step;
+        let stop = &self.stop;
         let mut shown = String::new();
         let mut last = None::<Instant>;
         let mut on_call = |name: &str, arguments: &str| {
-            if name != SUBMIT_ANSWER || last.is_some_and(|at| at.elapsed() < DRAFT_EVERY) {
+            if stop.load(Ordering::SeqCst)
+                || name != SUBMIT_ANSWER
+                || last.is_some_and(|at| at.elapsed() < DRAFT_EVERY)
+            {
                 return;
             }
             let Some(text) = draft_text(arguments) else {
@@ -105,9 +110,19 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
             shown.clone_from(&text);
             on_step(Step::AnswerDraft { request, text });
         };
-        let result = self
-            .inner
-            .complete_streaming(messages, tools, choice, timeout, &mut on_call);
+        let mut result =
+            self.inner
+                .complete_streaming(messages, tools, choice, timeout, &mut on_call);
+        if self.stop.load(Ordering::SeqCst) {
+            match &mut result {
+                Ok(reply) => {
+                    reply.calls.clear();
+                    reply.content = None;
+                    reply.rejected = Some(AgentError::Cancelled);
+                }
+                Err(error) => *error = AgentError::Cancelled,
+            }
+        }
         let (prompt_tokens, completion_tokens, outcome) = match &result {
             Ok(reply) => (
                 reply.prompt_tokens,
@@ -344,6 +359,79 @@ mod tests {
         assert!(!drafts.is_empty());
         assert!(drafts.iter().all(|(request, text)| *request == 2
             && "Votre PC ralentit parce que la mémoire est pleine.".starts_with(text.as_str())));
+    }
+
+    #[test]
+    fn stopping_during_the_final_reply_discards_drafts_and_answer_but_keeps_usage() {
+        struct StopDuringReply {
+            replies: VecDeque<Reply>,
+            stop: Arc<AtomicBool>,
+        }
+        impl Model for StopDuringReply {
+            fn complete(
+                &mut self,
+                m: &[Value],
+                t: &Value,
+                c: ToolChoice,
+                d: Duration,
+            ) -> Result<Reply, AgentError> {
+                self.complete_streaming(m, t, c, d, &mut |_, _| {})
+            }
+            fn complete_streaming(
+                &mut self,
+                _: &[Value],
+                _: &Value,
+                _: ToolChoice,
+                _: Duration,
+                on_call: &mut dyn FnMut(&str, &str),
+            ) -> Result<Reply, AgentError> {
+                let reply = self.replies.pop_front().ok_or(AgentError::Network)?;
+                for call in &reply.calls {
+                    if call.function.name == SUBMIT_ANSWER {
+                        self.stop.store(true, Ordering::SeqCst);
+                        on_call(&call.function.name, &call.function.arguments);
+                    }
+                }
+                Ok(reply)
+            }
+        }
+        let done = Reply {
+            calls: vec![ToolCall {
+                id: "answer".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: SUBMIT_ANSWER.into(),
+                    arguments: json!({"answer":"The CPU is at 5 % [O1].", "confidence":"high",
+                        "category":"cpu", "action_refs":[], "follow_ups":[]})
+                    .to_string(),
+                },
+            }],
+            prompt_tokens: Some(5_000),
+            completion_tokens: Some(20),
+            ..Reply::default()
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut steps = Vec::new();
+        let mut model = ObservedModel::new(
+            StopDuringReply {
+                replies: VecDeque::from([tool_call(), done]),
+                stop: stop.clone(),
+            },
+            stop,
+            |step| steps.push(step),
+        );
+        let mut tools = SnapshotTools::new(|_, _| snapshot());
+        let report = investigate(&mut model, "test", &snapshot(), &mut tools, |_| {});
+        assert_eq!(report.error, Some(AgentError::Cancelled));
+        assert!(report.answer.is_none());
+        assert_eq!(report.stats.prompt_tokens, Some(9_700));
+        assert_eq!(report.stats.completion_tokens, Some(100));
+        assert!(!steps
+            .iter()
+            .any(|step| matches!(step, Step::AnswerDraft { .. })));
+        assert!(
+            matches!(steps.last(), Some(Step::ModelFinished { outcome, .. }) if outcome == "cancelled")
+        );
     }
 
     #[test]
