@@ -2,6 +2,7 @@
 //! untrusted input: every argument is validated here, paths and item references are resolved on
 //! this side, and the Nebius key never reaches the page.
 use crate::{
+    actions,
     preview::{self, PreparedTurn, Reviewed},
     protocol,
     session::{ObservedModel, ObservedTools, Step},
@@ -43,6 +44,7 @@ const PAGE: usize = 50;
 /// Requests for the thread that owns the live collector (its native handles stay on it).
 enum Measure {
     Dashboard(mpsc::Sender<view::Dashboard>),
+    Activity(mpsc::Sender<view::ActivityView>),
     Preview(mpsc::Sender<Snapshot>),
 }
 
@@ -75,6 +77,8 @@ struct AppState {
     preview: Mutex<Option<PreparedTurn>>,
     preview_revision: AtomicU64,
     privacy: Mutex<PrivacySettings>,
+    /// The last finished turn's action proposals; they run only after a click in this window.
+    actions: Arc<actions::Slot>,
 }
 
 /// The history file next to the settings file, with conversations older than the retention
@@ -263,6 +267,10 @@ fn measure_thread(requests: mpsc::Receiver<Measure>) {
                 }
                 let _ = reply.send(dashboard);
             }
+            Measure::Activity(reply) => {
+                // Two seconds between samples: long enough for rates, short enough to feel live.
+                let _ = reply.send(view::activity(&collector.process_activity(2, 50)));
+            }
             Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);
                 let _ = reply.send(snapshot);
@@ -295,6 +303,41 @@ fn app_info() -> view::AppInfo {
 #[tauri::command]
 async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, String> {
     ask_measure(&state, Measure::Dashboard).await
+}
+
+/// The proposals of a finished turn, as the person reviews them before deciding.
+#[tauri::command]
+fn action_plans(state: State<'_, AppState>, turn_id: String) -> Vec<view::PlanView> {
+    actions::plans(&state.actions, &turn_id)
+}
+
+#[tauri::command]
+fn action_decline(
+    state: State<'_, AppState>,
+    turn_id: String,
+    plan_id: String,
+) -> Result<(), String> {
+    actions::decline(&state.actions, &turn_id, &plan_id)
+}
+
+/// Runs one reviewed proposal. Only this window calls it, after the person's click on that plan;
+/// the broker revalidates the target and refuses anything protected or changed.
+#[tauri::command]
+async fn action_run(
+    state: State<'_, AppState>,
+    turn_id: String,
+    plan_id: String,
+) -> Result<view::ActionOutcome, String> {
+    let slot = state.actions.clone();
+    tauri::async_runtime::spawn_blocking(move || actions::run(&slot, &turn_id, &plan_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Application groups, their members and services over a short fresh window (local only).
+#[tauri::command]
+async fn process_activity(state: State<'_, AppState>) -> Result<view::ActivityView, String> {
+    ask_measure(&state, Measure::Activity).await
 }
 
 #[derive(Serialize)]
@@ -468,7 +511,11 @@ fn send_message(
         }
     }
     let privacy = lock(&state.privacy).clone();
-    let sharing = privacy.mode.sharing();
+    // A cloud mode without a usable key and model runs locally, as the window says it will.
+    let sharing = privacy.mode.sharing().filter(|_| {
+        let creds = Credentials::load();
+        Config::from_lookup(|name| creds.get(name)).is_ok()
+    });
     if sharing.is_some() && !privacy.confirmed {
         return Err("Review the sharing preview and confirm the privacy choice first.".into());
     }
@@ -659,6 +706,7 @@ fn start_investigation(
     };
     let history = state.history.clone();
     let sampler = state.sampler.clone();
+    let proposals = state.actions.clone();
     let saved_in = conversation_id.clone();
     let worker_turn_id = turn_id.clone();
     thread::Builder::new()
@@ -676,7 +724,7 @@ fn start_investigation(
                 storage_context: prepared.as_ref().map(|p| &p.storage_context),
                 scope_ids: if use_storage { prepared.as_ref().and_then(|p| p.storage_scope.clone()).into_iter().collect() } else { Vec::new() },
             };
-            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, sampler.as_ref());
+            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, sampler.as_ref(), &proposals);
             let stored_report = match &outcome {
                 Ok(report) => report.clone(),
                 Err((code, message)) => {
@@ -745,6 +793,7 @@ fn investigation(
     stop: &Arc<AtomicBool>,
     answer: &Arc<Mutex<Option<mpsc::Sender<bool>>>>,
     sampler: Option<&Sampler>,
+    proposals: &actions::Slot,
 ) -> Result<view::Report, (String, String)> {
     let emit = |step: Step| {
         let at_unix_ms = unix_ms();
@@ -814,6 +863,10 @@ fn investigation(
         if let Some(context) = ask.storage_context {
             workstation.set_storage_context(context.clone());
         }
+        // The model may propose actions; they wait for a click in this window to run.
+        if let Some(desk) = actions::desk() {
+            workstation.enable_action_proposals(desk);
+        }
         let mut tools = ObservedTools::new(workstation, |tool: &str| {
             emit(Step::ToolStarted { tool: tool.into() })
         });
@@ -834,6 +887,9 @@ fn investigation(
             |partial, request| ask_extension(app, id, ask.turn_id, partial, request, stop, answer),
         );
         let mut workstation = tools.into_inner();
+        if let Some((_, pending)) = workstation.take_actions() {
+            actions::keep(proposals, ask.turn_id, pending);
+        }
         let jobs = workstation.take_jobs();
         for job in &jobs {
             job.cancel();
@@ -1186,12 +1242,17 @@ pub fn run() {
             history: Arc::new(Mutex::new(open_history())),
             sampler: open_sampler(),
             privacy: Mutex::new(settings::load()),
+            actions: Arc::new(Mutex::new(None)),
             preview: Mutex::new(None),
             preview_revision: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
             dashboard,
+            process_activity,
+            action_plans,
+            action_decline,
+            action_run,
             cloud_preview,
             start_investigation,
             answer_extension,
