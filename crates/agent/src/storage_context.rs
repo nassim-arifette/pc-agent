@@ -25,6 +25,8 @@ mod tests {
     use super::*;
     use pcagent_storage::{ContentOptions, ScanOptions, StorageService};
 
+    // Windows path syntax: other platforms have neither drive letters nor verbatim prefixes.
+    #[cfg(windows)]
     #[test]
     fn a_verbatim_root_matches_its_displayed_items() {
         let root = without_verbatim(Path::new(r"\\?\C:\Users\x\AppData\Local\Temp\scope"));
