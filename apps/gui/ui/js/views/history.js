@@ -32,6 +32,14 @@ const ROWS = [
 
 const EVENT_ICONS = { cpu_busy: "cpu", memory_pressure: "memory", disk_latency: "drive", disk_busy: "drive" };
 
+// Rounding must not say "100% not measured" next to measured values, nor "0%" for a real gap.
+function gapsHint(share) {
+  if (!(share > 0)) return t("history.noGaps");
+  if (share < 0.005) return t("history.gapsFew");
+  if (share >= 0.995 && share < 1) return t("history.gapsAlmostAll");
+  return t("history.gaps", { share: percent(share) });
+}
+
 function eventLabel(e) {
   const key = `history.event.${e.kind}`;
   const label = t(key);
@@ -165,8 +173,9 @@ export function mount(page) {
     const running = r.ended_at_unix_ms == null;
     const elapsed = Math.min(r.duration_seconds * 1000, Date.now() - r.started_at_unix_ms);
     const left = Math.max(0, r.duration_seconds * 1000 - elapsed);
-    const from = clock(r.started_at_unix_ms);
-    const to = r.ended_at_unix_ms ? clock(r.ended_at_unix_ms) : null;
+    // A recording lasts seconds to minutes: minute precision would read "from 20:01 to 20:01".
+    const from = clock(r.started_at_unix_ms, { seconds: true });
+    const to = r.ended_at_unix_ms ? clock(r.ended_at_unix_ms, { seconds: true }) : null;
     fill(
       recordHost,
       h(
@@ -177,8 +186,8 @@ export function mount(page) {
           "div",
           null,
           h("strong", null, running ? t("history.recording", { left: duration(left) }) : t(`history.recording.${r.status}`, { from, to: to ?? "" })),
-          h("span", null, t("history.recording.samples", { count: r.samples })),
-          h("div", { class: "rec-bar" }, h("span", { style: { width: `${(elapsed / (r.duration_seconds * 1000)) * 100}%` } })),
+          h("span", null, t(running ? "history.recording.samples" : "history.recording.samplesDone", { count: r.samples })),
+          running ? h("div", { class: "rec-bar" }, h("span", { style: { width: `${(elapsed / (r.duration_seconds * 1000)) * 100}%` } })) : null,
         ),
         h("span", { class: "spacer" }),
         running
@@ -242,7 +251,7 @@ export function mount(page) {
         "div",
         { class: "card-head" },
         h("h2", { class: "card-title" }, t("history.activity")),
-        h("span", { class: "hint" }, missing > 0 ? t("history.gaps", { share: percent(missing / (to - from)) }) : t("history.noGaps")),
+        h("span", { class: "hint" }, gapsHint(missing / (to - from))),
       ),
       ROWS.map((row) => {
         const points = rowPoints(row, row.metrics.map((m) => series[m]));
@@ -296,7 +305,7 @@ export function mount(page) {
                       null,
                       [
                         t("history.event.peak", { value: eventValue(e) }),
-                        t("history.event.during", { time: duration(e.ended_at_unix_ms - e.started_at_unix_ms) }),
+                        e.ended_at_unix_ms > e.started_at_unix_ms ? t("history.event.during", { time: duration(e.ended_at_unix_ms - e.started_at_unix_ms) }) : t("history.event.single"),
                         e.contributor ? t("history.event.contributor", { name: e.contributor }) : null,
                         e.active ? t("history.event.active") : null,
                       ]
