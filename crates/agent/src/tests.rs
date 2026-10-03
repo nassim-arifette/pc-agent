@@ -305,6 +305,40 @@ fn repairs_are_bounded_and_the_last_answer_is_shown_with_its_problems() {
     assert_eq!(answer.unverified[0].excerpt, "32 GB");
 }
 #[test]
+fn cancellation_during_answer_repair_does_not_publish_the_existing_fallback() {
+    for billed_reply in [false, true] {
+        let mut m = script(vec![
+            tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+            submit_with("unverified", "Windows needs 32 GB [O1]."),
+        ]);
+        let cancelled = if billed_reply {
+            let mut reply = submit_with("late-answer", "The inspection is complete [O1].");
+            reply.rejected = Some(AgentError::Cancelled);
+            Ok(reply)
+        } else {
+            Err(AgentError::Cancelled)
+        };
+        m.replies.push_back(cancelled);
+        let report = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
+        assert_eq!(report.error, Some(AgentError::Cancelled));
+        assert_eq!(report.execution_status, ExecutionStatus::Failed);
+        assert!(
+            report.answer.is_none(),
+            "a stopped repair cannot publish its fallback"
+        );
+        assert_eq!(m.calls, 3);
+        assert!(m.messages[2].last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported_number"));
+        if billed_reply {
+            assert_eq!(report.stats.prompt_tokens, Some(27));
+            assert_eq!(report.stats.completion_tokens, Some(3));
+        }
+    }
+}
+
+#[test]
 fn submit_answer_alone_and_only_as_a_tool_call() {
     let mut executed = 0;
     let mut m = script(vec![
@@ -1309,4 +1343,116 @@ fn only_the_most_recent_turns_that_fit_are_read_again() {
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].question, "q3");
     assert!(conversation::recent(&[]).is_empty());
+}
+
+#[test]
+fn frozen_c5_projection_matches_preview_and_filters_every_request() {
+    struct SensitiveTools(Sharing);
+    impl Toolbox for SensitiveTools {
+        fn specs(&self) -> &[ToolSpec] {
+            &SNAPSHOT_SPECS_FOR_PRIVACY
+        }
+        fn sharing(&self) -> Sharing {
+            self.0
+        }
+        fn run(&mut self, _: &ToolSpec, _: &Args) -> ToolOutput {
+            let mut output = ToolOutput::from_snapshot(&usable_snapshot());
+            output.cloud["note"] =
+                json!("Alice: known-example-secret, alice@example.test on ALICE-LAPTOP");
+            output.cloud["command_line"] = json!("PRIVATE-COMMAND-CONTENT");
+            output.cloud["shared_names"] = json!({"service-1":"Private Service"});
+            output.cloud["items"] = json!([{"shared_name":"private-report.pdf", "shared_path":"%USERPROFILE%\\Downloads\\private-report.pdf"}]);
+            output
+        }
+    }
+    const SNAPSHOT_SPECS_FOR_PRIVACY: [ToolSpec; 1] = [ToolSpec {
+        name: "get_system_snapshot",
+        class: ToolClass::Inspection,
+        description: "",
+        params: &[],
+    }];
+    let privacy = PrivacyContext::from_identifiers(
+        r"C:\Users\Alice",
+        "Alice",
+        "ALICE-LAPTOP",
+        &["known-example-secret"],
+    );
+    let question =
+        "Alice: why does C:\\Users\\Alice\\Downloads\\private-report.pdf affect Private Service?";
+    let past = vec![PastTurn {
+        question: "Private Service and private-report.pdf on ALICE-LAPTOP".into(),
+        answer: "Earlier, Alice saw known-example-secret".into(),
+        shared_names: [
+            ("service-1".into(), "Private Service".into()),
+            ("file-1".into(), "private-report.pdf".into()),
+        ]
+        .into(),
+        ..PastTurn::default()
+    }];
+    for sharing in [Sharing::Complete, Sharing::Anonymized] {
+        let initial = usable_snapshot();
+        let preview =
+            conversation_message_with_privacy(&past, question, &initial, sharing, &privacy)
+                .to_string();
+        let mut model = script(vec![
+            tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+            submit_with(
+                "unsafe",
+                "Run `powershell -Command known-example-secret` on ALICE-LAPTOP [O1].",
+            ),
+            submit_with("safe", "The inspection returned usable observations [O1]."),
+        ]);
+        let result = converse_with_privacy(
+            &mut model,
+            &past,
+            question,
+            &initial,
+            &mut SensitiveTools(sharing),
+            &privacy,
+            |_| {},
+            |_, _| false,
+        );
+        assert!(result.answer.unwrap().unverified.is_empty());
+        assert_eq!(
+            model.messages[0][1]["content"].as_str(),
+            Some(preview.as_str())
+        );
+        let wire = serde_json::to_string(&model.messages).unwrap();
+        for forbidden in [
+            "Alice",
+            "ALICE-LAPTOP",
+            "alice@example.test",
+            "known-example-secret",
+            "PRIVATE-COMMAND-CONTENT",
+        ] {
+            assert!(!wire.contains(forbidden), "private marker sent to a model");
+        }
+        if sharing == Sharing::Anonymized {
+            assert!(!wire.contains("Private Service"));
+            assert!(!wire.contains("private-report.pdf"));
+        } else {
+            assert!(wire.contains("Private Service"));
+            assert!(wire.contains("private-report.pdf"));
+        }
+    }
+}
+
+#[test]
+fn an_executable_mentioned_only_in_the_question_is_not_a_verified_name() {
+    let mut model = script(vec![
+        tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+        submit_with("guessed", "question-only.exe is responsible [O1]."),
+        submit_with(
+            "fixed",
+            "The measured evidence does not identify that program [O1].",
+        ),
+    ]);
+    let result = investigate(
+        &mut model,
+        "Could question-only.exe be responsible?",
+        &fixture(),
+        &mut tb(usable_snapshot),
+        |_| {},
+    );
+    assert_eq!(result.answer.unwrap().repairs, 1);
 }

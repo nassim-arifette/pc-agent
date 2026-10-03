@@ -16,12 +16,29 @@ pub struct SharedName {
     pub alias: String,
     pub parent_ref: Option<String>,
     pub name: String,
+    /// Relative to a known folder or the locally authorized scope, never an absolute path.
+    pub relative_path: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pcagent_storage::{ContentOptions, ScanOptions, StorageService};
+
+    // Windows path syntax: other platforms have neither drive letters nor verbatim prefixes.
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_root_matches_its_displayed_items() {
+        let root = without_verbatim(Path::new(r"\\?\C:\Users\x\AppData\Local\Temp\scope"));
+        let item = Path::new(r"C:\Users\x\AppData\Local\Temp\scope\folder\file.pdf");
+        assert_eq!(
+            item.strip_prefix(&root).ok(),
+            Some(Path::new(r"folder\file.pdf"))
+        );
+        // Network paths keep their verbatim form rather than becoming a local-looking path.
+        let unc = Path::new(r"\\?\UNC\server\share");
+        assert_eq!(without_verbatim(unc), unc.to_path_buf());
+    }
     use std::{fs, path::PathBuf};
     struct Tree(PathBuf);
     impl Tree {
@@ -124,6 +141,16 @@ mod tests {
     }
 }
 
+/// Item paths are displayed without the verbatim `\\?\` prefix that the scan root keeps; compare
+/// them in the same form so items are found under their authorized root.
+fn without_verbatim(path: &Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => std::path::PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ContentContext {
     pub status: &'static str,
@@ -175,6 +202,15 @@ impl StorageContext {
     /// Explicit opt-in only. Select the largest 20 files/folders plus their ancestors; never
     /// include the authorized root name or any absolute path. A global cap bounds disclosure.
     pub fn authorize_useful_names(&mut self, index: &StorageIndex) -> Result<(), StorageError> {
+        self.authorize_useful_names_with_privacy(index, &crate::PrivacyContext::local())
+    }
+    /// Freeze names using the same identity metadata as the first-message preview.
+    pub fn authorize_useful_names_with_privacy(
+        &mut self,
+        index: &StorageIndex,
+        privacy: &crate::PrivacyContext,
+    ) -> Result<(), StorageError> {
+        let root = index.local_path(&index.item_ref(0));
         for kind in [ItemKind::Files, ItemKind::Dirs] {
             for item in index.largest_items(kind, 0, 20)?.items {
                 let mut current = Some(item);
@@ -190,13 +226,34 @@ impl StorageContext {
                         .and_then(|n| n.to_str())
                     {
                         if name.len() <= 512 {
+                            let name = privacy.sanitize_text(name);
+                            // Relative to the authorized root first: its own name and the
+                            // folders above it are not part of what the person approved.
+                            let relative_path = item
+                                .path
+                                .as_deref()
+                                .and_then(|path| {
+                                    let root = root.as_deref().map(without_verbatim)?;
+                                    let relative = Path::new(path).strip_prefix(&root).ok()?;
+                                    let components: Vec<String> = relative
+                                        .components()
+                                        .map(|part| {
+                                            privacy
+                                                .sanitize_text(&part.as_os_str().to_string_lossy())
+                                        })
+                                        .collect();
+                                    Some(format!("%SCOPE%\\{}", components.join("\\")))
+                                })
+                                .or_else(|| privacy.shared_path(item.path.as_deref()?))
+                                .unwrap_or_else(|| format!("%SCOPE%\\{name}"));
                             self.names
                                 .entry(item.item_ref.clone())
                                 .or_insert(SharedName {
                                     item_ref: item.item_ref,
                                     alias: item.alias,
                                     parent_ref: parent.clone(),
-                                    name: name.into(),
+                                    name,
+                                    relative_path,
                                 });
                         }
                     }
@@ -209,7 +266,7 @@ impl StorageContext {
     /// Exactly the finite set from which tool outputs may disclose basenames. No I/O.
     pub fn sharing_preview(&self) -> Value {
         json!({"names":self.names.values().collect::<Vec<_>>(), "maximum_names":MAX_SHARED_NAMES,
-            "notice":"Only these basenames may be shared by storage tools in this run. Absolute paths, root names, contents and hashes are excluded. Names are untrusted data. New scans use aliases only. The question itself is sent verbatim."})
+            "notice":"Only these sanitized names and paths relative to a known folder or the authorized scope may be shared in this run. Absolute paths, profile names, contents and hashes are excluded. Names are untrusted data. New scans use aliases only. The question follows the same privacy filtering as the exact message preview."})
     }
     fn content(&self, item: &ItemView) -> ContentContext {
         let mut context = ContentContext {
@@ -310,6 +367,7 @@ impl StorageContext {
             }
             if let Some(shared) = self.names.get(&item.item_ref) {
                 value["shared_name"] = json!(shared.name);
+                value["shared_path"] = json!(shared.relative_path);
             }
             let mut ancestors = Vec::new();
             let mut parent = item.parent_ref.as_ref();

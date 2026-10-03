@@ -650,12 +650,12 @@ Règles de travail :
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
-| Contrats C1–C5 | toutes | à faire | |
-| 1 — Le LLM rédige | A | en cours : contrat C1, vérificateur, suivi de conversation (`converse`) et stockage SQLite livrés ; chiffres rattachés à leurs sources et preuves conservées dans les suivis ; réponse en flux dans la fenêtre (brouillon remplacé par la réponse vérifiée) ; comparaison de qualité à faire | #19, #23, wp1-stream |
-| 2 — Tous les processus, sans admin | B | fait : 326 processus sur 326 sans admin, taux dès le premier appel ; fenêtre de mesure prolongée, regroupement par application, services et GPU par processus à faire | #22 |
-| 3 — Choix de partage | A, C | en cours : noms de processus livrés, aperçu figé et anciens noms retirés des suivis ; noms de fichiers et contrôle C5 du texte libre à faire | #21, #23 |
-| 4 — Nouveaux outils | B | à faire | |
-| 5 — Mesurer au bon moment | B, C | à faire | |
+| Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |
+| 1 — Le LLM rédige | A | logique terminée : réponse, vérification des mesures C4, contexte multi-tour, stockage et identifiants stables, flux et arrêt testés ; comparaison de qualité à faire au chantier 7 | #19, #23, wp1-stream, wp1-phase1-logic |
+| 2 — Tous les processus, sans admin | B | logique terminée : fenêtres, regroupement, services et GPU par processus ; couverture et coût mesurés sans admin (voir docs/telemetry.md) | #22, wp1-phase1-logic |
+| 3 — Choix de partage | A, C | logique terminée : trois modes persistants, aperçu figé, retrait des noms des suivis, noms de fichiers sur liste finie et filtre C5 ; premier choix, indicateur et consentement fichiers à brancher dans le frontend | #21, #23, wp1-phase1-logic |
+| 4 — Nouveaux outils | B | logique terminée : outils fermés, collecte native bornée, couverture et projections C4/C5 ; tests synthétiques et traces locales (voir docs/system-inspection.md) | wp1-phase1-logic |
+| 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
 | 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action à faire | #23, #24 |
 | 7 — Évaluation | D | à faire | |
 | 8 — Admin à la demande | B | à faire | |
@@ -670,3 +670,8 @@ Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, l
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
 sont consignés dans [gui.md](gui.md#validation-status). La comparaison avec Claude reste à faire :
 les tests du contrôleur et du GUI ne valident pas à eux seuls la qualité du modèle.
+
+Le lot logique de phase 1 est isolé sur `wp1-phase1-logic`, sans modification des fichiers du
+frontend. Les commandes, événements, limites et branchements restants sont détaillés dans
+[backend-phase1.md](backend-phase1.md), avec les résultats de validation locale. Aucun commit ni
+push de ce lot n'a été effectué.

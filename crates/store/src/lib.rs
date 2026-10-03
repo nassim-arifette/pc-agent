@@ -2,14 +2,22 @@
 //! profile keeps each conversation with its turns, as the interface showed them. Nothing here is
 //! ever sent anywhere; the person can delete a conversation or everything, and old ones expire.
 #![forbid(unsafe_code)]
+mod process_peaks;
+pub mod sampler;
+mod samples;
+pub use process_peaks::ProcessPeaks;
 use rusqlite::{params, Connection, OptionalExtension};
+pub use samples::{
+    ActivityEvent, EventObservation, HistoryPoint, HistoryQuery, HistorySeries, Recording,
+    StoredSample, SAMPLE_RETENTION_MS,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 4;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -23,6 +31,8 @@ pub enum StoreError {
     TooNew(i64),
     #[error("A stored turn is not valid JSON")]
     Corrupt,
+    #[error("Invalid history window, metric, sampling interval or recording duration")]
+    InvalidQuery,
 }
 impl From<rusqlite::Error> for StoreError {
     fn from(e: rusqlite::Error) -> Self {
@@ -37,6 +47,7 @@ pub struct ConversationSummary {
     pub created_at_unix_ms: u64,
     pub updated_at_unix_ms: u64,
     pub turn_count: usize,
+    pub last_turn_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -94,6 +105,7 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
     fn init(conn: Connection) -> Result<Self, StoreError> {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -123,6 +135,28 @@ impl Store {
                 COMMIT;",
             )?;
         }
+        if version < 2 {
+            conn.execute_batch(samples::MIGRATION)?;
+        }
+        if version < 3 {
+            conn.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS sample_entities (
+                    session_id TEXT NOT NULL, local_ref TEXT NOT NULL, entity_ref TEXT NOT NULL UNIQUE,
+                    last_seen INTEGER NOT NULL, PRIMARY KEY(session_id,local_ref)
+                );
+                CREATE INDEX IF NOT EXISTS sample_entities_by_time ON sample_entities(last_seen);
+                PRAGMA user_version = 3;
+                COMMIT;")?;
+        }
+        if version < 4 {
+            conn.execute_batch(
+                "BEGIN;
+                ALTER TABLE activity_events ADD COLUMN peak_observation TEXT;
+                ALTER TABLE activity_events ADD COLUMN contributor_observation TEXT;
+                PRAGMA user_version = 4;
+                COMMIT;",
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -145,6 +179,31 @@ impl Store {
         asked_at_unix_ms: u64,
         report: &Value,
     ) -> Result<Option<String>, StoreError> {
+        self.add_turn_with_id(
+            conversation_id,
+            &pcagent_shared::new_id("turn"),
+            question,
+            asked_at_unix_ms,
+            report,
+        )
+    }
+
+    /// Persist the stable ID assigned before the turn starts. A repeated ID is refused by the
+    /// primary key; it never overwrites a previous answer or recreates a deleted conversation.
+    pub fn add_turn_with_id(
+        &mut self,
+        conversation_id: &str,
+        id: &str,
+        question: &str,
+        asked_at_unix_ms: u64,
+        report: &Value,
+    ) -> Result<Option<String>, StoreError> {
+        if !id.starts_with("turn-")
+            || id.len() > 100
+            || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err(StoreError::InvalidQuery);
+        }
         let tx = self.conn.transaction()?;
         let exists = tx
             .query_row(
@@ -162,7 +221,6 @@ impl Store {
             params![conversation_id],
             |row| row.get(0),
         )?;
-        let id = pcagent_shared::new_id("turn");
         let text = serde_json::to_string(report).map_err(|_| StoreError::Corrupt)?;
         tx.execute(
             "INSERT INTO turns (id, conversation_id, position, question, asked_at, report)
@@ -181,14 +239,16 @@ impl Store {
             params![conversation_id, stored(asked_at_unix_ms)],
         )?;
         tx.commit()?;
-        Ok(Some(id))
+        Ok(Some(id.to_owned()))
     }
 
     /// The most recently updated conversations first.
     pub fn list(&self, limit: usize) -> Result<Vec<ConversationSummary>, StoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT c.id, c.title, c.created_at, c.updated_at,
-                    (SELECT COUNT(*) FROM turns t WHERE t.conversation_id = c.id)
+                    (SELECT COUNT(*) FROM turns t WHERE t.conversation_id = c.id),
+                    (SELECT json_extract(t.report, '$.execution') FROM turns t
+                     WHERE t.conversation_id = c.id ORDER BY t.position DESC LIMIT 1)
              FROM conversations c ORDER BY c.updated_at DESC, c.created_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
@@ -198,6 +258,7 @@ impl Store {
                 created_at_unix_ms: millis(row.get(2)?),
                 updated_at_unix_ms: millis(row.get(3)?),
                 turn_count: usize::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                last_turn_status: row.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -235,7 +296,9 @@ impl Store {
     fn list_one(&self, id: &str) -> rusqlite::Result<ConversationSummary> {
         self.conn.query_row(
             "SELECT c.id, c.title, c.created_at, c.updated_at,
-                    (SELECT COUNT(*) FROM turns t WHERE t.conversation_id = c.id)
+                    (SELECT COUNT(*) FROM turns t WHERE t.conversation_id = c.id),
+                    (SELECT json_extract(t.report, '$.execution') FROM turns t
+                     WHERE t.conversation_id = c.id ORDER BY t.position DESC LIMIT 1)
              FROM conversations c WHERE c.id = ?1",
             params![id],
             |row| {
@@ -245,6 +308,7 @@ impl Store {
                     created_at_unix_ms: millis(row.get(2)?),
                     updated_at_unix_ms: millis(row.get(3)?),
                     turn_count: usize::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                    last_turn_status: row.get(5)?,
                 })
             },
         )
@@ -326,6 +390,43 @@ mod tests {
         store.create("expired", 1_000).unwrap();
         assert_eq!(store.prune(2_000).unwrap(), 1);
         assert_eq!(store.list(10).unwrap()[0].title, "kept");
+    }
+
+    #[test]
+    fn stable_turn_id_is_kept_and_neither_reused_nor_resurrected() {
+        let mut store = Store::open_in_memory().unwrap();
+        let conversation = store.create("question", 1).unwrap();
+        assert_eq!(
+            store
+                .add_turn_with_id(
+                    &conversation,
+                    "turn-stable",
+                    "question",
+                    2,
+                    &json!({"execution":"completed"})
+                )
+                .unwrap(),
+            Some("turn-stable".into())
+        );
+        assert_eq!(
+            store.get(&conversation).unwrap().unwrap().turns[0].id,
+            "turn-stable"
+        );
+        assert_eq!(
+            store.list(1).unwrap()[0].last_turn_status.as_deref(),
+            Some("completed")
+        );
+        assert!(store
+            .add_turn_with_id(&conversation, "turn-stable", "again", 3, &json!({}))
+            .is_err());
+        assert_eq!(store.get(&conversation).unwrap().unwrap().turns.len(), 1);
+        store.delete(&conversation).unwrap();
+        assert_eq!(
+            store
+                .add_turn_with_id(&conversation, "turn-after-delete", "late", 4, &json!({}))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
