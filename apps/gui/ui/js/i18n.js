@@ -1,6 +1,19 @@
 // Interface text in English and French. Findings computed by the core are in English for now;
 // their headings are translated here.
 const en = {
+  "live.apps": "Applications",
+  "live.apps.sort": "Sort applications",
+  "live.apps.by.memory": "Memory",
+  "live.apps.by.cpu": "Processor",
+  "live.apps.one": "1 process",
+  "live.apps.many": "{count} processes",
+  "live.apps.grew": "Memory grew by",
+  "live.apps.gpu": "Graphics card",
+  "live.apps.services": "Services",
+  "live.apps.members": "Processes",
+  "live.apps.others": "{count} more, lower in the ranking",
+  "live.apps.total": "{shown} of {total} applications shown",
+  "live.apps.note": "Grouped by program and parent; memory sums include shared pages. Measured over 2 s.",
   "nav.history": "History",
   "history.title.page": "History",
   "history.sub": "What happened on this PC while PC Agent was measuring, gaps included.",
@@ -418,6 +431,19 @@ const en = {
 };
 
 const fr = {
+  "live.apps": "Applications",
+  "live.apps.sort": "Trier les applications",
+  "live.apps.by.memory": "Mémoire",
+  "live.apps.by.cpu": "Processeur",
+  "live.apps.one": "1 processus",
+  "live.apps.many": "{count} processus",
+  "live.apps.grew": "Mémoire en hausse de",
+  "live.apps.gpu": "Carte graphique",
+  "live.apps.services": "Services",
+  "live.apps.members": "Processus",
+  "live.apps.others": "{count} autres, plus bas dans le classement",
+  "live.apps.total": "{shown} applications sur {total}",
+  "live.apps.note": "Regroupées par programme et parent ; les sommes de mémoire comptent les pages partagées. Mesuré sur 2 s.",
   "nav.history": "Historique",
   "history.title.page": "Historique",
   "history.sub": "Ce qui s'est passé sur ce PC pendant que PC Agent mesurait, trous compris.",

@@ -471,6 +471,36 @@ export function createMock() {
       await wait(tick === 0 ? 700 : 120);
       return dashboard();
     },
+    process_activity: async () => {
+      await wait(600);
+      const now = Date.now();
+      const window = { started_at_unix_ms: now - 2000, finished_at_unix_ms: now, duration_ms: 2000 };
+      const app = (ref, name, count, cpu, ws, members, services = []) => ({
+        entity_ref: ref, name, process_count: count, members_truncated: false,
+        cpu: m(cpu, `${(cpu / 100).toFixed(1)}%`), working_set: m(ws * GiB, fmt(ws * GiB)), private_commit: m(ws * 0.8 * GiB, fmt(ws * 0.8 * GiB)),
+        working_set_increase: ref === "app-1" ? m(0.2 * GiB, fmt(0.2 * GiB)) : m(0, "0"), io_read: m(120000, "117 KiB/s"), io_write: m(40000, "39 KiB/s"),
+        gpu: ref === "app-1" ? m(310, "3.1%") : missing("unsupported", "No GPU counter instance for these processes."),
+        services,
+        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `${ref}-p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
+      });
+      return {
+        collected_at_unix_ms: now, window_ms: 2000, status: "partial",
+        applications: [
+          app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),
+          app("app-2", "Code.exe", 9, Math.round(jitter(210, 80)), 1.2, [[5100, 120, 0.51], [5133, 40, 0.28]]),
+          app("app-3", "Teams.exe", 6, Math.round(jitter(140, 60)), 0.84, [[6200, 90, 0.42]]),
+          app("app-4", "svchost.exe", 31, Math.round(jitter(180, 60)), 0.62, [[1108, 80, 0.06]], [
+            { name: "wuauserv", display_name: "Windows Update", state: "running" },
+            { name: "Spooler", display_name: "Print Spooler", state: "running" },
+          ]),
+          app("app-5", "MsMpEng.exe", 1, Math.round(jitter(90, 40)), 0.21, [[3200, 90, 0.21]], [{ name: "WinDefend", display_name: "Microsoft Defender Antivirus Service", state: "running" }]),
+          app("app-6", "explorer.exe", 2, 30, 0.31, [[2900, 30, 0.31]]),
+        ],
+        applications_total: 74,
+        coverage: { status: "partial", enumerated: 231, readable: 214, permission_denied: 17, unavailable: 0, returned: 50, enumeration_truncated: false },
+        services_status: "ok", gpu_status: "partial", limitations: [], window,
+      };
+    },
     history_status: () => samplerStatus(),
     metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
       await wait(150);
