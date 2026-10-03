@@ -191,7 +191,8 @@ export async function sendMessage(question, { followUp = false, previewId = null
   state.inv = {
     turnId: null,
     question,
-    cloud: state.privacy.mode !== "local",
+    // Same rule as effectiveMode() and send_message: a cloud mode without a usable key runs locally.
+    cloud: state.privacy.mode !== "local" && Boolean(state.info?.cloud?.ready),
     conversationId,
     status: "running",
     steps: [],

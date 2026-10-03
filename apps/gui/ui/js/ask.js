@@ -314,8 +314,9 @@ export async function ask(question, { followUp = false } = {}) {
     navigate("chat");
     return;
   }
-  // First cloud question: the choice itself is made deliberately, once.
-  if (state.privacy.mode !== "local" && !state.privacy.confirmed && !state.privacyAsked) {
+  // First cloud question: the choice itself is made deliberately, once. Without a usable key the
+  // question is answered locally, as the composer and status already say.
+  if (effectiveMode() !== "local" && !state.privacy.confirmed && !state.privacyAsked) {
     state.privacyAsked = true;
     const settings = await choosePrivacy();
     if (!settings) return;
@@ -323,12 +324,7 @@ export async function ask(question, { followUp = false } = {}) {
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
   let previewId = null;
   let scopeIds = [];
-  if (state.privacy.mode !== "local") {
-    if (!cloudReady()) {
-      toast(t("mode.cloud.setup"), "bad");
-      navigate("settings");
-      return;
-    }
+  if (effectiveMode() !== "local") {
     if (state.skipConsent && state.privacy.confirmed) {
       try {
         const fileNames = Boolean(state.lastFileNames && namesShared());

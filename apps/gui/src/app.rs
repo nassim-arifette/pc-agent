@@ -511,7 +511,11 @@ fn send_message(
         }
     }
     let privacy = lock(&state.privacy).clone();
-    let sharing = privacy.mode.sharing();
+    // A cloud mode without a usable key and model runs locally, as the window says it will.
+    let sharing = privacy.mode.sharing().filter(|_| {
+        let creds = Credentials::load();
+        Config::from_lookup(|name| creds.get(name)).is_ok()
+    });
     if sharing.is_some() && !privacy.confirmed {
         return Err("Review the sharing preview and confirm the privacy choice first.".into());
     }
