@@ -33,6 +33,22 @@ These thresholds are hints for the status line, not findings.
 The full *Storage* and *Settings* screens open in the conversation area. Storage picks or drops a
 folder, follows the scan and lists the largest folders and files; nothing is deleted there.
 
+## History, recording and startup
+
+The *History* view reads the local sampler (`history_status`, `metric_history`): processor,
+memory, disk activity and graphics card over the last hour, 24 hours or 7 days, as four charts on
+one time axis. Unmeasured periods (PC Agent closed, PC asleep) stay breaks in the lines and are
+counted, never drawn through. Detected anomalies are listed with their peak, duration and the
+program measured at the peak, which is not presented as the proven cause; *Investigate* asks about
+that moment through the normal consent flow.
+
+*Record a problem* takes one measurement per second for 30, 60 or 120 seconds
+(`record_activity_start`), with a countdown and *Stop* (`record_activity_cancel`, which keeps the
+measurements); then *Analyze this recording* asks about that exact window. The *Collection* card
+shows the sampler's measured processor cost against its target and the whole window's memory,
+the optional *Start with Windows* setting (`startup_get`, `startup_set`, off by default) and
+*Clear the history* (`history_clear`), which keeps conversations.
+
 ## Visual system
 
 Warm neutrals, a single accent (*Encre* `#3B5BDB`, `#8FA2F5` in dark), Segoe UI Variable and 1 px

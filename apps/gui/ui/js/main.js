@@ -30,10 +30,11 @@ import { modelName } from "./models.js";
 import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import * as chat from "./views/chat.js";
+import * as history from "./views/history.js";
 import * as storage from "./views/storage.js";
 import * as settings from "./views/settings.js";
 
-const VIEWS = { chat, storage, settings };
+const VIEWS = { chat, history, storage, settings };
 const narrow = window.matchMedia("(max-width: 900px)");
 
 let app = null;
@@ -199,7 +200,7 @@ function renderFoot() {
   const route = currentRoute();
   const nav = (name, iconName, label) =>
     h("button", { type: "button", class: "nav-row", "aria-current": route === name ? "page" : null, onclick: () => navigate(name) }, icon(iconName), h("span", null, t(label)));
-  fill(footHost, nav("storage", "drive", "nav.storage"), nav("settings", "sliders", "nav.settings"), modelStatus());
+  fill(footHost, nav("history", "history", "nav.history"), nav("storage", "drive", "nav.storage"), nav("settings", "sliders", "nav.settings"), modelStatus());
 }
 
 function setSidebar(open) {
