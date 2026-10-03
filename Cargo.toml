@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "apps/gui", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect"]
+members = ["apps/cli", "apps/gui", "apps/eval", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect"]
 resolver = "2"
 
 [workspace.package]
