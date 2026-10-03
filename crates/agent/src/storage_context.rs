@@ -24,6 +24,19 @@ pub struct SharedName {
 mod tests {
     use super::*;
     use pcagent_storage::{ContentOptions, ScanOptions, StorageService};
+
+    #[test]
+    fn a_verbatim_root_matches_its_displayed_items() {
+        let root = without_verbatim(Path::new(r"\\?\C:\Users\x\AppData\Local\Temp\scope"));
+        let item = Path::new(r"C:\Users\x\AppData\Local\Temp\scope\folder\file.pdf");
+        assert_eq!(
+            item.strip_prefix(&root).ok(),
+            Some(Path::new(r"folder\file.pdf"))
+        );
+        // Network paths keep their verbatim form rather than becoming a local-looking path.
+        let unc = Path::new(r"\\?\UNC\server\share");
+        assert_eq!(without_verbatim(unc), unc.to_path_buf());
+    }
     use std::{fs, path::PathBuf};
     struct Tree(PathBuf);
     impl Tree {
@@ -126,6 +139,16 @@ mod tests {
     }
 }
 
+/// Item paths are displayed without the verbatim `\\?\` prefix that the scan root keeps; compare
+/// them in the same form so items are found under their authorized root.
+fn without_verbatim(path: &Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => std::path::PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ContentContext {
     pub status: &'static str,
@@ -202,13 +225,14 @@ impl StorageContext {
                     {
                         if name.len() <= 512 {
                             let name = privacy.sanitize_text(name);
+                            // Relative to the authorized root first: its own name and the
+                            // folders above it are not part of what the person approved.
                             let relative_path = item
                                 .path
                                 .as_deref()
-                                .and_then(|path| privacy.shared_path(path))
-                                .or_else(|| {
-                                    let path = Path::new(item.path.as_deref()?);
-                                    let relative = path.strip_prefix(root.as_ref()?).ok()?;
+                                .and_then(|path| {
+                                    let root = root.as_deref().map(without_verbatim)?;
+                                    let relative = Path::new(path).strip_prefix(&root).ok()?;
                                     let components: Vec<String> = relative
                                         .components()
                                         .map(|part| {
@@ -218,6 +242,7 @@ impl StorageContext {
                                         .collect();
                                     Some(format!("%SCOPE%\\{}", components.join("\\")))
                                 })
+                                .or_else(|| privacy.shared_path(item.path.as_deref()?))
                                 .unwrap_or_else(|| format!("%SCOPE%\\{name}"));
                             self.names
                                 .entry(item.item_ref.clone())
