@@ -16,6 +16,8 @@ mod settings;
 mod view;
 
 #[cfg(windows)]
+mod actions;
+#[cfg(windows)]
 mod app;
 
 #[cfg(windows)]

@@ -52,6 +52,18 @@ shows the sampler's measured processor cost against its target and the whole win
 the optional *Start with Windows* setting (`startup_get`, `startup_set`, off by default) and
 *Clear the history* (`history_clear`), which keeps conversations.
 
+## Action proposals
+
+In a cloud turn, the model may propose actions with `prepare_action_plan`; it cannot run them.
+The proposals of the last finished turn wait on the Rust side (`action_plans`) and appear as cards
+under the answer, each saying what it would do, how many files and bytes, and how to recover
+(Recycle Bin, reopen the program, regenerated cache). *Review and confirm* lists every exact
+target; *Run now* calls `action_run` for that one plan, which leaves the waiting list first so it
+cannot run twice. The same broker, guard, protection policy and journal as the CLI revalidate each
+target just before running and refuse anything changed or protected; the result reports what was
+done and the free space or system measurements before and after. *Ignore* calls
+`action_decline`. A newer turn replaces older proposals, which can no longer run.
+
 ## Visual system
 
 Warm neutrals, a single accent (*Encre* `#3B5BDB`, `#8FA2F5` in dark), Segoe UI Variable and 1 px
@@ -177,7 +189,7 @@ server runs). The mock lives outside `ui/`, so the app never embeds it.
 
 ## Known gaps
 
-Action proposals and approvals are CLI-only for now. Finding texts come from the core in English,
+Finding texts come from the core in English,
 also when the interface is in French. Conversation history is stored locally in SQLite; older
 display-only reports remain readable but are not reused as evidence. There is no tray icon or
 installer. See [answer verification](answer-verification.md) for covered and intentional limits of

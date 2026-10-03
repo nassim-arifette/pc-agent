@@ -293,6 +293,18 @@ function samplerStatus() {
   return { running: true, samples: historyCleared ? 12 : 98213, last_sample_unix_ms: Date.now() - 2000, recording: active, error: null, thread_cpu_basis_points: 160, total_cpu_basis_points: 20, logical_processors: 8, resource_window_ms: 60000, host_working_set_bytes: 96 * MiB, cpu_target_basis_points: 50, memory_target_bytes: 50 * MiB };
 }
 
+
+// ---------- Action proposals ----------
+// A question about freeing space proposes two plans; running one reports space freed.
+const turnPlans = new Map();
+function proposePlans(turnId, question) {
+  if (!/supprim|delete|clean|nettoy|place|space|free/i.test(question)) return;
+  turnPlans.set(turnId, [
+    { plan_id: `plan-${turnId}-1`, kind: "run_cleanup_adapter", targets: [{ kind: "cleanup", label: "C:\\Users\\Alex\\AppData\\Local\\Temp", files: 1840, bytes: 18.7 * GiB }], recovery: "none_synthetic_regenerable_data", checks: ["identity_revalidated", "not_protected"], decision: null },
+    { plan_id: `plan-${turnId}-2`, kind: "recycle_selected_files", targets: [{ kind: "file", label: "C:\\Users\\Alex\\Downloads\\ubuntu-24.04.iso", files: 1, bytes: null }, { kind: "file", label: "C:\\Users\\Alex\\Downloads\\setup-old.exe", files: 1, bytes: null }], recovery: "recycle_bin_if_operation_supported", checks: ["identity_revalidated", "recycle_bin_available"], decision: null },
+  ]);
+}
+
 let nextId = 1;
 // Saved conversations, as the Rust side keeps them in SQLite.
 const conversations = [];
@@ -501,6 +513,20 @@ export function createMock() {
         services_status: "ok", gpu_status: "partial", limitations: [], window,
       };
     },
+    action_plans: ({ turnId }) => (turnPlans.get(turnId) || []).map((p) => ({ ...p })),
+    action_decline: ({ turnId, planId }) => {
+      const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
+      if (!plan) throw new Error("These proposals are no longer current.");
+      plan.decision = plan.decision || "declined";
+    },
+    action_run: async ({ turnId, planId }) => {
+      const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
+      if (!plan || plan.decision) throw new Error("This proposal was already decided.");
+      await wait(1200);
+      plan.decision = "completed";
+      const gained = plan.kind === "run_cleanup_adapter" ? 18.6 * GiB : null;
+      return { plan_id: planId, overall: "completed", items: [], verification: { volume: gained ? { gained_bytes: gained, status: "ok" } : null, comparisons: [] } };
+    },
     history_status: () => samplerStatus(),
     metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
       await wait(150);
@@ -572,6 +598,7 @@ export function createMock() {
         conversations.unshift(conversation);
       }
       running = { id, turnId: `turn-${nextTurn++}`, askedAt: Date.now(), stop: false, answer: null, done: false, conversationId: conversation.id, question };
+      if (cloudRun) proposePlans(running.turnId, question);
       investigate(id, question, cloudRun).finally(() => {
         running.done = true;
       });
