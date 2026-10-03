@@ -1,5 +1,6 @@
 // Application state and the backend's events. Views subscribe to topics ("info", "inv",
-// "conversation", "history", "scan", "extension", "live", "panel") and redraw the parts they own.
+// "conversation", "history", "scan", "extension", "live", "panel", "draft", "privacy") and redraw
+// the parts they own.
 import { call, on } from "./api.js";
 
 const listeners = new Set();
@@ -15,6 +16,8 @@ export const state = {
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
   /** "Don't ask again until I close PC Agent" was ticked in the consent dialog. */
   skipConsent: false,
+  /** The stored sharing choice: complete, anonymized or local; cloud modes need confirmation. */
+  privacy: { mode: "complete", confirmed: false },
   /** Live measurements shared by the status pill and the panel, with a short history for sparklines. */
   live: { dash: null, error: null, paused: false, history: [] },
   /** The context panel: closed by default, opened on a tab, optionally pointing at one source. */
@@ -28,6 +31,25 @@ export function subscribe(listener) {
 
 export function notify(topic) {
   for (const listener of [...listeners]) listener(topic);
+}
+
+export async function refreshPrivacy() {
+  try {
+    state.privacy = await call("privacy_get");
+  } catch {
+    state.privacy = { mode: "local", confirmed: false };
+  }
+  notify("privacy");
+  return state.privacy;
+}
+
+/** Stores a sharing choice. Changing the mode invalidates any reviewed preview on the Rust side. */
+export async function setPrivacy(mode, confirmed) {
+  const previous = state.privacy.mode;
+  state.privacy = await call("privacy_set", { settings: { mode, confirmed } });
+  if (state.privacy.mode !== previous) state.skipConsent = false;
+  notify("privacy");
+  return state.privacy;
 }
 
 export async function refreshInfo() {
@@ -146,27 +168,35 @@ export async function clearConversations() {
   return removed;
 }
 
-// ---------- Investigations ----------
+// ---------- Turns ----------
+// A question and its answer form a turn with a stable ID, returned by send_message and carried by
+// every turn:* event. The Rust side still emits the legacy inv:* events for older clients; this
+// window listens to turn:* only, so nothing is drawn twice.
 
-/** Events can arrive before start_investigation returns: the first one names the id. */
-function current(id) {
+/** Events can arrive before send_message returns: the first one names the turn. */
+function current(turnId) {
   const inv = state.inv;
   if (!inv) return null;
-  if (inv.id == null) inv.id = id;
-  return inv.id === id ? inv : null;
+  if (inv.turnId == null) inv.turnId = turnId;
+  return inv.turnId === turnId ? inv : null;
 }
 
-/** Asks in the open conversation when `followUp` is true, otherwise starts a new one. */
-export async function startInvestigation(question, { cloud, useStorage, names = true, followUp = false, previewId = null }) {
+/**
+ * Sends a question in the open conversation when `followUp` is true, otherwise in a new one.
+ * The sharing mode is the stored privacy choice; a cloud mode needs the reviewed preview ticket.
+ */
+export async function sendMessage(question, { followUp = false, previewId = null, scopeIds = [] } = {}) {
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
   if (!followUp || !state.conversation) state.conversation = { id: null, title: question, turns: [] };
   state.inv = {
-    id: null,
+    turnId: null,
     question,
-    cloud,
+    // Same rule as effectiveMode() and send_message: a cloud mode without a usable key runs locally.
+    cloud: state.privacy.mode !== "local" && Boolean(state.info?.cloud?.ready),
     conversationId,
     status: "running",
     steps: [],
+    draft: null,
     report: null,
     failure: null,
     extension: null,
@@ -175,9 +205,9 @@ export async function startInvestigation(question, { cloud, useStorage, names = 
   notify("conversation");
   notify("inv");
   try {
-    const started = await call("start_investigation", { request: { question, cloud, useStorage, names: Boolean(names), conversationId, previewId } });
-    if (state.inv && state.inv.id == null) state.inv.id = started.id;
-    if (state.inv && state.inv.id === started.id) state.inv.conversationId = started.conversation_id;
+    const started = await call("send_message", { conversationId, text: question, scopeIds, previewId });
+    if (state.inv && state.inv.turnId == null) state.inv.turnId = started.turn_id;
+    if (state.inv && state.inv.turnId === started.turn_id) state.inv.conversationId = started.conversation_id;
     if (state.conversation && state.conversation.id == null) state.conversation.id = started.conversation_id;
     refreshConversations();
   } catch (error) {
@@ -192,18 +222,23 @@ export async function stopInvestigation() {
   if (!inv || inv.status !== "running") return;
   inv.status = "stopping";
   notify("inv");
-  if (inv.id != null) await call("stop_investigation", { id: inv.id });
+  if (inv.turnId == null) return;
+  try {
+    await call("stop_turn", { turnId: inv.turnId });
+  } catch {
+    // The turn ended meanwhile; its final event updates the view.
+  }
 }
 
 export async function answerExtension(accept) {
   const inv = state.inv;
-  if (!inv || inv.id == null) return;
+  if (!inv || inv.turnId == null) return;
   inv.extension = null;
   notify("inv");
   try {
-    await call("answer_extension", { id: inv.id, accept });
+    await call("answer_extension", { turnId: inv.turnId, accept });
   } catch {
-    // The investigation ended meanwhile; its final event updates the view.
+    // The turn ended meanwhile; its final event updates the view.
   }
 }
 
@@ -212,8 +247,8 @@ function update(inv, key, patch) {
   if (step) Object.assign(step, patch);
 }
 
-function onStep({ id, at_unix_ms: at, step }) {
-  const inv = current(id);
+function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
+  const inv = current(turnId);
   if (!inv) return;
   switch (step.kind) {
     case "snapshot_started":
@@ -228,14 +263,11 @@ function onStep({ id, at_unix_ms: at, step }) {
       inv.draft = null;
       break;
     case "answer_draft": {
-      inv.draft = step.text;
+      // turn:delta carries the text; this step only marks which request is writing.
       const writing = inv.steps.find((s) => s.key === `model-${step.request}`);
-      if (writing && !writing.writing) {
-        writing.writing = true;
-        notify("inv");
-      }
-      notify("draft");
-      return;
+      if (!writing || writing.writing) return;
+      writing.writing = true;
+      break;
     }
     case "model_finished":
       update(inv, `model-${step.request}`, {
@@ -266,45 +298,97 @@ function onStep({ id, at_unix_ms: at, step }) {
   notify("inv");
 }
 
+/** The whole draft so far when `replace` is true; never verified, replaced by the finished turn. */
+function onDelta({ turn_id: turnId, text, replace }) {
+  const inv = current(turnId);
+  if (!inv || inv.status === "done") return;
+  inv.draft = replace === false && inv.draft ? inv.draft + text : text;
+  notify("draft");
+}
+
 function onExtension(payload) {
-  const inv = current(payload.id);
+  const inv = current(payload.turn_id);
   if (!inv) return;
   inv.extension = payload;
   notify("inv");
   notify("extension");
 }
 
-function onDone({ id, report, conversation_id: conversationId }) {
-  const inv = current(id);
-  if (!inv) return;
-  // A local analysis runs the rules engine on the first measurement; show it as its own step.
+/** Errors that leave no usable analysis: the window offers Settings or a local analysis. */
+const SETUP_ERRORS = ["missing_key", "missing_model", "invalid_model", "model_unavailable", "http", "network", "start"];
+
+function finish(inv, turn, conversationId, failure) {
+  const report = turn?.report ?? null;
   for (const step of inv.steps) if (step.state === "running") step.state = "cancelled";
-  if (report.mode === "local_rules") inv.steps.push({ key: "local", type: "local", state: "done" });
-  // The last request of a completed investigation is the one that chose the conclusion.
+  if (report?.mode === "local_rules") inv.steps.push({ key: "local", type: "local", state: "done" });
+  // The last request of a completed turn is the one that wrote the answer.
   const lastModel = [...inv.steps].reverse().find((s) => s.type === "model");
-  if (lastModel && !report.error && lastModel.state === "done") lastModel.final = true;
-  inv.report = report;
+  if (lastModel && report && !report.error && lastModel.state === "done") lastModel.final = true;
+  inv.draft = null;
   inv.extension = null;
-  inv.status = "done";
   inv.finishedAt = Date.now();
-  const conversation = state.conversation;
-  if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
-    conversation.id = conversationId ?? conversation.id;
-    conversation.turns.push({ question: inv.question, report, at: inv.finishedAt });
+  if (failure && (!report || SETUP_ERRORS.includes(failure.code))) {
+    inv.status = "failed";
+    inv.failure = failure;
+  } else {
+    inv.status = "done";
+    inv.report = report;
+    const conversation = state.conversation;
+    if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
+      conversation.id = conversationId ?? conversation.id;
+      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [] };
+      conversation.turns.push(saved);
+      if (report.mode === "nebius" && turn.id) loadPlans(saved);
+    }
   }
   notify("conversation");
   notify("inv");
   refreshConversations();
 }
 
-function onFailed({ id, code, message }) {
-  const inv = current(id);
-  if (!inv) return;
-  for (const step of inv.steps) if (step.state === "running") step.state = "cancelled";
-  inv.status = "failed";
-  inv.failure = { code, message };
-  inv.extension = null;
-  notify("inv");
+/** Proposals of a finished turn; only the last turn's can still run. */
+async function loadPlans(turn) {
+  try {
+    turn.plans = await call("action_plans", { turnId: turn.id });
+  } catch {
+    turn.plans = [];
+  }
+  if (turn.plans.length) notify("conversation");
+}
+
+/** Runs one reviewed proposal after the person's click; resolves with its measured outcome. */
+export async function runPlan(turn, plan) {
+  plan.decision = "running";
+  notify("conversation");
+  try {
+    plan.outcome = await call("action_run", { turnId: turn.id, planId: plan.plan_id });
+    plan.decision = plan.outcome.overall;
+  } catch (error) {
+    plan.decision = "refused";
+    plan.error = error.message;
+  }
+  notify("conversation");
+  return plan;
+}
+
+export async function declinePlan(turn, plan) {
+  try {
+    await call("action_decline", { turnId: turn.id, planId: plan.plan_id });
+  } catch {
+    // Already decided or no longer current: the card still shows it as set aside.
+  }
+  plan.decision = "declined";
+  notify("conversation");
+}
+
+function onDone({ turn_id: turnId, conversation_id: conversationId, turn }) {
+  const inv = current(turnId);
+  if (inv) finish(inv, turn, conversationId, null);
+}
+
+function onFailed({ turn_id: turnId, conversation_id: conversationId, code, message, turn }) {
+  const inv = current(turnId);
+  if (inv) finish(inv, turn, conversationId, { code, message });
 }
 
 // ---------- Storage scans ----------
@@ -348,10 +432,11 @@ export async function morePage(kind) {
 }
 
 export function wireEvents() {
-  on("inv:step", onStep);
-  on("inv:extension", onExtension);
-  on("inv:done", onDone);
-  on("inv:failed", onFailed);
+  on("turn:step", onStep);
+  on("turn:delta", onDelta);
+  on("turn:extension", onExtension);
+  on("turn:done", onDone);
+  on("turn:failed", onFailed);
   on("scan:progress", (p) => {
     const scan = currentScan(p.scope_id);
     if (!scan) return;

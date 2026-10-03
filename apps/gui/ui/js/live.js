@@ -61,7 +61,8 @@ function gpuName(name) {
 }
 
 /** The "Live PC" tab: memory, processor, drives, graphics cards and the heaviest programs. */
-export function liveView(live, { onPause }) {
+export function liveView(live, options) {
+  const { onPause } = options;
   const dash = live.dash;
   const history = live.history;
   const head = h(
@@ -133,28 +134,108 @@ export function liveView(live, { onPause }) {
     );
   }
 
-  const procs = dash.processes.filter((p) => p.working_set.value != null).slice(0, 6);
-  const max = Math.max(1, ...procs.map((p) => p.working_set.value));
   const hidden = dash.process_coverage.permission_denied;
   return h(
     "div",
     { class: "live" },
     head,
     h("div", { class: "live-rows" }, rows),
-    h("h3", { class: "caption" }, t("live.procs")),
+    applicationsView(live, options),
+    hidden ? h("p", { class: "note" }, t("procs.hidden", { count: hidden })) : null,
+  );
+}
+
+/** Value used to rank and size a row: memory in bytes or CPU in basis points; unknown last. */
+function rankValue(app, sort) {
+  return (sort === "cpu" ? app.cpu.value : app.working_set.value) ?? -1;
+}
+
+function measureText(measure, kind) {
+  if (measure?.value == null) return h("span", { class: "unknown", title: measure?.note || "" }, "—");
+  return kind === "bytes" ? bytes(measure.value) : basisPoints(measure.value);
+}
+
+/**
+ * Programs grouped by application, with their own sums, members and services. A group is never
+ * presented as one process: its members stay one click away with their own values.
+ */
+function applicationsView(live, { sort = "memory", onSort, expanded, onToggle }) {
+  const activity = live.activity;
+  const head = h(
+    "div",
+    { class: "apps-head" },
+    h("h3", { class: "caption" }, t("live.apps")),
+    h("span", { class: "spacer" }),
     h(
       "div",
-      { class: "live-procs" },
-      procs.map((p) =>
-        h(
-          "div",
-          { class: "proc" },
-          h("span", { class: "proc-name", title: `${p.name} · PID ${p.pid}` }, p.name),
-          h("span", { class: "proc-value" }, bytes(p.working_set.value)),
-          h("div", { class: "meter" }, h("span", { style: { width: `${(p.working_set.value / max) * 100}%` } })),
-        ),
+      { class: "mini-tabs", role: "group", "aria-label": t("live.apps.sort") },
+      ["memory", "cpu"].map((key) =>
+        h("button", { type: "button", "aria-pressed": String(sort === key), onclick: () => onSort?.(key) }, t(`live.apps.by.${key}`)),
       ),
     ),
-    hidden ? h("p", { class: "note" }, t("procs.hidden", { count: hidden })) : null,
+  );
+  if (!activity) {
+    return h("div", { class: "apps" }, head, h("div", { class: "skeleton", style: { height: "120px" } }));
+  }
+  const apps = [...activity.applications].sort((a, b) => rankValue(b, sort) - rankValue(a, sort)).slice(0, 8);
+  const max = Math.max(1, ...apps.map((a) => rankValue(a, sort)));
+  return h(
+    "div",
+    { class: "apps" },
+    head,
+    apps.map((app) => {
+      const open = expanded === app.entity_ref;
+      const share = Math.max(0, rankValue(app, sort)) / max;
+      return h(
+        "div",
+        { class: ["app-group", open ? "open" : ""] },
+        h(
+          "button",
+          { type: "button", class: "app-main", "aria-expanded": String(open), onclick: () => onToggle?.(open ? null : app.entity_ref) },
+          h("span", { class: "app-name", title: app.name }, app.name),
+          h("span", { class: "app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
+          h("span", { class: "app-value" }, sort === "cpu" ? measureText(app.cpu, "cpu") : measureText(app.working_set, "bytes")),
+          h("div", { class: "meter" }, h("span", { style: { width: `${share * 100}%` } })),
+        ),
+        open
+          ? h(
+              "div",
+              { class: "app-detail" },
+              h(
+                "dl",
+                { class: "kv" },
+                h("dt", null, t("metric.memory")),
+                h("dd", null, measureText(app.working_set, "bytes")),
+                h("dt", null, t("metric.cpu")),
+                h("dd", null, measureText(app.cpu, "cpu")),
+                app.working_set_increase?.value ? h("dt", null, t("live.apps.grew")) : null,
+                app.working_set_increase?.value ? h("dd", null, `+${bytes(app.working_set_increase.value)}`) : null,
+                h("dt", null, t("live.apps.gpu")),
+                h("dd", null, measureText(app.gpu, "cpu")),
+              ),
+              app.services.length
+                ? h("div", { class: "app-services" }, h("span", { class: "caption" }, t("live.apps.services")), app.services.map((sv) => h("span", { class: "tag", title: sv.name }, sv.display_name || sv.name)))
+                : null,
+              h(
+                "div",
+                { class: "app-members" },
+                h("span", { class: "caption" }, t("live.apps.members")),
+                app.members.map((m) =>
+                  h(
+                    "div",
+                    { class: "member" },
+                    h("span", { class: "member-name" }, `${m.name} · PID ${m.pid}`),
+                    h("span", null, measureText(m.cpu, "cpu")),
+                    h("span", null, measureText(m.working_set, "bytes")),
+                  ),
+                ),
+                app.process_count > app.members.length ? h("span", { class: "note" }, t("live.apps.others", { count: app.process_count - app.members.length })) : null,
+              ),
+            )
+          : null,
+      );
+    }),
+    activity.applications_total > apps.length ? h("p", { class: "note" }, t("live.apps.total", { shown: apps.length, total: activity.applications_total })) : null,
+    h("p", { class: "note" }, t("live.apps.note")),
   );
 }

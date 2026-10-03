@@ -10,6 +10,7 @@ import {
   state,
   subscribe,
   refreshInfo,
+  refreshPrivacy,
   wireEvents,
   answerExtension,
   refreshConversations,
@@ -29,10 +30,11 @@ import { modelName } from "./models.js";
 import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import * as chat from "./views/chat.js";
+import * as history from "./views/history.js";
 import * as storage from "./views/storage.js";
 import * as settings from "./views/settings.js";
 
-const VIEWS = { chat, storage, settings };
+const VIEWS = { chat, history, storage, settings };
 const narrow = window.matchMedia("(max-width: 900px)");
 
 let app = null;
@@ -100,12 +102,13 @@ function historyView() {
               type: "button",
               class: "history-item",
               "aria-current": state.conversation?.id === c.id && currentRoute() === "chat" ? "true" : null,
-              title: c.title,
+              title: c.last_turn_status === "failed" ? `${c.title} — ${t("history.lastFailed")}` : c.title,
               onclick: async () => {
                 if (await openConversation(c.id)) navigate("chat");
                 if (narrow.matches) setSidebar(false);
               },
             },
+            c.last_turn_status === "failed" ? h("span", { class: "dot warn", "aria-label": t("history.lastFailed") }) : null,
             c.title,
           ),
           h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => confirmDelete(c) }, icon("x")),
@@ -120,7 +123,11 @@ function modelStatus() {
   let tone = "neutral";
   let title = t("status.local.title");
   let text = t("status.local.text");
-  if (cloud?.ready) {
+  if (cloud?.ready && state.privacy.mode === "local") {
+    tone = "neutral";
+    title = t("privacy.local");
+    text = t("status.localChosen");
+  } else if (cloud?.ready) {
     tone = "good";
     title = modelName(cloud.model_id);
     text = t(namesShared() ? "status.names.shared" : "status.names.hidden");
@@ -193,7 +200,7 @@ function renderFoot() {
   const route = currentRoute();
   const nav = (name, iconName, label) =>
     h("button", { type: "button", class: "nav-row", "aria-current": route === name ? "page" : null, onclick: () => navigate(name) }, icon(iconName), h("span", null, t(label)));
-  fill(footHost, nav("storage", "drive", "nav.storage"), nav("settings", "sliders", "nav.settings"), modelStatus());
+  fill(footHost, nav("history", "history", "nav.history"), nav("storage", "drive", "nav.storage"), nav("settings", "sliders", "nav.settings"), modelStatus());
 }
 
 function setSidebar(open) {
@@ -314,7 +321,7 @@ async function boot() {
   renderShell();
   wireEvents();
   subscribe((topic) => {
-    if (topic === "info") renderFoot();
+    if (topic === "info" || topic === "privacy") renderFoot();
     if (topic === "history" || topic === "conversation") {
       if (historyHost) fill(historyHost, historyView());
       renderTopbar();
@@ -349,6 +356,7 @@ async function boot() {
   route(true);
   startLive();
   refreshConversations();
+  refreshPrivacy();
   try {
     await refreshInfo();
   } catch {

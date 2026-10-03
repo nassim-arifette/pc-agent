@@ -1,4 +1,5 @@
-// Screenshots of the main states in light and dark themes, against the mock (dev/mock.js).
+// Screenshots of the main states (welcome, consent, running, answer, sources, live PC, history,
+// storage, settings) in light and dark themes, against the mock (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
 import { launch } from "./cdp.mjs";
@@ -20,7 +21,7 @@ try {
     await page.scheme(dark);
     await page.goto(`${base}#/chat`);
     await page.eval(`localStorage.setItem('pcagent.prefs.v1', ${JSON.stringify(prefs)}); sessionStorage.clear()`);
-    await page.goto(`${base}?cloud=ready#/chat`);
+    await page.goto(`${base}?cloud=ready&privacy=complete#/chat`);
     await page.waitFor("document.querySelector('.welcome') && document.querySelector('.status-text.warn')");
     await page.sleep(400);
     await shot(`1-home-${theme}`);
@@ -33,7 +34,7 @@ try {
     await page.waitFor("document.querySelector('.progress .step')", 10000);
     await page.sleep(700);
     await shot(`3-running-${theme}`);
-    await page.waitFor("document.querySelector('.answer-text .cite')", 20000);
+    await page.waitFor("document.querySelector('.answer-foot') && document.querySelector('.answer-text .cite')", 20000);
     await page.sleep(300);
     await shot(`4-answer-${theme}`);
     await page.click(".answer-text .cite", 0);
@@ -44,14 +45,18 @@ try {
     await page.waitFor("document.querySelector('.panel.open .live-row')");
     await page.sleep(5600);
     await shot(`6-live-${theme}`);
+    await page.goto(`${base}?cloud=ready&privacy=complete#/history`);
+    await page.waitFor("document.querySelectorAll('.history-chart').length >= 4", 10000);
+    await page.sleep(300);
+    await shot(`7-history-${theme}`);
     await page.goto(`${base}?cloud=ready#/storage`);
     await page.waitFor("document.querySelectorAll('.chip').length >= 6");
     await page.click(".chip", 0);
     await page.waitFor("document.querySelector('.tabs')", 10000);
-    await shot(`7-storage-${theme}`);
+    await shot(`8-storage-${theme}`);
     await page.goto(`${base}?cloud=ready#/settings`);
     await page.waitFor("document.querySelector('select')");
-    await shot(`8-settings-${theme}`);
+    await shot(`9-settings-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {
