@@ -20,7 +20,7 @@ try {
     await page.scheme(dark);
     await page.goto(`${base}#/chat`);
     await page.eval(`localStorage.setItem('pcagent.prefs.v1', ${JSON.stringify(prefs)}); sessionStorage.clear()`);
-    await page.goto(`${base}?cloud=ready#/chat`);
+    await page.goto(`${base}?cloud=ready&privacy=complete#/chat`);
     await page.waitFor("document.querySelector('.welcome') && document.querySelector('.status-text.warn')");
     await page.sleep(400);
     await shot(`1-home-${theme}`);
@@ -33,7 +33,7 @@ try {
     await page.waitFor("document.querySelector('.progress .step')", 10000);
     await page.sleep(700);
     await shot(`3-running-${theme}`);
-    await page.waitFor("document.querySelector('.answer-text .cite')", 20000);
+    await page.waitFor("document.querySelector('.answer-foot') && document.querySelector('.answer-text .cite')", 20000);
     await page.sleep(300);
     await shot(`4-answer-${theme}`);
     await page.click(".answer-text .cite", 0);

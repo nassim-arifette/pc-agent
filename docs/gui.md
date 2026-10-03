@@ -44,17 +44,30 @@ clickable prototype live on a private design canvas; the decisions are recorded 
 
 ## Consent and privacy
 
-- Local analysis is the default. *With AI* requires a configured key and model.
-- Before an AI investigation, a dialog previews the exact first data message, including the bounded
-  conversation history and its retained observations. Program names follow the person's choice.
-  The reviewed snapshot is frozen in a single-use ticket; sending waits for preview updates and
-  rejects a mismatched or expired ticket. Subsequent tool results follow the same sharing settings.
-  *Don't ask again until I close PC Agent* lasts for the session only; it is never saved.
-- A folder scanned in Storage is offered to the model only when that box is ticked; otherwise the
-  investigation gets an empty storage service.
+- The person chooses how questions are analyzed, once and then whenever they like (composer pill,
+  Settings): **AI with program names** (complete sharing, recommended), **AI with names hidden**
+  (anonymized) or **on this PC only** (local rules, no request). The choice is stored by the Rust
+  side (`privacy_get`, `privacy_set`); choosing a cloud mode is not consent by itself.
+- Before a cloud question, a dialog shows the stored mode (with *Change*), the question exactly as
+  it will be sent after identities, paths and secrets were removed (and says when something was
+  removed), what is sent and never sent, and the exact first message. Approving it confirms the
+  choice. The reviewed snapshot is frozen in a single-use ticket that `send_message` requires.
+- File and folder names of the scanned folder are a separate opt-in, offered only in complete
+  sharing. The dialog lists the exact names and folder-relative paths (`%SCOPE%\...`) that may be
+  sent; never file contents or paths outside the folder.
+- *Don't ask again until I close PC Agent* lasts for the session only and still requests a fresh
+  ticket per question; it applies to the folder actually approved.
 - When the budget runs out, the window asks before extending it and shows the cost so far.
 - The key is written to `%APPDATA%\pcagent\.env` (the CLI's file) by the Rust side and never sent
   back to the page, which only sees whether a key exists and its last four characters.
+
+## Turns and events
+
+A question and its answer form a turn. `send_message` returns a stable `turn_id`; the window
+follows `turn:step`, `turn:delta` (the whole draft so far, replaced by the verified turn),
+`turn:extension`, `turn:done` and `turn:failed`, and stops a turn with `stop_turn`. The Rust side
+still emits the legacy `inv:*` events for older clients; this window does not listen to them, so
+nothing is drawn twice. Failed turns are kept in the history and marked in the sidebar.
 
 ## Architecture
 
@@ -108,7 +121,8 @@ browser:
 ```powershell
 cd apps\gui
 python -m http.server 5173 --bind 127.0.0.1
-# open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok)
+# open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok,
+# ?privacy=complete|anonymized|local for a confirmed choice)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model

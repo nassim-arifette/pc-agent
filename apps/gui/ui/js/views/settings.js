@@ -3,9 +3,9 @@ import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
-import { disclosure, namesShared } from "../ask.js";
+import { disclosure, modeCards, cloudReady } from "../ask.js";
 import { getPrefs, setPref } from "../prefs.js";
-import { state, subscribe, refreshInfo, clearConversations } from "../store.js";
+import { state, subscribe, refreshInfo, clearConversations, setPrivacy } from "../store.js";
 import { badge, button, segmented, toast, toggle } from "../ui.js";
 import { price } from "../format.js";
 import { modelName } from "../models.js";
@@ -151,27 +151,38 @@ function historyRow() {
 }
 
 function privacyCard() {
-  const what = h("div", null, disclosure(null));
+  const cards = h("div");
+  const what = h("div");
+  const draw = () => {
+    fill(
+      cards,
+      modeCards(state.privacy.mode, async (mode) => {
+        if (mode !== "local" && !cloudReady()) {
+          toast(t("mode.cloud.setup"), "bad");
+          return;
+        }
+        // Keeping the same mode keeps its confirmation; a new cloud mode is confirmed by its
+        // first reviewed preview.
+        await setPrivacy(mode, mode === "local" || (mode === state.privacy.mode && state.privacy.confirmed));
+        draw();
+      }),
+    );
+    fill(what, disclosure(null, state.privacy.mode));
+  };
+  draw();
   return h(
     "section",
     { class: "card card-pad" },
     h("div", { class: "card-head" }, h("h2", { class: "card-title" }, icon("shield"), t("settings.privacy.title"))),
+    h("p", { class: "hint", style: { "margin-bottom": "12px" } }, t("privacy.lead")),
+    cards,
     h(
       "div",
-      { class: "setting-row" },
+      { class: "setting-row", style: { "margin-top": "12px" } },
       h("div", { class: "setting-text" }, h("strong", null, t("settings.privacy.ask")), h("span", { class: "hint" }, t("settings.privacy.askNote"))),
       toggle(!state.skipConsent, (on) => {
         state.skipConsent = !on;
       }, t("settings.privacy.ask")),
-    ),
-    h(
-      "div",
-      { class: "setting-row" },
-      h("div", { class: "setting-text" }, h("strong", null, t("settings.privacy.names")), h("span", { class: "hint" }, t("settings.privacy.namesNote"))),
-      toggle(namesShared(), (on) => {
-        setPref("names", on);
-        fill(what, disclosure(null, on));
-      }, t("settings.privacy.names")),
     ),
     historyRow(),
     h("details", { class: "more" }, h("summary", null, icon("chevron"), t("settings.privacy.what")), what),

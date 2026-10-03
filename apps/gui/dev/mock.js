@@ -2,8 +2,10 @@
 // (python -m http.server in apps/gui, then /ui/index.html). Every value is synthetic. The app
 // never loads this file: it is outside the embedded ui folder.
 //
-// URL switches: ?cloud=none|ready|problem, ?gpu=none. Questions containing "extend" ask for a
-// budget extension; "fail" makes the model's answer unusable; "slow" stretches the steps.
+// URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
+// (a confirmed choice; without it the first cloud question asks for one). Questions containing
+// "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
+// stretches the steps. Both event families are emitted, like the Rust side: turn:* and inv:*.
 
 const params = new URLSearchParams(window.location.search);
 const listeners = new Map();
@@ -234,16 +236,48 @@ function saveTurn(conversationId, question, report) {
   return c.id;
 }
 function done(id, report) {
-  const conversationId = running && running.id === id ? saveTurn(running.conversationId, running.question, report) : null;
+  const own = running && running.id === id;
+  const conversationId = own ? saveTurn(running.conversationId, running.question, report) : null;
+  if (own) {
+    const turn = { id: running.turnId, question: running.question, asked_at_unix_ms: running.askedAt, answer: report.answer, report };
+    if (report.error) emit("turn:failed", { turn_id: running.turnId, conversation_id: conversationId, code: report.error.code, message: report.error.message, turn });
+    else emit("turn:done", { turn_id: running.turnId, conversation_id: conversationId, turn });
+  }
   return emit("inv:done", { id, report, conversation_id: conversationId });
 }
 let running = null;
+let nextTurn = 1;
+const privacyParam = params.get("privacy");
+let privacy = ["complete", "anonymized", "local"].includes(privacyParam) ? { mode: privacyParam, confirmed: true } : { mode: "complete", confirmed: false };
+/** What PrivacyContext removes from free text: the profile path, the user and machine names. */
+function sanitize(text) {
+  return text
+    .replace(/C:\\Users\\Alex/gi, "%USERPROFILE%")
+    .replace(/\bAlex\b/g, "[user]")
+    .replace(/DESKTOP-ALEX/gi, "[computer]");
+}
+function fileNameSharing(root) {
+  if (!root) return { names: [], scope: null };
+  return {
+    scope: "%SCOPE%",
+    names: [
+      { item_ref: "scan-1:1", name: "Games", relative_path: "%SCOPE%\\Games" },
+      { item_ref: "scan-1:2", name: "Videos", relative_path: "%SCOPE%\\Videos" },
+      { item_ref: "scan-1:3", name: "windows-11-24h2.iso", relative_path: "%SCOPE%\\Installers\\windows-11-24h2.iso" },
+    ],
+  };
+}
 let pendingPreview = null;
 let previewSequence = 0;
 
 async function investigate(id, question, cloudRun) {
   const slow = /slow|lent/i.test(question) ? 1.6 : 1;
-  const step = (s) => emit("inv:step", { id, at_unix_ms: Date.now(), step: s });
+  const step = (s) => {
+    const at = Date.now();
+    emit("turn:step", { turn_id: running.turnId, at_unix_ms: at, step: s });
+    if (s.kind === "answer_draft") emit("turn:delta", { turn_id: running.turnId, request: s.request, text: s.text, replace: true, unverified: true });
+    emit("inv:step", { id, at_unix_ms: at, step: s });
+  };
   step({ kind: "snapshot_started" });
   await wait(900 * slow);
   step({ kind: "snapshot_finished", duration_ms: 1012, measured: 38 });
@@ -276,11 +310,12 @@ async function investigate(id, question, cloudRun) {
     const answer = new Promise((resolve) => {
       running.answer = resolve;
     });
-    emit("inv:extension", {
-      id,
+    const extension = {
       request: { reason: "rounds", available: true, additional_rounds: 6, additional_tool_calls: 12, additional_seconds: 90 },
       usage: { requests: 6, tool_calls: 6, extensions: 0, prompt_tokens: 30210, completion_tokens: 812, reasoning_tokens: 600, cost: { usd: "0.0098", exact_usd: "0.0097938", price: null } },
-    });
+    };
+    emit("turn:extension", { turn_id: running.turnId, ...extension });
+    emit("inv:extension", { id, ...extension });
     const accepted = await answer;
     if (!accepted) return done(id, { ...report(question, true, "budget"), execution: "budget_exhausted" });
   }
@@ -367,17 +402,36 @@ export function createMock() {
       await wait(tick === 0 ? 700 : 120);
       return dashboard();
     },
-    cloud_preview: async ({ question, names, conversationId = null }) => {
+    privacy_get: () => ({ ...privacy }),
+    privacy_set: ({ settings }) => {
+      if (settings.mode !== privacy.mode || !settings.confirmed) pendingPreview = null;
+      privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed) };
+      return { ...privacy };
+    },
+    cloud_preview: async ({ question, names, conversationId = null, fileNames = false }) => {
       const sequence = ++previewSequence;
       await wait(300);
-      const message = { question, initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
+      if (fileNames && !names) throw new Error("File names require complete sharing.");
+      if (fileNames && !lastScanRoot) throw new Error("Scan and authorize a folder before previewing its names.");
+      const message = { question: sanitize(question), initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
       if (names) message.process_names = { "proc-1a2b3c4d": "chrome.exe" };
       const conversation = conversations.find((c) => c.id === conversationId);
       if (conversation?.turns.length) message.previous_turns = conversation.turns.map((turn) => ({ question: turn.question, answer: "Earlier synthetic observation.", observations: [] }));
       if (sequence !== previewSequence) throw new Error("A newer sharing preview was requested.");
       const id = `preview-${sequence}`;
-      pendingPreview = { id, question, names, conversationId };
-      return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot };
+      pendingPreview = { id, question, names, conversationId, fileNames };
+      return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot, file_name_sharing: fileNames ? fileNameSharing(lastScanRoot) : { names: [], scope: null } };
+    },
+    send_message: async ({ conversationId = null, text, scopeIds = [], previewId = null }) => {
+      const cloudRun = privacy.mode !== "local";
+      if (cloudRun && !privacy.confirmed) throw new Error("Review the sharing preview and confirm the privacy choice first.");
+      if (scopeIds.length > 1) throw new Error("Attach one scanned folder to a message.");
+      return commands.start_investigation({ request: { question: text, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
+    },
+    stop_turn: ({ turnId }) => {
+      if (!running || running.turnId !== turnId || running.done) throw new Error("This turn is over.");
+      running.stop = true;
+      running.answer?.(false);
     },
     start_investigation: async ({ request: { question, cloud: cloudRun, names, conversationId = null, previewId } }) => {
       if (running && !running.done) throw new Error("An investigation is already running.");
@@ -392,17 +446,17 @@ export function createMock() {
         conversation = { id: `conv-${nextConversation++}`, title: question.split("\n")[0].slice(0, 80), created_at_unix_ms: now, updated_at_unix_ms: now, turns: [] };
         conversations.unshift(conversation);
       }
-      running = { id, stop: false, answer: null, done: false, conversationId: conversation.id, question };
+      running = { id, turnId: `turn-${nextTurn++}`, askedAt: Date.now(), stop: false, answer: null, done: false, conversationId: conversation.id, question };
       investigate(id, question, cloudRun).finally(() => {
         running.done = true;
       });
-      return { id, conversation_id: conversation.id };
+      return { id, conversation_id: conversation.id, turn_id: running.turnId };
     },
     conversations_list: async () =>
       conversations
         .slice()
         .sort((a, b) => b.updated_at_unix_ms - a.updated_at_unix_ms)
-        .map(({ turns, ...c }) => ({ ...c, turn_count: turns.length })),
+        .map(({ turns, ...c }) => ({ ...c, turn_count: turns.length, last_turn_status: turns.length && turns[turns.length - 1].report?.error ? "failed" : "completed" })),
     conversation_get: async ({ id }) => {
       const c = conversations.find((x) => x.id === id);
       return c ? { ...c, turn_count: c.turns.length, turns: c.turns.slice() } : null;

@@ -10,6 +10,7 @@ import {
   state,
   subscribe,
   refreshInfo,
+  refreshPrivacy,
   wireEvents,
   answerExtension,
   refreshConversations,
@@ -100,12 +101,13 @@ function historyView() {
               type: "button",
               class: "history-item",
               "aria-current": state.conversation?.id === c.id && currentRoute() === "chat" ? "true" : null,
-              title: c.title,
+              title: c.last_turn_status === "failed" ? `${c.title} — ${t("history.lastFailed")}` : c.title,
               onclick: async () => {
                 if (await openConversation(c.id)) navigate("chat");
                 if (narrow.matches) setSidebar(false);
               },
             },
+            c.last_turn_status === "failed" ? h("span", { class: "dot warn", "aria-label": t("history.lastFailed") }) : null,
             c.title,
           ),
           h("button", { type: "button", class: "history-delete", title: t("history.delete"), "aria-label": t("history.delete"), onclick: () => confirmDelete(c) }, icon("x")),
@@ -120,7 +122,11 @@ function modelStatus() {
   let tone = "neutral";
   let title = t("status.local.title");
   let text = t("status.local.text");
-  if (cloud?.ready) {
+  if (cloud?.ready && state.privacy.mode === "local") {
+    tone = "neutral";
+    title = t("privacy.local");
+    text = t("status.localChosen");
+  } else if (cloud?.ready) {
     tone = "good";
     title = modelName(cloud.model_id);
     text = t(namesShared() ? "status.names.shared" : "status.names.hidden");
@@ -314,7 +320,7 @@ async function boot() {
   renderShell();
   wireEvents();
   subscribe((topic) => {
-    if (topic === "info") renderFoot();
+    if (topic === "info" || topic === "privacy") renderFoot();
     if (topic === "history" || topic === "conversation") {
       if (historyHost) fill(historyHost, historyView());
       renderTopbar();
@@ -349,6 +355,7 @@ async function boot() {
   route(true);
   startLive();
   refreshConversations();
+  refreshPrivacy();
   try {
     await refreshInfo();
   } catch {

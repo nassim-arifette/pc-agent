@@ -3,7 +3,7 @@ import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call, onDrop } from "../api.js";
-import { ask, cloudReady } from "../ask.js";
+import { askWithAi, cloudReady } from "../ask.js";
 import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
@@ -108,7 +108,7 @@ export function mount(page) {
     const current = view[tab];
     const max = current.items.reduce((m, i) => Math.max(m, i.size), 0);
     const askButton = cloudReady()
-      ? button(t("storage.ask"), { iconName: "sparkle", variant: "primary", onClick: () => ask(t("storage.askQuestion", { folder: folderName(view.root) }), { cloud: true }) })
+      ? button(t("storage.ask"), { iconName: "sparkle", variant: "primary", onClick: () => askWithAi(t("storage.askQuestion", { folder: folderName(view.root) }), { followUp: false }) })
       : button(t("storage.ask"), { iconName: "sparkle", disabled: true, title: t("mode.cloud.setup") });
     return [
       h(
