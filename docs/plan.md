@@ -179,6 +179,10 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
   de durée/requêtes/outils du tour et laisse l'arrêt utilisateur prioritaire.
 - Le mode automatique exige un étalonnage local valide issu de situations réelles annotées, avec
   coût, qualité et échecs conservés. Sans cet étalonnage, aucune reprise automatique n'est activée.
+  Les traces portent dès leur création l'identité du registre global des outils, du contrat
+  analyste/vérificateur et du harness de rejeu. Le compilateur d'étalonnage et les chargeurs CLI/GUI
+  exigent cette même identité actuelle ; un champ absent ou une version différente invalide
+  l'étalonnage. On ne réétiquette jamais une ancienne exécution avec l'identité du moteur actuel.
   Les comparaisons externes exclues de ce lot ne sont pas requises pour préparer le mécanisme.
 - Les rapports ajoutent des métadonnées de routage et un détail d'usage/coût par modèle ; un total
   n'est disponible que si toutes les consommations et tous les prix sont connus. Les événements
