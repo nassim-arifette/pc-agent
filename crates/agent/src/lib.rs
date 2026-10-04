@@ -2,6 +2,7 @@
 //! the controller checks every citation, number and name of that answer against what the tools
 //! returned. The model never supplies permissions, commands or executed actions.
 #![forbid(unsafe_code)]
+mod action_targets;
 pub mod activity_tools;
 mod answer;
 pub use answer::{
@@ -20,6 +21,7 @@ pub use conversation::{
 };
 pub mod credentials;
 pub mod history_tools;
+mod models;
 mod nebius;
 mod payload;
 mod proposals;
@@ -29,6 +31,7 @@ pub mod system_tools;
 pub use storage_context::{
     ContentContext, LocalStorageItem, SharedName, StorageContext, MAX_SHARED_NAMES,
 };
+mod tool_context;
 mod tools;
 mod verify;
 mod workstation;
@@ -36,6 +39,7 @@ use budget::{Budget, Checkpoint};
 pub use budget::{BudgetLimit, ExtensionRequest, MAX_EXTENSIONS};
 pub use cost::{estimate as estimate_cost, Cost, Pricing};
 pub use history_tools::METRICS as HISTORY_TOOL_METRICS;
+pub use models::{validate_model_id, ModelCatalog, ModelInfo};
 pub use nebius::{Config, Nebius};
 pub use payload::{measurements, FindingAliases, Measurements, ModelFinding, NotMeasured};
 use pcagent_diagnostics::{analyze, Classification, Finding, Support};
@@ -863,6 +867,7 @@ pub fn converse_with_privacy(
     // The last answer whose text could be checked, shown with its problems marked if the repairs
     // or the budget run out. It is never a reason to ask the user for more budget.
     let mut fallback: Option<Answer> = None;
+    let mut tool_context = tool_context::ToolContext::default();
     loop {
         if fallback.is_some() && budget.exhausted(&result, &Checkpoint::Inference) {
             return result.finish(fallback, repairs, AgentError::Budget);
@@ -902,6 +907,7 @@ pub fn converse_with_privacy(
                 }
             }
         }
+        tool_context.compact(&mut messages);
         let reply = match model.complete(
             &messages,
             &definitions,
@@ -1065,15 +1071,6 @@ pub fn converse_with_privacy(
             let mut cloud = output.cloud.clone();
             let fresh = output.findings.clone();
             result.append(output);
-            if sharing == Sharing::Complete {
-                share_process_names(&mut cloud, &result.local_processes, privacy);
-            }
-            privacy::collect_shared_names(&cloud, &mut result.conversation_names);
-            if sharing == Sharing::Anonymized {
-                let mut names = result.conversation_names.clone();
-                names.extend(process_name_map(&result.local_processes, privacy));
-                privacy::anonymize(&mut cloud, &names);
-            }
             if let Some(object) = cloud.as_object_mut() {
                 // The model cites short references; local observation IDs stay here.
                 object.insert("observation_id".into(), json!(citation));
@@ -1098,9 +1095,17 @@ pub fn converse_with_privacy(
                         .collect::<Vec<_>>()),
                 );
             }
-            privacy.sanitize_value(&mut cloud);
+            privacy::project_tool_names(
+                &mut cloud,
+                sharing,
+                &result.local_processes,
+                privacy,
+                &mut result.conversation_names,
+            );
+            tool_context::add_readable_values(&mut cloud);
+            let context_payload = tool_context.message(&cloud);
             messages.push(json!({"role":"tool","tool_call_id":call.id,
-                "content":serde_json::to_string(&cloud).expect("serializable observation")}));
+                "content":serde_json::to_string(&context_payload).expect("serializable observation")}));
             received.push(cloud);
         }
     }

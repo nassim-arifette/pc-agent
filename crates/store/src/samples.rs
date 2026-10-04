@@ -1793,7 +1793,7 @@ mod tests {
                 .conn
                 .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
                 .unwrap(),
-            4
+            crate::SCHEMA_VERSION
         );
         let events = store.activity_events(0, 3000, 100).unwrap();
         assert_eq!(events.len(), 1);

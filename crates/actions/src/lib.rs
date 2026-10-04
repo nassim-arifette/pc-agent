@@ -12,8 +12,10 @@ mod cleanup;
 mod journal;
 mod native;
 mod plan;
+mod startup;
 #[cfg(test)]
 mod tests;
+mod user_cleanup;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;
@@ -40,6 +42,11 @@ pub use plan::{
     ActionIntent, ActionKind, ActionPlan, CleanupTarget, FileIdentity, FileTarget, PlanItem,
     PlanModelView, PlanState, Precondition, ProcessIdentity, ProcessTarget, Recovery,
     ResolvedTarget, SettingsPage, MAX_REF_LEN, MAX_TARGETS,
+};
+pub use startup::{StartupApproval, StartupIdentity, StartupTarget};
+pub use user_cleanup::{
+    RecycleCleanupTarget, UserCleanupAdapter, UserCleanupKind, MAX_USER_CLEANUP_ENTRIES,
+    MAX_USER_CLEANUP_FILES, MIN_TEMP_AGE,
 };
 #[cfg(windows)]
 pub use windows::show_in_explorer;

@@ -32,6 +32,7 @@ struct Fake {
     targets: HashMap<String, ResolvedTarget>,
     files: RefCell<HashMap<PathBuf, FileIdentity>>,
     processes: RefCell<HashMap<u32, ProcessIdentity>>,
+    startups: RefCell<HashMap<String, StartupIdentity>>,
 }
 impl Fake {
     fn file(mut self, r: &str, path: &str, n: u128) -> Self {
@@ -57,6 +58,49 @@ impl Fake {
         );
         self
     }
+    fn startup(mut self, reference: &str, name: &str, approval: StartupApproval) -> Self {
+        self.startups.borrow_mut().insert(
+            name.into(),
+            StartupIdentity {
+                run_key_last_write_filetime: 42,
+                approval,
+            },
+        );
+        let target = StartupTarget::disable(name, &self).unwrap();
+        self.targets
+            .insert(reference.into(), ResolvedTarget::UserStartup(target));
+        self
+    }
+    fn cleanup(mut self) -> Self {
+        let root = FileTarget {
+            path: r"C:\Users\fixture\Temp".into(),
+            identity: FileIdentity {
+                is_directory: true,
+                ..file_id(10)
+            },
+        };
+        self.files
+            .borrow_mut()
+            .insert(root.path.clone(), root.identity.clone());
+        let files = [11, 12]
+            .into_iter()
+            .map(|index| {
+                let file = FileTarget {
+                    path: PathBuf::from(format!(r"C:\Users\fixture\Temp\{index}.tmp")),
+                    identity: file_id(index),
+                };
+                self.files
+                    .borrow_mut()
+                    .insert(file.path.clone(), file.identity.clone());
+                file
+            })
+            .collect();
+        self.targets.insert(
+            "user.temp".into(),
+            ResolvedTarget::RecycleCleanup(crate::user_cleanup::fixture_target(root, files)),
+        );
+        self
+    }
 }
 impl TargetResolver for Fake {
     fn resolve(&self, r: &str) -> Result<ResolvedTarget, Status> {
@@ -69,6 +113,9 @@ impl Guard for Fake {
     }
     fn observe_process(&self, pid: u32) -> Result<Option<ProcessIdentity>, Status> {
         Ok(self.processes.borrow().get(&pid).cloned())
+    }
+    fn observe_user_startup(&self, name: &str) -> Result<Option<StartupIdentity>, Status> {
+        Ok(self.startups.borrow().get(name).cloned())
     }
 }
 
@@ -86,6 +133,7 @@ impl ProtectionCheck for Protect {
 struct Recorder<'a> {
     calls: RefCell<Vec<String>>,
     recycle_removes_from: Option<&'a Fake>,
+    startup_updates: Option<&'a Fake>,
     cancel_after_first: Option<&'a AtomicBool>,
     panic_on_call: Cell<Option<usize>>,
     block_journal: Option<&'a Path>,
@@ -139,6 +187,21 @@ impl Effects for Recorder<'_> {
         self.record(format!("recycle {}", f.path.display()));
         if let Some(fake) = self.recycle_removes_from {
             fake.files.borrow_mut().remove(&f.path);
+        }
+        Ok(EffectOutcome::Done(None))
+    }
+    fn set_user_startup(
+        &self,
+        _: &Permit,
+        target: &StartupTarget,
+    ) -> Result<EffectOutcome, EffectError> {
+        self.record("startup approval".into());
+        if let Some(fake) = self.startup_updates {
+            fake.startups
+                .borrow_mut()
+                .get_mut(target.value_name())
+                .unwrap()
+                .approval = target.desired_approval().clone();
         }
         Ok(EffectOutcome::Done(None))
     }
@@ -393,6 +456,7 @@ fn replaced_file_is_refused_and_needs_new_plan() {
         targets: again,
         files: fake.files.clone(),
         processes: Default::default(),
+        startups: Default::default(),
     };
     let b2 = broker(&fake2, &BaselineProtection, &fx, &env);
     assert!(matches!(
@@ -622,10 +686,12 @@ fn settings_outside_allowlist_are_refused() {
     let env = Env::new();
     let b = broker(&fake, &BaselineProtection, &fx, &env);
     for page in [
-        "windowsupdate",
+        "windowsupdate-troubleshooter?untrusted=true",
         "ms-settings:storagesense",
         "privacy",
         "StorageSense",
+        "BatteryUsage",
+        "ms-settings:batterysaver-usagedetails",
     ] {
         assert!(matches!(
             b.prepare_plan(&intent(ActionKind::OpenSettingsPage, &[page])),
@@ -636,6 +702,341 @@ fn settings_outside_allowlist_are_refused() {
         r#"{"action_kind":"open_settings_page","target_refs":["storagesense","startupapps"]}"#
     )
     .is_err());
+}
+
+#[test]
+fn planned_settings_pages_keep_fixed_uris_and_require_approval() {
+    let fake = Fake::default();
+    let effects = Recorder::default();
+    let env = Env::new();
+    let b = broker(&fake, &BaselineProtection, &effects, &env);
+    for (reference, uri) in [
+        ("windowsupdate", "ms-settings:windowsupdate"),
+        (
+            "windowsupdate-optionalupdates",
+            "ms-settings:windowsupdate-optionalupdates",
+        ),
+        ("powersleep", "ms-settings:powersleep"),
+        (
+            "batterysaver-usagedetails",
+            "ms-settings:batterysaver-usagedetails",
+        ),
+    ] {
+        let page = SettingsPage::from_ref(reference).unwrap();
+        assert_eq!(page.uri(), uri);
+        let plan = b
+            .prepare_plan(&intent(ActionKind::OpenSettingsPage, &[reference]))
+            .unwrap();
+        assert_eq!(plan.state(), PlanState::AwaitingApproval);
+    }
+    assert!(effects.calls.borrow().is_empty());
+}
+
+#[test]
+fn battery_usage_page_opens_only_after_local_approval() {
+    let fake = Fake::default();
+    let effects = Recorder::default();
+    let env = Env::new();
+    let b = broker(&fake, &BaselineProtection, &effects, &env);
+    let session = LocalSession::new();
+    let mut plan = b
+        .prepare_plan(&intent(
+            ActionKind::OpenSettingsPage,
+            &["batterysaver-usagedetails"],
+        ))
+        .unwrap();
+    assert_eq!(plan.state(), PlanState::AwaitingApproval);
+    assert!(effects.calls.borrow().is_empty());
+    let token = approve_locally(&mut plan, &session, TTL).unwrap();
+    assert!(effects.calls.borrow().is_empty());
+    assert_eq!(
+        go(&b, &mut plan, &token, &session).unwrap().overall,
+        OverallOutcome::Completed
+    );
+    assert_eq!(
+        *effects.calls.borrow(),
+        vec!["settings ms-settings:batterysaver-usagedetails"]
+    );
+}
+
+#[test]
+fn user_startup_is_locally_approved_journaled_and_restorable() {
+    let mut fake = Fake::default().startup("startup-1", "Fixture App", StartupApproval::Missing);
+    let env = Env::new();
+    let session = LocalSession::new();
+    let restore = {
+        let effects = Recorder {
+            startup_updates: Some(&fake),
+            ..Default::default()
+        };
+        let b = broker(&fake, &BaselineProtection, &effects, &env);
+        let mut plan = b
+            .prepare_plan(&intent(ActionKind::DisableUserStartup, &["startup-1"]))
+            .unwrap();
+        assert_eq!(plan.recovery(), Recovery::RestorePreviousStartupApproval);
+        let json = serde_json::to_string(&plan.model_view()).unwrap();
+        for local in ["Fixture App", "run_key", "desired_approval", "binary"] {
+            assert!(!json.contains(local), "{local} leaked to model view");
+        }
+        assert!(effects.calls.borrow().is_empty());
+        let token = approve_locally(&mut plan, &session, TTL).unwrap();
+        let mut result = go(&b, &mut plan, &token, &session).unwrap();
+        assert_eq!(result.overall, OverallOutcome::Completed);
+        result.record_after_measurement("after-startup");
+        assert_eq!(
+            result.measurement.after_ref.as_deref(),
+            Some("after-startup")
+        );
+        assert!(go(&b, &mut plan, &token, &session).is_err());
+        let (records, bad) = env.journal.read(plan.plan_id()).unwrap();
+        assert_eq!(bad, 0);
+        let Some(PreState::UserStartup { target }) = records[0].pre_state.as_ref() else {
+            panic!()
+        };
+        assert_eq!(target.identity().approval, StartupApproval::Missing);
+        assert!(
+            StartupTarget::restore_from_journal(&env.journal, plan.plan_id(), 1, &fake).is_err()
+        );
+        StartupTarget::restore_from_journal(&env.journal, plan.plan_id(), 0, &fake).unwrap()
+    };
+    fake.targets
+        .insert("restore-1".into(), ResolvedTarget::UserStartup(restore));
+    let effects = Recorder {
+        startup_updates: Some(&fake),
+        ..Default::default()
+    };
+    let b = broker(&fake, &BaselineProtection, &effects, &env);
+    let mut restore_plan = b
+        .prepare_plan(&intent(ActionKind::RestoreUserStartup, &["restore-1"]))
+        .unwrap();
+    let token = approve_locally(&mut restore_plan, &session, TTL).unwrap();
+    assert_eq!(
+        go(&b, &mut restore_plan, &token, &session).unwrap().overall,
+        OverallOutcome::Completed
+    );
+    assert_eq!(
+        fake.startups.borrow()["Fixture App"].approval,
+        StartupApproval::Missing
+    );
+}
+
+#[test]
+fn startup_restoration_refuses_unfinished_failed_or_mismatched_journals() {
+    let fake = Fake::default().startup("startup-1", "Fixture App", StartupApproval::Missing);
+    let effects = Recorder {
+        startup_updates: Some(&fake),
+        ..Default::default()
+    };
+    let source = Env::new();
+    let b = broker(&fake, &BaselineProtection, &effects, &source);
+    let mut plan = b
+        .prepare_plan(&intent(ActionKind::DisableUserStartup, &["startup-1"]))
+        .unwrap();
+    let session = LocalSession::new();
+    let token = approve_locally(&mut plan, &session, TTL).unwrap();
+    assert_eq!(
+        go(&b, &mut plan, &token, &session).unwrap().overall,
+        OverallOutcome::Completed
+    );
+    let (records, bad) = source.journal.read(plan.plan_id()).unwrap();
+    assert_eq!(bad, 0);
+    assert!(StartupTarget::restore_from_journal(&source.journal, "../escape", 0, &fake).is_err());
+    for case in 0..6 {
+        let destination = Env::new();
+        let mut changed = records.clone();
+        match case {
+            0 => {
+                changed.pop();
+            }
+            1 => changed[1].fingerprint.push('0'),
+            2 => {
+                changed[1].outcome = Some(ItemOutcome::Refused {
+                    reason: Refusal::StartupEntryChanged,
+                })
+            }
+            3 => changed[0].schema_version += 1,
+            4 => changed[1].target_ref.push('0'),
+            5 => {
+                changed[0].pre_state = Some(PreState::SettingsPage {
+                    page: SettingsPage::StartupApps,
+                })
+            }
+            _ => unreachable!(),
+        }
+        for record in &changed {
+            destination.journal.append(record).unwrap();
+        }
+        assert!(
+            StartupTarget::restore_from_journal(&destination.journal, plan.plan_id(), 0, &fake)
+                .is_err(),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn changed_user_startup_entry_or_approval_is_refused() {
+    for change_source in [true, false] {
+        let fake = Fake::default().startup("startup-1", "Fixture App", StartupApproval::Missing);
+        let effects = Recorder {
+            startup_updates: Some(&fake),
+            ..Default::default()
+        };
+        let env = Env::new();
+        let b = broker(&fake, &BaselineProtection, &effects, &env);
+        let mut plan = b
+            .prepare_plan(&intent(ActionKind::DisableUserStartup, &["startup-1"]))
+            .unwrap();
+        let session = LocalSession::new();
+        let token = approve_locally(&mut plan, &session, TTL).unwrap();
+        let mut startups = fake.startups.borrow_mut();
+        let entry = startups.get_mut("Fixture App").unwrap();
+        if change_source {
+            entry.run_key_last_write_filetime += 1;
+        } else {
+            let mut data = [0_u8; 12];
+            data[0] = 2;
+            entry.approval = StartupApproval::Binary(data);
+        }
+        drop(startups);
+        let result = go(&b, &mut plan, &token, &session).unwrap();
+        assert_eq!(result.overall, OverallOutcome::Failed);
+        assert_eq!(
+            result.items[0].outcome,
+            ItemOutcome::Refused {
+                reason: Refusal::StartupEntryChanged
+            }
+        );
+        assert!(effects.calls.borrow().is_empty());
+    }
+}
+
+#[test]
+fn startup_cannot_restore_over_a_later_user_change() {
+    let fake = Fake::default().startup("startup-1", "Fixture App", StartupApproval::Missing);
+    let ResolvedTarget::UserStartup(target) = &fake.targets["startup-1"] else {
+        panic!()
+    };
+    assert_eq!(
+        target.prepare_restore(&fake),
+        Err(Refusal::StartupEntryChanged)
+    );
+    fake.startups
+        .borrow_mut()
+        .get_mut("Fixture App")
+        .unwrap()
+        .approval = target.desired_approval().clone();
+    assert!(target.prepare_restore(&fake).is_ok());
+    fake.startups
+        .borrow_mut()
+        .get_mut("Fixture App")
+        .unwrap()
+        .run_key_last_write_filetime += 1;
+    assert_eq!(
+        target.prepare_restore(&fake),
+        Err(Refusal::StartupEntryChanged)
+    );
+}
+
+#[test]
+fn user_cleanup_recycles_exact_files_and_journals_each_item() {
+    let fake = Fake::default().cleanup();
+    let effects = Recorder {
+        recycle_removes_from: Some(&fake),
+        ..Default::default()
+    };
+    let env = Env::new();
+    let b = broker(&fake, &BaselineProtection, &effects, &env);
+    let mut plan = b
+        .prepare_plan(&intent(ActionKind::RunCleanupAdapter, &["user.temp"]))
+        .unwrap();
+    assert_eq!(plan.items().len(), 2);
+    assert_eq!(plan.estimated_immediate_reclaim_bytes(), Some(0));
+    assert_eq!(plan.recovery(), Recovery::RecycleBinIfOperationSupported);
+    let view = serde_json::to_string(&plan.model_view()).unwrap();
+    for local in ["fixture", "11.tmp", "volume_serial", "directories"] {
+        assert!(!view.contains(local));
+    }
+    // Recycling one file changes directory timestamps, not the directory object.
+    fake.files
+        .borrow_mut()
+        .get_mut(Path::new(r"C:\Users\fixture\Temp"))
+        .unwrap()
+        .modified_filetime += 1;
+    let session = LocalSession::new();
+    let token = approve_locally(&mut plan, &session, TTL).unwrap();
+    let result = go(&b, &mut plan, &token, &session).unwrap();
+    assert_eq!(result.overall, OverallOutcome::Completed);
+    assert!(result.items.iter().all(|item| matches!(
+        item.outcome,
+        ItemOutcome::Completed {
+            bytes_removed: Some(0),
+            ..
+        }
+    )));
+    let (records, bad) = env.journal.read(plan.plan_id()).unwrap();
+    assert_eq!((records.len(), bad), (4, 0));
+    assert!(matches!(
+        records[0].pre_state,
+        Some(PreState::RecycleCleanup { .. })
+    ));
+    assert!(recover(&env.journal).unwrap().needs_inspection.is_empty());
+    assert_eq!(fake.files.borrow().len(), 1); // The root directory is preserved.
+}
+
+#[test]
+fn user_cleanup_revalidates_replacement_protection_and_cancellation() {
+    let fake = Fake::default().cleanup();
+    let cancel = AtomicBool::new(false);
+    let effects = Recorder {
+        recycle_removes_from: Some(&fake),
+        cancel_after_first: Some(&cancel),
+        ..Default::default()
+    };
+    let env = Env::new();
+    let b = broker(&fake, &BaselineProtection, &effects, &env);
+    let mut plan = b
+        .prepare_plan(&intent(ActionKind::RunCleanupAdapter, &["user.temp"]))
+        .unwrap();
+    let session = LocalSession::new();
+    let token = approve_locally(&mut plan, &session, TTL).unwrap();
+    let result = b
+        .execute(&mut plan, &token, &session, &cancel, None)
+        .unwrap();
+    assert_eq!(result.overall, OverallOutcome::Partial);
+    assert_eq!(effects.calls.borrow().len(), 1);
+    assert!(matches!(
+        result.items[1].outcome,
+        ItemOutcome::Skipped {
+            reason: SkipReason::Cancelled
+        }
+    ));
+
+    let fake = Fake::default().cleanup();
+    let effects = Recorder {
+        recycle_removes_from: Some(&fake),
+        ..Default::default()
+    };
+    let env = Env::new();
+    let protection = Protect("c:\\users\\fixture\\temp\\11");
+    assert!(broker(&fake, &protection, &effects, &env)
+        .prepare_plan(&intent(ActionKind::RunCleanupAdapter, &["user.temp"]))
+        .is_err());
+    let b = broker(&fake, &BaselineProtection, &effects, &env);
+    let mut plan = b
+        .prepare_plan(&intent(ActionKind::RunCleanupAdapter, &["user.temp"]))
+        .unwrap();
+    let token = approve_locally(&mut plan, &session, TTL).unwrap();
+    fake.files
+        .borrow_mut()
+        .get_mut(Path::new(r"C:\Users\fixture\Temp"))
+        .unwrap()
+        .file_id += 1;
+    assert_eq!(
+        go(&b, &mut plan, &token, &session).unwrap().overall,
+        OverallOutcome::Failed
+    );
+    assert!(effects.calls.borrow().is_empty());
 }
 
 #[test]

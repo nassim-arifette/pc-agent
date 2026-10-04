@@ -1,6 +1,7 @@
 //! Read-only investigation tools backed by the real collectors, storage index and policy.
 //! Every cloud payload is built from an explicit allowlist: PIDs, executable names, full paths,
 //! boot IDs and collector session IDs stay local.
+use crate::action_targets::{ActionTargets, ScannedFile};
 use crate::proposals::{
     self, ActionDesk, PendingPlan, PolicyProtection, Proposal, CLEANUP_TARGET_REF,
     PREPARE_ACTION_PLAN,
@@ -171,6 +172,7 @@ pub struct Workstation<'a> {
     jobs: Vec<ScanJob>,
     specs: Vec<ToolSpec>,
     actions: Option<ActionDesk>,
+    action_targets: ActionTargets,
     observation_refs: Vec<String>,
     storage_context: crate::StorageContext,
     sharing: crate::Sharing,
@@ -193,6 +195,7 @@ impl<'a> Workstation<'a> {
             jobs: Vec::new(),
             specs: Self::tool_specs(),
             actions: None,
+            action_targets: ActionTargets::default(),
             observation_refs: Vec::new(),
             storage_context: crate::StorageContext::default(),
             sharing: crate::Sharing::Anonymized,
@@ -333,61 +336,117 @@ impl Workstation<'_> {
             .text("action_kind")
             .and_then(proposals::parse_kind)
             .ok_or("unsupported action_kind")?;
-        let proposal = match kind {
-            ActionKind::OpenSettingsPage => Proposal {
-                kind,
-                target_ref: args
-                    .text("settings_page")
-                    .ok_or("settings_page is required")?
-                    .into(),
-                target: None,
-                synthetic_cache: None,
-            },
-            ActionKind::OpenInExplorer => {
-                let (path, _, item_ref) = self.local_item(args)?;
-                let identity = match desk.guard.observe_file(&path) {
-                    Ok(Some(identity)) => identity,
-                    Ok(None) => return Err("item no longer exists".into()),
-                    Err(status) => return Err(format!("item identity unavailable ({status:?})")),
-                };
-                Proposal {
+        proposals::validate_arguments(kind, args)?;
+        let proposal =
+            match kind {
+                ActionKind::OpenSettingsPage => Proposal {
                     kind,
-                    target_ref: item_ref,
-                    target: Some(ResolvedTarget::File(FileTarget { path, identity })),
-                    synthetic_cache: None,
-                }
-            }
-            ActionKind::RunCleanupAdapter => {
-                if self.prefs.permissions.reversible_only {
-                    return Err("user preferences allow reversible actions only".into());
-                }
-                let (path, item_kind, item_ref) = self.local_item(args)?;
-                let input = CandidateInput {
-                    item_ref,
-                    path: path.to_string_lossy().into_owned(),
-                    is_dir: item_kind == ItemKind::Dirs,
-                    logical_bytes: 0,
-                    allocated_bytes: None,
-                    modified_unix_ms: None,
-                    attributes: Attributes::default(),
-                    origin: Origin::Live,
-                    marker_verified: item_kind == ItemKind::Dirs && self.has_adapter_marker(&path),
-                };
-                let c = self.policy.classify(&input, self.prefs);
-                if c.adapter_id != Some(SYNTHETIC_CACHE_ID) || !c.preselectable {
-                    return Err("item is not a validated cleanup adapter target".into());
-                }
-                let cache =
-                    SyntheticDemoCache::open(&path).map_err(|_| "adapter marker check failed")?;
-                Proposal {
-                    kind,
-                    target_ref: CLEANUP_TARGET_REF.into(),
+                    target_ref: args
+                        .text("settings_page")
+                        .ok_or("settings_page is required")?
+                        .into(),
                     target: None,
-                    synthetic_cache: Some(cache),
+                    synthetic_cache: None,
+                },
+                ActionKind::OpenInExplorer => {
+                    let (path, _, item_ref) = self.local_item(args)?;
+                    let identity = match desk.guard.observe_file(&path) {
+                        Ok(Some(identity)) => identity,
+                        Ok(None) => return Err("item no longer exists".into()),
+                        Err(status) => {
+                            return Err(format!("item identity unavailable ({status:?})"))
+                        }
+                    };
+                    Proposal {
+                        kind,
+                        target_ref: item_ref,
+                        target: Some(ResolvedTarget::File(FileTarget { path, identity })),
+                        synthetic_cache: None,
+                    }
                 }
-            }
-            _ => return Err("unsupported action_kind".into()),
-        };
+                ActionKind::RunCleanupAdapter => {
+                    if let Some(adapter) = args.text("adapter_id") {
+                        Proposal {
+                            kind,
+                            target_ref: adapter.into(),
+                            target: Some(self.action_targets.cleanup(adapter).ok_or(
+                                "inspect a supported cleanup adapter before proposing it",
+                            )?),
+                            synthetic_cache: None,
+                        }
+                    } else {
+                        if self.prefs.permissions.reversible_only {
+                            return Err("user preferences allow reversible actions only".into());
+                        }
+                        let (path, item_kind, item_ref) = self.local_item(args)?;
+                        let input = CandidateInput {
+                            item_ref,
+                            path: path.to_string_lossy().into_owned(),
+                            is_dir: item_kind == ItemKind::Dirs,
+                            logical_bytes: 0,
+                            allocated_bytes: None,
+                            modified_unix_ms: None,
+                            attributes: Attributes::default(),
+                            origin: Origin::Live,
+                            marker_verified: item_kind == ItemKind::Dirs
+                                && self.has_adapter_marker(&path),
+                        };
+                        let c = self.policy.classify(&input, self.prefs);
+                        if c.adapter_id != Some(SYNTHETIC_CACHE_ID) || !c.preselectable {
+                            return Err("item is not a validated cleanup adapter target".into());
+                        }
+                        let cache = SyntheticDemoCache::open(&path)
+                            .map_err(|_| "adapter marker check failed")?;
+                        Proposal {
+                            kind,
+                            target_ref: CLEANUP_TARGET_REF.into(),
+                            target: None,
+                            synthetic_cache: Some(cache),
+                        }
+                    }
+                }
+                ActionKind::DisableUserStartup => {
+                    let reference = args.text("startup_ref").ok_or("startup_ref is required")?;
+                    Proposal {
+                        kind,
+                        target_ref: reference.into(),
+                        target: Some(self.action_targets.startup(reference).ok_or(
+                            "inspect a supported current-user Run entry before proposing it",
+                        )?),
+                        synthetic_cache: None,
+                    }
+                }
+                ActionKind::RequestNormalClose => {
+                    let reference = args.text("process_ref").ok_or("process_ref is required")?;
+                    Proposal {
+                        kind,
+                        target_ref: reference.into(),
+                        target: Some(self.action_targets.process(reference).ok_or(
+                            "inspect a verifiable, non-preserved process before proposing it",
+                        )?),
+                        synthetic_cache: None,
+                    }
+                }
+                ActionKind::RecycleSelectedFiles => {
+                    let (scope, item_ref) = (
+                        args.text("scope_id").ok_or("scope_id is required")?,
+                        args.text("item_ref").ok_or("item_ref is required")?,
+                    );
+                    // A reference from a replaced scan cannot select an old local path.
+                    self.local_item(args)?;
+                    Proposal {
+                        kind,
+                        target_ref: item_ref.into(),
+                        target: Some(
+                            self.action_targets.file(scope, item_ref).ok_or(
+                                "inspect a verifiable file before proposing its recycling",
+                            )?,
+                        ),
+                        synthetic_cache: None,
+                    }
+                }
+                _ => return Err("unsupported action_kind".into()),
+            };
         let protection = PolicyProtection {
             policy: self.policy,
             prefs: self.prefs,
@@ -478,7 +537,22 @@ impl Toolbox for Workstation<'_> {
                 json!({"scope_id":scope,"error":"Scope was not approved for this turn."}),
             );
         }
-        let extension = crate::system_tools::run(spec, args, self.sharing)
+        let targets = &mut self.action_targets;
+        let desk = self.actions.as_ref();
+        let policy = self.policy;
+        let prefs = self.prefs;
+        let extension =
+            crate::system_tools::run_with_inspection(spec, args, self.sharing, |inspection| {
+                if let Some(desk) = desk {
+                    targets.retain_inspection(
+                        spec.name,
+                        inspection,
+                        desk.guard.as_ref(),
+                        policy,
+                        prefs,
+                    );
+                }
+            })
             .or_else(|| crate::history_tools::run(spec, args, self.history.as_ref(), self.sharing))
             .or_else(|| crate::activity_tools::run(spec, args, self.collector, self.sharing));
         let mut out = if let Some(out) = extension {
@@ -574,9 +648,64 @@ impl Toolbox for Workstation<'_> {
         if !scope.is_empty() {
             out.cloud["scope_id"] = scope.into();
         }
+        if let Some(desk) = self.actions.as_ref() {
+            self.action_targets
+                .restrict_inspection_projection(spec.name, &out.cloud);
+            if spec.name == "get_processes" {
+                self.action_targets.retain_processes(
+                    &out.processes,
+                    desk.guard.as_ref(),
+                    self.prefs,
+                );
+            }
+            if matches!(spec.name, "get_largest_items" | "get_cleanup_candidates") {
+                let items: Vec<_> = self
+                    .storage
+                    .index(scope)
+                    .ok()
+                    .map(|index| {
+                        out.storage_items
+                            .iter()
+                            .filter_map(|item| {
+                                Some(ScannedFile {
+                                    item: index.item(&item.item_ref).ok()?,
+                                    identity: index.local_identity(&item.item_ref),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.action_targets.retain_files(
+                    scope,
+                    &items,
+                    desk.guard.as_ref(),
+                    self.policy,
+                    self.prefs,
+                );
+            }
+            if matches!(
+                spec.name,
+                "get_startup_programs"
+                    | "get_cleanup_opportunities"
+                    | "get_processes"
+                    | "get_largest_items"
+                    | "get_cleanup_candidates"
+            ) {
+                out.cloud["proposable_actions"] = self
+                    .action_targets
+                    .view(spec.name, &out.cloud, scope)
+                    .into();
+            }
+            if spec.name == "get_startup_programs" && !self.prefs.preserved_apps.is_empty() {
+                out.cloud["action_limitations"] = json!(["Startup entries cannot be mapped to preserved applications without reading commands; disable proposals remain unavailable."]);
+            }
+        }
         if matches!(spec.class, crate::tools::ToolClass::Inspection) && out.inspection_complete {
             let reference = pcagent_shared::new_id("obs");
             out.cloud["observation_id"] = reference.clone().into();
+            if self.observation_refs.len() >= pcagent_actions::MAX_TARGETS {
+                self.observation_refs.remove(0);
+            }
             self.observation_refs.push(reference);
         }
         out
@@ -756,7 +885,20 @@ mod tests {
                 }))
             }
             fn observe_process(&self, _: u32) -> Result<Option<ProcessIdentity>, Status> {
-                Err(Status::Unsupported)
+                Ok(Some(ProcessIdentity {
+                    pid: 42,
+                    creation_time_filetime: 100,
+                    boot_id: Some("fixture-boot".into()),
+                }))
+            }
+            fn observe_user_startup(
+                &self,
+                _: &str,
+            ) -> Result<Option<pcagent_actions::StartupIdentity>, Status> {
+                Ok(Some(pcagent_actions::StartupIdentity {
+                    run_key_last_write_filetime: 1,
+                    approval: pcagent_actions::StartupApproval::Missing,
+                }))
             }
         }
         struct FakeEffects(Rc<Cell<u32>>);
@@ -976,7 +1118,10 @@ mod tests {
                     Status::Error
                 );
             }
-            for page in crate::proposals::SETTINGS_PAGES {
+            for page in crate::proposals::SETTINGS_PAGES
+                .iter()
+                .take(crate::MAX_PENDING_PLANS)
+            {
                 let args =
                     json!({"action_kind":"open_settings_page","settings_page":page}).to_string();
                 assert_eq!(
@@ -992,6 +1137,128 @@ mod tests {
             assert_eq!(ws.take_actions().unwrap().1.len(), crate::MAX_PENDING_PLANS);
             assert_eq!(calls.get(), 0);
             fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn new_settings_pages_are_pending_and_targets_require_prior_inspection() {
+            for page in [
+                "windowsupdate",
+                "windowsupdate-optionalupdates",
+                "powersleep",
+                "batterysaver-usagedetails",
+            ] {
+                let (mut collector, policy, prefs) =
+                    (Collector::new(), Policy::default(), Preferences::default());
+                let mut ws = Workstation::new(
+                    &mut collector,
+                    Arc::new(StorageService::new()),
+                    &policy,
+                    &prefs,
+                );
+                let calls = Rc::new(Cell::new(0));
+                ws.enable_action_proposals(desk(page, &calls));
+                ws.observation_refs.push("obs-fixture".into());
+                let out = run(
+                    &mut ws,
+                    "prepare_action_plan",
+                    &json!({"action_kind":"open_settings_page", "settings_page":page}).to_string(),
+                );
+                assert_eq!(out.status, Status::Ok);
+                assert_eq!(out.cloud["plan"]["state"], "awaiting_approval");
+                assert_eq!(calls.get(), 0);
+                for unavailable in [
+                    r#"{"action_kind":"disable_user_startup","startup_ref":"startup-forged"}"#,
+                    r#"{"action_kind":"run_cleanup_adapter","adapter_id":"user.temp"}"#,
+                    r#"{"action_kind":"request_normal_close","process_ref":"proc-forged"}"#,
+                    r#"{"action_kind":"recycle_selected_files","scope_id":"scope-forged","item_ref":"scan-forged:1"}"#,
+                ] {
+                    assert_eq!(
+                        run(&mut ws, "prepare_action_plan", unavailable).status,
+                        Status::Error
+                    );
+                }
+                assert_eq!(ws.take_actions().unwrap().1.len(), 1);
+                assert_eq!(calls.get(), 0);
+            }
+        }
+
+        #[test]
+        fn startup_and_normal_close_plans_use_only_captured_targets_and_never_execute() {
+            use pcagent_inspect::{CoverageStatus, Inspection, Observation};
+            use pcagent_shared::{ProcessInstance, Window};
+            let (mut collector, policy, prefs) =
+                (Collector::new(), Policy::default(), Preferences::default());
+            let mut ws = Workstation::new(
+                &mut collector,
+                Arc::new(StorageService::new()),
+                &policy,
+                &prefs,
+            );
+            let calls = Rc::new(Cell::new(0));
+            ws.enable_action_proposals(desk("captured-startup-and-close", &calls));
+            ws.observation_refs.push("obs-fixture".into());
+            let inspection = Inspection {
+                status: Status::Ok,
+                measured_at_unix_ms: 1,
+                window: Window::instant(),
+                origin: Origin::SyntheticFixture,
+                observations: [("startup_kind", "Run"), ("startup_scope", "user_64")]
+                    .into_iter()
+                    .map(|(metric, value)| Observation {
+                        observation_id: format!("measurement-{metric}"),
+                        measured_at_unix_ms: 1,
+                        window: Window::instant(),
+                        entity_ref: "startup-fixture".into(),
+                        metric: metric.into(),
+                        value: value.into(),
+                        unit: "category".into(),
+                        status: CoverageStatus::Ok,
+                        source: "synthetic fixture".into(),
+                        origin: Origin::SyntheticFixture,
+                    })
+                    .collect(),
+                coverage: vec![],
+                names: [("startup-fixture".into(), "PRIVATE-STARTUP-NAME".into())].into(),
+            };
+            ws.action_targets.retain_inspection(
+                "get_startup_programs",
+                &inspection,
+                &FakeGuard,
+                &policy,
+                &prefs,
+            );
+            ws.action_targets.retain_processes(
+                &[ProcessInstance {
+                    entity_ref: "proc-fixture".into(),
+                    pid: 42,
+                    creation_time_filetime: 100,
+                    boot_id: Some("fixture-boot".into()),
+                    executable_name: Some("PRIVATE-PROCESS.exe".into()),
+                }],
+                &FakeGuard,
+                &prefs,
+            );
+            for args in [
+                r#"{"action_kind":"disable_user_startup","startup_ref":"startup-fixture"}"#,
+                r#"{"action_kind":"request_normal_close","process_ref":"proc-fixture"}"#,
+            ] {
+                let out = run(&mut ws, "prepare_action_plan", args);
+                assert_eq!(out.status, Status::Ok, "{}", out.cloud);
+                assert_eq!(out.cloud["plan"]["state"], "awaiting_approval");
+                assert_eq!(out.cloud["plan"]["approval_granted"], false);
+                let text = out.cloud.to_string();
+                for forbidden in [
+                    "PRIVATE",
+                    "fixture-boot",
+                    "creation_time",
+                    "run_key_last_write",
+                    "pid",
+                ] {
+                    assert!(!text.contains(forbidden), "{forbidden}");
+                }
+            }
+            assert_eq!(calls.get(), 0);
+            assert_eq!(ws.take_actions().unwrap().1.len(), 2);
         }
     }
 }

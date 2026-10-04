@@ -8,8 +8,8 @@ use crate::{
     Collector,
 };
 use pcagent_shared::{
-    new_id, new_short_ref, Evidence, Metric, Origin, ProcessCoverage, ProcessInstance, Status,
-    Window, SCHEMA_VERSION,
+    new_id, new_short_ref, Evidence, InstanceState, Metric, Origin, ProcessCoverage,
+    ProcessInstance, Status, Window, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -151,18 +151,22 @@ struct GpuReadings {
     /// Physical engine keys never leave this module; only measured shares are exported.
     engines: HashMap<u32, BTreeMap<String, u64>>,
     rejected: usize,
+    affected_pids: HashSet<u32>,
+    unscoped_rejected: usize,
     unattributed: usize,
 }
 
 fn gpu_readings(instances: &Instances, stable_pids: &HashSet<u32>) -> GpuReadings {
     let mut out = GpuReadings {
         rejected: instances.invalid,
+        unscoped_rejected: instances.invalid,
         ..GpuReadings::default()
     };
     let mut seen = HashSet::new();
     for (name, percent) in &instances.valid {
         let Some((pid, engine)) = gpu_identity(name) else {
             out.rejected += 1;
+            out.unscoped_rejected += 1;
             continue;
         };
         if !stable_pids.contains(&pid) {
@@ -171,10 +175,12 @@ fn gpu_readings(instances: &Instances, stable_pids: &HashSet<u32>) -> GpuReading
         }
         let Some(value) = scaled(*percent, 100).and_then(clamp_share) else {
             out.rejected += 1;
+            out.affected_pids.insert(pid);
             continue;
         };
         if !seen.insert((pid, engine.to_owned())) {
             out.rejected += 1;
+            out.affected_pids.insert(pid);
             continue;
         }
         out.engines
@@ -216,6 +222,98 @@ fn busiest_gpu(pids: impl Iterator<Item = u32>, gpu: &GpuReadings) -> Option<u64
         maximum = maximum.max(Some(value));
     }
     maximum
+}
+
+/// A retained exited process object still has creation times, and its exit code can be 259.
+/// A running identity therefore requires both a known zero exit time and the running code.
+pub(crate) fn handle_instance_state(
+    expected_created: u64,
+    times: Option<(u64, u64)>,
+    exit_code: Option<u32>,
+    running_code: u32,
+) -> InstanceState {
+    let Some((created, exited)) = times else {
+        return InstanceState::Unverified;
+    };
+    if expected_created == 0 || created == 0 {
+        return InstanceState::Unverified;
+    }
+    if created != expected_created {
+        return InstanceState::PidReused;
+    }
+    if exited != 0 {
+        return InstanceState::Exited;
+    }
+    match exit_code {
+        Some(code) if code == running_code => InstanceState::Running,
+        Some(_) => InstanceState::Exited,
+        None => InstanceState::Unverified,
+    }
+}
+
+/// The caller supplies identities observed before the PDH baseline and revalidated after
+/// its finish. Native PIDs and physical engine identifiers stay inside this computation.
+pub(crate) fn recording_gpu_evidence(
+    processes: &[ProcessInstance],
+    before: &HashSet<(u32, u64)>,
+    revalidated: &HashSet<(u32, u64)>,
+    instances: &Sampled<Instances>,
+    window: &Window,
+) -> Vec<Evidence> {
+    let stable: HashSet<_> = processes
+        .iter()
+        .filter(|process| {
+            let key = (process.pid, process.creation_time_filetime);
+            key.0 != 0 && key.1 != 0 && before.contains(&key) && revalidated.contains(&key)
+        })
+        .map(|process| process.pid)
+        .collect();
+    let clock_consistent = window.duration_ms > 0
+        && window
+            .finished_at_unix_ms
+            .checked_sub(window.started_at_unix_ms)
+            .is_some_and(|span| span.abs_diff(window.duration_ms) <= 50);
+    let readings = instances
+        .as_ref()
+        .map(|instances| gpu_readings(instances, &stable))
+        .unwrap_or_default();
+    processes
+        .iter()
+        .map(|process| {
+            let value = (clock_consistent
+                && before.contains(&(process.pid, process.creation_time_filetime))
+                && revalidated.contains(&(process.pid, process.creation_time_filetime))
+                && readings.unscoped_rejected == 0
+                && !readings.affected_pids.contains(&process.pid))
+                .then(|| busiest_gpu([process.pid].into_iter(), &readings))
+                .flatten();
+            let mut measured = evidence(
+                Metric::ProcessGpuBasisPoints,
+                &process.entity_ref,
+                value,
+                GPU_SOURCE,
+                window,
+                "No full-window GPU measurement for this retained, unchanged and revalidated process; absence is unknown, not zero.",
+            );
+            if measured.value.is_none() {
+                if let Err(why) = instances {
+                    measured.status = why.status;
+                } else if instances.as_ref().is_ok_and(|instances| {
+                    instances.valid.is_empty() && instances.invalid == 0
+                }) {
+                    measured.status = Status::Unsupported;
+                }
+            }
+            if readings.rejected > 0 {
+                measured.limitations.push(format!(
+                    "GPU window rejected {} invalid or duplicate instances; invalid entries without a usable identity prevent complete per-process attribution.",
+                    readings.rejected
+                ));
+            }
+            measured.limitations.push("GPU occupancy is the busiest observed physical engine; it cannot establish watts, joules or a battery percentage for an application.".into());
+            measured
+        })
+        .collect()
 }
 
 fn rate(bytes: u64, duration_ms: u64) -> Option<u64> {
@@ -933,6 +1031,211 @@ mod tests {
         assert_eq!(busiest_gpu([10].into_iter(), &readings), Some(2000));
         assert!(gpu_identity("pid_-1_luid_x_phys_0_eng_0_engtype_3D").is_none());
         assert!(gpu_identity("pid_10_luid_x").is_none());
+    }
+
+    fn recording_process(pid: u32, created: u64, reference: &str) -> ProcessInstance {
+        ProcessInstance {
+            entity_ref: reference.into(),
+            pid,
+            creation_time_filetime: created,
+            boot_id: None,
+            executable_name: Some("private-local-name.exe".into()),
+        }
+    }
+
+    #[test]
+    fn recorded_gpu_keeps_identity_native_window_units_and_measured_zero() {
+        let processes = [
+            recording_process(10, 100, "proc-11112222"),
+            recording_process(20, 200, "proc-33334444"),
+        ];
+        let identities = [(10, 100), (20, 200)].into_iter().collect();
+        let window = Window {
+            started_at_unix_ms: 1000,
+            finished_at_unix_ms: 3000,
+            duration_ms: 2000,
+        };
+        let evidence = recording_gpu_evidence(
+            &processes,
+            &identities,
+            &identities,
+            &Ok(gpu(&[(10, "0", 37.0), (10, "1", 73.0), (20, "0", 0.0)])),
+            &window,
+        );
+        assert_eq!(evidence.len(), 2);
+        assert_eq!(evidence[0].entity_ref, "proc-11112222");
+        assert_eq!(evidence[0].usable_value(), Some(7300));
+        assert_eq!(evidence[1].usable_value(), Some(0));
+        for value in &evidence {
+            assert_eq!(value.metric, Metric::ProcessGpuBasisPoints);
+            assert_eq!(value.unit, Metric::ProcessGpuBasisPoints.unit());
+            assert_eq!(value.source, GPU_SOURCE);
+            assert_eq!(value.window.started_at_unix_ms, window.started_at_unix_ms);
+            assert_eq!(value.window.finished_at_unix_ms, window.finished_at_unix_ms);
+            assert_eq!(value.window.duration_ms, window.duration_ms);
+        }
+        let wire = serde_json::to_string(&evidence).unwrap();
+        for private in ["pid_", "luid_", "creation_time", "private-local-name"] {
+            assert!(!wire.contains(private));
+        }
+    }
+
+    #[test]
+    fn recorded_gpu_requires_the_same_instance_before_and_after_the_exact_window() {
+        let process = recording_process(10, 100, "proc-11112222");
+        let same = [(10, 100)].into_iter().collect();
+        let reused = [(10, 99)].into_iter().collect();
+        let absent = HashSet::new();
+        let window = Window {
+            started_at_unix_ms: 1000,
+            finished_at_unix_ms: 3000,
+            duration_ms: 2000,
+        };
+        for (before, verified) in [
+            (&absent, &same),
+            (&reused, &same),
+            (&same, &absent),
+            (&same, &reused),
+        ] {
+            let values = recording_gpu_evidence(
+                std::slice::from_ref(&process),
+                before,
+                verified,
+                &Ok(gpu(&[(10, "0", 73.0)])),
+                &window,
+            );
+            assert_eq!(values[0].value, None);
+            assert_eq!(values[0].status, Status::Partial);
+        }
+        let mut skewed = window.clone();
+        skewed.finished_at_unix_ms += 500;
+        for window in [skewed, Window::instant()] {
+            assert_eq!(
+                recording_gpu_evidence(
+                    std::slice::from_ref(&process),
+                    &same,
+                    &same,
+                    &Ok(gpu(&[(10, "0", 73.0)])),
+                    &window,
+                )[0]
+                .value,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_gpu_preserves_unavailable_and_invalid_coverage() {
+        let processes = [recording_process(10, 100, "proc-11112222")];
+        let identities = [(10, 100)].into_iter().collect();
+        let window = Window {
+            started_at_unix_ms: 1000,
+            finished_at_unix_ms: 3000,
+            duration_ms: 2000,
+        };
+        for (instances, expected) in [
+            (Ok(Instances::default()), Status::Unsupported),
+            (Ok(gpu(&[(10, "0", 120.0)])), Status::Partial),
+            (Ok(gpu(&[(20, "0", 73.0)])), Status::Partial),
+            (
+                Err(crate::counters::Unavailable::new(
+                    Status::PermissionDenied,
+                    "GPU counter denied.",
+                )),
+                Status::PermissionDenied,
+            ),
+        ] {
+            let values =
+                recording_gpu_evidence(&processes, &identities, &identities, &instances, &window);
+            assert_eq!(values[0].value, None);
+            assert_eq!(values[0].status, expected);
+        }
+    }
+
+    #[test]
+    fn recorded_gpu_cannot_hide_a_rejected_engine_behind_a_valid_zero() {
+        let processes = [
+            recording_process(10, 100, "proc-11112222"),
+            recording_process(20, 200, "proc-33334444"),
+        ];
+        let identities = [(10, 100), (20, 200)].into_iter().collect();
+        let window = Window {
+            started_at_unix_ms: 1000,
+            finished_at_unix_ms: 3000,
+            duration_ms: 2000,
+        };
+        for (engine, invalid) in [("1", f64::NAN), ("1", 120.0), ("0", 25.0)] {
+            let instances = gpu(&[(10, "0", 0.0), (10, engine, invalid), (20, "0", 73.0)]);
+            let values = recording_gpu_evidence(
+                &processes,
+                &identities,
+                &identities,
+                &Ok(instances),
+                &window,
+            );
+            assert_eq!(values[0].value, None);
+            assert_eq!(values[0].status, Status::Partial);
+            assert!(values[0]
+                .limitations
+                .iter()
+                .any(|limitation| limitation.contains("rejected 1")));
+            assert_eq!(values[1].usable_value(), Some(7300));
+        }
+        for invalid_identity in [false, true] {
+            let mut instances = gpu(&[(10, "0", 0.0), (20, "0", 73.0)]);
+            if invalid_identity {
+                instances.valid.push(("unrecognized-instance".into(), 30.0));
+            } else {
+                instances.invalid = 1;
+            }
+            let values = recording_gpu_evidence(
+                &processes,
+                &identities,
+                &identities,
+                &Ok(instances),
+                &window,
+            );
+            assert!(values
+                .iter()
+                .all(|value| value.value.is_none() && value.status == Status::Partial));
+        }
+    }
+
+    #[test]
+    fn process_handle_liveness_requires_creation_exit_time_and_exit_code() {
+        for (times, code, expected) in [
+            (Some((100, 0)), Some(259), InstanceState::Running),
+            (Some((100, 3001)), Some(259), InstanceState::Exited),
+            (Some((100, 3001)), Some(0), InstanceState::Exited),
+            (Some((100, 0)), Some(0), InstanceState::Exited),
+            (Some((99, 0)), Some(259), InstanceState::PidReused),
+            (Some((0, 0)), Some(259), InstanceState::Unverified),
+            (Some((100, 0)), None, InstanceState::Unverified),
+            (None, Some(259), InstanceState::Unverified),
+        ] {
+            assert_eq!(handle_instance_state(100, times, code, 259), expected);
+        }
+        let process = recording_process(10, 100, "proc-11112222");
+        let identities = [(10, 100)].into_iter().collect();
+        let after_window = handle_instance_state(100, Some((100, 3001)), Some(259), 259);
+        let verified = if after_window == InstanceState::Running {
+            [(10, 100)].into_iter().collect()
+        } else {
+            HashSet::new()
+        };
+        let values = recording_gpu_evidence(
+            &[process],
+            &identities,
+            &verified,
+            &Ok(gpu(&[(10, "0", 73.0)])),
+            &Window {
+                started_at_unix_ms: 1000,
+                finished_at_unix_ms: 3000,
+                duration_ms: 2000,
+            },
+        );
+        assert_eq!(values[0].value, None);
+        assert_eq!(values[0].status, Status::Partial);
     }
 
     #[test]

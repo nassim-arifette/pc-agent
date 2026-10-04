@@ -114,6 +114,14 @@ impl Sampler {
     ) -> Result<crate::ProcessPeaks, StoreError> {
         Store::open(&self.0.path)?.process_peaks(from_unix_ms, to_unix_ms, limit)
     }
+    pub fn process_resource_peaks(
+        &self,
+        from_unix_ms: u64,
+        to_unix_ms: u64,
+        limit: usize,
+    ) -> Result<crate::ProcessPeaks, StoreError> {
+        Store::open(&self.0.path)?.process_resource_peaks(from_unix_ms, to_unix_ms, limit)
+    }
     pub fn start_recording(&self, seconds: u64) -> Result<Recording, StoreError> {
         if !(30..=120).contains(&seconds) {
             return Err(StoreError::InvalidQuery);
@@ -140,6 +148,12 @@ impl Sampler {
     }
     pub fn recording(&self, id: &str) -> Result<Option<Recording>, StoreError> {
         Store::open(&self.0.path)?.recording(id)
+    }
+    pub fn battery_recording(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::BatteryRecording>, StoreError> {
+        Store::open(&self.0.path)?.battery_recording(id)
     }
     /// Wait for a bounded recording while allowing the caller's existing stop flag to cancel it.
     pub fn record(&self, seconds: u64, stop: &AtomicBool) -> Result<Recording, StoreError> {
@@ -246,15 +260,19 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
                     let _ = reply.send(Err(stopped()));
                     continue;
                 }
+                // Pair the persisted UTC epoch with the recording's actual Instant anchor
+                // before database work, so its delay cannot masquerade as clock skew.
+                let recording_started = Instant::now();
                 let now = unix_ms();
                 let result = store
                     .interrupt_old_recordings(now)
                     .and_then(|_| store.begin_recording(seconds, now));
                 let began = result.is_ok();
                 if let Ok(recording) = &result {
+                    collector.reset_recording_gpu();
                     active = Some((
                         recording.clone(),
-                        Instant::now() + Duration::from_secs(seconds),
+                        recording_started + Duration::from_secs(seconds),
                         0,
                     ));
                     update(status, |s| s.recording = Some(recording.clone()));
@@ -293,9 +311,21 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
         } else {
             ProcessSort::WorkingSet
         };
-        let snapshot = collector.sample_processes(20, sort);
+        let snapshot = if active.is_some() {
+            collector.sample_recording_processes(20, sort)
+        } else {
+            collector.sample_processes(20, sort)
+        };
         let now = unix_ms();
         let sample = StoredSample::from_snapshot(&snapshot, now, interval_ms);
+        let battery = active.as_ref().map(|(recording, end, _)| {
+            let inspection = pcagent_inspect::inspect(pcagent_inspect::Query::Battery);
+            let started = *end - Duration::from_secs(recording.duration_seconds);
+            let elapsed = Instant::now()
+                .saturating_duration_since(started)
+                .as_millis() as u64;
+            (recording.id.clone(), inspection, unix_ms(), elapsed)
+        });
         match store.append_sample(&sample) {
             Ok(_) => {
                 update(status, |s| {
@@ -317,6 +347,16 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
             Err(_) => update(status, |s| {
                 s.error = Some("Could not persist a local sample".into())
             }),
+        }
+        if let Some((id, inspection, at, elapsed)) = battery {
+            if store
+                .append_recording_battery_timed(&id, &inspection, at, Some(elapsed))
+                .is_err()
+            {
+                update(status, |s| {
+                    s.error = Some("Could not persist a recording battery sample".into())
+                });
+            }
         }
         if Instant::now() >= next_maintenance {
             if store

@@ -2,7 +2,7 @@
 //! untrusted input: every argument is validated here, paths and item references are resolved on
 //! this side, and the Nebius key never reaches the page.
 use crate::{
-    actions,
+    actions, elevation,
     preview::{self, PreparedTurn, Reviewed},
     protocol,
     session::{ObservedModel, ObservedTools, Step},
@@ -79,6 +79,7 @@ struct AppState {
     privacy: Mutex<PrivacySettings>,
     /// The last finished turn's action proposals; they run only after a click in this window.
     actions: Arc<actions::Slot>,
+    elevation: Arc<elevation::Slot>,
 }
 
 /// The history file next to the settings file, with conversations older than the retention
@@ -143,6 +144,23 @@ async fn record_activity_start(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Read the battery points of an existing local problem recording without collecting again.
+#[tauri::command]
+async fn battery_recording(
+    state: State<'_, AppState>,
+    recording_id: String,
+) -> Result<Option<pcagent_store::BatteryRecording>, String> {
+    let sampler = state
+        .sampler
+        .as_ref()
+        .ok_or("Local history is unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || sampler.battery_recording(&recording_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -309,6 +327,21 @@ async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, String
 #[tauri::command]
 fn action_plans(state: State<'_, AppState>, turn_id: String) -> Vec<view::PlanView> {
     actions::plans(&state.actions, &turn_id)
+}
+
+/// Prepare local journal-based recovery; the existing action_run command still requires a click.
+#[tauri::command]
+async fn startup_restore_prepare(
+    state: State<'_, AppState>,
+    source_plan_id: String,
+    item_index: usize,
+) -> Result<actions::StartupRestoration, String> {
+    let slot = state.actions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        actions::prepare_startup_restore(&slot, &source_plan_id, item_index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1199,6 +1232,54 @@ struct CloudCheck {
     price: Option<view::PriceView>,
 }
 
+/// Lists the saved account's catalog; the page receives metadata, never the local key.
+#[tauri::command]
+async fn cloud_models() -> Result<pcagent_agent::ModelCatalog, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let credentials = Credentials::load();
+        Nebius::account_catalog(|name| credentials.get(name), Duration::from_secs(10))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Prepare a fixed task for local review without opening the Windows consent dialog.
+#[tauri::command]
+async fn elevation_prepare(
+    state: State<'_, AppState>,
+    task: pcagent_inspect::elevation::ElevatedTask,
+    budget_ms: u64,
+) -> Result<elevation::PreparedView, String> {
+    let slot = state.elevation.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        slot.prepare(task, Duration::from_millis(budget_ms))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn elevation_status(state: State<'_, AppState>) -> Result<Option<elevation::PreparedView>, String> {
+    state.elevation.status()
+}
+
+/// The local approval click consumes one prepared request. No model tool invokes this command.
+#[tauri::command]
+async fn elevation_run(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<pcagent_inspect::Inspection, String> {
+    let run = state.elevation.begin(&request_id)?;
+    let result = tauri::async_runtime::spawn_blocking(move || run.execute()).await;
+    result.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn elevation_cancel(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+    state.elevation.cancel(&request_id)
+}
+
 /// Explicit catalog check with the saved key; sends no telemetry.
 #[tauri::command]
 async fn test_cloud() -> Result<CloudCheck, String> {
@@ -1219,6 +1300,10 @@ async fn test_cloud() -> Result<CloudCheck, String> {
 }
 
 pub fn run() {
+    if pcagent_inspect::elevation::ensure_unelevated_host().is_err() {
+        eprintln!("Start PC Agent from a standard, unelevated session.");
+        std::process::exit(2);
+    }
     let background = std::env::args_os().any(|arg| arg == "--background");
     let mut context = tauri::generate_context!();
     if background {
@@ -1243,6 +1328,7 @@ pub fn run() {
             sampler: open_sampler(),
             privacy: Mutex::new(settings::load()),
             actions: Arc::new(Mutex::new(None)),
+            elevation: Arc::new(elevation::Slot::default()),
             preview: Mutex::new(None),
             preview_revision: AtomicU64::new(0),
         })
@@ -1251,6 +1337,7 @@ pub fn run() {
             dashboard,
             process_activity,
             action_plans,
+            startup_restore_prepare,
             action_decline,
             action_run,
             cloud_preview,
@@ -1265,6 +1352,11 @@ pub fn run() {
             reveal,
             save_cloud_settings,
             test_cloud,
+            cloud_models,
+            elevation_prepare,
+            elevation_status,
+            elevation_run,
+            elevation_cancel,
             conversations_list,
             conversation_get,
             conversation_delete,
@@ -1272,6 +1364,7 @@ pub fn run() {
             history_status,
             metric_history,
             record_activity_start,
+            battery_recording,
             record_activity_cancel,
             history_clear,
             startup_get,
@@ -1301,7 +1394,6 @@ pub fn run() {
                     }
                     "quit" => {
                         shutdown(app);
-                        app.exit(0);
                     }
                     _ => {}
                 })
@@ -1328,6 +1420,8 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                 } else {
+                    // Tauri exits the process without Rust destructors. Wait for the helper first.
+                    api.prevent_close();
                     shutdown(window.app_handle());
                 }
             }
@@ -1338,6 +1432,9 @@ pub fn run() {
 
 fn shutdown(app: &AppHandle) {
     let state = app.state::<AppState>();
+    let Some(shutdown) = state.elevation.begin_shutdown() else {
+        return;
+    };
     if let Some(running) = lock(&state.investigation).as_ref() {
         running.stop.store(true, Ordering::SeqCst);
         if let Some(answer) = lock(&running.answer).take() {
@@ -1347,4 +1444,12 @@ fn shutdown(app: &AppHandle) {
     if let Some(sampler) = &state.sampler {
         sampler.stop();
     }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if shutdown.wait(Duration::from_secs(5)) {
+            app.exit(0);
+        } else {
+            eprintln!("PC Agent is waiting for its elevated inspection to stop; try Quit again.");
+        }
+    });
 }

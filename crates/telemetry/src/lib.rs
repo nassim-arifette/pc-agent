@@ -120,6 +120,8 @@ pub struct Collector {
     last_ticks: Option<TickSample>,
     #[cfg(windows)]
     pdh: Option<Result<windows::pdh::Pdh, counters::Unavailable>>,
+    #[cfg(windows)]
+    recording_gpu_baseline: Option<windows::RecordingGpuBaseline>,
     /// NVML, opened on the first snapshot and shut down with the collector.
     #[cfg(windows)]
     nvml: Option<Result<windows::nvml::Nvml, windows::nvml::OpenError>>,
@@ -147,6 +149,8 @@ impl Collector {
             last_ticks: None,
             #[cfg(windows)]
             pdh: None,
+            #[cfg(windows)]
+            recording_gpu_baseline: None,
             #[cfg(windows)]
             nvml: None,
         }
@@ -202,6 +206,27 @@ impl Collector {
         };
         self.record(&result);
         result
+    }
+    /// Recording sample that reuses the existing PDH window for bounded process GPU evidence.
+    /// Warm-up and unverifiable identities stay unknown; there is no extra measurement sleep.
+    pub fn sample_recording_processes(&mut self, limit: usize, sort: ProcessSort) -> Snapshot {
+        #[cfg(windows)]
+        let result = windows::collect_recording(self, limit.clamp(1, 50), sort);
+        #[cfg(not(windows))]
+        let result = {
+            let _ = (limit, sort);
+            unsupported_snapshot(&self.session_id)
+        };
+        self.record(&result);
+        result
+    }
+    /// Start a recording without lending its first GPU window a prior recording's identities.
+    /// Existing CPU/PDH counters remain warm; only the local attribution anchor is cleared.
+    pub fn reset_recording_gpu(&mut self) {
+        #[cfg(windows)]
+        {
+            self.recording_gpu_baseline = None;
+        }
     }
     /// Fresh CPU, memory growth, I/O and GPU observations for processes and applications.
     /// The requested window is bounded to 1..=30 seconds; callers default to 3 seconds.

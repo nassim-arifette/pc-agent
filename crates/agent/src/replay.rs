@@ -262,6 +262,23 @@ impl Toolbox for ReplayTools {
     fn sharing(&self) -> Sharing {
         self.sharing
     }
+    fn definitions(&self) -> Value {
+        let privacy = crate::PrivacyContext::local();
+        json!(self.specs.iter().map(|spec| {
+            let mut definition = spec.definition();
+            let mut captured: Vec<Value> = self.calls.iter()
+                .filter(|call| call.tool == spec.name)
+                .map(|call| call.arguments.clone()).collect();
+            captured.sort_by_key(Value::to_string);
+            captured.dedup();
+            let mut captured = json!(captured);
+            privacy.sanitize_value(&mut captured);
+            definition["function"]["description"] = json!(format!(
+                "{} Frozen replay: only these exact argument objects were captured: {}. Omitted defaults differ from explicit defaults; other calls are unavailable and never approximated.",
+                spec.description, captured));
+            definition
+        }).collect::<Vec<_>>())
+    }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         let arguments = args.to_value();
         let same = |c: &RecordedCall| c.tool == spec.name && c.arguments == arguments;
@@ -274,13 +291,9 @@ impl Toolbox for ReplayTools {
                 self.reused_calls += 1;
             }
             self.served[i] = true;
-            let mut out = self.calls[i].output.to_output();
-            if self.sharing == Sharing::Anonymized {
-                // Names are normally added by the controller, not the toolbox. Imported
-                // scenarios may already contain a process dictionary; do not retain it.
-                remove_shared_names(&mut out.cloud);
-            }
-            return out;
+            // Imported captures are local collector output. ModelView/the controller apply
+            // the final C5 projection, including names embedded in findings and prose.
+            return self.calls[i].output.to_output();
         }
         self.misses.push(Miss {
             tool: spec.name.into(),
@@ -307,27 +320,6 @@ impl Toolbox for ReplayTools {
     }
 }
 
-fn remove_shared_names(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            // Every name dictionary the tools emit in complete sharing; see C5.
-            for key in [
-                "process_names",
-                "shared_name",
-                "shared_names",
-                "shared_ancestors",
-            ] {
-                map.remove(key);
-            }
-            for value in map.values_mut() {
-                remove_shared_names(value);
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(remove_shared_names),
-        _ => {}
-    }
-}
-
 /// The model-facing view of a tool session for MCP and offline previews. It uses the same
 /// initial envelope, finding aliases, observation citations and name projection as the agent.
 /// Local PIDs, boot/session identifiers and storage paths are never serialized here.
@@ -337,6 +329,69 @@ pub struct ModelView {
     sharing: Sharing,
     privacy: crate::PrivacyContext,
     initial: Value,
+}
+
+/// Offline byte measurements on real or explicitly labelled synthetic captures. These are not
+/// provider token counts, prices or answer-quality scores; collection and evidence are unchanged.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextMeasurement {
+    pub tool_calls: usize,
+    pub identical_results: usize,
+    pub full_projection_bytes: u64,
+    pub compact_projection_bytes: u64,
+    pub cumulative_full_context_bytes: u64,
+    pub cumulative_compact_context_bytes: u64,
+}
+
+pub fn measure_context(
+    scenario: &Scenario,
+    sharing: Sharing,
+) -> Result<ContextMeasurement, ReplayError> {
+    let mut replay = ReplayTools::new(scenario, sharing)?;
+    let mut view = ModelView::new(
+        scenario
+            .question
+            .as_deref()
+            .unwrap_or("Inspect this recorded PC situation."),
+        &scenario.initial,
+        sharing,
+    );
+    let mut context = crate::tool_context::ToolContext::default();
+    let mut messages = Vec::new();
+    let mut measured = ContextMeasurement {
+        tool_calls: 0,
+        identical_results: 0,
+        full_projection_bytes: 0,
+        compact_projection_bytes: 0,
+        cumulative_full_context_bytes: 0,
+        cumulative_compact_context_bytes: 0,
+    };
+    for call in &scenario.calls {
+        let spec = *replay
+            .specs()
+            .iter()
+            .find(|s| s.name == call.tool)
+            .ok_or(ReplayError::InvalidScenario)?;
+        let args = spec
+            .validate(&call.arguments.to_string())
+            .map_err(|_| ReplayError::InvalidScenario)?;
+        let output = replay.run(&spec, &args);
+        let full = view.output(&spec, output);
+        let compact = context.message(&full);
+        measured.tool_calls += 1;
+        measured.identical_results += usize::from(compact.get("same_result_as").is_some());
+        measured.full_projection_bytes += full.to_string().len() as u64;
+        measured.cumulative_full_context_bytes += measured.full_projection_bytes;
+        messages.push(json!({"role":"tool", "content":compact.to_string()}));
+        context.compact(&mut messages);
+        measured.compact_projection_bytes = messages
+            .iter()
+            .filter_map(|m| m["content"].as_str())
+            .map(|s| s.len() as u64)
+            .sum();
+        measured.cumulative_compact_context_bytes += measured.compact_projection_bytes;
+    }
+    Ok(measured)
 }
 impl ModelView {
     pub fn new(question: &str, initial: &Snapshot, sharing: Sharing) -> Self {
@@ -376,13 +431,6 @@ impl ModelView {
         let status = output.status;
         let inspection_complete = output.inspection_complete;
         self.report.append(output);
-        cloud.as_object_mut().unwrap().remove("process_names");
-        if self.sharing == Sharing::Anonymized {
-            remove_shared_names(&mut cloud);
-        }
-        if self.sharing == Sharing::Complete {
-            crate::share_process_names(&mut cloud, &self.report.local_processes, &self.privacy);
-        }
         cloud["observation_id"] = json!(citation);
         cloud["status"] = json!(status);
         cloud["inspection_complete"] = json!(inspection_complete);
@@ -405,6 +453,14 @@ impl ModelView {
             .filter(|o| o.citable)
             .map(|o| &o.citation)
             .collect::<Vec<_>>());
+        crate::privacy::project_tool_names(
+            &mut cloud,
+            self.sharing,
+            &self.report.local_processes,
+            &self.privacy,
+            &mut self.report.conversation_names,
+        );
+        crate::tool_context::add_readable_values(&mut cloud);
         cloud
     }
 }
@@ -578,12 +634,87 @@ mod tests {
         let mut cloud = json!({
             "process_names": {"proc-a1b2c3d4": "browser.exe"},
             "shared_names": {"app-b1c2d3e4": "browser.exe"},
+            "service_names": {"svc-a1b2c3d4": "FixtureService"},
+            "application_names": {"app-a1b2c3d4": "FixtureApp"},
+            "startup_names": {"startup-a1b2c3d4": "FixtureStartup"},
+            "hardware_names": {"hardware-a1b2c3d4": "FixtureHardware"},
+            "note": "browser.exe failed; FixtureService, FixtureApp, FixtureStartup and FixtureHardware.",
             "items": [{"shared_name": "Browser", "nested": {"shared_names": {"x": "y"}}}],
             "kept": 1
         });
-        remove_shared_names(&mut cloud);
+        crate::privacy::project_tool_names(
+            &mut cloud,
+            Sharing::Anonymized,
+            &[],
+            &crate::PrivacyContext::default(),
+            &mut Default::default(),
+        );
         let text = cloud.to_string();
         assert!(!text.contains("browser") && !text.contains("Browser"));
+        for forbidden in [
+            "FixtureService",
+            "FixtureApp",
+            "FixtureStartup",
+            "FixtureHardware",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden}");
+        }
         assert_eq!(cloud["kept"], 1);
+    }
+
+    #[test]
+    fn context_byte_measurements_preserve_origin_and_are_not_quality_scores() {
+        let mut scenario = Scenario::new("fixture".into(), None, snapshot(10));
+        let mut output = RecordedOutput::from(&ToolOutput::from_snapshot(&scenario.initial));
+        let row = json!({"measured_at_unix_ms":100,"window":{"duration_ms":3000},"origin":"synthetic_fixture",
+            "metric":"temperature","unit":"celsius","value":52,"status":"ok","source":"fixture"});
+        output.cloud["observations"] = json!(vec![row; 300]);
+        let call = RecordedCall {
+            tool: "get_system_snapshot".into(),
+            arguments: json!({}),
+            output,
+            recorded_at_unix_ms: None,
+            duration_ms: None,
+        };
+        let mut changed = call.clone();
+        changed.output.cloud["observations"][0]["value"] = json!(53);
+        scenario.calls = vec![call.clone(), call, changed];
+        let original = serde_json::to_value(&scenario).unwrap();
+        let result = measure_context(&scenario, Sharing::Anonymized).unwrap();
+        assert_eq!(result.tool_calls, 3);
+        assert_eq!(result.identical_results, 1);
+        assert!(result.full_projection_bytes > result.compact_projection_bytes);
+        assert!(result.cumulative_full_context_bytes > result.cumulative_compact_context_bytes);
+        assert_eq!(serde_json::to_value(&scenario).unwrap(), original);
+    }
+
+    #[test]
+    fn imported_tool_text_passes_the_same_final_privacy_filter_as_the_controller() {
+        let mut view = ModelView::new("fixture", &snapshot(10), Sharing::Complete);
+        view.privacy = crate::PrivacyContext::from_identifiers(
+            r"C:\Users\FixturePerson",
+            "FixturePerson",
+            "FIXTURE-HOST",
+            &["fixture-secret-token"],
+        );
+        let mut output = RecordedOutput {
+            status: Status::Ok,
+            inspection_complete: true,
+            cloud: json!({"note": "FixturePerson on FIXTURE-HOST; fixture-secret-token; test@example.invalid",
+                "path": r"C:\Users\FixturePerson\Documents\file.txt", "value": 10}),
+            evidence: vec![], findings: vec![], processes: vec![], limitations: vec![],
+        }.to_output();
+        output.cloud["process_names"] = json!({});
+        let cloud = view.output(spec("get_system_snapshot"), output);
+        let text = cloud.to_string();
+        for forbidden in [
+            "FixturePerson",
+            "FIXTURE-HOST",
+            "fixture-secret-token",
+            "test@example.invalid",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden}");
+        }
+        assert_eq!(cloud["value"], 10);
     }
 }
