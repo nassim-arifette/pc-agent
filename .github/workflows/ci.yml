@@ -26,7 +26,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Unit, command and native smoke tests (no provider credentials)
+        if: runner.os != 'Windows'
         run: cargo test --workspace --locked
+      - name: Windows tests with a standard-user token (no provider credentials)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci-windows-tests.ps1
       - name: Lossless paged MCP client tests (no provider credentials)
         run: python scripts/test-eval-mcp-client.py
       - name: Clippy

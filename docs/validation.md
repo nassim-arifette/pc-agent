@@ -18,6 +18,15 @@
 
 The workflow validates pushes and pull requests with read-only permissions. It checks formatting and the committed lockfile, without pushing changes or replacing the revision under review. A failed job must not be reported as successful validation.
 
+GitHub's [hosted Windows runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+is elevated with UAC disabled. The CI-only
+`scripts/ci-windows-tests.ps1` compiles every workspace test executable, verifies that the real
+CLI refuses the elevated runner, then runs all test executables under an ephemeral local account
+in the Users group. Cargo doctests are checked separately. The account is removed even when a test
+fails; its workspace and temporary permissions are confined to the disposable CI VM. Local
+unelevated development retains the normal `cargo test --workspace --locked` command. No product
+guard or test is skipped to accommodate CI.
+
 ## Manual native acceptance — NOT completed by CI
 
 On a separate Windows 11 x64 test PC, without elevation:
