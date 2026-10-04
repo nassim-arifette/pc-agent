@@ -1,13 +1,29 @@
 //! Locally approved elevation for one fixed, read-only task. No model or network entry point.
 #[cfg(any(windows, test))]
 mod cache;
+pub mod energy;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod energy_native;
 mod job;
 mod lifecycle;
 pub mod mft;
 #[cfg(windows)]
 #[allow(unsafe_code)]
+mod mft_native;
+#[cfg(windows)]
+#[allow(unsafe_code)]
 mod native;
+mod projection;
 mod protocol;
+pub mod system;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod system_native;
+pub mod trace;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod trace_native;
 mod worker;
 
 pub use job::{ElevationApproval, PreparedElevation};
@@ -103,7 +119,15 @@ pub fn to_inspection(response: &ElevationResponse) -> crate::Inspection {
         );
         out.coverage(cache.category.as_str(), status, source, &detail);
     }
-    if response.caches.is_empty() {
+    projection::add(&mut out, response);
+    if response.caches.is_empty()
+        && response.mft.is_none()
+        && response.shadow_storage.is_none()
+        && response.disk_reliability.is_none()
+        && response.process_images.is_none()
+        && response.battery_energy.is_none()
+        && response.performance_trace.is_none()
+    {
         let detail = format!("No usable aggregate measurement was returned; no cleanup recommendation is available. Limits: {:?}.", response.limitations);
         out.coverage(
             "elevated_task",

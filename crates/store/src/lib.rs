@@ -6,7 +6,10 @@ mod battery;
 mod process_peaks;
 pub mod sampler;
 mod samples;
-pub use battery::{BatteryRecording, MAX_BATTERY_POINTS, MAX_RECORDING_BATTERIES};
+pub use battery::{
+    BatteryGap, BatteryHistory, BatteryPoint, BatteryRecording, BatteryRecordingCoverage,
+    MAX_BATTERY_POINTS, MAX_RECORDING_BATTERIES,
+};
 pub use process_peaks::ProcessPeaks;
 use rusqlite::{params, Connection, OptionalExtension};
 pub use samples::{

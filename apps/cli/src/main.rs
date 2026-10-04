@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+mod model_routing;
 mod storage_view;
 mod text;
 use clap::{Parser, Subcommand};
@@ -55,6 +56,16 @@ struct Args {
     /// Print machine-readable JSON instead of text (byte counts are 64-bit integers).
     #[arg(long, global = true)]
     json: bool,
+    /// Model routing for cloud diagnoses. Configured preserves the existing model choice.
+    #[arg(long, global = true, default_value = "configured", value_parser = ["configured", "super", "ultra", "automatic"])]
+    routing: String,
+    #[arg(long, global = true)]
+    super_model: Option<String>,
+    #[arg(long, global = true)]
+    ultra_model: Option<String>,
+    /// Local human-reviewed paired Nemotron calibration; required for automatic routing.
+    #[arg(long, global = true)]
+    routing_calibration: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -70,11 +81,19 @@ enum Command {
     },
     /// Prepare one fixed read-only elevated inspection; execution requires local approval.
     ElevatedInspect {
-        #[arg(value_parser = ["system-caches", "mft"])]
+        #[arg(value_parser = ["system-caches", "mft", "shadow-storage", "disk-reliability", "process-image", "battery-energy", "performance-trace"])]
         task: String,
-        /// One uppercase local drive letter for the future MFT inventory.
+        /// One uppercase local drive letter for the bounded native MFT inventory.
         #[arg(long, default_value = "C")]
         volume: String,
+        /// A local process identity; PID alone is insufficient because Windows can reuse it.
+        #[arg(long, requires = "creation_time_filetime")]
+        pid: Option<u32>,
+        #[arg(long, requires = "pid")]
+        creation_time_filetime: Option<u64>,
+        /// Fixed ETW duration; collection remains gated until hard-exit cleanup is validated.
+        #[arg(long, value_parser = parse_trace_duration)]
+        duration_seconds: Option<u8>,
         #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=120))]
         timeout_seconds: u64,
         /// Explicit local approval after reading the task; then Windows asks for UAC consent.
@@ -396,6 +415,78 @@ fn review_actions(
     Ok(results)
 }
 const SETTLE_AFTER_ACTION: Duration = Duration::from_secs(2);
+fn parse_trace_duration(text: &str) -> std::result::Result<u8, String> {
+    match text {
+        "30" => Ok(30),
+        "60" => Ok(60),
+        _ => Err("ETW duration must be 30 or 60 seconds.".into()),
+    }
+}
+
+trait CliElevationCompletion {
+    fn wait(&self, timeout: Duration) -> bool;
+}
+impl CliElevationCompletion for pcagent_inspect::elevation::ElevationCompletion {
+    fn wait(&self, timeout: Duration) -> bool {
+        pcagent_inspect::elevation::ElevationCompletion::wait(self, timeout)
+    }
+}
+struct CliCleanup<C: CliElevationCompletion>(C);
+impl<C: CliElevationCompletion> Drop for CliCleanup<C> {
+    fn drop(&mut self) {
+        // A result, timeout or interrupt is never proof that private resources disappeared.
+        while !self.0.wait(Duration::from_millis(100)) {}
+    }
+}
+fn with_elevation_cleanup<C: CliElevationCompletion, R>(
+    completion: C,
+    operation: impl FnOnce() -> R,
+) -> R {
+    let _cleanup = CliCleanup(completion);
+    // The operation owns the prepared job; its resources are dropped before this guard waits,
+    // including preview/approval errors and unwinding through the operation.
+    operation()
+}
+
+struct InterruptRelayStop<'a> {
+    finished: &'a AtomicBool,
+    thread: std::thread::Thread,
+}
+impl Drop for InterruptRelayStop<'_> {
+    fn drop(&mut self) {
+        self.finished.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+}
+fn with_elevation_interrupt<R>(
+    signal: &AtomicBool,
+    operation: impl FnOnce(&pcagent_storage::CancelToken) -> R,
+) -> io::Result<R> {
+    let cancel = pcagent_storage::CancelToken::default();
+    // Cover an interrupt delivered before the relay gets its first scheduling opportunity.
+    if signal.load(Ordering::SeqCst) {
+        cancel.cancel();
+    }
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let relay = std::thread::Builder::new()
+            .name("pcagent-cli-elevation-interrupt".into())
+            .spawn_scoped(scope, || {
+                while !finished.load(Ordering::Acquire) {
+                    if signal.load(Ordering::SeqCst) {
+                        cancel.cancel();
+                    }
+                    std::thread::park_timeout(Duration::from_millis(20));
+                }
+            })?;
+        let _stop = InterruptRelayStop {
+            finished: &finished,
+            thread: relay.thread().clone(),
+        };
+        Ok(operation(&cancel))
+    })
+}
+
 fn sample_system(collector: &mut Collector, cancel: &AtomicBool) -> Vec<Snapshot> {
     (0..VERIFY_SAMPLES)
         .take_while(|_| !cancel.load(Ordering::SeqCst))
@@ -528,6 +619,12 @@ fn print_doctor(
     Ok(())
 }
 fn run(args: Args) -> Result<u8> {
+    let routing = model_routing::load(
+        &args.routing,
+        args.super_model.clone(),
+        args.ultra_model.clone(),
+        args.routing_calibration.as_deref(),
+    )?;
     match args.command {
         Command::RestoreStartup {
             source_plan_id,
@@ -557,6 +654,9 @@ fn run(args: Args) -> Result<u8> {
         Command::ElevatedInspect {
             task,
             volume,
+            pid,
+            creation_time_filetime,
+            duration_seconds,
             timeout_seconds,
             approve_local,
         } => {
@@ -566,35 +666,76 @@ fn run(args: Args) -> Result<u8> {
                 "mft" => ElevatedTask::MftInventory {
                     volume: DriveLetter::parse(&volume)?,
                 },
+                "shadow-storage" => ElevatedTask::ShadowStorage,
+                "disk-reliability" => ElevatedTask::DiskReliability,
+                "battery-energy" => ElevatedTask::BatteryEnergy,
+                "performance-trace" => ElevatedTask::PerformanceTrace {
+                    duration_seconds: duration_seconds.unwrap_or(30),
+                },
+                "process-image" => ElevatedTask::ProcessImages {
+                    targets: vec![pcagent_inspect::elevation::system::ProcessImageTarget {
+                        pid: pid
+                            .ok_or("process-image requires --pid and --creation-time-filetime")?,
+                        creation_time_filetime: creation_time_filetime
+                            .ok_or("process-image requires --pid and --creation-time-filetime")?,
+                    }],
+                },
                 _ => return Err("Unsupported elevated task.".into()),
             };
-            if matches!(task, ElevatedTask::MftInventory { .. }) {
+            if !matches!(task, ElevatedTask::ProcessImages { .. })
+                && (pid.is_some() || creation_time_filetime.is_some())
+            {
+                return Err("Process identity flags apply only to process-image.".into());
+            }
+            if duration_seconds.is_some() && !matches!(task, ElevatedTask::PerformanceTrace { .. })
+            {
+                return Err("Duration applies only to performance-trace.".into());
+            }
+            if matches!(task, ElevatedTask::PerformanceTrace { .. }) {
                 write_json(
-                    &json!({"task":task,"status":"unsupported","reason":"MFT allocation accuracy has not been validated on a controlled volume."}),
+                    &json!({"task":task,"state":"unsupported","limits":["cleanup_unvalidated"],
+                    "trace_session_started":false,"note":"Private session cleanup after hard termination still requires validation; no UAC, trace or ACL changes are performed."}),
                 )?;
                 return Ok(3);
             }
-            let mut prepared =
-                PreparedElevation::prepare(task, Duration::from_secs(timeout_seconds))?;
-            if !approve_local {
-                write_json(
-                    &json!({"task":task,"budget_seconds":timeout_seconds,"state":"awaiting_local_approval",
-                    "note":"Reads system-cache metadata only. It never deletes files. Re-run with --approve-local after reviewing this fixed task."}),
-                )?;
-                return Ok(0);
-            }
-            let approval = prepared.approve_locally()?;
-            let response =
-                prepared.run_locally(approval, &pcagent_storage::CancelToken::default())?;
-            let inspection = pcagent_inspect::elevation::to_inspection(&response);
-            write_json(&inspection)?;
-            Ok(
-                if matches!(inspection.status, Status::Ok | Status::Partial) {
-                    0
-                } else {
-                    3
-                },
-            )
+            // Keep Ctrl+C handled until confirmed cleanup, including a declined prepared job.
+            let interruption = ActionCancellation::begin()?;
+            with_elevation_interrupt(interruption.flag(), |cancel| -> Result<u8> {
+                if cancel.is_cancelled() {
+                    return Err(pcagent_inspect::elevation::ElevationError::Cancelled.into());
+                }
+                let prepared =
+                    PreparedElevation::prepare(task.clone(), Duration::from_secs(timeout_seconds))?;
+                let completion = prepared.completion();
+                with_elevation_cleanup(completion, move || {
+                    let mut prepared = prepared;
+                    if cancel.is_cancelled() {
+                        return Err(pcagent_inspect::elevation::ElevationError::Cancelled.into());
+                    }
+                    if !approve_local {
+                        write_json(
+                            &json!({"task":task,"budget_seconds":timeout_seconds,"state":"awaiting_local_approval",
+                            "note":"One fixed read-only metadata inspection. It never deletes files or installs drivers. MFT and historical energy coverage remain explicitly partial. Re-run with --approve-local after reviewing this fixed task, then approve the Windows UAC prompt."}),
+                        )?;
+                        return Ok(0);
+                    }
+                    let approval = prepared.approve_locally()?;
+                    let response = prepared.run_locally_bounded(approval, cancel)?;
+                    let inspection = pcagent_inspect::elevation::to_inspection(&response);
+                    let mut local = serde_json::to_value(&inspection)?;
+                    if let Some(collection) = &response.mft {
+                        local["local_mft_tree"] = serde_json::to_value(&collection.tree)?;
+                    }
+                    write_json(&local)?;
+                    Ok(
+                        if matches!(inspection.status, Status::Ok | Status::Partial) {
+                            0
+                        } else {
+                            3
+                        },
+                    )
+                })
+            })?
         }
         Command::Models { allow_cloud } => {
             if !allow_cloud {
@@ -934,7 +1075,7 @@ fn run(args: Args) -> Result<u8> {
             let mut model = if allow_cloud {
                 let config = Config::from_lookup(|name| creds.get(name))
                     .map_err(|e| cloud_setup_error(e, &creds))?;
-                Some(Nebius::new(config)?)
+                Some(routing.model(&config)?)
             } else {
                 None
             };
@@ -953,6 +1094,7 @@ fn run(args: Args) -> Result<u8> {
                 write_json(
                     &json!({"sent":false,"notice":"The sanitized question is sent only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
                     "message":initial_message_with_privacy(&question, &initial, sharing, &privacy),
+                    "model_routing":routing.preview(),
                     "tools":Workstation::tool_specs().iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
                     "authorized_scopes":storage.scopes().len(),
                     "file_name_sharing":prepared.context.sharing_preview(),
@@ -1091,7 +1233,6 @@ fn run(args: Args) -> Result<u8> {
             let creds = Credentials::load();
             let config = Config::from_lookup(|name| creds.get(name))
                 .map_err(|e| cloud_setup_error(e, &creds))?;
-            let mut model = Nebius::new(config)?;
             let mut privacy = PrivacyContext::local();
             if let Some(secret) = creds.get("NEBIUS_API_KEY") {
                 privacy.protect_secret(&secret);
@@ -1125,6 +1266,9 @@ fn run(args: Args) -> Result<u8> {
                     continue;
                 }
                 let initial = collector.snapshot(true, 10);
+                // Routing is per turn: a previous escalation never changes the next turn's
+                // starting model or resets/extends any investigation budget.
+                let mut model = routing.model(&config)?;
                 let mut workstation =
                     Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
                 workstation.set_sharing(sharing);
@@ -1313,6 +1457,145 @@ mod tests {
     fn cli_schema_is_consistent() {
         Args::command().debug_assert();
     }
+    #[test]
+    fn an_interrupt_already_pending_reaches_elevation_before_launch() {
+        let signal = AtomicBool::new(true);
+        let cancelled = with_elevation_interrupt(&signal, |cancel| cancel.is_cancelled()).unwrap();
+        assert!(cancelled);
+    }
+
+    #[test]
+    fn a_scoped_console_signal_reaches_an_in_flight_elevation() {
+        use std::sync::mpsc;
+        let signal = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            let (started_tx, started_rx) = mpsc::channel();
+            let worker_signal = signal.clone();
+            let worker = scope.spawn(move || {
+                with_elevation_interrupt(&worker_signal, |cancel| {
+                    assert!(!cancel.is_cancelled());
+                    started_tx.send(()).unwrap();
+                    let started = std::time::Instant::now();
+                    while !cancel.is_cancelled() && started.elapsed() < Duration::from_secs(3) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    cancel.is_cancelled()
+                })
+                .unwrap()
+            });
+            started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            signal.store(true, Ordering::SeqCst);
+            assert!(worker.join().unwrap());
+        });
+    }
+
+    struct FixtureCliHandler(Arc<AtomicBool>);
+    impl Drop for FixtureCliHandler {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    struct FixtureCliPrepared(Arc<AtomicBool>);
+    impl Drop for FixtureCliPrepared {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    struct FixtureCliCompletion {
+        entered: std::sync::mpsc::Sender<()>,
+        entered_once: AtomicBool,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        cleaned: Arc<AtomicBool>,
+    }
+    impl CliElevationCompletion for FixtureCliCompletion {
+        fn wait(&self, timeout: Duration) -> bool {
+            if !self.entered_once.swap(true, Ordering::SeqCst) {
+                let _ = self.entered.send(());
+            }
+            match self.release.lock().unwrap().recv_timeout(timeout) {
+                Ok(()) => {
+                    self.cleaned.store(true, Ordering::SeqCst);
+                    true
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+                // Release a failed fixture's worker while unwinding; it never counts as cleanup.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => true,
+            }
+        }
+    }
+
+    #[test]
+    fn preview_approval_error_and_cancelled_run_keep_the_handler_until_confirmed_cleanup() {
+        use std::sync::mpsc;
+        for outcome in [Ok(0_u8), Err("approval expired"), Err("user cancelled")] {
+            let signal = Arc::new(AtomicBool::new(false));
+            let handler_active = Arc::new(AtomicBool::new(true));
+            let prepared_dropped = Arc::new(AtomicBool::new(false));
+            let cleaned = Arc::new(AtomicBool::new(false));
+            std::thread::scope(|scope| {
+                // Owned here so a failed assertion releases the synthetic cleanup wait.
+                let (release_tx, release_rx) = mpsc::channel();
+                let (waiting_tx, waiting_rx) = mpsc::channel();
+                let (token_tx, token_rx) = mpsc::channel();
+                let (result_tx, result_rx) = mpsc::channel();
+                let worker_signal = signal.clone();
+                let worker_handler = handler_active.clone();
+                let dropped = prepared_dropped.clone();
+                let confirmed = cleaned.clone();
+                let worker = scope.spawn(move || {
+                    let result = {
+                        // This fixture installs no real console handler and launches no helper.
+                        let _handler = FixtureCliHandler(worker_handler);
+                        with_elevation_interrupt(&worker_signal, |cancel| {
+                            let prepared = FixtureCliPrepared(dropped);
+                            let completion = FixtureCliCompletion {
+                                entered: waiting_tx,
+                                entered_once: AtomicBool::new(false),
+                                release: std::sync::Mutex::new(release_rx),
+                                cleaned: confirmed,
+                            };
+                            with_elevation_cleanup(completion, move || {
+                                let _prepared = prepared;
+                                token_tx.send(cancel.clone()).unwrap();
+                                outcome
+                            })
+                        })
+                    };
+                    let _ = result_tx.send(result);
+                });
+                waiting_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                let cancel = token_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                assert!(prepared_dropped.load(Ordering::SeqCst));
+                assert!(handler_active.load(Ordering::SeqCst));
+                assert!(!cleaned.load(Ordering::SeqCst));
+                assert!(matches!(
+                    result_rx.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+                signal.store(true, Ordering::SeqCst);
+                let started = std::time::Instant::now();
+                while !cancel.is_cancelled() && started.elapsed() < Duration::from_secs(3) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    cancel.is_cancelled(),
+                    "relay stopped before cleanup completed"
+                );
+                release_tx.send(()).unwrap();
+                assert_eq!(
+                    result_rx
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap(),
+                    outcome
+                );
+                worker.join().unwrap();
+                assert!(cleaned.load(Ordering::SeqCst));
+                assert!(!handler_active.load(Ordering::SeqCst));
+            });
+        }
+    }
+
     #[test]
     fn cloud_requires_an_explicit_flag() {
         let args = Args::try_parse_from(["pcagent", "diagnose", "Why is my PC slow?"]).unwrap();
