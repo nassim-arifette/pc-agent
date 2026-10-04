@@ -31,6 +31,7 @@ pub(crate) enum Checkpoint {
 pub(crate) struct Budget {
     started: Instant,
     human_wait: Duration,
+    duration_limit: Duration,
     extensions: usize,
 }
 
@@ -39,11 +40,12 @@ impl Budget {
         Self {
             started: Instant::now(),
             human_wait: Duration::ZERO,
+            duration_limit: MAX_DURATION,
             extensions: 0,
         }
     }
     pub(crate) fn remaining(&self) -> Duration {
-        (MAX_DURATION * (1 + self.extensions as u32))
+        self.duration_limit
             .saturating_sub(self.started.elapsed().saturating_sub(self.human_wait))
     }
     fn reason(&self, report: &Investigation, checkpoint: &Checkpoint) -> Option<BudgetLimit> {
@@ -97,6 +99,7 @@ impl Budget {
                 return false;
             }
             self.extensions += 1;
+            self.duration_limit += MAX_DURATION;
             report.stats.extensions = self.extensions;
             report.continuation = None;
         }
@@ -114,7 +117,9 @@ mod tests {
     fn elapsed_budget_is_reported_before_another_request_and_extends_only_on_consent() {
         for accept in [false, true] {
             let mut budget = Budget::new();
-            budget.started -= MAX_DURATION;
+            // Expire a fixture without subtracting from the platform's monotonic epoch:
+            // newly booted Windows runners can have less uptime than MAX_DURATION.
+            budget.duration_limit = Duration::ZERO;
             let mut report = local_report(&Snapshot::empty("fixture"));
             let mut prompts = 0;
             assert_eq!(
