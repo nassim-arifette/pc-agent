@@ -16,6 +16,8 @@ pub enum ActionKind {
     RequestNormalClose,
     RecycleSelectedFiles,
     RunCleanupAdapter,
+    DisableUserStartup,
+    RestoreUserStartup,
 }
 impl ActionKind {
     fn max_targets(self) -> usize {
@@ -85,6 +87,10 @@ pub enum SettingsPage {
     StorageSense,
     AppsFeatures,
     StartupApps,
+    WindowsUpdate,
+    WindowsUpdateOptionalUpdates,
+    PowerSleep,
+    BatteryUsage,
 }
 impl SettingsPage {
     pub fn from_ref(target_ref: &str) -> Option<Self> {
@@ -92,6 +98,10 @@ impl SettingsPage {
             "storagesense" => Some(Self::StorageSense),
             "appsfeatures" => Some(Self::AppsFeatures),
             "startupapps" => Some(Self::StartupApps),
+            "windowsupdate" => Some(Self::WindowsUpdate),
+            "windowsupdate-optionalupdates" => Some(Self::WindowsUpdateOptionalUpdates),
+            "powersleep" => Some(Self::PowerSleep),
+            "batterysaver-usagedetails" => Some(Self::BatteryUsage),
             _ => None,
         }
     }
@@ -100,6 +110,10 @@ impl SettingsPage {
             Self::StorageSense => "ms-settings:storagesense",
             Self::AppsFeatures => "ms-settings:appsfeatures",
             Self::StartupApps => "ms-settings:startupapps",
+            Self::WindowsUpdate => "ms-settings:windowsupdate",
+            Self::WindowsUpdateOptionalUpdates => "ms-settings:windowsupdate-optionalupdates",
+            Self::PowerSleep => "ms-settings:powersleep",
+            Self::BatteryUsage => "ms-settings:batterysaver-usagedetails",
         }
     }
 }
@@ -159,6 +173,8 @@ pub enum ResolvedTarget {
     Process(ProcessTarget),
     SettingsPage { page: SettingsPage },
     CleanupAdapter(CleanupTarget),
+    RecycleCleanup(crate::RecycleCleanupTarget),
+    UserStartup(crate::StartupTarget),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +190,7 @@ pub enum Recovery {
     RecycleBinIfOperationSupported,
     UserCanRestartApplication,
     NoneSyntheticRegenerableData,
+    RestorePreviousStartupApproval,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +203,9 @@ pub enum Precondition {
     SettingsPageAllowlisted,
     SyntheticCacheMarkerPresent,
     RecycleBinAvailable,
+    UserStartupEntryUnchanged,
+    KnownStartupApprovalFormat,
+    CleanupManifestUnchanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

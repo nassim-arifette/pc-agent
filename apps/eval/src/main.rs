@@ -3,6 +3,7 @@
 mod capture;
 mod files;
 mod mcp;
+mod mcp_trace;
 #[cfg(test)]
 mod tests;
 
@@ -41,6 +42,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Measure full and compact tool-context bytes offline; this does not measure model quality.
+    ContextBenchmark {
+        scenario: PathBuf,
+        /// Keep executable names opaque (recommended for export).
+        #[arg(long)]
+        anonymize: bool,
+        /// New local result file outside Git; otherwise emit only byte measurements to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Record local tool outputs; with --allow-cloud, record a real Nemotron investigation.
     Capture {
         /// New JSON file outside any Git repository. Parent directory must already exist.
@@ -70,6 +81,9 @@ enum Command {
         /// JSON array of {tool, arguments}; otherwise sweep the implemented tools.
         #[arg(long)]
         calls: Option<PathBuf>,
+        /// Additional exact variants after the offline sweep; use a new capture for every campaign.
+        #[arg(long, conflicts_with_all = ["calls", "allow_cloud"])]
+        extra_calls: Option<PathBuf>,
         /// Local performance history to read (default: PC Agent's pcagent.sqlite beside its
         /// settings). The sampler keeps recording into it while the capture runs.
         #[arg(long)]
@@ -112,6 +126,12 @@ enum Command {
         question: Option<String>,
         #[arg(long = "scope", requires = "live")]
         scopes: Vec<PathBuf>,
+        /// Record the replay MCP tool session locally; no final client answer or bill is inferred.
+        #[arg(long, requires = "allow_recording", conflicts_with = "live")]
+        out: Option<PathBuf>,
+        /// Consent to retaining raw local tool outputs in --out, outside any Git repository.
+        #[arg(long, requires = "out")]
+        allow_recording: bool,
     },
 }
 
@@ -126,6 +146,7 @@ fn question(value: Option<String>, fallback: Option<&str>) -> Result<String> {
 }
 
 fn model(id: Option<String>) -> Result<(Nebius, String)> {
+    pcagent_inspect::elevation::ensure_unelevated_host()?;
     let credentials = Credentials::load();
     let config = Config::from_lookup(|key| {
         if key == "NEBIUS_MODEL_ID" {
@@ -210,8 +231,43 @@ fn emit(value: &Value, output: Option<OutputFile>) -> Result<()> {
     }
 }
 
+fn fingerprint(value: &impl serde::Serialize) -> Result<String> {
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+fn replay_identity(scenario: &Scenario, tools: &impl Toolbox) -> Result<Value> {
+    Ok(json!({
+        "scenario_sha256": fingerprint(scenario)?,
+        "tool_registry_sha256": fingerprint(&tools.definitions())?,
+        "scenario_origin": scenario.initial.origin,
+        "captured_at_unix_ms": scenario.captured_at_unix_ms,
+        "harness_version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 fn run(cli: Cli) -> Result<u8> {
     match cli.command {
+        Command::ContextBenchmark {
+            scenario: path,
+            anonymize,
+            out,
+        } => {
+            let scenario = load_scenario(&path)?;
+            let sharing = if anonymize {
+                Sharing::Anonymized
+            } else {
+                scenario.sharing
+            };
+            let replay = ReplayTools::new(&scenario, sharing)?;
+            let mut result = replay_identity(&scenario, &replay)?;
+            result["measurement_kind"] = json!("offline_context_bytes");
+            result["metrics"] =
+                serde_json::to_value(pcagent_agent::replay::measure_context(&scenario, sharing)?)?;
+            result["limitations"] = json!(["Byte counts exclude system messages and tool definitions. They do not measure tokens, model answers, quality or billed costs."]);
+            let output = out.as_deref().map(OutputFile::reserve).transpose()?;
+            emit(&result, output)?;
+            Ok(0)
+        }
         Command::Capture {
             out,
             name,
@@ -223,6 +279,7 @@ fn run(cli: Cli) -> Result<u8> {
             model: id,
             anonymize,
             calls,
+            extra_calls,
             history,
         } => {
             if name.trim().is_empty() || name.len() > 256 {
@@ -232,6 +289,11 @@ fn run(cli: Cli) -> Result<u8> {
             let calls: Option<Vec<capture::Call>> =
                 calls.as_deref().map(files::read_json).transpose()?;
             if let Some(calls) = &calls {
+                capture::validate_calls(calls, &Workstation::tool_specs())?;
+            }
+            let extra_calls: Option<Vec<capture::Call>> =
+                extra_calls.as_deref().map(files::read_json).transpose()?;
+            if let Some(calls) = &extra_calls {
                 capture::validate_calls(calls, &Workstation::tool_specs())?;
             }
             if !cfg!(windows) {
@@ -274,6 +336,9 @@ fn run(cli: Cli) -> Result<u8> {
             } else {
                 capture::sweep(&mut recorder, &scenario.initial)?;
                 recorder = capture::finish_scans(recorder)?;
+                for call in extra_calls.into_iter().flatten() {
+                    capture::run(&mut recorder, &call.tool, call.arguments)?;
+                }
             }
             let (_, calls) = recorder.into_parts();
             scenario.calls = calls;
@@ -296,7 +361,6 @@ fn run(cli: Cli) -> Result<u8> {
             out,
         } => {
             let scenario = load_scenario(&path)?;
-            let scenario_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&scenario)?));
             let asked = question(asked, scenario.question.as_deref())?;
             let sharing = if anonymize {
                 Sharing::Anonymized
@@ -324,11 +388,18 @@ fn run(cli: Cli) -> Result<u8> {
             let output = out.as_deref().map(OutputFile::reserve).transpose()?;
             let started = Instant::now();
             let mut success = true;
-            let mut result = json!({"schema_version": SCENARIO_VERSION, "scenario": scenario.name,
-                "scenario_sha256": scenario_sha256,
-                "captured_at_unix_ms": scenario.captured_at_unix_ms, "question": asked,
-                "sharing": sharing, "harness_version": env!("CARGO_PKG_VERSION"),
-                "mode": if preview_cloud { "preview" } else if allow_cloud { "nebius_replay" } else { "offline_replay" }});
+            let mut result = replay_identity(&scenario, &replay)?;
+            result["schema_version"] = json!(SCENARIO_VERSION);
+            result["scenario"] = json!(scenario.name);
+            result["question"] = json!(asked);
+            result["sharing"] = json!(sharing);
+            result["mode"] = json!(if preview_cloud {
+                "preview"
+            } else if allow_cloud {
+                "nebius_replay"
+            } else {
+                "offline_replay"
+            });
             if allow_cloud {
                 let (mut model, id) = model(id)?;
                 let mut recorder = Recorder::new(replay);
@@ -377,6 +448,8 @@ fn run(cli: Cli) -> Result<u8> {
             anonymize,
             question: asked,
             scopes,
+            out,
+            allow_recording: _,
         } => {
             if let Some(path) = scenario {
                 let scenario = load_scenario(&path)?;
@@ -386,16 +459,54 @@ fn run(cli: Cli) -> Result<u8> {
                 } else {
                     scenario.sharing
                 };
-                let mut tools = ReplayTools::new(&scenario, sharing)?;
-                mcp::serve(
+                let mut replay = ReplayTools::new(&scenario, sharing)?;
+                let output = out.as_deref().map(OutputFile::reserve).transpose()?;
+                let Some(output) = output else {
+                    mcp::serve(
+                        &mut replay,
+                        &scenario.initial,
+                        &asked,
+                        io::stdin().lock(),
+                        io::stdout().lock(),
+                    )?;
+                    if !replay.misses.is_empty() {
+                        eprintln!("Replay had {} unrecorded calls.", replay.misses.len());
+                    }
+                    return Ok(0);
+                };
+                let mut trace = replay_identity(&scenario, &replay)?;
+                trace["schema_version"] = json!(1);
+                trace["mode"] = json!("mcp_replay_trace");
+                trace["question"] = json!(asked);
+                trace["sharing"] = json!(sharing);
+                trace["started_at_unix_ms"] = json!(unix_ms());
+                let started = Instant::now();
+                let mut tools = mcp_trace::TraceTools::new(replay);
+                let served = mcp::serve(
                     &mut tools,
                     &scenario.initial,
                     &asked,
                     io::stdin().lock(),
                     io::stdout().lock(),
-                )?;
-                if !tools.misses.is_empty() {
-                    eprintln!("Replay had {} unrecorded calls.", tools.misses.len());
+                );
+                let (replay, calls, recording_complete) = tools.into_parts();
+                trace["calls"] = serde_json::to_value(calls)?;
+                trace["duration_ms"] = json!(started.elapsed().as_millis() as u64);
+                trace["replay_misses"] = serde_json::to_value(&replay.misses)?;
+                trace["served_captures"] = json!(replay.served_count());
+                trace["unused_captures"] = json!(scenario.calls.len() - replay.served_count());
+                trace["reused_calls"] = json!(replay.reused_calls);
+                trace["replay_complete"] = json!(replay.misses.is_empty());
+                trace["transport_complete"] = json!(served.is_ok());
+                trace["recording_complete"] = json!(recording_complete);
+                // The tool server cannot observe the client's final answer or provider usage.
+                trace["answer"] = Value::Null;
+                trace["usage"] = Value::Null;
+                trace["cost_usd"] = Value::Null;
+                output.save(&trace)?;
+                served?;
+                if !replay.misses.is_empty() {
+                    eprintln!("Replay had {} unrecorded calls.", replay.misses.len());
                 }
             } else {
                 if !cfg!(windows) {

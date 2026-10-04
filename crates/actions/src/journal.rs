@@ -29,6 +29,12 @@ pub enum PreState {
         files: u64,
         bytes: Option<u64>,
     },
+    UserStartup {
+        target: crate::StartupTarget,
+    },
+    RecycleCleanup {
+        target: crate::RecycleCleanupTarget,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

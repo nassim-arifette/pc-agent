@@ -20,6 +20,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+. (Join-Path $PSScriptRoot 'eval-files.ps1')
 if (-not (Test-Path -LiteralPath $Evaluator -PathType Leaf)) { throw 'Evaluator not found; build pcagent-eval first.' }
 if ($Models.Count -gt 0 -and -not $AllowCloud) { throw '-Models requires -AllowCloud.' }
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Choose a new output directory; campaign files are never overwritten.' }
@@ -34,12 +35,31 @@ while ($null -ne $ancestor) {
 }
 $inputs = @(Get-ChildItem -LiteralPath $Scenarios -Filter '*.json' -File | Sort-Object Name)
 if ($inputs.Count -eq 0) { throw 'No scenario JSON files found.' }
+$scenarioRecords = @(foreach ($inputFile in $inputs) {
+    $scenario = Read-EvalJson $inputFile.FullName
+    if ($scenario.schema_version -ne 1 -or $null -eq $scenario.initial -or $null -eq $scenario.calls) {
+        throw 'Expected recorded scenarios; result files are not scenario inputs.'
+    }
+    [pscustomobject]@{
+        file = $inputFile.FullName; file_sha256 = (Get-FileHash -LiteralPath $inputFile.FullName).Hash.ToLowerInvariant()
+        origin = $scenario.initial.origin; captured_at_unix_ms = $scenario.captured_at_unix_ms
+    }
+})
 New-Item -ItemType Directory -Path $fullOutput | Out-Null
+$source = Save-EvalSource $fullOutput (Join-Path $PSScriptRoot '..')
+Write-EvalJson (Join-Path $fullOutput 'manifest.json') ([ordered]@{
+    schema_version = 1; created_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    evaluator_sha256 = (Get-FileHash -LiteralPath $Evaluator).Hash.ToLowerInvariant()
+    source = $source; scenarios = $scenarioRecords; models_requested = $Models
+    allow_cloud = [bool]$AllowCloud; anonymize = [bool]$Anonymize; repeat = $Repeat
+    grading = 'ungraded'; quality_claim = $null
+})
 $modelIds = if ($Models.Count -gt 0) { $Models } else { @('') }
 $rows = @()
 $grading = @()
 $runNumber = 0
 foreach ($inputFile in $inputs) {
+    $origin = ($scenarioRecords | Where-Object { $_.file -eq $inputFile.FullName }).origin
     foreach ($modelId in $modelIds) {
         for ($iteration = 1; $iteration -le $Repeat; $iteration++) {
             $runNumber++
@@ -51,10 +71,13 @@ foreach ($inputFile in $inputs) {
             if ($Anonymize) { $arguments += '--anonymize' }
             & $Evaluator @arguments 2> (Join-Path $fullOutput "$runId.stderr.log")
             $code = $LASTEXITCODE
-            $result = if (Test-Path -LiteralPath $resultPath) { Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+            $result = if (Test-Path -LiteralPath $resultPath) { Read-EvalJson $resultPath } else { $null }
             $report = $result.run.report
             $rows += [pscustomobject]@{
-                run = $runId; scenario = $inputFile.BaseName; scenario_sha256 = $result.scenario_sha256
+                run = $runId; scenario = $inputFile.BaseName; scenario_origin = $origin
+                scenario_sha256 = $result.scenario_sha256; tool_registry_sha256 = $result.tool_registry_sha256
+                question_sha256 = if ($null -ne $result.question) { Get-EvalTextHash $result.question } else { $null }
+                sharing = $result.sharing
                 mode = $result.mode; model = $result.run.model; repeat = $iteration; exit_code = $code
                 replay_complete = $result.replay_complete
                 misses = if ($null -ne $result) { @($result.replay_misses).Count } else { $null }
@@ -74,5 +97,5 @@ foreach ($inputFile in $inputs) {
 }
 $rows | Export-Csv -LiteralPath (Join-Path $fullOutput 'summary.csv') -NoTypeInformation -Encoding UTF8
 $grading | Export-Csv -LiteralPath (Join-Path $fullOutput 'scores.csv') -NoTypeInformation -Encoding UTF8
-Write-Host "Saved $runNumber runs; scores.csv is ungraded. Offline runs do not measure model quality."
+Write-Host "Saved $runNumber runs and provenance; scores.csv is ungraded. Prepare blind packets with scripts/grade.ps1. Offline runs do not measure model quality."
 if (@($rows | Where-Object { $_.exit_code -ne 0 }).Count -gt 0) { exit 2 }

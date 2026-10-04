@@ -113,11 +113,16 @@ pub(super) fn named(out: &mut Inspection, query: &str, limit: usize) {
             "Win32_PhysicalMemory",
             &[
                 n("Capacity", "memory_capacity_bytes", "bytes", 1),
-                n("Speed", "memory_speed_megahertz", "megahertz", 1),
+                n(
+                    "Speed",
+                    "memory_speed_megatransfers_per_second",
+                    "megatransfers_per_second",
+                    1,
+                ),
                 n(
                     "ConfiguredClockSpeed",
-                    "memory_configured_clock_megahertz",
-                    "megahertz",
+                    "memory_configured_speed_megatransfers_per_second",
+                    "megatransfers_per_second",
                     1,
                 ),
             ],
@@ -261,7 +266,7 @@ fn integer(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 
-fn query(
+pub(super) fn query(
     namespace: &str,
     class: &str,
     columns: &[Column],
@@ -373,6 +378,11 @@ fn variant_value(variant: &VARIANT) -> Value {
             VT_I2 => Value::from(v.Anonymous.iVal),
             VT_I4 => Value::from(v.Anonymous.lVal),
             VT_I8 => Value::from(v.Anonymous.llVal),
+            VT_R4 => serde_json::Number::from_f64(f64::from(v.Anonymous.fltVal))
+                .map_or(Value::Null, Value::Number),
+            VT_R8 => {
+                serde_json::Number::from_f64(v.Anonymous.dblVal).map_or(Value::Null, Value::Number)
+            }
             VT_BOOL => Value::from(v.Anonymous.boolVal.0 != 0),
             _ => Value::Null,
         }

@@ -26,18 +26,27 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Unit, command and native smoke tests (no provider credentials)
+        if: runner.os != 'Windows'
         run: cargo test --workspace --locked
+      - name: Windows tests with a standard-user token (no provider credentials)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci-windows-tests.ps1
+      - name: Lossless paged MCP client tests (no provider credentials)
+        run: python scripts/test-eval-mcp-client.py
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build Windows CLI, desktop app and evaluator
+      - name: Build Windows CLI, desktop app, evaluator and isolated helper
         if: runner.os == 'Windows'
-        run: cargo build --release --locked -p pcagent -p pcagent-gui -p pcagent-eval
+        run: cargo build --release --locked -p pcagent -p pcagent-gui -p pcagent-eval -p pcagent-elevated
       - name: Keep Windows executable (no telemetry or keys)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pcagent-windows-x64
-          path: target/release/pcagent.exe
+          path: |
+            target/release/pcagent.exe
+            target/release/pcagent-elevated.exe
           if-no-files-found: error
           retention-days: 7
       - name: Keep Windows evaluator (no captures or results)
@@ -53,6 +62,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pcagent-gui-windows-x64
-          path: target/release/pcagent-gui.exe
+          path: |
+            target/release/pcagent-gui.exe
+            target/release/pcagent-elevated.exe
           if-no-files-found: error
           retention-days: 7

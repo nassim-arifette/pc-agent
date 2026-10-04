@@ -48,6 +48,9 @@ pub fn recovery(r: Recovery) -> &'static str {
         Recovery::RecycleBinIfOperationSupported => "restore it from the Recycle Bin",
         Recovery::UserCanRestartApplication => "restart the application",
         Recovery::NoneSyntheticRegenerableData => "none needed (synthetic, regenerable data)",
+        Recovery::RestorePreviousStartupApproval => {
+            "prepare a locally approved restoration of the previous startup state"
+        }
     }
 }
 

@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub mod autostart;
+pub mod elevation;
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod parse;
@@ -30,14 +31,41 @@ pub const QUERY_NAMES: &[&str] = &[
 #[derive(Clone, Copy, Debug)]
 pub enum Query<'a> {
     Startup,
-    Services { limit: usize },
-    Events { days: u32, limit: usize },
+    Services {
+        limit: usize,
+    },
+    Events {
+        days: u32,
+        limit: usize,
+    },
     SystemState,
     Power,
-    Apps { limit: usize },
+    /// Battery-only reads for recording, without querying thermal/WMI providers.
+    Battery,
+    Apps {
+        limit: usize,
+    },
     Hardware,
+    Drivers {
+        limit: usize,
+        windows_update: WindowsUpdateMode,
+    },
     Cleanup,
-    Allowlisted { name: &'a str, limit: usize },
+    Allowlisted {
+        name: &'a str,
+        limit: usize,
+    },
+}
+
+/// Offline reads the local Windows Update cache. Online requires an explicit request;
+/// it can contact the configured update service but never downloads or installs a driver.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsUpdateMode {
+    None,
+    #[default]
+    Offline,
+    Online,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +161,17 @@ impl Inspection {
             origin: self.origin,
         });
     }
+    /// Display text follows the same explicit C5 consent path as application names.
+    fn name_value(&mut self, entity: &str, metric: &str, name: Option<String>, source: &str) {
+        let reference = name.map(|name| self.entity("name", Some(name)));
+        self.value(
+            entity,
+            metric,
+            reference.map(Value::from).unwrap_or(Value::Null),
+            "opaque_ref",
+            source,
+        );
+    }
     fn coverage(&mut self, scope: &str, status: CoverageStatus, source: &str, detail: &str) {
         self.coverage.push(Coverage {
             scope: scope.into(),
@@ -219,5 +258,44 @@ mod tests {
             "Access denied.",
         );
         assert_eq!(result.finish().status, Status::PermissionDenied);
+    }
+    #[test]
+    fn selected_hardware_and_event_names_never_serialize_implicitly() {
+        let mut result = Inspection::new();
+        result.name_value(
+            "device",
+            "driver_model_ref",
+            Some("PRIVATE-MODEL".into()),
+            "fixture",
+        );
+        result.name_value(
+            "event",
+            "event_module_ref",
+            Some("PRIVATE.dll".into()),
+            "fixture",
+        );
+        result.name_value("system", "pc_model_ref", None, "fixture");
+        let value = serde_json::to_string(&result).unwrap();
+        assert!(!value.contains("PRIVATE"));
+        assert_eq!(result.names.len(), 2);
+        assert!(result.observations[2].value.is_null());
+        assert_eq!(WindowsUpdateMode::default(), WindowsUpdateMode::Offline);
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn drivers_on_other_hosts_return_unsupported_without_fixture_measurements() {
+        let result = inspect(Query::Drivers {
+            limit: 100,
+            windows_update: WindowsUpdateMode::Offline,
+        });
+        assert_eq!(result.status, Status::Unsupported);
+        assert!(result.observations.is_empty());
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn battery_on_other_hosts_is_unknown_without_synthetic_live_measurements() {
+        let result = inspect(Query::Battery);
+        assert_eq!(result.status, Status::Unsupported);
+        assert!(result.observations.is_empty());
     }
 }
