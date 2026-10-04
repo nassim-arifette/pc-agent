@@ -18,6 +18,31 @@ const NAME_FIELDS: &[&str] = &[
     "shared_ancestors",
 ];
 
+/// Project names after all findings and citations have been added. Keep the local name
+/// dictionaries until this step so names embedded in prose can also be anonymized.
+pub(crate) fn project_tool_names(
+    value: &mut Value,
+    sharing: crate::Sharing,
+    processes: &[pcagent_shared::ProcessInstance],
+    privacy: &PrivacyContext,
+    known_names: &mut BTreeMap<String, String>,
+) {
+    if sharing == crate::Sharing::Complete {
+        // Only locally resolved process names may replace imported dictionaries.
+        if let Some(object) = value.as_object_mut() {
+            object.remove("process_names");
+        }
+        crate::share_process_names(value, processes, privacy);
+    }
+    collect_shared_names(value, known_names);
+    if sharing == crate::Sharing::Anonymized {
+        let mut names = known_names.clone();
+        names.extend(crate::process_name_map(processes, privacy));
+        anonymize(value, &names);
+    }
+    privacy.sanitize_value(value);
+}
+
 /// Frozen local identifiers for one consent preview and investigation. Never serialize this
 /// object, put it in an HTTP header, or print its contents.
 #[derive(Clone, Default)]
@@ -506,12 +531,73 @@ pub(crate) fn anonymize(value: &mut Value, names: &BTreeMap<String, String>) {
         Value::Array(items) => items.iter_mut().for_each(|v| anonymize(v, names)),
         Value::Object(map) => {
             map.retain(|key, _| !NAME_FIELDS.contains(&key.as_str()));
-            for child in map.values_mut() {
-                anonymize(child, names);
+            let typed_reference = map
+                .get("unit")
+                .and_then(Value::as_str)
+                .is_some_and(|unit| matches!(unit, "opaque_ref" | "category"));
+            for (key, child) in map.iter_mut() {
+                // Closed-schema identifiers and vocabulary are evidence, not display names.
+                // A process called System/CPU/proc/O1 must never corrupt measurements or links.
+                let schema_field = key.ends_with("_ref")
+                    || key.ends_with("_refs")
+                    || key.ends_with("_id")
+                    || key.ends_with("_ids")
+                    || (key == "value" && typed_reference)
+                    || (key == "id" && child.as_str().is_some_and(is_evidence_alias))
+                    || (key == "support"
+                        && child.as_str().is_some_and(|support| {
+                            matches!(support, "supported" | "plausible" | "insufficient")
+                        }))
+                    || matches!(
+                        key.as_str(),
+                        "observation_id"
+                            | "observation_ids"
+                            | "citable_observation_ids"
+                            | "current_finding_ids"
+                            | "finding_id"
+                            | "finding_ids"
+                            | "citation"
+                            | "citations"
+                            | "entity"
+                            | "entity_ref"
+                            | "entity_refs"
+                            | "metric"
+                            | "unit"
+                            | "units"
+                            | "status"
+                            | "origin"
+                            | "source"
+                            | "window"
+                            | "scope_id"
+                            | "item_ref"
+                            | "target_ref"
+                            | "process_ref"
+                            | "startup_ref"
+                            | "adapter_id"
+                            | "action_kind"
+                            | "kind"
+                            | "category"
+                            | "classification"
+                            | "tool"
+                            | "tool_name"
+                            | "same_result_as"
+                            | "scope"
+                            | "domain"
+                    );
+                if !schema_field {
+                    anonymize(child, names);
+                }
             }
         }
         _ => {}
     }
+}
+
+fn is_evidence_alias(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    (2..=21).contains(&bytes.len())
+        && matches!(bytes[0], b'O' | b'F')
+        && bytes[1..].iter().all(u8::is_ascii_digit)
 }
 
 pub(crate) fn anonymize_text(text: &str, names: &BTreeMap<String, String>) -> String {
@@ -527,9 +613,31 @@ pub(crate) fn anonymize_text(text: &str, names: &BTreeMap<String, String>) -> St
         .collect();
     forms.sort_by_key(|name| std::cmp::Reverse(name.len()));
     forms.dedup();
-    forms.into_iter().fold(text.to_owned(), |text, name| {
-        replace_word_ci(&text, &name, "[name]")
-    })
+    let replace = |text: &str| {
+        forms.iter().fold(text.to_owned(), |text, name| {
+            replace_word_ci(&text, name, "[name]")
+        })
+    };
+    // Bracketed O/F citations have a closed grammar; display names in free prose do not.
+    let mut out = String::new();
+    let (mut cursor, mut plain_start) = (0, 0);
+    while let Some(offset) = text[cursor..].find('[') {
+        let open = cursor + offset;
+        let Some(close) = text[open..].find(']').map(|offset| open + offset) else {
+            break;
+        };
+        let inside = &text[open + 1..close];
+        if is_evidence_alias(inside) {
+            out.push_str(&replace(&text[plain_start..open]));
+            out.push_str(&text[open..=close]);
+            plain_start = close + 1;
+            cursor = plain_start;
+        } else {
+            cursor = open + 1;
+        }
+    }
+    out.push_str(&replace(&text[plain_start..]));
+    out
 }
 
 #[cfg(test)]
@@ -635,5 +743,40 @@ mod tests {
         ] {
             assert!(!wire.contains(name));
         }
+    }
+
+    #[test]
+    fn name_collisions_preserve_measurement_vocabulary_and_citation_identity() {
+        let mut value = json!({"shared_names":{"app-system":"System", "app-cpu":"CPU.exe", "app-proc":"proc.exe", "app-citation":"O1", "app-finding":"F1", "app-support":"Plausible.exe"},
+            "note":"System and CPU.exe and proc.exe failed [O1] [F1]",
+            "observation_id":"O1", "citable_observation_ids":["O1"], "current_finding_ids":["F1"],
+            "findings":[{"id":"F1", "support":"plausible", "description":"F1 and Plausible.exe failed"}],
+            "untyped_item":{"id":"Plausible.exe", "support":"Plausible.exe"},
+            "observations":[{"entity_ref":"proc-123", "entity":"system", "metric":"cpu_busy_basis_points", "value":8100, "unit":"basis_points", "status":"ok", "source":"CPU counter", "origin":"live"}]});
+        let original = value["observations"].clone();
+        project_tool_names(
+            &mut value,
+            crate::Sharing::Anonymized,
+            &[],
+            &PrivacyContext::default(),
+            &mut BTreeMap::new(),
+        );
+        assert_eq!(value["observations"], original);
+        assert_eq!(value["observation_id"], "O1");
+        assert_eq!(value["citable_observation_ids"], json!(["O1"]));
+        assert_eq!(value["current_finding_ids"], json!(["F1"]));
+        assert_eq!(value["findings"][0]["id"], "F1");
+        assert_eq!(value["findings"][0]["support"], "plausible");
+        assert_eq!(
+            value["findings"][0]["description"],
+            "[name] and [name] failed"
+        );
+        assert_eq!(value["untyped_item"]["id"], "[name]");
+        assert_eq!(value["untyped_item"]["support"], "[name]");
+        assert_eq!(
+            value["note"],
+            "[name] and [name] and [name] failed [O1] [F1]"
+        );
+        assert!(value.get("shared_names").is_none());
     }
 }

@@ -247,6 +247,18 @@ pub fn plan(plan: &pcagent_actions::ActionPlan, decision: Option<&str>) -> PlanV
                 files: None,
                 bytes: None,
             },
+            ResolvedTarget::UserStartup(t) => TargetView {
+                kind: "startup".into(),
+                label: t.value_name().into(),
+                files: None,
+                bytes: None,
+            },
+            ResolvedTarget::RecycleCleanup(c) => TargetView {
+                kind: "cleanup".into(),
+                label: c.root().path.display().to_string(),
+                files: Some(c.files().len() as u64),
+                bytes: c.bytes(),
+            },
         })
         .collect();
     PlanView {

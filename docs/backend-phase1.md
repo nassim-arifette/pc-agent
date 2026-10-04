@@ -99,7 +99,7 @@ folders remain available locally but do not become visible to that model run aut
 | `get_services` | State, startup type, opaque shared-process groups and available recent failure counts. |
 | `get_recent_events` | Selected crash, hang, resource, hardware, disk and update events; counts and timestamps, without messages or user/computer fields. |
 | `get_system_state` | Uptime, Windows build, pending reboot markers, fast-startup setting, available update records and pagefile observations. |
-| `get_power_and_thermal` | Power source, charge/saver, active plan, processor frequency/performance limits, supported firmware and GPU temperatures. |
+| `get_power_and_thermal` | Power source, charge/saver, active plan, processor frequency/performance limits, supported firmware and GPU temperatures; separate battery capacities, estimated wear, optional cycles, charge state and signed power flow (see [battery.md](battery.md)). |
 | `get_installed_apps` | Uninstall registrations, publisher/version/date and size estimates, with incomplete Store/portable-app coverage stated. |
 | `get_hardware_inventory` | CPU, memory modules/slots, volume space, available storage characteristics and display-driver version/date, without serial numbers. |
 | `get_cleanup_opportunities` | Bounded metadata inventory of cache, temporary, rollback, large-download and virtual-disk categories, with recovery policy and coverage. |
@@ -133,6 +133,7 @@ estimate of the sampler's incremental allocation.
 | `metric_history(metric, from_unix_ms, to_unix_ms, entity_ref?)` | A typed stored metric over a bounded interval; the default entity is the system. |
 | `record_activity_start(duration_seconds)` | Start a 30–120 second recording and return its record immediately. |
 | `record_activity_cancel(recording_id)` | Cancel that recording while preserving its measured samples and markers. |
+| `battery_recording(recording_id)` | `Option<BatteryRecording>` containing dated battery points, gaps, coverage and continuous discharge segments for an existing recording. Unknown or deleted IDs return `null`; older recordings without battery samples report unavailable coverage. |
 | `history_clear()` | Clear stored performance data independently of conversation deletion. |
 | `startup_get()`, `startup_set(enabled)` | Inspect/change the explicit per-user Windows startup choice. |
 
@@ -144,7 +145,11 @@ Events retain each peak's native source and actual observation window, and the c
 measurement at that peak. Derived memory/disk percentages retain their operands; mismatched
 windows remain explicit. Schema-v3 event rows without these fields are migrated as unknown
 metadata and cannot certify numerical claims. Recordings also return the ten highest observed
-process CPU peaks, including those below the system anomaly threshold. Sampling twenty processes
+process CPU peaks, including those below the system anomaly threshold. The additive
+`resource_activity` result retains up to ten separate GPU, read-I/O and write-I/O peaks per metric,
+with their own units, source and actual windows. Unavailable measurements stay absent with explicit
+coverage; different resource quantities are not ranked against each other or converted into energy.
+Sampling twenty processes
 does not establish a complete ranking or causality.
 Cloud history is bounded to 120 points (30 per system metric in a recording), thirty events and
 thirty gap details, preserving extrema, measurement counts and explicit omissions.
@@ -160,7 +165,7 @@ Persisted process references remain unique across collector sessions and can be 
 | `pcagent chat --allow-cloud` | Keep bounded question/answer/evidence context in memory for terminal follow-ups. Conversation text is not added to the desktop conversation database. Performance samples still use persistent local history. |
 | `pcagent inspect TOOL --arguments JSON` | Validate and execute one declared read-only tool locally; unknown tools and undeclared/out-of-range arguments fail. `--anonymize` selects the opaque projection. |
 | `pcagent history` | Read a typed metric from the persisted database, with `--metric`, `--entity-ref`, `--window-seconds` and optional `--end-unix-ms`. |
-| `pcagent record --seconds 30` | Record for 30–120 seconds, then print the recording, system CPU history, observed process CPU peaks and sampler status. |
+| `pcagent record --seconds 30` | Record for 30–120 seconds, then print the recording, system CPU history, separate observed process CPU/GPU/I/O peaks, dated battery evolution and sampler status. |
 | `pcagent sample --seconds 60` | Run normal background collection for the requested duration, then print measured sampler overhead. |
 
 The inspection/history/record/sample commands accept `--database` for a separate local database.

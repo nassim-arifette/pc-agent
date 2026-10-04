@@ -27,6 +27,13 @@ The real campaign from the plan still needs these situations:
 | Application crash | Relevant bounded event history |
 | Long-pending restart | System state and dated evidence |
 | PC without an observed problem | Representative moderate readings and explicit coverage limits |
+| Cost of upgrading 8 GiB to 16 GiB | Sustained memory pressure, SMBIOS compatibility and a dated price source |
+| Latest NVIDIA driver, with and without symptoms | Installed and offered versions, measured symptom and official release notes |
+| Windows Update failure 0x800f0922 | Exact bounded event fields, KB and official issue evidence |
+| Latest Windows version absent | System version and locally observed safeguard hold, with official confirmation |
+| Game crashes after driver update | Correlated crash event, module/version and driver change timing |
 
 Several of these need tools from work packages 4, 5 and 9. Their absence is a coverage gap, not
-an invitation to fabricate a successful capture. See [the harness guide](../../docs/eval.md).
+an invitation to fabricate a successful capture. Recent prices and release notes are not covered by
+the five fixtures. No C/D/E reference answer is supplied or inferred. See
+[the harness guide](../../docs/eval.md).

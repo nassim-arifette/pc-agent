@@ -1,6 +1,10 @@
 use super::{
     AgentError, FunctionCall, Model, Pricing, Reply, ToolCall, ToolChoice, MAX_OUTPUT_TOKENS,
 };
+#[cfg(test)]
+use crate::models::catalog_pricing;
+use crate::models::{validate_model_id, Catalog, CATALOG_URL};
+use crate::ModelCatalog;
 use reqwest::{
     blocking::{Client, RequestBuilder, Response},
     redirect::Policy,
@@ -13,8 +17,6 @@ use std::{
 };
 
 const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
-/// The verbose catalog also publishes per-token prices, which date-stamped cost estimates use.
-const CATALOG_URL: &str = "https://api.tokenfactory.nebius.com/v1/models?verbose=true";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
@@ -37,19 +39,6 @@ impl Config {
         validate_model_id(&model_id)?;
         Ok(Self { api_key, model_id })
     }
-}
-fn validate_model_id(id: &str) -> Result<(), AgentError> {
-    let lower = id.to_ascii_lowercase();
-    if id.len() > 200
-        || !lower.starts_with("nvidia/")
-        || !lower.contains("nemotron")
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
-    {
-        return Err(AgentError::InvalidModel);
-    }
-    Ok(())
 }
 
 /// A request that ran out of time is reported as such; other transport failures stay opaque.
@@ -135,13 +124,16 @@ impl Nebius {
     /// Explicit preflight: checks the exact configured ID and reads its published prices,
     /// without sending telemetry.
     pub fn check_catalog(&mut self, timeout: Duration) -> Result<(), AgentError> {
-        let catalog: Catalog = self.read_json(self.client.get(CATALOG_URL), timeout)?;
+        let catalog = self.available_models(timeout)?;
         let entry = catalog
-            .data
+            .models
             .into_iter()
             .find(|entry| entry.id == self.config.model_id)
             .ok_or(AgentError::ModelUnavailable)?;
-        self.pricing = catalog_pricing(entry, pcagent_shared::unix_ms());
+        if entry.supports_tools == Some(false) {
+            return Err(AgentError::ModelUnavailable);
+        }
+        self.pricing = entry.pricing;
         self.catalog_checked = true;
         Ok(())
     }
@@ -149,33 +141,25 @@ impl Nebius {
     pub fn catalog_pricing(&self) -> Option<&Pricing> {
         self.pricing.as_ref()
     }
-}
-#[derive(Deserialize)]
-struct Catalog {
-    data: Vec<CatalogEntry>,
-}
-#[derive(Deserialize)]
-struct CatalogEntry {
-    id: String,
-    #[serde(default)]
-    pricing: Option<CatalogPrices>,
-}
-#[derive(Deserialize)]
-struct CatalogPrices {
-    prompt: Option<String>,
-    completion: Option<String>,
-}
-/// Only exact, parseable decimal prices count as verified; anything else leaves the cost unknown.
-fn catalog_pricing(entry: CatalogEntry, read_at_unix_ms: u64) -> Option<Pricing> {
-    let prices = entry.pricing?;
-    let pricing = Pricing {
-        model_id: entry.id,
-        prompt_usd_per_token: prices.prompt?,
-        completion_usd_per_token: prices.completion?,
-        source: CATALOG_URL.into(),
-        read_at_unix_ms,
-    };
-    pricing.per_token_pico().map(|_| pricing)
+    /// Explicit account catalog request; no question, telemetry or identity is sent.
+    pub fn available_models(&self, timeout: Duration) -> Result<ModelCatalog, AgentError> {
+        let catalog: Catalog = self.read_json(self.client.get(CATALOG_URL), timeout)?;
+        catalog.project(pcagent_shared::unix_ms())
+    }
+    /// A first-launch host can list models with its local credential before choosing an ID.
+    pub fn account_catalog(
+        lookup: impl Fn(&str) -> Option<String>,
+        timeout: Duration,
+    ) -> Result<ModelCatalog, AgentError> {
+        let api_key = lookup("NEBIUS_API_KEY")
+            .filter(|key| !key.trim().is_empty())
+            .ok_or(AgentError::MissingKey)?;
+        let client = Self::new(Config {
+            api_key,
+            model_id: String::new(),
+        })?;
+        client.available_models(timeout)
+    }
 }
 #[derive(Deserialize)]
 struct Envelope {
@@ -521,12 +505,12 @@ mod tests {
     }
     #[test]
     fn only_exact_catalog_prices_are_kept_with_their_date() {
-        let entry = |prices: serde_json::Value| -> CatalogEntry {
+        let entry = |prices: serde_json::Value| -> crate::models::CatalogEntry {
             serde_json::from_value(json!({"id":"nvidia/nemotron-fixture","pricing":prices}))
                 .unwrap()
         };
         let p = catalog_pricing(
-            entry(json!({"prompt":"0.0000003","completion":"0.0000009"})),
+            &entry(json!({"prompt":"0.0000003","completion":"0.0000009"})),
             42,
         )
         .unwrap();
@@ -538,10 +522,11 @@ mod tests {
             json!({"prompt":"0.0000003"}),
             json!(null),
         ] {
-            assert!(catalog_pricing(entry(prices), 42).is_none());
+            assert!(catalog_pricing(&entry(prices), 42).is_none());
         }
-        let absent: CatalogEntry = serde_json::from_value(json!({"id":"x"})).unwrap();
-        assert!(catalog_pricing(absent, 42).is_none());
+        let absent: crate::models::CatalogEntry =
+            serde_json::from_value(json!({"id":"x"})).unwrap();
+        assert!(catalog_pricing(&absent, 42).is_none());
     }
     #[test]
     fn requests_that_run_out_of_time_are_reported_as_timeouts() {

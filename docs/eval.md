@@ -67,6 +67,22 @@ validated before any measurement:
 ]
 ```
 
+When a replay reports valid calls that were not captured, build a deduplicated union and record a
+**new** situation. `--extra-calls` adds these exact variants after the offline sweep and validates
+the whole list before any collector starts. It conflicts with `--calls` and `--allow-cloud`.
+
+```powershell
+.\scripts\eval-capture-calls.ps1 -Results D:\pcagent-tmp\baseline-super.json,D:\pcagent-tmp\baseline-ultra.json `
+  -Output D:\pcagent-tmp\extra-calls.json
+& $eval capture --name slow-pc-comparison --question 'Pourquoi mon PC rame ?' `
+  --allow-recording --extra-calls D:\pcagent-tmp\extra-calls.json `
+  --out D:\pcagent-tmp\captures\slow-pc-comparison.json
+```
+
+Rerun every configuration against the new scenario. Later measurements must not be appended to an
+older capture: the PC and timestamps have changed. No variant is approximated, and replay's exact
+matching rule remains unchanged.
+
 For a trace of a real model investigation, add `--allow-cloud`. This records the initial snapshot,
 every actual tool call and its duration, the checked answer, unverified passages, errors,
 per-request tokens, catalog-priced cost and total investigation time:
@@ -81,13 +97,14 @@ Credentials use the existing environment / `%APPDATA%\pcagent\.env` loader. Keys
 arguments or trace serialization. `--model` overrides only the model ID; the NVIDIA/Nemotron guard
 stays active. No budget extension is accepted automatically. A failed or unverified investigation
 still saves its trace, then exits with code 2. Before a live run, the same PC Agent sharing contract
-applies: the question is currently verbatim (free-text C5 filtering remains work package 3), so keep
-personal information and secrets out of it. Grader `--note` values never enter model messages.
+and C5 projections apply to the question and measurements. Inspect the minimized preview; local
+question metadata and notes are raw trace data, not a promise that every string is shared verbatim.
+Grader `--note` values never enter model messages.
 
 ## Replay and inspect what is shared
 
 ```powershell
-# No collectors, provider or credentials; inspect the recorded sequence.
+# No collectors or provider request; credentials are not required.
 & $eval replay D:\pcagent-tmp\captures\slow-pc.json
 
 # Model-facing initial envelope and every recorded tool output, with names removed.
@@ -123,13 +140,17 @@ its defaults and metadata; whitespace in the source file does not change it. `ha
 is the package version. Also retain the Git revision and any uncommitted patch with each campaign:
 the package version alone does not identify the source build.
 
+Results also retain `scenario_origin` and `tool_registry_sha256`, the fingerprint of the replay
+tool definitions. The same fields appear in a saved MCP replay trace. An origin of
+`synthetic_fixture` remains synthetic even when a paid model has answered it.
+
 | Exit | Meaning |
 | --- | --- |
 | 0 | Offline replay succeeded, or a model produced a verified answer with no replay misses. This is not a quality score. |
 | 1 | File, scenario, configuration or transport setup error. |
 | 2 | Partial/failed/unverified investigation, a replay miss, or invalid CLI syntax. Inspect stderr and any saved report. |
 
-## Claude through MCP
+## Reference models through MCP
 
 The server uses newline-delimited JSON-RPC over stdio, following the MCP
 [transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
@@ -166,6 +187,38 @@ MCP stdout contains only protocol messages. Ending stdin exits and drops any bac
 An MCP client's final answer and token bill are **not** captured or verified by this tool server;
 save them separately for configuration C. There is no `submit_answer` tool on MCP.
 
+For a client whose visible tool output is smaller than an MCP response, use the local stdio
+adapter `scripts/eval-mcp-client.py`. It forwards the same RPC requests and pages every reply into
+6,000-character pieces. Nested JSON text is decoded once for display; concatenating all pages
+reconstructs the complete JSON data. Read each page with `{"bridge_next":true}` before the next
+RPC, and close with `{"bridge_finish":true}`. The server's trace remains unchanged. Explicit
+`--allow-cloud` and `--allow-recording` are required; use `--anonymize` for an anonymous reference.
+The adjacent `.client.json` reports whether all pages were served and closure completed. This is
+a transport check, not evidence that an external client actually attended to every page. Exclude
+any run with visible truncation or incomplete client visibility from quality comparisons.
+
+```powershell
+python scripts/eval-mcp-client.py --binary $eval --scenario D:\pcagent-tmp\captures\slow-pc.json `
+  --out D:\pcagent-tmp\references\reference-tools.json --allow-cloud --allow-recording --anonymize
+python scripts/test-eval-mcp-client.py
+```
+
+For configuration C, record the actual replayed tool session as a new local file. Add these
+arguments to the MCP server entry:
+
+```json
+["mcp", "--scenario", "D:\\pcagent-tmp\\captures\\slow-pc.json", "--allow-cloud",
+ "--allow-recording", "--out", "D:\\pcagent-tmp\\references\\claude-tools.json"]
+```
+
+The trace is saved when stdin ends, including transport failure. It preserves the scenario and
+registry fingerprints, sharing mode, actual calls and durations, replay misses, reuse count and
+transport/recording completeness. Stdio still contains only JSON-RPC replies. Recording requires
+its own explicit consent, never overwrites a file and is currently available in replay mode only.
+Retained calls are bounded to 16 MiB; exhausting that budget refuses further tools and marks the
+recording incomplete. `answer`, `usage` and `cost_usd` remain null because the server does not see
+the client's response or bill. The trace contains local raw output; keep it private.
+
 ## Campaigns and grading
 
 ```powershell
@@ -182,6 +235,14 @@ The script requires a new output directory and writes individual JSON results, s
 `summary.csv` (coverage, token counts, cost, duration, verification issues), and an empty
 `scores.csv`. Missing usage/cost stays unknown, never an assumed zero. Synthetic runs exercise
 the harness; they cannot establish diagnostic quality on real PCs.
+
+`manifest.json` records the executable SHA-256, checkout revision, scenario file hashes and origins,
+requested models, sharing switch and repetitions. `source.patch` retains the tracked evaluation
+and backend diff; `source-files.json` hashes tracked and untracked evaluation/backend sources.
+`untracked-source/` also retains new source files so the patch can be reconstructed without a commit.
+These files stay local too. The executable fingerprint identifies the tested binary. The checkout
+record describes the files beside the script; confirm its relation to the binary with the person
+who built it rather than assuming that the two match.
 
 For the weekly comparison, hold the scenario hash, question, sharing mode and tool registry
 constant. Archive configuration A's historical build/results separately: the current harness
@@ -202,9 +263,161 @@ misses and reuse count. Separate capture gaps from model errors. The submission 
 B >= 80% of C, with no unsafe recommendation and no unmarked invented number. Neither that ratio
 nor a successful synthetic replay can be claimed without a real scored campaign.
 
+### Import references and prepare blind packets
+
+Save each C/D/E answer separately, using [the local reference schema](../eval/reference.schema.json).
+The requested reference models are **Claude Sonnet 5.5, medium**, **Codex `gpt-6.1-sol`, low**, or
+**Codex `gpt-5.6-terra`, high**. Record `reasoning_effort` alongside the exact model name; the importer
+and advisory-judge summary reject other model/effort combinations. No Opus reference or unsolicited
+judge run is requested. A Codex replay/MCP reference uses C's same-tool condition, with its actual
+model identified privately; PowerShell references remain D and screenshots E.
+For C, copy the exact identity fields from its MCP trace and retain the client's answer and known
+usage/bill. For D, retain the dated PowerShell commands; for E, retain the contemporaneous Task
+Manager screenshot. Give D/E `evidence_basis: "capture_time"` and their actual start time. Their
+offset from the scenario capture is reported, and they never enter an equivalent-replay B/C ratio.
+Unknown duration, bill or tokens stay null. No reference answer is supplied in the repository.
+
+Example C reference, with identity placeholders to replace from the actual trace:
+
+```json
+{
+  "schema_version": 1,
+  "configuration": "C",
+  "model": "Claude Sonnet 5.5",
+  "reasoning_effort": "medium",
+  "scenario_sha256": "copy the 64-character scenario fingerprint",
+  "tool_registry_sha256": "copy the 64-character registry fingerprint",
+  "question": "copy the recorded question exactly",
+  "sharing": "anonymized",
+  "answer": "paste the actual final answer",
+  "evidence_basis": "same_replay",
+  "trace_file": "claude-tools.json",
+  "duration_ms": null,
+  "cost_usd": null,
+  "usage": null,
+  "unverified": null
+}
+```
+
+Relative trace/evidence paths resolve inside the reference directory. D/E `evidence_files` use
+`{"kind":"commands","path":"commands.txt"}` or
+`{"kind":"screenshot","path":"task-manager.png"}`. This is a local import, not an upload.
+
+Optionally create a ground-truth JSON array with one entry per scenario:
+`{"scenario_sha256":"…","ground_truth":"locally established facts","limitations":["…"]}`.
+The script never substitutes model prose or a local heuristic for established ground truth.
+
+```powershell
+.\scripts\grade.ps1 -CampaignDirectory D:\pcagent-tmp\eval-comparison `
+  -ReferenceDirectory D:\pcagent-tmp\references -GroundTruthPath D:\pcagent-tmp\ground-truth.json `
+  -OutputDirectory D:\pcagent-tmp\blind-packets -Seed 20261003
+
+# After the human has filled grader/scores.csv; add separate rows for an independent LLM judge.
+.\scripts\grade-summary.ps1 -PacketDirectory D:\pcagent-tmp\blind-packets `
+  -Output D:\pcagent-tmp\graded-summary.json
+```
+
+Give the grader only `grader/`: shuffled answer labels, minimized recorded evidence, ground truth,
+the rubric and a blank scores sheet. `private/` holds the seed, identity map, preview intermediates,
+model, configuration, costs, duration and source/packet hashes. Repeating the same inputs and seed
+reproduces the label order. Observed evidence follows the actual calls so its O/F aliases match
+the answer; the complete available capture is included separately. Extra D/E evidence is copied
+under opaque filenames. Its contents can still reveal context and must be reviewed before any
+external grading. The scripts never contact a judge or send raw traces.
+
+Enter all five 0–2 scores, a grader identifier, `human` or `llm`, an evidence-based rationale in
+`notes`, and explicit `true`/`false` decisions for unsafe recommendations, unmarked invented numbers
+and missing capture. Blank rows stay ungraded. Human and advisory LLM scores remain separate.
+LLM rows must also identify the requested `grader_model` and `grader_reasoning_effort`; this records
+an already authorized judgment and never starts one. The offline test's explicitly marked
+`synthetic-test-model-c` is a fixture, not a Claude/Codex invocation or reference result.
+The summary refuses changed packets and duplicate or incomplete scores. It reports missing C/D/E
+references rather than creating substitutes. Equivalent B/C ratios use only complete real runs
+with the same question, sharing and registry, established ground truth and no capture gap. The
+submission target remains unassessed below 17 paired real scenarios; critical failures always
+prevent claiming it even when the mean score ratio is high.
+Every real campaign situation and prepared B/C answer must also be graded and complete; an
+unanswered model run, ungraded repeat or omitted scenario prevents a submission-target claim.
+
 ## Validation log — 2026-10-02
 
 The implementation supplies five synthetic situations, portable command tests, recorder/replay
 round-trip and privacy tests, MCP protocol tests and a scripted model run through the actual C1
 controller (including cost and persistent-number verification). No paid model comparison, Claude
-Desktop session or human score is implied by these tests. Real campaign results are still pending.
+Desktop session or human score is implied by these tests. Scored real campaign results are still pending.
+
+## Local evidence — 2026-10-03
+
+Existing raw files outside the repository include a live capture with 96 calls and 23 registered
+tools, its complete anonymized offline preview, and an earlier live capture/replay with 57 calls
+and 12 tools. The newer capture is reusable as a frozen local situation. This audit establishes
+neither ground truth nor reference/human scores from those files. No raw file was added to this
+repository.
+
+Real Super and Ultra attempts against the same 96-call scenario reported missing `get_processes`
+argument variants. Their exact union contains five variants: limits 5 and 10 with omitted sort,
+limit 5 with `private_commit`, and limit 2 with `cpu` or `working_set`. These attempts identify a
+capture gap and cannot establish relative quality or a model default.
+
+An independent real Codex `gpt-6.1-sol`, low reference then used the same capture through MCP
+and returned a final answer. Its `record_activity` call with `{}` had no exact captured match,
+so the trace is incomplete and excluded from scores, B/C ratios and model-default decisions.
+The earlier MCP `tools/list` response also omitted the replay's captured-argument descriptions.
+Its tokens and bill remain unknown; no human score or established ground truth was supplied.
+
+MCP `tools/list` now obtains descriptions and closed argument schemas from the replay toolbox's
+definitions. A subprocess regression checks that captured-argument descriptions reach the
+client. Calls still require exact matching, including omitted versus explicit defaults;
+missing combinations remain unsupported. The complete independent Sol v4 reference and its
+paired blind packets are now available locally (see the final status below). References D/E,
+human grading and an established ground truth remain pending.
+
+The offline grading-script test passed with the centrally built evaluator: provenance,
+actual stdio MCP tool evidence, blind answer identities, missing references, null costs,
+blank human scores and synthetic/critical-failure exclusions were checked. Its two fake
+answers are explicitly harness fixtures, not model or reference results. A fresh anonymized
+offline replay of the existing live scenario served all 96 recorded calls with zero misses
+and `replay_complete = true`; no collector or provider was contacted. Reports remain on D:
+outside Git. This validates replay and grading mechanics, not diagnostic quality.
+
+## Final local evidence status — 2026-10-04
+
+An independent Codex `gpt-6.1-sol`, reasoning effort `low`, produced the valid configuration C
+reference v4 through replay MCP. It used the same frozen real-origin, anonymized 96-call capture,
+question, tool registry and evaluator v2 binary as the actual Ultra v2 run. The MCP trace has
+zero replay misses; the client sidecar records all 27 pages served, zero pending pages, an explicit
+finish and child exit 0. These checks establish complete replay and transport delivery; they do
+not establish diagnostic quality or prove attention to every delivered page. The first, second
+and third Sol attempts remain retained as incomplete or truncated attempts and are excluded from
+quality comparisons. The valid v4 reference supersedes them.
+
+The local pairing is identified by scenario SHA-256
+`fd88d433400c30f9bae713d5f1c89741f8d3b44c834afe2da577c2c5bed55240`, registry SHA-256
+`5c861d0357dd93d3bb4e6b840bbdd3a5edf26cc570b97ce976bbd5fbf1c53038` and frozen binary SHA-256
+`9e46881148f909b8ef146651a4490cd22a456dde6af61d31d3da5c2e9db624b1`. The frozen binary's build
+revision was not recorded and remains unknown; the current checkout is not asserted to match it.
+The evidence bundle under `D:\pcagent-tmp\backend-20261003\grading-sol-v4-20261004-a0e5c36e`
+retains copied inputs, the exact reference and model results, assembly provenance, frozen grading
+scripts and a local reconstruction command in its README. `delivery-audit-final.json` and
+`repro/validated-reproduction-final.json` confirm identical reconstructed reference and answer
+packet hashes, without new provider calls, collection or compilation. The original
+`reference-sol61-low-v4-mcp.json.client.json` retains the client delivery check. Raw traces and
+packets remain outside Git.
+
+Ultra v2 completed on this same capture with a final answer and seven verifier issues. Those
+issues include actual conversion faults and conservative flags; their count is not a fidelity
+score, and each passage still needs review against its own cited observation. Super v2 produced
+no final answer after the frozen build's old 90-second request timeout. Its failed result is
+retained in campaign accounting rather than omitted. That historical timeout is not a measurement
+of the current harness: the current source includes already merged PR #32's 600-second turn and
+300-second request budgets. This pairing does not measure those newer budgets.
+
+The two prepared blind packets contain the actual Sol v4 and Ultra v2 answers, their actual tool
+requests, answer-scoped observed evidence and the available capture. Human score rows remain
+blank. The separately attempted advisory blind LLM review also remains ungraded because complete
+relevant evidence did not reach the judge context; null scores and failure flags record an
+incomplete review, not absent original measurements or a passed safety/fidelity check. No local
+ground truth or confirmed cause has been established. Sol usage, bill and duration remain unknown.
+This single situation supplies no quality score or B/C ratio, no submission-target result, no
+model-default or escalation decision, and no evidence for starting Tavily. References D/E and
+independent human assessment remain outstanding.
