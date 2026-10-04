@@ -27,15 +27,27 @@ impl Write for BoundedBytes {
 }
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    serde_json::from_slice(&read_bytes(path)?)
+        .map_err(|_| "Invalid JSON or incompatible document structure".into())
+}
+
+/// Read once so a human-approved hash and its parsed content refer to the same bounded bytes.
+pub fn read_bytes(path: &Path) -> Result<Vec<u8>> {
+    read_bytes_limited(path, MAX_FILE_BYTES)
+}
+
+pub fn read_bytes_limited(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    if maximum > MAX_FILE_BYTES {
+        return Err("Input limit exceeds 32 MiB".into());
+    }
     let mut bytes = Vec::new();
     File::open(path)?
-        .take(MAX_FILE_BYTES + 1)
+        .take(maximum + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err("Input exceeds the 32 MiB limit".into());
+    if bytes.len() as u64 > maximum {
+        return Err("Input exceeds its byte limit (at most 32 MiB)".into());
     }
-    serde_json::from_slice(&bytes)
-        .map_err(|_| "Invalid JSON or incompatible document structure".into())
+    Ok(bytes)
 }
 
 /// Reserve the destination before collection or paid inference. Never truncate an existing file.

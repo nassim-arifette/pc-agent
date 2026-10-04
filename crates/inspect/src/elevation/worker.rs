@@ -6,7 +6,9 @@ pub fn worker_main(args: impl IntoIterator<Item = OsString>) -> Result<(), Eleva
     let arguments = WorkerArguments::parse(args)?;
     #[cfg(windows)]
     {
-        super::native::worker(arguments)
+        let result = super::native::worker(arguments);
+        let cleanup = super::trace_native::abort_owned_session();
+        result.and(cleanup)
     }
     #[cfg(not(windows))]
     {

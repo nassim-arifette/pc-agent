@@ -126,6 +126,7 @@ pub struct Engine {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ProcessRow {
+    pub entity_ref: String,
     pub name: String,
     pub pid: u32,
     pub working_set: Measure,
@@ -134,6 +135,7 @@ pub struct ProcessRow {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Dashboard {
+    pub selection_source_id: Option<String>,
     pub collected_at_unix_ms: u64,
     pub memory: Memory,
     pub cpu: Cpu,
@@ -320,6 +322,7 @@ pub struct ApplicationView {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityView {
+    pub selection_source_id: Option<String>,
     pub collected_at_unix_ms: u64,
     pub window_ms: u64,
     pub status: Status,
@@ -397,6 +400,7 @@ pub fn activity(a: &pcagent_telemetry::ProcessActivity) -> ActivityView {
         })
         .collect();
     ActivityView {
+        selection_source_id: None,
         collected_at_unix_ms: a.window.finished_at_unix_ms,
         window_ms: a.window.duration_ms,
         status: a.status,
@@ -484,6 +488,7 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
         .map(|p| {
             let m = |metric| measure(s, &p.entity_ref, metric);
             ProcessRow {
+                entity_ref: p.entity_ref.clone(),
                 name: process_name(p),
                 pid: p.pid,
                 working_set: m(Metric::ProcessWorkingSetBytes),
@@ -493,6 +498,7 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
         })
         .collect();
     Dashboard {
+        selection_source_id: None,
         collected_at_unix_ms: unix_ms(),
         memory: Memory {
             used_ratio: ratio(used, total.value),
@@ -570,6 +576,9 @@ pub struct Usage {
     pub completion_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub cost: Option<CostView>,
+    pub model_requests: Vec<pcagent_agent::ModelRequestUsage>,
+    pub total_cost_usd: Option<String>,
+    pub routing: Option<pcagent_agent::routing::RoutingState>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorView {
@@ -691,6 +700,9 @@ pub fn usage(s: &Stats) -> Usage {
         completion_tokens: s.completion_tokens,
         reasoning_tokens: s.reasoning_tokens,
         cost: s.cost.as_ref().map(cost),
+        model_requests: s.model_requests.clone(),
+        total_cost_usd: s.total_cost_usd.clone(),
+        routing: s.routing.clone(),
     }
 }
 fn answer(r: &Investigation, a: &Answer) -> AnswerView {
@@ -834,6 +846,7 @@ pub struct Item {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Page {
+    pub selection_source_id: Option<String>,
     pub kind: ItemKind,
     pub items: Vec<Item>,
     pub total: usize,
@@ -891,6 +904,7 @@ fn item(i: &ItemView, root: &str) -> Item {
 }
 pub fn page(p: &LargestItemsPage, root: &str) -> Page {
     Page {
+        selection_source_id: None,
         kind: p.kind,
         items: p.items.iter().map(|i| item(i, root)).collect(),
         total: p.total,

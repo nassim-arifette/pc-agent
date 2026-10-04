@@ -92,13 +92,18 @@ returned review fields retain their Rust snake_case names.
 | `elevation_cancel` | `requestId` | Declines a prepared task, or signals cancellation of the matching running task |
 
 `elevation_status` recovers the same request ID, task and budget after a webview reload, with state
-`awaiting_local_approval`, `running` or `cancelling`. Reading this status creates no new job or
+`preparing`, `awaiting_local_approval`, `running` or `cancelling`. `preparing` reserves admission
+during private request creation or the local approval transition. Request creation runs on a
+blocking worker; preparing grants no execution permit. Status, cancellation and shutdown never wait for that work's
+filesystem operations under the slot mutex. Reading this status creates no new job or
 permit. A recovering frontend must still obtain the local approval gesture for a prepared task;
-running/cancelling requests cannot be approved again.
+preparing/running/cancelling requests cannot be approved again.
 
 The frontend must display the returned task and budget before offering the local approval
 gesture. Only that gesture calls `elevation_run`. Retrying a consumed request or supplying a
 different ID cannot execute a task. Declining before approval creates no helper process.
+Cancelling a preparing task prevents it from becoming available for approval or execution once
+creation returns. The slot remains occupied during creation and any subsequent cleanup.
 Cancelling a running task keeps the slot occupied until native supervision and cleanup finish.
 An `elevation_run` error is not proof that the slot is free; wait for `elevation_status` to return
 `null` before preparing another task.

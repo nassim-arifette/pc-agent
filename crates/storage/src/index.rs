@@ -326,6 +326,10 @@ pub struct StorageIndex {
 }
 
 impl StorageIndex {
+    /// Original scan window; reading a stored page must not redate its measurements.
+    pub fn measurement_window(&self) -> &Window {
+        &self.window
+    }
     pub(crate) fn new(scope: &ScanScope, backend: &'static str, started_ms: u64) -> Self {
         Self {
             scan_id: pcagent_shared::new_id("scan"),

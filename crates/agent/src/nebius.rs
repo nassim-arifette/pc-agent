@@ -27,6 +27,17 @@ pub struct Config {
     model_id: String,
 }
 impl Config {
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+    /// Reuse an already local credential for an explicit catalog-checked routing target.
+    pub fn for_model(&self, model_id: &str) -> Result<Self, AgentError> {
+        validate_model_id(model_id)?;
+        Ok(Self {
+            api_key: self.api_key.clone(),
+            model_id: model_id.into(),
+        })
+    }
     pub fn from_env() -> Result<Self, AgentError> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
@@ -415,6 +426,9 @@ impl Model for Nebius {
     }
     fn pricing(&self) -> Option<Pricing> {
         self.pricing.clone()
+    }
+    fn model_id(&self) -> Option<&str> {
+        Some(&self.config.model_id)
     }
 }
 

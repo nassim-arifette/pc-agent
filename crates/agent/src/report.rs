@@ -242,6 +242,26 @@ impl SensorCoverage {
                     missing,
                 );
             }
+            "get_selected_evidence" => {
+                let domain = match output.cloud["selected"]["target"]["kind"]
+                    .as_str()
+                    .or_else(|| output.cloud["target"]["kind"].as_str())
+                {
+                    Some("process") => Domain::Processes,
+                    Some("storage") => Domain::Storage,
+                    Some("event" | "recording") => Domain::History,
+                    _ => Domain::System,
+                };
+                self.inspection(
+                    domain,
+                    None,
+                    output,
+                    vec![
+                        "already measured selected evidence; no fresh collection in this tool"
+                            .into(),
+                    ],
+                );
+            }
             _ => {}
         }
     }

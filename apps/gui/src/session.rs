@@ -24,6 +24,13 @@ const DRAFT_EVERY: Duration = Duration::from_millis(80);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Step {
+    SelectedEvidenceLoaded {
+        intent: pcagent_agent::selection::SelectionIntent,
+        measured_at_unix_ms: Option<u64>,
+    },
+    ModelChanged {
+        change: pcagent_agent::routing::ModelChange,
+    },
     SnapshotStarted,
     SnapshotFinished {
         duration_ms: u64,
@@ -146,6 +153,26 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
     fn pricing(&self) -> Option<Pricing> {
         self.inner.pricing()
     }
+    fn model_id(&self) -> Option<&str> {
+        self.inner.model_id()
+    }
+    fn routing_state(&self) -> Option<pcagent_agent::routing::RoutingState> {
+        self.inner.routing_state()
+    }
+    fn try_escalate(
+        &mut self,
+        reason: pcagent_agent::routing::EscalationReason,
+        requests: usize,
+    ) -> Option<pcagent_agent::routing::ModelChange> {
+        if self.stop.load(Ordering::SeqCst) {
+            return None;
+        }
+        let change = self.inner.try_escalate(reason, requests)?;
+        (self.on_step)(Step::ModelChanged {
+            change: change.clone(),
+        });
+        Some(change)
+    }
 }
 
 pub struct ObservedTools<T, F> {
@@ -207,6 +234,115 @@ mod tests {
             Window::instant(),
         ));
         s
+    }
+
+    #[test]
+    fn routing_changes_are_reported_without_resetting_request_numbers_and_stop_has_priority() {
+        use pcagent_agent::routing::{EscalationReason, ModelChange, RoutingMode, RoutingState};
+        struct RoutedFixture {
+            id: String,
+            change: Option<ModelChange>,
+            escalation_calls: usize,
+        }
+        impl Model for RoutedFixture {
+            fn complete(
+                &mut self,
+                _: &[Value],
+                _: &Value,
+                _: ToolChoice,
+                _: Duration,
+            ) -> Result<Reply, AgentError> {
+                Ok(Reply::default())
+            }
+            fn model_id(&self) -> Option<&str> {
+                Some(&self.id)
+            }
+            fn routing_state(&self) -> Option<RoutingState> {
+                Some(RoutingState {
+                    mode: RoutingMode::Automatic,
+                    current_model_id: Some(self.id.clone()),
+                    calibration_reviewed_at_unix_ms: Some(1000),
+                    change: self.change.clone(),
+                    last_request_error: None,
+                })
+            }
+            fn try_escalate(
+                &mut self,
+                reason: EscalationReason,
+                requests: usize,
+            ) -> Option<ModelChange> {
+                self.escalation_calls += 1;
+                if self.change.is_some() {
+                    return None;
+                }
+                let change = ModelChange {
+                    from_model_id: self.id.clone(),
+                    to_model_id: "nvidia/ultra-fixture".into(),
+                    reason,
+                    after_requests: requests,
+                };
+                self.id = change.to_model_id.clone();
+                self.change = Some(change.clone());
+                Some(change)
+            }
+        }
+        let fixture = || RoutedFixture {
+            id: "nvidia/super-fixture".into(),
+            change: None,
+            escalation_calls: 0,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut steps = Vec::new();
+        {
+            let mut model =
+                ObservedModel::new(fixture(), Arc::clone(&stop), |step| steps.push(step));
+            model
+                .complete(
+                    &[],
+                    &json!([]),
+                    ToolChoice::Required,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+            let change = model
+                .try_escalate(EscalationReason::LowConfidence, 1)
+                .unwrap();
+            assert_eq!(model.model_id(), Some("nvidia/ultra-fixture"));
+            assert_eq!(model.routing_state().unwrap().change, Some(change));
+            model
+                .complete(
+                    &[],
+                    &json!([]),
+                    ToolChoice::Required,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+            assert!(model
+                .try_escalate(EscalationReason::LowConfidence, 2)
+                .is_none());
+        }
+        assert!(matches!(steps[0], Step::ModelStarted { request: 1 }));
+        assert!(matches!(&steps[2], Step::ModelChanged { change } if change.after_requests == 1));
+        assert!(matches!(steps[3], Step::ModelStarted { request: 2 }));
+        stop.store(true, Ordering::SeqCst);
+        let mut model = ObservedModel::new(fixture(), stop, |_| {
+            panic!("A stopped model cannot emit a request or routing event")
+        });
+        assert!(model
+            .try_escalate(EscalationReason::LowConfidence, 0)
+            .is_none());
+        assert_eq!(model.inner.escalation_calls, 0);
+        assert_eq!(
+            model
+                .complete(
+                    &[],
+                    &json!([]),
+                    ToolChoice::Required,
+                    Duration::from_secs(1)
+                )
+                .unwrap_err(),
+            AgentError::Cancelled
+        );
     }
     fn tool_call() -> Reply {
         Reply {
