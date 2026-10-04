@@ -60,6 +60,33 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Review restoring one startup entry previously disabled by a completed local action.
+    RestoreStartup {
+        source_plan_id: String,
+        #[arg(long, default_value_t = 0)]
+        item_index: usize,
+        #[arg(long)]
+        journal_dir: Option<PathBuf>,
+    },
+    /// Prepare one fixed read-only elevated inspection; execution requires local approval.
+    ElevatedInspect {
+        #[arg(value_parser = ["system-caches", "mft"])]
+        task: String,
+        /// One uppercase local drive letter for the future MFT inventory.
+        #[arg(long, default_value = "C")]
+        volume: String,
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=120))]
+        timeout_seconds: u64,
+        /// Explicit local approval after reading the task; then Windows asks for UAC consent.
+        #[arg(long)]
+        approve_local: bool,
+    },
+    /// List the NVIDIA Nemotron models actually available to the saved account.
+    Models {
+        /// Authorize a catalog request with the local key; no measurements are sent.
+        #[arg(long)]
+        allow_cloud: bool,
+    },
     /// Run a closed-schema read-only tool locally, without a provider request.
     Inspect {
         tool: String,
@@ -271,6 +298,14 @@ fn review_actions(
                     c.bytes.map_or_else(|| "size unknown".into(), format_bytes)
                 ),
                 ResolvedTarget::Process(t) => format!("process {}", t.identity.pid),
+                ResolvedTarget::UserStartup(t) => format!("user startup entry {}", t.value_name()),
+                ResolvedTarget::RecycleCleanup(c) => format!(
+                    "{} ({}, {})",
+                    text::path(&c.root().path),
+                    text::plural(c.files().len() as u64, "file", "files"),
+                    c.bytes()
+                        .map_or_else(|| "size unknown".into(), format_bytes)
+                ),
             };
             writeln!(err, "  Target: {target}")?;
         }
@@ -304,6 +339,7 @@ fn review_actions(
         }
         let volume_root = p.plan.items().iter().find_map(|i| match &i.target {
             ResolvedTarget::CleanupAdapter(c) => Some(c.root.clone()),
+            ResolvedTarget::RecycleCleanup(c) => Some(c.root().path.clone()),
             _ => None,
         });
         let cancellation = ActionCancellation::begin()?;
@@ -493,6 +529,105 @@ fn print_doctor(
 }
 fn run(args: Args) -> Result<u8> {
     match args.command {
+        Command::RestoreStartup {
+            source_plan_id,
+            item_index,
+            journal_dir,
+        } => {
+            pcagent_inspect::elevation::ensure_unelevated_host()?;
+            let desk = ActionDesk::native(Journal::open(
+                journal_dir.unwrap_or_else(|| local_data_dir().join("journal")),
+            )?);
+            let (policy, prefs) = (Policy::from_env(), Preferences::default());
+            let protection = PolicyProtection {
+                policy: &policy,
+                prefs: &prefs,
+            };
+            let pending = desk.prepare_startup_restore(&source_plan_id, item_index, &protection)?;
+            let results = review_actions(
+                &desk,
+                vec![pending],
+                &protection,
+                &mut Collector::new(),
+                args.json,
+            )?;
+            write_json(&json!({"restoration":results}))?;
+            Ok(0)
+        }
+        Command::ElevatedInspect {
+            task,
+            volume,
+            timeout_seconds,
+            approve_local,
+        } => {
+            use pcagent_inspect::elevation::{DriveLetter, ElevatedTask, PreparedElevation};
+            let task = match task.as_str() {
+                "system-caches" => ElevatedTask::SystemCaches,
+                "mft" => ElevatedTask::MftInventory {
+                    volume: DriveLetter::parse(&volume)?,
+                },
+                _ => return Err("Unsupported elevated task.".into()),
+            };
+            if matches!(task, ElevatedTask::MftInventory { .. }) {
+                write_json(
+                    &json!({"task":task,"status":"unsupported","reason":"MFT allocation accuracy has not been validated on a controlled volume."}),
+                )?;
+                return Ok(3);
+            }
+            let mut prepared =
+                PreparedElevation::prepare(task, Duration::from_secs(timeout_seconds))?;
+            if !approve_local {
+                write_json(
+                    &json!({"task":task,"budget_seconds":timeout_seconds,"state":"awaiting_local_approval",
+                    "note":"Reads system-cache metadata only. It never deletes files. Re-run with --approve-local after reviewing this fixed task."}),
+                )?;
+                return Ok(0);
+            }
+            let approval = prepared.approve_locally()?;
+            let response =
+                prepared.run_locally(approval, &pcagent_storage::CancelToken::default())?;
+            let inspection = pcagent_inspect::elevation::to_inspection(&response);
+            write_json(&inspection)?;
+            Ok(
+                if matches!(inspection.status, Status::Ok | Status::Partial) {
+                    0
+                } else {
+                    3
+                },
+            )
+        }
+        Command::Models { allow_cloud } => {
+            if !allow_cloud {
+                return Err("Listing account models requires --allow-cloud; the request sends only the saved credential, never telemetry.".into());
+            }
+            let credentials = Credentials::load();
+            let catalog =
+                Nebius::account_catalog(|name| credentials.get(name), Duration::from_secs(10))?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&catalog)?);
+            } else {
+                println!(
+                    "NVIDIA Nemotron account catalog ({}):",
+                    pcagent_shared::format_utc_minute(catalog.read_at_unix_ms)
+                );
+                for model in catalog.models {
+                    let prices = model
+                        .pricing
+                        .as_ref()
+                        .and_then(Pricing::per_million_usd)
+                        .map(|(input, output)| {
+                            format!("${input} / ${output} per million input / output tokens")
+                        })
+                        .unwrap_or_else(|| "prices unknown".into());
+                    let context = model
+                        .context_tokens
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "unknown".into());
+                    println!("  {}: {prices}; context {context}", model.id);
+                }
+            }
+            Ok(0)
+        }
         Command::Inspect {
             tool,
             arguments,
@@ -576,8 +711,16 @@ fn run(args: Args) -> Result<u8> {
                 end.max(recording.started_at_unix_ms + 1),
                 10,
             )?;
+            let battery = sampler.battery_recording(&recording.id)?;
+            let resource_activity = sampler.process_resource_peaks(
+                recording.started_at_unix_ms,
+                end.max(recording.started_at_unix_ms + 1),
+                10,
+            )?;
             write_json(&json!({"recording":recording,"history":history,
-                    "process_activity":process_activity,"sampler":sampler.status()}))?;
+                    "process_activity":process_activity,"battery":battery,
+                    "resource_activity":resource_activity,
+                    "sampler":sampler.status()}))?;
             Ok(0)
         }
         Command::Sample { seconds, database } => {
@@ -1030,7 +1173,12 @@ fn run(args: Args) -> Result<u8> {
     }
 }
 fn main() -> ExitCode {
-    match run(Args::parse()) {
+    let args = Args::parse();
+    if pcagent_inspect::elevation::ensure_unelevated_host().is_err() {
+        eprintln!("Start PC Agent from a standard, unelevated session.");
+        return ExitCode::from(2);
+    }
+    match run(args) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("Error: {}", text::clean(&error.to_string()));

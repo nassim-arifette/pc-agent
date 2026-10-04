@@ -30,6 +30,23 @@ pub struct ActionSlot {
     pub pending: Vec<PendingPlan>,
     pub decided: HashMap<String, String>,
 }
+impl ActionSlot {
+    fn new(turn_id: &str, pending: Vec<PendingPlan>) -> Self {
+        Self {
+            turn_id: turn_id.to_owned(),
+            views: pending.iter().map(|p| view::plan(&p.plan, None)).collect(),
+            pending,
+            decided: HashMap::new(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct StartupRestoration {
+    /// Local action group accepted by action_plans/action_run; not a conversation turn.
+    pub turn_id: String,
+    pub plan: view::PlanView,
+}
 
 pub type Slot = Mutex<Option<ActionSlot>>;
 
@@ -53,12 +70,34 @@ pub fn desk() -> Option<ActionDesk> {
 /// Keeps a finished turn's proposals, replacing an older turn's: those can no longer be run.
 pub fn keep(slot: &Slot, turn_id: &str, pending: Vec<PendingPlan>) {
     let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
-    *slot = Some(ActionSlot {
-        turn_id: turn_id.to_owned(),
-        views: pending.iter().map(|p| view::plan(&p.plan, None)).collect(),
-        pending,
-        decided: HashMap::new(),
-    });
+    *slot = Some(ActionSlot::new(turn_id, pending));
+}
+
+/// Read a completed disable's local journal and prepare a fresh restoration for review. This
+/// does not execute it, and refuses to replace the slot while another approved action is running.
+pub fn prepare_startup_restore(
+    slot: &Slot,
+    source_plan_id: &str,
+    item_index: usize,
+) -> Result<StartupRestoration, String> {
+    let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+    if slot
+        .as_ref()
+        .is_some_and(|current| current.decided.values().any(|v| v == "running"))
+    {
+        return Err("An approved action is still running.".into());
+    }
+    let desk = desk().ok_or("The action journal cannot be opened.")?;
+    let (policy, prefs) = (Policy::from_env(), Preferences::default());
+    let protection = PolicyProtection {
+        policy: &policy,
+        prefs: &prefs,
+    };
+    let pending = desk.prepare_startup_restore(source_plan_id, item_index, &protection)?;
+    let turn_id = format!("local-restore-{}", pending.plan.plan_id());
+    let plan = view::plan(&pending.plan, None);
+    *slot = Some(ActionSlot::new(&turn_id, vec![pending]));
+    Ok(StartupRestoration { turn_id, plan })
 }
 
 pub fn plans(slot: &Slot, turn_id: &str) -> Vec<view::PlanView> {
@@ -146,6 +185,7 @@ fn execute(mut pending: PendingPlan) -> Result<view::ActionOutcome, String> {
     let measure_system = pending.plan.action_kind() == ActionKind::RequestNormalClose;
     let volume_root = pending.plan.items().iter().find_map(|i| match &i.target {
         ResolvedTarget::CleanupAdapter(c) => Some(c.root.clone()),
+        ResolvedTarget::RecycleCleanup(c) => Some(c.root().path.clone()),
         _ => None,
     });
     let before = if measure_system {

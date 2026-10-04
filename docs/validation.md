@@ -39,3 +39,58 @@ A live provider test incurs provider usage and must be explicitly authorized. No
 The work order and its acceptance criteria are in [the October plan](plan.md) (in French). This
 checklist is updated as each work package changes the product. Metadata storage scans and controlled
 actions are implemented with bounded scope; see [storage](storage.md) and [actions](actions.md).
+
+## Local backend integration — 2026-10-04
+
+The isolated `wp13-backend-integration` worktree is based on main `60b09b8`. The existing
+phase-1 frontend from PR #30 is preserved; no frontend file was authored by this backend delivery.
+These local checks preceded publication. Repository integration requires a separate successful CI
+run. [backend-delivery.md](backend-delivery.md) records the delivered modules, frontend command
+bindings and incomplete acceptance; the concurrent plan/C6 proposal remains separate.
+
+Rust checks used the pinned 1.90.0 toolchain, the committed lockfile, `-j 1` and one Cargo
+operation at a time. Targets and Windows temporary artifacts stayed on D:. Test/dev debug info
+was disabled and codegen units set to one to fit the development PC's memory. WSL tests used a
+Linux filesystem for fixtures; bulky targets stayed on D:. The Windows release directory is
+`D:\pcagent-target\backend-final-20261004`, separate from the already-running older GUI executable.
+No existing target or running GUI was removed.
+
+| Check | Observed result |
+| --- | --- |
+| Windows and Linux `cargo fmt --all -- --check` | PASS |
+| Windows and Linux workspace/all-targets Clippy, `--locked -j 1 -- -D warnings` | PASS |
+| Windows workspace tests | 559 passed, zero failed, one ignored |
+| Linux workspace tests | 510 passed, zero failed, one ignored |
+| Windows release: CLI, GUI, evaluator, elevated helper | PASS |
+| Linux release: CLI, GUI stub, evaluator, elevated stub | PASS |
+| Linux release stubs | Read-only Windows inspections return `unsupported` (exit 3), GUI exits 2 with its Windows-only message, helper rejects native execution as `Unsupported` (exit 1) |
+| Python paged MCP client | Three tests passed |
+| Offline evaluation/import/blind-grading harness | PASS; synthetic harness fixtures do not score real model quality |
+| Same unchanged live-origin capture, offline context benchmark | 96 calls, one exact repeat; 1,136,940 full / 865,970 compact projection bytes; 64,695,008 full / 49,309,431 compact cumulative context bytes |
+| Linux/Windows offline projection | Same scenario/registry hashes and byte metrics |
+
+The ignored test requires live credentials/network and was not enabled. Linux Clippy first
+identified fields used only by native Windows worker execution. A scoped non-Windows dead-code
+annotation preserves portable argument parsing and the honest unsupported stub; Linux checks and
+Windows Clippy/tests subsequently passed. This is a local validation record, not a published CI run.
+
+Authorized Windows inspections of the final release ran after compilation stopped, without admin,
+and stored anonymized outputs in a separate private D: directory. Power/thermal, inventory, events,
+system state and drivers all returned explicit partial coverage with 47, 44, 116, 43 and 325
+observations respectively. There were 64
+installed-driver entries; no online Windows Update search was performed. The account catalogue
+GET succeeded with four NVIDIA models and sent no PC observations. Battery capacities/state and
+the 29-point, 30-second persisted recording and the earlier build-time probe are detailed in
+[battery.md](battery.md#native-validation--2026-10-04).
+No user startup entry or cache was mutated, Settings page opened, driver installed or real UAC
+request launched. Fixtures exercise action approval/revalidation, journal-bound startup reversal,
+bounded cleanup, helper supervision, battery discontinuities and fifteen offline MFT parser cases.
+
+Raw captures, recording database, compiler logs, grading packets and source/binary hash manifests
+remain outside Git under `D:\pcagent-tmp\backend-20261003`. Native sensor-supplier readings,
+recorded discharge/runtime and per-process GPU acceptance remain unverified on this PC. Native MFT
+collection is not implemented; dedicated-volume accuracy, real UAC/install acceptance and some
+native action effects remain outstanding. Real answers have no human quality scores, and the
+advisory judge remains ungraded. Byte reductions establish neither token/cost savings nor preserved
+diagnostic quality. Default-model changes, automatic escalation and external research remain
+conditional on the plan's missing evaluation/contract evidence.

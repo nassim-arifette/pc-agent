@@ -622,6 +622,7 @@ fn item_refs_are_opaque_and_validated() {
         "scan-other:1",
     ] {
         assert!(ix.resolve(forged).is_none(), "{forged}");
+        assert!(ix.local_identity(forged).is_none(), "{forged}");
     }
 }
 

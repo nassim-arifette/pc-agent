@@ -3,7 +3,7 @@ use crate::{
     tools::{Args, Param, ParamKind, ToolClass, ToolOutput, ToolSpec},
     PrivacyContext, Sharing,
 };
-use pcagent_inspect::{CoverageStatus, Inspection, Query, QUERY_NAMES};
+use pcagent_inspect::{CoverageStatus, Inspection, Query, WindowsUpdateMode, QUERY_NAMES};
 use pcagent_shared::Status;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -23,9 +23,12 @@ pub const TOOLS:&[ToolSpec]=&[
         Param{name:"days",description:"Trailing calendar duration in days (default 7, maximum 30).",kind:ParamKind::Integer{min:1,max:30},required:false},
         Param{name:"limit",description:"Maximum recent occurrence timestamps (default 50).",kind:ParamKind::Integer{min:1,max:200},required:false}]},
     ToolSpec{name:"get_system_state",class:ToolClass::Inspection,description:"Read uptime, Windows build, pending-reboot markers, fast-startup configuration, installed servicing hotfixes and pagefile usage. Missing dates and incomplete update coverage are explicit.",params:&[]},
-    ToolSpec{name:"get_power_and_thermal",class:ToolClass::Inspection,description:"Read AC/battery charge and saver, active power plan, CPU frequency/performance limits, firmware thermal zones and supported GPU sensors. Missing temperatures are unknown, not zero.",params:&[]},
+    ToolSpec{name:"get_power_and_thermal",class:ToolClass::Inspection,description:"Read battery design/full/remaining capacities, estimated wear, optional cycles, signed charge/discharge power and separate Windows/current-rate runtime estimates; AC/saver, active plan, CPU frequency/limits and supported thermal/GPU sensors. Unknown values/units stay null; batteries stay separate. Application activity in recordings shows correlations, not measured per-app watts.",params:&[]},
     ToolSpec{name:"get_installed_apps",class:ToolClass::Inspection,description:"Read Uninstall registrations across HKCU/HKLM and registry views: publisher, version, installation date and estimated size. Estimates are not measured disk use; Store/portable app coverage is explicit.",params:&[LIMIT]},
     ToolSpec{name:"get_hardware_inventory",class:ToolClass::Inspection,description:"Read CPU, Windows build, RAM capacity and SMBIOS memory slots, volume space, disk bus/rotational properties and graphics driver versions. No serial numbers or hardware identifiers.",params:&[]},
+    ToolSpec{name:"get_drivers",class:ToolClass::Inspection,description:"Read installed display, network, storage, system, audio and Bluetooth drivers and Windows Update offers. The cache is used by default. Version comparisons are unknown unless the offer matches one device unambiguously. Never recommend a downgrade or install a driver.",params:&[
+        Param{name:"limit",description:"Maximum installed devices (default 64).",kind:ParamKind::Integer{min:1,max:100},required:false},
+        Param{name:"windows_update",description:"none skips offers; offline reads the local update cache (default); online explicitly contacts Microsoft and may time out.",kind:ParamKind::OneOf(&["none","offline","online"]),required:false}]},
     ToolSpec{name:"get_cleanup_opportunities",class:ToolClass::Inspection,description:"Bounded metadata-only inventory of recycle bin, temporary/browser/shader/development caches, WSL/Docker disks, old large downloads, Windows update/rollback files and system-managed files. Categories report review/regenerable/keep, unknown sizes and partial lower bounds. Proposes no deletion and grants no permission.",params:&[]},
     ToolSpec{name:"query_system",class:ToolClass::Inspection,description:"Execute one fixed allowlisted read-only WMI, registry or event-log query. Cannot accept commands, WQL, paths, usernames, remote hosts or arbitrary registry keys.",params:&[
         Param{name:"query",description:"Named fixed inspection.",kind:ParamKind::OneOf(QUERY_NAMES),required:true},
@@ -33,6 +36,17 @@ pub const TOOLS:&[ToolSpec]=&[
 ];
 
 pub fn run(spec: &ToolSpec, args: &Args, sharing: Sharing) -> Option<ToolOutput> {
+    run_with_inspection(spec, args, sharing, |_| {})
+}
+
+/// Retain locally resolved action targets before projecting the read-only inspection for C5.
+/// The callback cannot change collector output or authorize any action.
+pub fn run_with_inspection(
+    spec: &ToolSpec,
+    args: &Args,
+    sharing: Sharing,
+    retain_local: impl FnOnce(&Inspection),
+) -> Option<ToolOutput> {
     let limit = args.integer("limit").unwrap_or(100) as usize;
     let query = match spec.name {
         "get_startup_programs" => Query::Startup,
@@ -45,6 +59,14 @@ pub fn run(spec: &ToolSpec, args: &Args, sharing: Sharing) -> Option<ToolOutput>
         "get_power_and_thermal" => Query::Power,
         "get_installed_apps" => Query::Apps { limit },
         "get_hardware_inventory" => Query::Hardware,
+        "get_drivers" => Query::Drivers {
+            limit: args.integer("limit").unwrap_or(64) as usize,
+            windows_update: match args.text("windows_update").unwrap_or("offline") {
+                "none" => WindowsUpdateMode::None,
+                "online" => WindowsUpdateMode::Online,
+                _ => WindowsUpdateMode::Offline,
+            },
+        },
         "get_cleanup_opportunities" => Query::Cleanup,
         "query_system" => Query::Allowlisted {
             name: args.text("query").unwrap_or(""),
@@ -53,6 +75,7 @@ pub fn run(spec: &ToolSpec, args: &Args, sharing: Sharing) -> Option<ToolOutput>
         _ => return None,
     };
     let inspection = pcagent_inspect::inspect(query);
+    retain_local(&inspection);
     let mut output = project(&inspection, sharing, &PrivacyContext::local());
     if spec.name == "get_hardware_inventory" {
         let inventory = pcagent_telemetry::Collector::new().hardware_inventory();

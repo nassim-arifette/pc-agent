@@ -77,6 +77,11 @@ automatically to a different folder.
   growth, and a measured delta cannot stand in for current usage.
 - Explicit CPU and GPU claims also constrain temperature, frequency and power readings. A firmware
   thermal-zone value cannot certify a temperature attributed to either processor family.
+- Battery claims retain their entity and metric role: design/full/remaining energy, wear/retention,
+  signed net power and charge/discharge magnitudes cannot certify each other. Generic percentage
+  complements are disabled for these claims; the collector emits explicit dated derivations.
+  Energy (Wh/mWh), power (W/mW), voltage (V/mV), runtime and cycle quantities use separate dimensions.
+  Recording windows and derivation operands are provenance, never substitute result quantities.
 - Older stored display-only reports remain readable locally. They are not replayed as model
   context because they have neither original measured sources nor a reliable name dictionary.
 - The replay budget includes serialized evidence and name metadata, not only question/answer text.

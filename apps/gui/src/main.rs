@@ -19,6 +19,8 @@ mod view;
 mod actions;
 #[cfg(windows)]
 mod app;
+#[cfg(windows)]
+mod elevation;
 
 #[cfg(windows)]
 fn main() {

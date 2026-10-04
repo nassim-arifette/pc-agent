@@ -3,11 +3,28 @@ use crate::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Check the serialized size while formatting, including indentation, before retaining more bytes.
+/// A deeply nested imported payload must not allocate an unbounded pretty-printed output.
+#[derive(Default)]
+struct BoundedBytes(Vec<u8>);
+impl Write for BoundedBytes {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if (self.0.len() as u64).saturating_add(bytes.len() as u64) >= MAX_FILE_BYTES {
+            return Err(io::Error::other("Output exceeds the 32 MiB limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let mut bytes = Vec::new();
@@ -55,24 +72,37 @@ impl OutputFile {
         })
     }
     pub fn save(mut self, value: &impl Serialize) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(value)?;
-        if bytes.len() as u64 >= MAX_FILE_BYTES {
-            return Err("Output exceeds the 32 MiB limit".into());
-        }
+        let mut bytes = BoundedBytes::default();
+        serde_json::to_writer_pretty(&mut bytes, value)?;
         // Preserve a partial file on an I/O error so the failure can be diagnosed locally.
         self.written = true;
         let file = self.file.as_mut().expect("reserved output");
-        file.write_all(&bytes)?;
+        file.write_all(&bytes.0)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
         Ok(())
     }
 }
+
 impl Drop for OutputFile {
     fn drop(&mut self) {
         if !self.written {
             self.file.take();
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_bound_is_checked_before_extending_the_buffer() {
+        let mut bytes = BoundedBytes(vec![0; MAX_FILE_BYTES as usize - 2]);
+        assert_eq!(bytes.write(b"x").unwrap(), 1);
+        let retained = bytes.0.len();
+        assert!(bytes.write(b"yz").is_err());
+        assert_eq!(bytes.0.len(), retained);
     }
 }
