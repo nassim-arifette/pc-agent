@@ -1,5 +1,6 @@
 //! Evaluation entry point. No execution broker and no provider request without explicit opt-in.
 #![forbid(unsafe_code)]
+mod calibration;
 mod capture;
 mod files;
 mod mcp;
@@ -12,6 +13,7 @@ use files::OutputFile;
 use pcagent_agent::{
     credentials::Credentials,
     replay::{ModelView, RecordedRun, Recorder, ReplayTools, Scenario, SCENARIO_VERSION},
+    routing::{CalibrationRuntime, REPLAY_HARNESS_VERSION},
     Config, Model, Nebius, Sharing, Toolbox, Workstation, MAX_QUESTION_BYTES,
 };
 use pcagent_policy::{Policy, Preferences};
@@ -42,6 +44,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Validate human-reviewed, paired real Nemotron replay results locally. Makes no provider request.
+    CalibrateNemotron {
+        /// Closed annotation manifest binding the exact captures and trace hashes reviewed by a human.
+        #[arg(long)]
+        annotations: PathBuf,
+        /// New routing Calibration JSON outside Git. Automatic routing is not enabled by this command.
+        #[arg(long)]
+        out: PathBuf,
+        /// New local proof of checked identities, usage and hashes, without raw questions or answers.
+        #[arg(long)]
+        provenance_out: PathBuf,
+    },
     /// Measure full and compact tool-context bytes offline; this does not measure model quality.
     ContextBenchmark {
         scenario: PathBuf,
@@ -168,6 +182,7 @@ fn investigate(
     initial: &Snapshot,
     tools: &mut impl Toolbox,
 ) -> (RecordedRun, bool) {
+    let runtime = CalibrationRuntime::current();
     let started_at_unix_ms = unix_ms();
     let started = Instant::now();
     let report = pcagent_agent::investigate(model, question, initial, tools, |event| {
@@ -184,7 +199,8 @@ fn investigate(
     (
         RecordedRun {
             model: id,
-            harness_version: env!("CARGO_PKG_VERSION").into(),
+            harness_version: REPLAY_HARNESS_VERSION.into(),
+            runtime: Some(runtime),
             started_at_unix_ms,
             duration_ms: started.elapsed().as_millis() as u64,
             report: serde_json::to_value(report).expect("serializable report"),
@@ -241,12 +257,26 @@ fn replay_identity(scenario: &Scenario, tools: &impl Toolbox) -> Result<Value> {
         "tool_registry_sha256": fingerprint(&tools.definitions())?,
         "scenario_origin": scenario.initial.origin,
         "captured_at_unix_ms": scenario.captured_at_unix_ms,
-        "harness_version": env!("CARGO_PKG_VERSION"),
+        "harness_version": REPLAY_HARNESS_VERSION,
+        "runtime": CalibrationRuntime::current(),
     }))
 }
 
 fn run(cli: Cli) -> Result<u8> {
     match cli.command {
+        Command::CalibrateNemotron {
+            annotations,
+            out,
+            provenance_out,
+        } => {
+            let (calibration, provenance) = calibration::compile(&annotations)?;
+            let output = OutputFile::reserve(&out)?;
+            let proof_output = OutputFile::reserve(&provenance_out)?;
+            proof_output.save(&provenance)?;
+            output.save(&calibration)?;
+            eprintln!("Saved validated local Nemotron calibration and provenance. No provider request was made; routing settings are unchanged.");
+            Ok(0)
+        }
         Command::ContextBenchmark {
             scenario: path,
             anonymize,
@@ -544,5 +574,78 @@ fn main() -> ExitCode {
             eprintln!("pcagent-eval: {error}");
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_identity_tests {
+    use super::*;
+    use pcagent_agent::{AgentError, Reply, ToolChoice};
+    use pcagent_shared::{Evidence, Metric, Origin, Window};
+    use std::time::Duration;
+
+    struct FailingFixtureModel {
+        requests: usize,
+    }
+    impl Model for FailingFixtureModel {
+        fn complete(
+            &mut self,
+            _: &[Value],
+            _: &Value,
+            _: ToolChoice,
+            _: Duration,
+        ) -> std::result::Result<Reply, AgentError> {
+            self.requests += 1;
+            // Exercise the trace producer without a transport or a calibration-quality claim.
+            Err(AgentError::Network)
+        }
+    }
+
+    #[test]
+    fn new_runs_stamp_current_identity_and_old_runs_are_never_relabelled() {
+        let mut initial = Snapshot::empty("synthetic-runtime-fixture");
+        initial.origin = Origin::SyntheticFixture;
+        let mut evidence = Evidence::measured(
+            Metric::CpuBusyBasisPoints,
+            "system",
+            500,
+            "synthetic unit fixture",
+            Window::instant(),
+        );
+        evidence.origin = Origin::SyntheticFixture;
+        initial.evidence.push(evidence);
+        let mut scenario = Scenario::new("synthetic-runtime-fixture".into(), None, initial);
+        scenario.tool_names = vec!["get_system_snapshot".into()];
+        let mut tools = ReplayTools::new(&scenario, Sharing::Anonymized).unwrap();
+        let identity = replay_identity(&scenario, &tools).unwrap();
+        let current = CalibrationRuntime::current();
+        assert_eq!(identity["runtime"], serde_json::to_value(&current).unwrap());
+        assert_eq!(identity["harness_version"], REPLAY_HARNESS_VERSION);
+        // The frozen replay's subset and descriptions retain their separate fingerprint.
+        assert_ne!(
+            identity["tool_registry_sha256"],
+            current.registered_tool_registry_sha256
+        );
+        let mut model = FailingFixtureModel { requests: 0 };
+        let (run, success) = investigate(
+            &mut model,
+            "synthetic-runtime-model".into(),
+            "Synthetic fixture question",
+            &scenario.initial,
+            &mut tools,
+        );
+        assert_eq!(model.requests, 1);
+        assert!(!success);
+        assert_eq!(run.runtime.as_ref(), Some(&current));
+        assert_eq!(run.harness_version, REPLAY_HARNESS_VERSION);
+
+        let mut legacy = serde_json::to_value(&run).unwrap();
+        legacy.as_object_mut().unwrap().remove("runtime");
+        let decoded: RecordedRun = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.runtime.is_none());
+        assert!(serde_json::to_value(decoded)
+            .unwrap()
+            .get("runtime")
+            .is_none());
     }
 }

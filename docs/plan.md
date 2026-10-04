@@ -704,22 +704,22 @@ Règles de travail :
 | 3 — Choix de partage | A, C | logique terminée : trois modes persistants, aperçu figé, retrait des noms des suivis, noms de fichiers sur liste finie et filtre C5 ; premier choix, indicateur et consentement fichiers à brancher dans le frontend | #21, #23, wp1-phase1-logic |
 | 4 — Nouveaux outils | B | logique terminée : outils fermés, collecte native bornée, couverture et projections C4/C5 ; tests synthétiques et traces locales (voir docs/system-inspection.md) | wp1-phase1-logic |
 | 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
-| 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action à faire | #23, #24 |
-| 7 — Évaluation | D | en cours : `pcagent-eval` livré (capture de tous les outils de phase 1, rejeu strict, traces locales, MCP pour Claude) ; première campagne réelle à faire | wp7-eval |
-| 8 — Admin à la demande | B | protocole/helper et caches bornés livrés (#33) ; collecte MFT native et inspections complémentaires en cours ; validation UAC/second PC à réaliser | #33, wp8-backend-completion |
+| 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) | #23, #24, wp8-backend-completion |
+| 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, wp8-backend-completion |
+| 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser | #33, wp8-backend-completion |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
 | 12 — Soumission | D | à faire | |
 | 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider | #33 |
-| 14 — Escalade Super → Ultra | A | mécanisme backend en cours ; activation automatique conditionnée à un étalonnage réel valide, comparaisons Sonnet/Codex exclues de ce lot | wp8-backend-completion |
+| 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, wp8-backend-completion |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
-sont consignés dans [gui.md](gui.md#validation-status). La comparaison avec Claude reste à faire :
-les tests du contrôleur et du GUI ne valident pas à eux seuls la qualité du modèle.
+sont consignés dans [gui.md](gui.md#validation-status). Les tests du contrôleur et du GUI ne
+valident pas à eux seuls la qualité du modèle ; celle-ci reste à annoter sur les situations réelles.
 
-Le lot logique de phase 1 est isolé sur `wp1-phase1-logic`, sans modification des fichiers du
-frontend. Les commandes, événements, limites et branchements restants sont détaillés dans
-[backend-phase1.md](backend-phase1.md), avec les résultats de validation locale. Aucun commit ni
-push de ce lot n'a été effectué.
+Les contrats de phase 1 sont détaillés dans [backend-phase1.md](backend-phase1.md). Le prolongement
+backend du 4 octobre est décrit dans [backend-completion.md](backend-completion.md), avec ses
+commandes, preuves de validation et acceptations restantes. Les fichiers frontend et la
+configuration des clés restent hors du périmètre de ce lot.

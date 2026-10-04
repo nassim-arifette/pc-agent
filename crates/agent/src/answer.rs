@@ -741,6 +741,12 @@ fn unit_of(name: &str) -> Option<(Dim, f64)> {
         Some((Dim::WattHours, 0.001))
     } else if is("watt_hours") {
         Some((Dim::WattHours, 1.0))
+    } else if name == "mJ" || is("millijoules") {
+        Some((Dim::WattHours, 1.0 / 3_600_000.0))
+    } else if name == "J" || is("joules") {
+        Some((Dim::WattHours, 1.0 / 3_600.0))
+    } else if is("hours") {
+        Some((Dim::Millis, 3_600_000.0))
     } else if is("milliwatts") || is("mw") {
         Some((Dim::Watts, 0.001))
     } else if is("millivolts") || is("mv") {
@@ -966,6 +972,14 @@ fn unit(written: &str, per_second: bool) -> Option<(Dim, Vec<f64>)> {
         return Some((Dim::Bytes, factors));
     }
     let one = |dim: Dim, factor: f64| Some((dim, vec![factor]));
+    // The prefixes are case-sensitive: mJ and MJ differ by a billion.
+    match written {
+        "mJ" => return one(Dim::WattHours, 1.0 / 3_600_000.0),
+        "MJ" => return one(Dim::WattHours, 1_000_000.0 / 3_600.0),
+        "J" => return one(Dim::WattHours, 1.0 / 3_600.0),
+        "kJ" => return one(Dim::WattHours, 1_000.0 / 3_600.0),
+        _ => {}
+    }
     match lower.as_str() {
         "%" => one(Dim::Percent, 1.0),
         "ms" => one(Dim::Millis, 1.0),
@@ -980,6 +994,8 @@ fn unit(written: &str, per_second: bool) -> Option<(Dim, Vec<f64>)> {
         "mw" => one(Dim::Watts, 0.001),
         "wh" => one(Dim::WattHours, 1.0),
         "mwh" => one(Dim::WattHours, 0.001),
+        "joule" | "joules" => one(Dim::WattHours, 1.0 / 3_600.0),
+        "millijoule" | "millijoules" => one(Dim::WattHours, 1.0 / 3_600_000.0),
         "v" | "volt" | "volts" => one(Dim::Volts, 1.0),
         "mv" | "millivolt" | "millivolts" => one(Dim::Volts, 0.001),
         "processes" | "processus" | "services" | "applications" | "apps" | "programs"
@@ -1063,6 +1079,35 @@ fn bound_before(before: &str) -> Bound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_energy_estimates_convert_units_without_proving_capacity_or_power() {
+        let received = vec![json!({"observation_id":"O1", "historical":true,
+            "observations":[{"observation_id":"energy-fixture-1", "entity_ref":"battery-app-1", "metric":"battery_app_energy_estimated",
+            "value":3_600_000,"unit":"mJ","status":"ok","source":"synthetic E3 fixture"}]})];
+        let references = refs();
+        let context = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "Earlier measurement: estimated energy consumption was 3 600 000 mJ [O1].",
+            "Earlier measurement: estimated energy consumption was 3 600 J [O1].",
+            "Mesure précédente : la consommation d'énergie estimée était de 1 Wh [O1].",
+        ] {
+            assert!(review(&submit(text), &context).is_ok(), "{text}");
+        }
+        for text in [
+            "Earlier measurement: estimated energy consumption was 3 600 000 MJ [O1].",
+            "Earlier measurement: measured energy consumption was 1 Wh [O1].",
+            "La capacité de la batterie était de 1 Wh lors de la mesure précédente [O1].",
+            "Earlier measurement: estimated power consumption was 1 W [O1].",
+            "Estimated energy consumption is currently 1 Wh [O1].",
+        ] {
+            assert!(review(&submit(text), &context).is_err(), "{text}");
+        }
+    }
 
     #[test]
     fn battery_energy_runtime_and_signed_power_require_matching_measured_units() {

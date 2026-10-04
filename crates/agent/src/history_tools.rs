@@ -108,7 +108,7 @@ fn process_ref(reference: &str) -> bool {
     })
 }
 
-fn event_observation(observation: &EventObservation, reference: &str) -> Value {
+pub(crate) fn event_observation(observation: &EventObservation, reference: &str) -> Value {
     if observation.entity_ref != "system" && !process_ref(&observation.entity_ref) {
         return Value::Null;
     }
@@ -128,7 +128,7 @@ fn event_observation(observation: &EventObservation, reference: &str) -> Value {
     value
 }
 
-fn project(
+pub(crate) fn project(
     mut series: HistorySeries,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -319,7 +319,7 @@ fn project(
     }
 }
 
-fn measured_at(cloud: &Value) -> Option<u64> {
+pub(crate) fn measured_at(cloud: &Value) -> Option<u64> {
     let points = cloud["points"]
         .as_array()
         .into_iter()
@@ -375,7 +375,7 @@ fn measured_at(cloud: &Value) -> Option<u64> {
         .max()
 }
 
-fn project_process_peaks(
+pub(crate) fn project_process_peaks(
     peaks: ProcessPeaks,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -389,7 +389,7 @@ fn project_process_peaks(
     )
 }
 
-fn project_resource_peaks(
+pub(crate) fn project_resource_peaks(
     peaks: ProcessPeaks,
     sharing: Sharing,
     privacy: &PrivacyContext,

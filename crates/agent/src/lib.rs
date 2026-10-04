@@ -5,6 +5,7 @@
 mod action_targets;
 pub mod activity_tools;
 mod answer;
+pub mod elevated_tools;
 pub use answer::{
     Answer, Category, Citation, CitationKind, Confidence, Issue, IssueKind, SUBMIT_ANSWER,
 };
@@ -26,6 +27,8 @@ mod nebius;
 mod payload;
 mod proposals;
 mod report;
+pub mod routing;
+pub mod selection;
 mod storage_context;
 pub mod system_tools;
 pub use storage_context::{
@@ -184,6 +187,19 @@ pub trait Model {
     }
     /// Catalog prices of the model in use, when the provider published verifiable ones.
     fn pricing(&self) -> Option<Pricing> {
+        None
+    }
+    fn model_id(&self) -> Option<&str> {
+        None
+    }
+    fn routing_state(&self) -> Option<routing::RoutingState> {
+        None
+    }
+    fn try_escalate(
+        &mut self,
+        _reason: routing::EscalationReason,
+        _requests: usize,
+    ) -> Option<routing::ModelChange> {
         None
     }
 }
@@ -379,6 +395,14 @@ pub struct RequestUsage {
     pub completion_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
 }
+/// Actual per-request model and dated price. A missing price or count stays unknown.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelRequestUsage {
+    pub request: usize,
+    pub model_id: Option<String>,
+    pub usage: RequestUsage,
+    pub cost: Option<Cost>,
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
     pub inference_calls: usize,
@@ -394,6 +418,10 @@ pub struct Stats {
     /// Usage priced at the provider's catalog prices; absent without a verified, dated price or
     /// complete usage (spec 13).
     pub cost: Option<Cost>,
+    pub model_requests: Vec<ModelRequestUsage>,
+    /// Sum of individually priced requests; unknown if any request's cost is unknown.
+    pub total_cost_usd: Option<String>,
+    pub routing: Option<routing::RoutingState>,
     pub extensions: usize,
 }
 impl Stats {
@@ -408,6 +436,9 @@ impl Stats {
             reasoning_tokens: Some(0),
             requests: Vec::new(),
             cost: None,
+            model_requests: Vec::new(),
+            total_cost_usd: None,
+            routing: None,
             extensions: 0,
         }
     }
@@ -436,15 +467,45 @@ impl Stats {
             reasoning_tokens: None,
         });
     }
-    /// Prices the usage so far at the model's catalog prices; unknown usage or an unverified
-    /// price gives no cost.
-    fn price(&mut self, pricing: Option<Pricing>) {
-        self.cost = match (self.prompt_tokens, self.completion_tokens, pricing) {
-            (Some(prompt), Some(completion), Some(pricing)) if !self.requests.is_empty() => {
-                cost::estimate(prompt, completion, &pricing)
-            }
-            _ => None,
+    fn price_for(&mut self, pricing: Option<Pricing>, model_id: Option<&str>) {
+        let Some(usage) = self.requests.last().cloned() else {
+            return;
         };
+        let model_id = model_id
+            .map(str::to_owned)
+            .or_else(|| pricing.as_ref().map(|p| p.model_id.clone()));
+        let price = pricing.filter(|p| model_id.as_deref() == Some(p.model_id.as_str()));
+        let priced = usage
+            .prompt_tokens
+            .zip(usage.completion_tokens)
+            .zip(price.as_ref())
+            .and_then(|((p, c), rate)| cost::estimate(p, c, rate));
+        self.model_requests.push(ModelRequestUsage {
+            request: self.requests.len(),
+            model_id,
+            usage,
+            cost: priced,
+        });
+        self.total_cost_usd = self
+            .model_requests
+            .iter()
+            .try_fold(0u128, |sum, r| {
+                sum.checked_add(cost::parse_usd_pico(&r.cost.as_ref()?.usd)?)
+            })
+            .map(cost::format_pico);
+        // Preserve the legacy single-price shape only when every request used the same
+        // verified price. Never price the combined Super+Ultra tokens at the last rate.
+        self.cost = price
+            .filter(|p| {
+                self.model_requests
+                    .iter()
+                    .all(|r| r.cost.as_ref().is_some_and(|c| c.pricing == *p))
+            })
+            .and_then(|p| {
+                self.prompt_tokens
+                    .zip(self.completion_tokens)
+                    .and_then(|(input, output)| cost::estimate(input, output, &p))
+            });
     }
 }
 #[derive(Debug, Clone, Serialize)]
@@ -822,17 +883,86 @@ pub fn converse_with_privacy(
     initial: &Snapshot,
     toolbox: &mut impl Toolbox,
     privacy: &PrivacyContext,
+    on_event: impl FnMut(&ToolEvent),
+    on_extension: impl FnMut(&Investigation, &ExtensionRequest) -> bool,
+) -> Investigation {
+    converse_inner(
+        model,
+        past,
+        question,
+        initial,
+        toolbox,
+        privacy,
+        None,
+        on_event,
+        on_extension,
+    )
+}
+
+/// Explain/Investigate reuse the same controller and verifier with a frozen initial payload.
+#[allow(clippy::too_many_arguments)]
+pub fn converse_with_selection(
+    model: &mut impl Model,
+    past: &[PastTurn],
+    question: &str,
+    selected: &selection::FrozenSelection,
+    toolbox: &mut impl Toolbox,
+    privacy: &PrivacyContext,
+    on_event: impl FnMut(&ToolEvent),
+    on_extension: impl FnMut(&Investigation, &ExtensionRequest) -> bool,
+) -> Investigation {
+    converse_inner(
+        model,
+        past,
+        question,
+        selected.snapshot(),
+        toolbox,
+        privacy,
+        Some(selected),
+        on_event,
+        on_extension,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn converse_inner(
+    model: &mut impl Model,
+    past: &[PastTurn],
+    question: &str,
+    initial: &Snapshot,
+    toolbox: &mut impl Toolbox,
+    privacy: &PrivacyContext,
+    selected: Option<&selection::FrozenSelection>,
     mut on_event: impl FnMut(&ToolEvent),
     mut on_extension: impl FnMut(&Investigation, &ExtensionRequest) -> bool,
 ) -> Investigation {
     let mut budget = Budget::new();
     let mut result = local_report(initial);
     result.mode = "nebius".into();
+    result.stats.routing = model.routing_state();
     if question.trim().is_empty() || question.len() > MAX_QUESTION_BYTES {
         return result.partial(AgentError::InvalidQuestion);
     }
     let mut aliases = FindingAliases::default();
     let sharing = toolbox.sharing();
+    if let Some(selected) = selected {
+        let mut output = selected.output().clone();
+        let spec = selection::SELECTED_EVIDENCE;
+        result.coverage.record(&spec, &output);
+        result.initial_observation = Observation::record(&spec, &mut output);
+        result.initial_observation.citation = "O0".into();
+        result.initial_observation.measured_at_unix_ms =
+            output.cloud["measured_at_unix_ms"].as_u64().unwrap_or(0);
+        // The selected snapshot already seeded local_report. Keep the exact preview's
+        // single set of findings and measurements; other selection sources can add theirs.
+        output
+            .findings
+            .retain(|f| !result.findings.iter().any(|known| known.id == f.id));
+        output
+            .evidence
+            .retain(|e| !result.evidence.iter().any(|known| known.id == e.id));
+        result.append(output);
+    }
     let first = first_message(
         question,
         initial,
@@ -840,6 +970,10 @@ pub fn converse_with_privacy(
         &mut aliases,
         sharing,
         privacy,
+    );
+    let first = selected.map_or_else(
+        || first.clone(),
+        |selected| selected.augment_first_message(first.clone()),
     );
     let (first, historical) = conversation::prepare(first, past, sharing, privacy);
     result.historical_observations = historical;
@@ -869,6 +1003,15 @@ pub fn converse_with_privacy(
     let mut fallback: Option<Answer> = None;
     let mut tool_context = tool_context::ToolContext::default();
     loop {
+        if !budget.remaining().is_zero() {
+            if let Some(change) = model.try_escalate(
+                routing::EscalationReason::PrimaryRequestLimit,
+                result.stats.inference_calls,
+            ) {
+                result.stats.routing = model.routing_state();
+                messages.push(json!({"role":"system","content":format!("Continue this investigation with the existing measured observations and citation references. One locally calibrated escalation occurred: {:?}. All original budgets and approval requirements still apply.", change.reason)}));
+            }
+        }
         if fallback.is_some() && budget.exhausted(&result, &Checkpoint::Inference) {
             return result.finish(fallback, repairs, AgentError::Budget);
         }
@@ -917,7 +1060,8 @@ pub fn converse_with_privacy(
             Ok(reply) => reply,
             Err(error) => {
                 result.stats.record_failure();
-                result.stats.price(model.pricing());
+                result.stats.price_for(model.pricing(), model.model_id());
+                result.stats.routing = model.routing_state();
                 if fallback.is_some() {
                     return result.finish(fallback, repairs, error);
                 }
@@ -933,7 +1077,8 @@ pub fn converse_with_privacy(
             }
         };
         result.stats.record(&reply);
-        result.stats.price(model.pricing());
+        result.stats.price_for(model.pricing(), model.model_id());
+        result.stats.routing = model.routing_state();
         if let Some(error) = reply.rejected {
             // A reply cut off at the output limit is billed but empty: ask once more, briefly.
             if error == AgentError::OutputLimit && repairs < MAX_REPAIRS {
@@ -987,16 +1132,52 @@ pub fn converse_with_privacy(
                 )
             };
             let issues = match outcome {
-                Ok(answer) => return result.answered(answer, repairs),
+                Ok(answer) => {
+                    let reason = if answer.category == Category::InsufficientEvidence {
+                        Some(routing::EscalationReason::InsufficientEvidence)
+                    } else if answer.confidence == Confidence::Low {
+                        Some(routing::EscalationReason::LowConfidence)
+                    } else {
+                        None
+                    };
+                    let changed = !budget.remaining().is_zero()
+                        && reason.is_some_and(|reason| {
+                            model
+                                .try_escalate(reason, result.stats.inference_calls)
+                                .is_some()
+                        });
+                    if changed {
+                        result.stats.routing = model.routing_state();
+                        fallback = Some(answer);
+                        messages.push(
+                            json!({"role":"assistant","content":null,"tool_calls":reply.calls}),
+                        );
+                        messages.push(json!({"role":"tool","tool_call_id":submitted.id,
+                            "content":"{\"reviewed\":true,\"continue\":\"One locally calibrated escalation was approved. Reuse measured observations, retain citations and verify the conclusion. The previous answer is a draft, never measured evidence.\"}"}));
+                        continue;
+                    }
+                    return result.answered(answer, repairs);
+                }
                 Err((issues, shown)) => {
                     fallback = shown.map(|answer| *answer).or(fallback);
                     issues
                 }
             };
-            if repairs >= MAX_REPAIRS {
+            let escalated = repairs >= MAX_REPAIRS
+                && !budget.remaining().is_zero()
+                && model
+                    .try_escalate(
+                        routing::EscalationReason::VerificationFailure,
+                        result.stats.inference_calls,
+                    )
+                    .is_some();
+            if repairs >= MAX_REPAIRS && !escalated {
                 return result.finish(fallback, repairs, AgentError::InvalidFinding);
             }
-            repairs += 1;
+            if !escalated {
+                repairs += 1;
+            }
+            result.stats.routing = model.routing_state();
             messages.push(json!({"role":"assistant","content":null,"tool_calls":reply.calls}));
             for call in &reply.calls {
                 let content = if call.id == submitted.id {
@@ -1061,6 +1242,15 @@ pub fn converse_with_privacy(
             }
             result.coverage.record(&spec, &output);
             let citation = result.push_observation(Observation::record(&spec, &mut output));
+            if matches!(
+                spec.name,
+                "get_selected_evidence" | "get_approved_elevated_inspection"
+            ) {
+                if let Some(last) = result.observations.last_mut() {
+                    last.measured_at_unix_ms =
+                        output.cloud["measured_at_unix_ms"].as_u64().unwrap_or(0);
+                }
+            }
             let event = ToolEvent {
                 tool: spec.name.into(),
                 status: output.status,
@@ -1111,5 +1301,7 @@ pub fn converse_with_privacy(
     }
 }
 
+#[cfg(test)]
+mod routing_tests;
 #[cfg(test)]
 mod tests;

@@ -8,19 +8,36 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// C4 stays at the existing JSON level; the optional metadata tree is local UI data only.
+#[derive(Serialize)]
+pub struct InspectionResult {
+    #[serde(flatten)]
+    pub inspection: pcagent_inspect::Inspection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_mft_tree: Option<pcagent_inspect::elevation::mft::TreeSummary>,
+}
+impl From<pcagent_inspect::Inspection> for InspectionResult {
+    fn from(inspection: pcagent_inspect::Inspection) -> Self {
+        Self {
+            inspection,
+            local_mft_tree: None,
+        }
+    }
+}
+
 // These private adapters keep the slot's lifecycle testable without native job files or UAC.
 trait PendingTask: Send {
     fn budget(&self) -> Duration;
+    fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
+        None
+    }
     fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String>;
 }
 trait ApprovedTask: Send {
     fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
         None
     }
-    fn execute(
-        self: Box<Self>,
-        cancel: &CancelToken,
-    ) -> Result<pcagent_inspect::Inspection, String>;
+    fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, String>;
 }
 trait TaskCompletion: Send {
     fn on_complete(self: Box<Self>, finished: Box<dyn FnOnce() + Send>);
@@ -40,6 +57,9 @@ impl PendingTask for NativePending {
     fn budget(&self) -> Duration {
         self.0.request().budget()
     }
+    fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
+        Some(Box::new(NativeCompletion(self.0.completion())))
+    }
     fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
         let mut prepared = self.0;
         let approval = prepared
@@ -52,15 +72,15 @@ impl ApprovedTask for NativeApproved {
     fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
         Some(Box::new(NativeCompletion(self.prepared.completion())))
     }
-    fn execute(
-        self: Box<Self>,
-        cancel: &CancelToken,
-    ) -> Result<pcagent_inspect::Inspection, String> {
+    fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, String> {
         let response = self
             .prepared
             .run_locally_bounded(self.approval, cancel)
             .map_err(|error| error.to_string())?;
-        Ok(pcagent_inspect::elevation::to_inspection(&response))
+        Ok(InspectionResult {
+            inspection: pcagent_inspect::elevation::to_inspection(&response),
+            local_mft_tree: response.mft.map(|collection| collection.tree),
+        })
     }
 }
 
@@ -69,10 +89,17 @@ pub struct PreparedView {
     pub request_id: String,
     pub task: ElevatedTask,
     pub budget_ms: u64,
+    /// preparing, awaiting_local_approval, running or cancelling; preparing grants no permit.
     pub state: &'static str,
 }
 
 enum Job {
+    Preparing {
+        id: String,
+        task: ElevatedTask,
+        budget_ms: u64,
+        cancel: CancelToken,
+    },
     Prepared {
         id: String,
         task: ElevatedTask,
@@ -84,6 +111,11 @@ enum Job {
         budget_ms: u64,
         cancel: CancelToken,
     },
+    Cleanup {
+        id: String,
+        task: ElevatedTask,
+        budget_ms: u64,
+    },
 }
 
 #[derive(Default)]
@@ -91,12 +123,14 @@ struct SlotState {
     job: Option<Job>,
     closing: bool,
     shutdown_waiter: bool,
+    completed: Vec<pcagent_agent::elevated_tools::ApprovedInspection>,
 }
 
 #[derive(Default)]
 pub struct Slot {
-    state: Mutex<SlotState>,
-    idle: Condvar,
+    // Cleanup notifications can retain this state without keeping the host slot alive.
+    state: Arc<Mutex<SlotState>>,
+    idle: Arc<Condvar>,
 }
 
 /// One bounded shutdown attempt; dropping it permits a retry, while the slot stays closed.
@@ -106,6 +140,7 @@ pub struct Shutdown {
 
 pub struct Run {
     id: String,
+    task: ElevatedTask,
     approved: Option<Box<dyn ApprovedTask>>,
     completion: Option<Box<dyn TaskCompletion>>,
     cancel: CancelToken,
@@ -114,23 +149,34 @@ pub struct Run {
 
 impl Slot {
     pub fn prepare(&self, task: ElevatedTask, budget: Duration) -> Result<PreparedView, String> {
-        self.prepare_with(task, || {
+        self.prepare_with_budget(task.clone(), budget, || {
             PreparedElevation::prepare(task, budget)
                 .map(|prepared| Box::new(NativePending(prepared)) as Box<dyn PendingTask>)
                 .map_err(|error| error.to_string())
         })
     }
 
+    #[cfg(test)]
     fn prepare_with(
         &self,
         task: ElevatedTask,
         prepare: impl FnOnce() -> Result<Box<dyn PendingTask>, String>,
     ) -> Result<PreparedView, String> {
-        if matches!(task, ElevatedTask::MftInventory { .. }) {
-            return Err(
-                "MFT allocation accuracy has not been validated on a controlled volume.".into(),
-            );
-        }
+        self.prepare_with_budget(task, Duration::from_secs(1), prepare)
+    }
+
+    fn prepare_with_budget(
+        &self,
+        task: ElevatedTask,
+        budget: Duration,
+        prepare: impl FnOnce() -> Result<Box<dyn PendingTask>, String>,
+    ) -> Result<PreparedView, String> {
+        let budget_ms = u64::try_from(budget.as_millis())
+            .ok()
+            .filter(|ms| (1..=pcagent_inspect::elevation::MAX_BUDGET_MS).contains(ms))
+            .ok_or_else(|| {
+                pcagent_inspect::elevation::ElevationError::InvalidRequest.to_string()
+            })?;
         let mut slot = self
             .state
             .lock()
@@ -141,11 +187,46 @@ impl Slot {
         if slot.job.is_some() {
             return Err("An elevated inspection is already prepared or running.".into());
         }
-        let prepared = prepare()?;
         let id = new_id("elevation");
+        let cancel = CancelToken::default();
+        slot.job = Some(Job::Preparing {
+            id: id.clone(),
+            task: task.clone(),
+            budget_ms,
+            cancel: cancel.clone(),
+        });
+        drop(slot);
+
+        // Native request creation can wait for files or failed-creation cleanup. The reservation
+        // stays visible and cancellable without holding the GUI's state mutex across that work.
+        let result = prepare();
+        let mut slot = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let stopped = preparation_stop(slot.closing, &cancel);
+        let prepared = match result {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                // Native preparation errors return only after their private resources are gone.
+                if matches!(slot.job.as_ref(), Some(Job::Preparing { id: active, .. }) if active == &id)
+                {
+                    slot.job = None;
+                    self.idle.notify_all();
+                }
+                return Err(stopped.unwrap_or(error));
+            }
+        };
+        if let Some(error) = stopped {
+            slot.job = Some(Job::Cleanup {
+                id: id.clone(),
+                task,
+                budget_ms,
+            });
+            drop(slot);
+            self.abandon_prepared(id, prepared);
+            return Err(error);
+        }
         let view = PreparedView {
             request_id: id.clone(),
-            task,
+            task: task.clone(),
             budget_ms: prepared.budget().as_millis() as u64,
             state: "awaiting_local_approval",
         };
@@ -160,9 +241,24 @@ impl Slot {
             .lock()
             .map_err(|_| "Elevation state unavailable.")?;
         Ok(slot.job.as_ref().map(|job| match job {
+            Job::Preparing {
+                id,
+                task,
+                budget_ms,
+                cancel,
+            } => PreparedView {
+                request_id: id.clone(),
+                task: task.clone(),
+                budget_ms: *budget_ms,
+                state: if cancel.is_cancelled() {
+                    "cancelling"
+                } else {
+                    "preparing"
+                },
+            },
             Job::Prepared { id, task, prepared } => PreparedView {
                 request_id: id.clone(),
-                task: *task,
+                task: task.clone(),
                 budget_ms: prepared.budget().as_millis() as u64,
                 state: "awaiting_local_approval",
             },
@@ -173,13 +269,23 @@ impl Slot {
                 cancel,
             } => PreparedView {
                 request_id: id.clone(),
-                task: *task,
+                task: task.clone(),
                 budget_ms: *budget_ms,
                 state: if cancel.is_cancelled() {
                     "cancelling"
                 } else {
                     "running"
                 },
+            },
+            Job::Cleanup {
+                id,
+                task,
+                budget_ms,
+            } => PreparedView {
+                request_id: id.clone(),
+                task: task.clone(),
+                budget_ms: *budget_ms,
+                state: "cancelling",
             },
         }))
     }
@@ -200,17 +306,55 @@ impl Slot {
             unreachable!()
         };
         let budget_ms = prepared.budget().as_millis() as u64;
-        let approved = prepared.approve()?;
-        let completion = approved.completion();
         let cancel = CancelToken::default();
+        slot.job = Some(Job::Preparing {
+            id: id.clone(),
+            task: task.clone(),
+            budget_ms,
+            cancel: cancel.clone(),
+        });
+        drop(slot);
+        let pending_completion = prepared.completion();
+        // A failed local approval drops its prepared native request. Its filesystem cleanup
+        // must not hold the state mutex or hide a simultaneous cancellation/shutdown.
+        let result = prepared.approve();
+        let mut slot = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let stopped = preparation_stop(slot.closing, &cancel);
+        let approved = match result {
+            Ok(approved) => approved,
+            Err(error) => {
+                slot.job = Some(Job::Cleanup {
+                    id: id.clone(),
+                    task,
+                    budget_ms,
+                });
+                drop(slot);
+                self.release_after_completion(id, pending_completion);
+                return Err(stopped.unwrap_or(error));
+            }
+        };
+        if let Some(error) = stopped {
+            slot.job = Some(Job::Cleanup {
+                id: id.clone(),
+                task,
+                budget_ms,
+            });
+            drop(slot);
+            let completion = approved.completion().or(pending_completion);
+            drop(approved);
+            self.release_after_completion(id, completion);
+            return Err(error);
+        }
+        let completion = approved.completion().or(pending_completion);
         slot.job = Some(Job::Running {
             id: id.clone(),
-            task,
+            task: task.clone(),
             budget_ms,
             cancel: cancel.clone(),
         });
         Ok(Run {
             id,
+            task,
             approved: Some(approved),
             completion,
             cancel,
@@ -219,11 +363,40 @@ impl Slot {
     }
 
     pub fn finish(&self, request_id: &str) {
-        let mut slot = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(slot.job.as_ref(), Some(Job::Running { id, .. }) if id == request_id) {
-            slot.job = None;
-            self.idle.notify_all();
+        finish_state(&self.state, &self.idle, request_id);
+    }
+
+    fn release_after_completion(
+        &self,
+        request_id: String,
+        completion: Option<Box<dyn TaskCompletion>>,
+    ) {
+        let state = self.state.clone();
+        let idle = self.idle.clone();
+        let finished = Box::new(move || finish_state(&state, &idle, &request_id));
+        // An already completed capability may invoke this immediately: no state lock is held.
+        if let Some(completion) = completion {
+            completion.on_complete(finished);
+        } else {
+            finished();
         }
+    }
+
+    fn abandon_prepared(&self, request_id: String, prepared: Box<dyn PendingTask>) {
+        let completion = prepared.completion();
+        drop(prepared);
+        self.release_after_completion(request_id, completion);
+    }
+    /// Read only already approved evidence. This grants no access to the approval/run slot.
+    pub fn completed_evidence(&self) -> Vec<pcagent_agent::elevated_tools::ApprovedInspection> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .completed
+            .iter()
+            .filter(|result| result.available())
+            .cloned()
+            .collect()
     }
 
     pub fn cancel(&self, request_id: &str) -> Result<(), String> {
@@ -232,10 +405,26 @@ impl Slot {
             .lock()
             .map_err(|_| "Elevation state unavailable.")?;
         match slot.job.as_ref() {
-            Some(Job::Running { id, cancel, .. }) if id == request_id => cancel.cancel(),
-            Some(Job::Prepared { id, .. }) if id == request_id => slot.job = None,
+            Some(Job::Preparing { id, cancel, .. } | Job::Running { id, cancel, .. })
+                if id == request_id =>
+            {
+                cancel.cancel();
+                return Ok(());
+            }
+            Some(Job::Cleanup { id, .. }) if id == request_id => return Ok(()),
+            Some(Job::Prepared { id, .. }) if id == request_id => {}
             _ => return Err("This elevated inspection is no longer available.".into()),
         }
+        let Some(Job::Prepared { id, task, prepared }) = slot.job.take() else {
+            unreachable!()
+        };
+        slot.job = Some(Job::Cleanup {
+            id: id.clone(),
+            task,
+            budget_ms: prepared.budget().as_millis() as u64,
+        });
+        drop(slot);
+        self.abandon_prepared(id, prepared);
         Ok(())
     }
 
@@ -247,10 +436,29 @@ impl Slot {
         }
         slot.closing = true;
         slot.shutdown_waiter = true;
-        if let Some(Job::Running { cancel, .. }) = &slot.job {
+        if let Some(Job::Preparing { cancel, .. } | Job::Running { cancel, .. }) = &slot.job {
             cancel.cancel();
         }
         Some(Shutdown { slot: self.clone() })
+    }
+}
+
+fn preparation_stop(closing: bool, cancel: &CancelToken) -> Option<String> {
+    if closing {
+        Some("PC Agent is shutting down.".into())
+    } else if cancel.is_cancelled() {
+        Some("This elevated inspection was cancelled before execution.".into())
+    } else {
+        None
+    }
+}
+
+fn finish_state(state: &Mutex<SlotState>, idle: &Condvar, request_id: &str) {
+    let mut slot = state.lock().unwrap_or_else(|p| p.into_inner());
+    if matches!(slot.job.as_ref(), Some(Job::Running { id, .. } | Job::Cleanup { id, .. }) if id == request_id)
+    {
+        slot.job = None;
+        idle.notify_all();
     }
 }
 
@@ -261,13 +469,24 @@ impl Shutdown {
         let prepared = {
             let mut state = self.slot.state.lock().unwrap_or_else(|p| p.into_inner());
             if matches!(state.job.as_ref(), Some(Job::Prepared { .. })) {
-                state.job.take()
+                let Some(Job::Prepared { id, task, prepared }) = state.job.take() else {
+                    unreachable!()
+                };
+                state.job = Some(Job::Cleanup {
+                    id: id.clone(),
+                    task,
+                    budget_ms: prepared.budget().as_millis() as u64,
+                });
+                Some((id, prepared))
             } else {
                 None
             }
         };
-        // Finish private-file cleanup outside the state lock before permitting process exit.
-        drop(prepared);
+        // Dropping a prepared native job may only start cleanup. Keep admission closed until its
+        // completion confirms the private files disappeared; register outside the state lock.
+        if let Some((id, prepared)) = prepared {
+            self.slot.abandon_prepared(id, prepared);
+        }
         let mut state = self.slot.state.lock().unwrap_or_else(|p| p.into_inner());
         while state.job.is_some() {
             let remaining = timeout.saturating_sub(started.elapsed());
@@ -300,23 +519,48 @@ impl Drop for Shutdown {
 impl Drop for Slot {
     fn drop(&mut self) {
         // Shutdown cannot leave the separately running helper without its cancellation signal.
-        let slot = self
+        let job = self
             .state
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(Job::Running { cancel, .. }) = slot.job.take() {
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .job
+            .take();
+        if let Some(Job::Preparing { cancel, .. } | Job::Running { cancel, .. }) = &job {
             cancel.cancel();
         }
+        drop(job);
     }
 }
 
 impl Run {
-    pub fn execute(mut self) -> Result<pcagent_inspect::Inspection, String> {
+    pub fn execute(mut self) -> Result<InspectionResult, String> {
         let approved = self
             .approved
             .take()
             .ok_or_else(|| "This elevated inspection was already consumed.".to_owned())?;
-        approved.execute(&self.cancel)
+        let result = approved.execute(&self.cancel);
+        if !self.cancel.is_cancelled() {
+            if let (Some(slot), Ok(inspection)) = (self.slot.upgrade(), &result) {
+                if let Ok(captured) = pcagent_agent::elevated_tools::ApprovedInspection::new(
+                    &self.task,
+                    inspection.inspection.clone(),
+                ) {
+                    let mut state = slot.state.lock().unwrap_or_else(|p| p.into_inner());
+                    if !state.closing && !self.cancel.is_cancelled() {
+                        state
+                            .completed
+                            .retain(|r| r.available() && r.task_name() != captured.task_name());
+                        state.completed.push(captured);
+                        if state.completed.len()
+                            > pcagent_agent::elevated_tools::MAX_APPROVED_INSPECTIONS
+                        {
+                            state.completed.remove(0);
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -383,10 +627,7 @@ mod tests {
         }
     }
     impl ApprovedTask for FixtureApproved {
-        fn execute(
-            self: Box<Self>,
-            cancel: &CancelToken,
-        ) -> Result<pcagent_inspect::Inspection, String> {
+        fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, String> {
             if cancel.is_cancelled() {
                 return Err("fixture cancelled".into());
             }
@@ -406,7 +647,8 @@ mod tests {
                 observations: Vec::new(),
                 coverage: Vec::new(),
                 names: BTreeMap::new(),
-            })
+            }
+            .into())
         }
     }
     fn prepare(slot: &Slot, counters: &Arc<Counters>) -> PreparedView {
@@ -493,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_approval_and_unsupported_mft_never_occupy_a_running_slot() {
+    fn failed_approval_never_occupies_a_running_slot() {
         let slot = Arc::new(Slot::default());
         let counters = Arc::new(Counters::default());
         counters.reject_approval.store(true, Ordering::SeqCst);
@@ -504,12 +746,6 @@ mod tests {
         counters.reject_approval.store(false, Ordering::SeqCst);
         let next = prepare(&slot, &counters);
         slot.cancel(&next.request_id).unwrap();
-        let task = ElevatedTask::MftInventory {
-            volume: pcagent_inspect::elevation::DriveLetter::parse("C").unwrap(),
-        };
-        assert!(slot
-            .prepare_with(task, || panic!("unvalidated MFT must not be prepared"))
-            .is_err());
     }
 
     #[test]
@@ -624,10 +860,7 @@ mod tests {
         }
     }
     impl ApprovedTask for CleanupApproved {
-        fn execute(
-            self: Box<Self>,
-            _: &CancelToken,
-        ) -> Result<pcagent_inspect::Inspection, String> {
+        fn execute(self: Box<Self>, _: &CancelToken) -> Result<InspectionResult, String> {
             Err("cleanup fixture executes no task".into())
         }
     }
@@ -701,6 +934,290 @@ mod tests {
             }
         }
     }
+    struct GatedPending {
+        completion: Arc<CompletionGate>,
+        counters: Arc<Counters>,
+        complete_on_drop: bool,
+    }
+    impl PendingTask for GatedPending {
+        fn budget(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
+            Some(Box::new(GatedCompletion(self.completion.clone())))
+        }
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+            self.counters.approvals.fetch_add(1, Ordering::SeqCst);
+            Err("fixture expired".into())
+        }
+    }
+    impl Drop for GatedPending {
+        fn drop(&mut self) {
+            self.counters.pending_drops.fetch_add(1, Ordering::SeqCst);
+            if self.complete_on_drop {
+                self.completion.finish_cleanup();
+            }
+        }
+    }
+    fn prepare_gated_pending(
+        slot: &Slot,
+        complete_on_drop: bool,
+    ) -> (PreparedView, Arc<CompletionGate>, Arc<Counters>) {
+        let completion = Arc::new(CompletionGate::default());
+        let counters = Arc::new(Counters::default());
+        let gate = completion.clone();
+        let pending_counters = counters.clone();
+        let view = slot
+            .prepare_with(ElevatedTask::BatteryEnergy, || {
+                Ok(Box::new(GatedPending {
+                    completion: gate,
+                    counters: pending_counters,
+                    complete_on_drop,
+                }))
+            })
+            .unwrap();
+        (view, completion, counters)
+    }
+
+    fn abandon_gated_pending(slot: &Arc<Slot>, view: &PreparedView, path: &str, pending: bool) {
+        match path {
+            "cancel" => slot.cancel(&view.request_id).unwrap(),
+            "approval" => assert!(
+                matches!(slot.begin(&view.request_id), Err(error) if error == "fixture expired")
+            ),
+            "shutdown" => assert_eq!(
+                slot.begin_shutdown().unwrap().wait(Duration::ZERO),
+                !pending
+            ),
+            _ => panic!("unknown fixture path"),
+        }
+    }
+
+    #[test]
+    fn blocked_preparation_keeps_status_cancel_and_shutdown_responsive_until_cleanup() {
+        use std::sync::mpsc;
+        for stop in ["publish", "cancel", "shutdown"] {
+            let slot = Arc::new(Slot::default());
+            let completion = Arc::new(CompletionGate::default());
+            let counters = Arc::new(Counters::default());
+            std::thread::scope(|scope| {
+                // A failed assertion drops this sender, releasing the synthetic factory.
+                let (release_tx, release_rx) = mpsc::channel();
+                let (entered_tx, entered_rx) = mpsc::channel();
+                let (status_tx, status_rx) = mpsc::channel();
+                let preparing_slot = slot.clone();
+                let gate = completion.clone();
+                let pending_counters = counters.clone();
+                let preparing = scope.spawn(move || {
+                    preparing_slot.prepare_with(ElevatedTask::BatteryEnergy, || {
+                        let _ = entered_tx.send(());
+                        release_rx
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|_| "fixture preparation released without publishing")?;
+                        Ok(Box::new(GatedPending {
+                            completion: gate,
+                            counters: pending_counters,
+                            complete_on_drop: false,
+                        }))
+                    })
+                });
+                entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                let reading_slot = slot.clone();
+                let reader = scope.spawn(move || {
+                    let preparing = reading_slot.status().unwrap().unwrap();
+                    assert_eq!(preparing.state, "preparing");
+                    assert!(reading_slot.begin(&preparing.request_id).is_err());
+                    assert!(reading_slot
+                        .prepare_with(ElevatedTask::SystemCaches, || panic!("reserved"))
+                        .is_err());
+                    reading_slot.finish(&preparing.request_id);
+                    assert!(reading_slot.status().unwrap().is_some());
+                    if stop == "cancel" {
+                        reading_slot.cancel(&preparing.request_id).unwrap();
+                    } else if stop == "shutdown" {
+                        assert!(!reading_slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+                    }
+                    let status = reading_slot.status().unwrap().unwrap();
+                    let _ = status_tx.send((preparing, status));
+                });
+                let (before, after) = status_rx
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("status/cancellation waited for native preparation");
+                reader.join().unwrap();
+                assert_eq!(before.request_id, after.request_id);
+                assert_eq!(before.task, ElevatedTask::BatteryEnergy);
+                assert_eq!(before.budget_ms, 1000);
+                assert_eq!(
+                    after.state,
+                    if stop == "publish" {
+                        "preparing"
+                    } else {
+                        "cancelling"
+                    }
+                );
+                assert_eq!(counters.approvals.load(Ordering::SeqCst), 0);
+                release_tx.send(()).unwrap();
+                let result = preparing.join().unwrap();
+                if stop == "publish" {
+                    let view = result.unwrap();
+                    assert_eq!(view.request_id, before.request_id);
+                    assert_eq!(view.state, "awaiting_local_approval");
+                    slot.cancel(&view.request_id).unwrap();
+                } else {
+                    assert!(result.is_err());
+                }
+                assert_eq!(slot.status().unwrap().unwrap().state, "cancelling");
+                assert_eq!(counters.pending_drops.load(Ordering::SeqCst), 1);
+                assert_eq!(counters.executions.load(Ordering::SeqCst), 0);
+                assert!(slot
+                    .prepare_with(ElevatedTask::SystemCaches, || panic!("cleanup pending"))
+                    .is_err());
+                assert!(!slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+                completion.finish_cleanup();
+                assert!(slot.status().unwrap().is_none());
+                assert!(slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+            });
+        }
+    }
+
+    struct BlockingApprovalPending {
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        completion: Arc<CompletionGate>,
+        counters: Arc<Counters>,
+    }
+    impl PendingTask for BlockingApprovalPending {
+        fn budget(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
+            Some(Box::new(GatedCompletion(self.completion.clone())))
+        }
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+            self.counters.approvals.fetch_add(1, Ordering::SeqCst);
+            let _ = self.entered.send(());
+            let _ = self.release.recv_timeout(Duration::from_secs(10));
+            Err("fixture approval failed after blocking cleanup".into())
+        }
+    }
+    impl Drop for BlockingApprovalPending {
+        fn drop(&mut self) {
+            self.counters.pending_drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_blocked_local_approval_does_not_block_shutdown_or_release_admission() {
+        use std::sync::mpsc;
+        let slot = Arc::new(Slot::default());
+        let completion = Arc::new(CompletionGate::default());
+        let counters = Arc::new(Counters::default());
+        std::thread::scope(|scope| {
+            let (release_tx, release_rx) = mpsc::channel();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (status_tx, status_rx) = mpsc::channel();
+            let gate = completion.clone();
+            let pending_counters = counters.clone();
+            let view = slot
+                .prepare_with(ElevatedTask::BatteryEnergy, || {
+                    Ok(Box::new(BlockingApprovalPending {
+                        entered: entered_tx,
+                        release: release_rx,
+                        completion: gate,
+                        counters: pending_counters,
+                    }))
+                })
+                .unwrap();
+            let approving_slot = slot.clone();
+            let request_id = view.request_id.clone();
+            let approving = scope.spawn(move || approving_slot.begin(&request_id));
+            entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            let reading_slot = slot.clone();
+            let reader = scope.spawn(move || {
+                let status = reading_slot.status().unwrap().unwrap();
+                assert_eq!(status.state, "preparing");
+                reading_slot.cancel(&status.request_id).unwrap();
+                assert!(!reading_slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+                let _ = status_tx.send(reading_slot.status().unwrap().unwrap());
+            });
+            let status = status_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("local approval held the GUI state mutex");
+            reader.join().unwrap();
+            assert_eq!(status.request_id, view.request_id);
+            assert_eq!(status.state, "cancelling");
+            release_tx.send(()).unwrap();
+            assert!(approving.join().unwrap().is_err());
+            assert_eq!(counters.pending_drops.load(Ordering::SeqCst), 1);
+            assert_eq!(counters.approvals.load(Ordering::SeqCst), 1);
+            assert_eq!(counters.executions.load(Ordering::SeqCst), 0);
+            assert!(!slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+            completion.finish_cleanup();
+            assert!(slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+        });
+    }
+
+    #[test]
+    fn abandoning_prepared_work_keeps_admission_and_shutdown_pending_until_cleanup() {
+        for path in ["cancel", "approval", "shutdown"] {
+            let slot = Arc::new(Slot::default());
+            let (view, completion, counters) = prepare_gated_pending(&slot, false);
+            abandon_gated_pending(&slot, &view, path, true);
+            let status = slot.status().unwrap().unwrap();
+            assert_eq!(status.request_id, view.request_id);
+            assert_eq!(status.task, ElevatedTask::BatteryEnergy);
+            assert_eq!(status.budget_ms, 1000);
+            assert_eq!(status.state, "cancelling");
+            assert_eq!(counters.pending_drops.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                counters.approvals.load(Ordering::SeqCst),
+                usize::from(path == "approval")
+            );
+            assert_eq!(counters.executions.load(Ordering::SeqCst), 0);
+            assert!(!completion.cleaned.load(Ordering::SeqCst));
+            slot.cancel(&view.request_id).unwrap();
+            assert!(slot
+                .prepare_with(ElevatedTask::SystemCaches, || panic!("cleanup pending"))
+                .is_err());
+            assert!(!slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+            completion.finish_cleanup();
+            assert!(slot.status().unwrap().is_none());
+            assert!(slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+            assert_eq!(counters.pending_drops.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn prepared_cleanup_completed_before_registration_releases_without_locking_itself() {
+        for path in ["cancel", "approval", "shutdown"] {
+            let slot = Arc::new(Slot::default());
+            let (view, completion, counters) = prepare_gated_pending(&slot, true);
+            abandon_gated_pending(&slot, &view, path, false);
+            assert!(completion.cleaned.load(Ordering::SeqCst));
+            assert!(slot.status().unwrap().is_none());
+            assert_eq!(counters.pending_drops.load(Ordering::SeqCst), 1);
+            assert!(slot.begin_shutdown().unwrap().wait(Duration::ZERO));
+        }
+    }
+
+    #[test]
+    fn late_prepared_cleanup_notifications_cannot_release_a_new_request() {
+        let slot = Arc::new(Slot::default());
+        let (view, completion, _) = prepare_gated_pending(&slot, false);
+        slot.cancel(&view.request_id).unwrap();
+        completion.finish_cleanup();
+        let counters = Arc::new(Counters::default());
+        let next = prepare(&slot, &counters);
+        completion.finish_cleanup();
+        slot.finish(&view.request_id);
+        assert_eq!(slot.status().unwrap().unwrap().request_id, next.request_id);
+        let run = slot.begin(&next.request_id).unwrap();
+        slot.finish(&view.request_id);
+        assert_eq!(slot.status().unwrap().unwrap().request_id, next.request_id);
+        drop(run);
+        assert!(slot.status().unwrap().is_none());
+    }
+
     struct GatedTask {
         completion: Arc<CompletionGate>,
         failure: &'static str,
@@ -717,10 +1234,7 @@ mod tests {
         fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
             Some(Box::new(GatedCompletion(self.completion.clone())))
         }
-        fn execute(
-            self: Box<Self>,
-            _: &CancelToken,
-        ) -> Result<pcagent_inspect::Inspection, String> {
+        fn execute(self: Box<Self>, _: &CancelToken) -> Result<InspectionResult, String> {
             Err(self.failure.into())
         }
     }

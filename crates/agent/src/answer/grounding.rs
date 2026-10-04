@@ -119,6 +119,38 @@ struct Query<'a> {
 }
 
 fn accepts_record(record: &Value, query: &Query<'_>) -> bool {
+    if record["metric"].as_str().is_some_and(|metric| {
+        metric.ends_with("_energy_estimated") || metric == "battery_energy_estimated_total"
+    }) {
+        let words: Vec<_> = query
+            .passage
+            .split(|c: char| !c.is_alphabetic())
+            .map(str::to_lowercase)
+            .collect();
+        let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
+        if !has(&[
+            "estimated",
+            "estimate",
+            "estimates",
+            "estimée",
+            "estimé",
+            "estimation",
+            "estimations",
+        ]) || !has(&["energy", "énergie", "consumption", "consommation", "e3"])
+            || has(&[
+                "capacity",
+                "capacité",
+                "capacite",
+                "autonomy",
+                "autonomie",
+                "runtime",
+                "power",
+                "puissance",
+            ])
+        {
+            return false;
+        }
+    }
     record["metric"]
         .as_str()
         .is_some_and(|metric| query.topic.accepts(metric))
@@ -293,6 +325,14 @@ fn describes_history(passage: &str) -> bool {
         "auparavant",
         "recording",
         "recorded",
+        "capture",
+        "captured",
+        "snapshot",
+        "capturé",
+        "capturée",
+        "mesure",
+        "mesuré",
+        "mesurée",
         "history",
         "historical",
         "enregistrement",

@@ -88,6 +88,8 @@ pub struct RecordedCall {
 pub struct RecordedRun {
     pub model: String,
     pub harness_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::routing::CalibrationRuntime>,
     pub started_at_unix_ms: u64,
     pub duration_ms: u64,
     pub report: Value,
