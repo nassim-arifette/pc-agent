@@ -149,6 +149,50 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 fournisseur le permet), `turn:extension`, `turn:done { turn }`, `turn:failed { code, message }`.
 Ils remplacent `inv:*`. Les commandes du stockage et des réglages restent inchangées.
 
+#### Compléments backend du 4 octobre : sélection et routage
+
+Ces ajouts préparent les commandes Rust de la phase 2 ; ils ne modifient ni les commandes
+existantes, ni C1, ni les autorisations d'action. La configuration des clés et les comparaisons
+avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
+
+| Commande ajoutée | Rôle |
+| --- | --- |
+| `selection_sources()` | références locales opaques d'éléments déjà mesurés : ressource, processus, événement, enregistrement ou élément d'un scan autorisé |
+| `selection_preview(reference, intent, question?, conversation_id?, names)` | aperçu exact C5 ; sélection, intention et observations figées ; renvoie un ticket à usage unique |
+| `selection_send(reference, intent, question?, conversation_id?, preview_id)` | consomme l'aperçu correspondant puis démarre le tour avec les identifiants et événements C3 existants |
+| `model_routing_get()`, `model_routing_set(settings)` | mode configuré, toujours Super, toujours Ultra ou automatique ; paramètres locaux fermés, sans clé ni adresse de fournisseur |
+
+- `intent` vaut `explain` ou `investigate`. Expliquer expose au LLM seulement les mesures figées
+  via `get_selected_evidence` ; aucun collecteur, enregistrement ni proposition d'action n'y est
+  disponible. Enquêter ajoute ces mesures au contexte de l'enquête normale et garde sa politique
+  d'action. Le LLM rédige ; le vérificateur C1 contrôle les preuves effectivement reçues.
+- Les références se résolvent exclusivement dans l'état local du moteur, jamais dans des objets
+  ou des chemins fournis par la page. Un nouveau relevé crée une autre source, sans réécrire la
+  sélection précédente. Les sources figées et tickets expirent après cinq minutes monotones,
+  avec une capacité bornée. Une suppression d'historique, révocation de scan ou identité remplacée
+  invalide les sources concernées. Les dates, âges, lacunes et valeurs inconnues restent explicites.
+- La sélection, l'intention, la question, le contexte de conversation, les réglages de partage et
+  les données envoyées doivent correspondre exactement au ticket avant tout appel cloud. Les
+  noms de fichiers utilisent toujours le consentement fini déjà prévu par C5.
+- Le routage par défaut conserve le modèle configuré. L'escalade est au plus unique et n'ajoute
+  aucune autorité d'exécution. Elle réutilise les observations et citations, partage les budgets
+  de durée/requêtes/outils du tour et laisse l'arrêt utilisateur prioritaire.
+- Le mode automatique exige un étalonnage local valide issu de situations réelles annotées, avec
+  coût, qualité et échecs conservés. Sans cet étalonnage, aucune reprise automatique n'est activée.
+  Les comparaisons externes exclues de ce lot ne sont pas requises pour préparer le mécanisme.
+- Les rapports ajoutent des métadonnées de routage et un détail d'usage/coût par modèle ; un total
+  n'est disponible que si toutes les consommations et tous les prix sont connus. Les événements
+  signalent le changement de modèle. Aucun coût à deux modèles n'est attribué au seul tarif du
+  dernier modèle. Les champs et événements existants restent disponibles.
+- Le helper conserve ses tâches fermées et son protocole local versionné. MFT, fiabilité des
+  disques, identités de processus, traces ETW et énergie E3 ne reçoivent ni commandes arbitraires
+  ni chemins d'export fournis par le modèle. Les chemins complets et identités restent locaux ;
+  seules les mesures et références admises par C4/C5 peuvent partir. L'énergie E3 est une estimation
+  historique Windows, avec sa période et sa couverture, jamais une mesure physique exhaustive.
+
+La recherche externe reste conditionnée à un contrat distinct et à la preuve du besoin ; ces
+compléments n'adoptent pas le C6 proposé dans la PR #31.
+
 ### C4 — Sorties d'outils
 
 Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la période (instant ou
@@ -658,13 +702,13 @@ Règles de travail :
 | 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
 | 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action à faire | #23, #24 |
 | 7 — Évaluation | D | en cours : `pcagent-eval` livré (capture de tous les outils de phase 1, rejeu strict, traces locales, MCP pour Claude) ; première campagne réelle à faire | wp7-eval |
-| 8 — Admin à la demande | B | à faire | |
-| 9 — Capteurs matériels | B | à faire | |
-| 10 — Modèle | A | à faire | |
-| 11 — Agir depuis la conversation | A, C | à faire | |
+| 8 — Admin à la demande | B | protocole/helper et caches bornés livrés (#33) ; collecte MFT native et inspections complémentaires en cours ; validation UAC/second PC à réaliser | #33, wp8-backend-completion |
+| 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
+| 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
+| 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
 | 12 — Soumission | D | à faire | |
-| 13 — Optimiser le harness | A | à faire | |
-| 14 — Escalade Super → Ultra | A | à faire | |
+| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider | #33 |
+| 14 — Escalade Super → Ultra | A | mécanisme backend en cours ; activation automatique conditionnée à un étalonnage réel valide, comparaisons Sonnet/Codex exclues de ce lot | wp8-backend-completion |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
