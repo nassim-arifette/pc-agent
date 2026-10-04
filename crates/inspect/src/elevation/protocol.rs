@@ -1,3 +1,12 @@
+use super::trace::TraceSummary;
+use super::{
+    energy::EnergySummary,
+    mft::Collection,
+    system::{
+        validate_process_targets, DiskReliabilitySample, ProcessImageSample, ProcessImageTarget,
+        ShadowStorageSample, SystemReadSummary, MAX_PROCESS_IMAGES, MAX_SYSTEM_ROWS,
+    },
+};
 use pcagent_shared::{new_id, unix_ms, Window};
 use serde::{Deserialize, Serialize};
 #[cfg(any(windows, test))]
@@ -9,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_BUDGET_MS: u64 = 120_000;
 pub const MAX_REQUEST_BYTES: usize = 8192;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -40,11 +49,16 @@ impl<'de> Deserialize<'de> for DriveLetter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ElevatedTask {
     SystemCaches,
     MftInventory { volume: DriveLetter },
+    ShadowStorage,
+    DiskReliability,
+    ProcessImages { targets: Vec<ProcessImageTarget> },
+    BatteryEnergy,
+    PerformanceTrace { duration_seconds: u8 },
 }
 
 impl<'de> Deserialize<'de> for ElevatedTask {
@@ -55,11 +69,35 @@ impl<'de> Deserialize<'de> for ElevatedTask {
         enum WireTask {
             SystemCaches {},
             MftInventory { volume: DriveLetter },
+            ShadowStorage {},
+            DiskReliability {},
+            ProcessImages { targets: Vec<ProcessImageTarget> },
+            BatteryEnergy {},
+            PerformanceTrace { duration_seconds: u8 },
         }
         Ok(match WireTask::deserialize(deserializer)? {
             WireTask::SystemCaches {} => Self::SystemCaches,
             WireTask::MftInventory { volume } => Self::MftInventory { volume },
+            WireTask::ShadowStorage {} => Self::ShadowStorage,
+            WireTask::DiskReliability {} => Self::DiskReliability,
+            WireTask::ProcessImages { targets } => Self::ProcessImages { targets },
+            WireTask::BatteryEnergy {} => Self::BatteryEnergy,
+            WireTask::PerformanceTrace { duration_seconds } => {
+                Self::PerformanceTrace { duration_seconds }
+            }
         })
+    }
+}
+impl ElevatedTask {
+    fn validate(&self) -> Result<(), ElevationError> {
+        if matches!(self, Self::PerformanceTrace { duration_seconds } if !matches!(duration_seconds, 30 | 60))
+        {
+            return Err(ElevationError::InvalidRequest);
+        }
+        if let Self::ProcessImages { targets } = self {
+            validate_process_targets(targets).map_err(|_| ElevationError::InvalidRequest)?;
+        }
+        Ok(())
     }
 }
 
@@ -85,9 +123,14 @@ impl fmt::Debug for ElevationRequest {
 }
 impl ElevationRequest {
     pub(crate) fn new(task: ElevatedTask, budget: Duration) -> Result<Self, ElevationError> {
+        task.validate()?;
         let budget_ms =
             u64::try_from(budget.as_millis()).map_err(|_| ElevationError::InvalidRequest)?;
         if !(1..=MAX_BUDGET_MS).contains(&budget_ms) {
+            return Err(ElevationError::InvalidRequest);
+        }
+        if matches!(&task, ElevatedTask::PerformanceTrace { duration_seconds } if budget_ms < u64::from(*duration_seconds) * 1000 + 5000)
+        {
             return Err(ElevationError::InvalidRequest);
         }
         let now = unix_ms();
@@ -102,7 +145,7 @@ impl ElevationRequest {
         })
     }
     pub fn task(&self) -> ElevatedTask {
-        self.task
+        self.task.clone()
     }
     pub fn budget(&self) -> Duration {
         Duration::from_millis(self.budget_ms)
@@ -117,6 +160,11 @@ impl ElevationRequest {
         Ok(request)
     }
     pub(crate) fn validate_at(&self, now: u64) -> Result<(), ElevationError> {
+        self.task.validate()?;
+        if matches!(&self.task, ElevatedTask::PerformanceTrace { duration_seconds } if self.budget_ms < u64::from(*duration_seconds) * 1000 + 5000)
+        {
+            return Err(ElevationError::InvalidRequest);
+        }
         if self.protocol_version != PROTOCOL_VERSION
             || !random_ref(&self.job_id, "elevjob")
             || !random_ref(&self.nonce, "nonce")
@@ -209,6 +257,7 @@ pub enum ElevationLimit {
     Cancelled,
     RestorePointsUnimplemented,
     DefaultCacheLocationOnly,
+    PolicyCacheLocationUnconfirmed,
     MftAccuracyUnvalidated,
     SourceUnavailable,
     PlatformUnsupported,
@@ -275,6 +324,12 @@ pub struct ElevationResponse {
     #[serde(deserialize_with = "deserialize_window")]
     pub window: Window,
     pub caches: Vec<CacheSummary>,
+    pub mft: Option<Collection>,
+    pub shadow_storage: Option<SystemReadSummary<ShadowStorageSample>>,
+    pub disk_reliability: Option<SystemReadSummary<DiskReliabilitySample>>,
+    pub process_images: Option<SystemReadSummary<ProcessImageSample>>,
+    pub battery_energy: Option<EnergySummary>,
+    pub performance_trace: Option<TraceSummary>,
     pub limitations: Vec<ElevationLimit>,
 }
 impl fmt::Debug for ElevationResponse {
@@ -298,10 +353,16 @@ impl ElevationResponse {
             protocol_version: PROTOCOL_VERSION,
             job_id: request.job_id.clone(),
             nonce: request.nonce.clone(),
-            task: request.task,
+            task: request.task.clone(),
             status,
             window: Window::instant(),
             caches: Vec::new(),
+            mft: None,
+            shadow_storage: None,
+            disk_reliability: None,
+            process_images: None,
+            battery_energy: None,
+            performance_trace: None,
             limitations: vec![limit],
         }
     }
@@ -379,10 +440,116 @@ impl ElevationResponse {
             }
             categories.push(cache.category);
         }
-        if matches!(self.task, ElevatedTask::MftInventory { .. }) && !self.caches.is_empty() {
+        let payload_count = usize::from(self.mft.is_some())
+            + usize::from(self.shadow_storage.is_some())
+            + usize::from(self.disk_reliability.is_some())
+            + usize::from(self.process_images.is_some())
+            + usize::from(self.battery_energy.is_some())
+            + usize::from(self.performance_trace.is_some());
+        if payload_count > 1 || (self.task != ElevatedTask::SystemCaches && !self.caches.is_empty())
+        {
             return Err(ElevationError::InvalidResponse);
         }
-        if self.status == ElevationStatus::Completed
+        match &self.task {
+            ElevatedTask::SystemCaches if payload_count != 0 => {
+                return Err(ElevationError::InvalidResponse)
+            }
+            ElevatedTask::MftInventory { .. } => {
+                if let Some(value) = &self.mft {
+                    value
+                        .validate()
+                        .map_err(|_| ElevationError::InvalidResponse)?;
+                    let status = match value.end {
+                        super::mft::CollectionEnd::Cancelled => ElevationStatus::Cancelled,
+                        super::mft::CollectionEnd::TimedOut => ElevationStatus::TimedOut,
+                        _ => ElevationStatus::Partial,
+                    };
+                    if self.status != status || value.duration_ms > self.window.duration_ms {
+                        return Err(ElevationError::InvalidResponse);
+                    }
+                } else if payload_count != 0 || self.status == ElevationStatus::Completed {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            ElevatedTask::ShadowStorage => {
+                if let Some(value) = &self.shadow_storage {
+                    value.validate(MAX_SYSTEM_ROWS)?;
+                    for sample in &value.samples {
+                        sample.validate()?;
+                    }
+                    if self.status != value.status {
+                        return Err(ElevationError::InvalidResponse);
+                    }
+                } else if payload_count != 0 || self.status == ElevationStatus::Completed {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            ElevatedTask::DiskReliability => {
+                if let Some(value) = &self.disk_reliability {
+                    value.validate(MAX_SYSTEM_ROWS)?;
+                    for sample in &value.samples {
+                        sample.validate()?;
+                    }
+                    if self.status != value.status {
+                        return Err(ElevationError::InvalidResponse);
+                    }
+                } else if payload_count != 0 || self.status == ElevationStatus::Completed {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            ElevatedTask::ProcessImages { targets } => {
+                if let Some(value) = &self.process_images {
+                    value.validate(MAX_PROCESS_IMAGES)?;
+                    let mut seen = std::collections::BTreeSet::new();
+                    for sample in &value.samples {
+                        sample.validate()?;
+                        if !targets.contains(&sample.target) || !seen.insert(sample.target.pid) {
+                            return Err(ElevationError::InvalidResponse);
+                        }
+                    }
+                    if self.status != value.status
+                        || (value.status == ElevationStatus::Completed
+                            && (value.samples.len() != targets.len()
+                                || value
+                                    .samples
+                                    .iter()
+                                    .any(|s| s.status != ElevationStatus::Completed)))
+                    {
+                        return Err(ElevationError::InvalidResponse);
+                    }
+                } else if payload_count != 0 || self.status == ElevationStatus::Completed {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            ElevatedTask::BatteryEnergy => {
+                if let Some(value) = &self.battery_energy {
+                    value.validate()?;
+                    if self.status != value.status {
+                        return Err(ElevationError::InvalidResponse);
+                    }
+                } else if payload_count != 0 || self.status == ElevationStatus::Completed {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            ElevatedTask::PerformanceTrace { duration_seconds } => {
+                if let Some(value) = &self.performance_trace {
+                    value.validate()?;
+                    if self.status != value.status
+                        || value.requested_duration_seconds != *duration_seconds
+                        || value
+                            .observed_duration_us
+                            .is_some_and(|v| v > self.window.duration_ms.saturating_mul(1000))
+                    {
+                        return Err(ElevationError::InvalidResponse);
+                    }
+                } else if payload_count != 0 || self.status == ElevationStatus::Completed {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            _ => {}
+        }
+        if self.task == ElevatedTask::SystemCaches
+            && self.status == ElevationStatus::Completed
             && (self.caches.len() != 4
                 || self
                     .caches

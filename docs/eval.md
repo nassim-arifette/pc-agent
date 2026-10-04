@@ -421,3 +421,17 @@ ground truth or confirmed cause has been established. Sol usage, bill and durati
 This single situation supplies no quality score or B/C ratio, no submission-target result, no
 model-default or escalation decision, and no evidence for starting Tavily. References D/E and
 independent human assessment remain outstanding.
+
+## Local Nemotron calibration compiler
+
+`pcagent-eval calibrate-nemotron` imports existing paired real Super/Ultra replay traces
+and explicit human annotations without a provider request or collector. It checks the
+frozen scenario, registry, question, sharing, trace hashes, usage and dated costs before
+producing a version-2 routing Calibration and separate provenance. New run and replay
+envelopes carry the identity of the global tool registry, analyst/verifier contract and
+`pcagent-eval-replay-v2` harness. Compilation requires identical current identities in
+both envelopes; CLI/GUI routing loaders invalidate missing or outdated identities.
+Old recordings remain readable and are never relabelled with today's engine identity.
+The compiler refuses synthetic or unannotated evidence and does not enable automatic
+routing. See the
+[closed manifest and evidence limits](calibration-nemotron.md).

@@ -5,9 +5,13 @@
 
 // Portable: built and tested on every platform, used by the window on Windows.
 #[cfg_attr(not(windows), allow(dead_code))]
+mod model_routing;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod preview;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod protocol;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod selection;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod session;
 #[cfg_attr(not(windows), allow(dead_code))]

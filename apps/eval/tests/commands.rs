@@ -119,6 +119,74 @@ fn every_checked_in_fixture_replays_without_credentials_and_preserves_values() {
 }
 
 #[test]
+fn calibration_is_offline_and_refuses_synthetic_or_unreviewed_inputs_before_output() {
+    let temp = Temp::new();
+    let annotation_path = temp.file("annotations.json");
+    let output = temp.file("calibration.json");
+    let provenance = temp.file("provenance.json");
+    let review = json!({"source":"human","quality_scale":"routing_human_0_to_4",
+        "human_reviewed":true,"trigger":"low_confidence","primary_quality":1,
+        "ultra_quality":3,"primary_critical_error":false,"ultra_critical_error":false,
+        "rationale":"Synthetic CLI refusal fixture, not an actual human review."});
+    let pair = json!({
+        "scenario":fixture("cpu-busy"),"primary_result":"missing-primary.json",
+        "ultra_result":"missing-ultra.json","scenario_sha256":"a".repeat(64),
+        "tool_registry_sha256":"b".repeat(64),"question_sha256":"c".repeat(64),
+        "sharing":"anonymized","primary_trace_sha256":"d".repeat(64),
+        "ultra_trace_sha256":"e".repeat(64),"review":review
+    });
+    let mut annotations = json!({
+        "schema_version":1,
+        "super_model_id":"nvidia/nemotron-super-test",
+        "ultra_model_id":"nvidia/nemotron-ultra-test",
+        "reviewed_at_unix_ms":1,
+        "maximum_extra_cost_usd":"0.01",
+        "pairs":[pair]
+    });
+    for human_reviewed in [true, false] {
+        annotations["pairs"][0]["review"]["human_reviewed"] = human_reviewed.into();
+        fs::write(&annotation_path, serde_json::to_vec(&annotations).unwrap()).unwrap();
+        let result = command()
+            .arg("calibrate-nemotron")
+            .arg("--annotations")
+            .arg(&annotation_path)
+            .arg("--out")
+            .arg(&output)
+            .arg("--provenance-out")
+            .arg(&provenance)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(1));
+        assert!(result.stdout.is_empty());
+        let reason = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            reason.contains(if human_reviewed {
+                "calibration_requires_a_real_frozen_capture"
+            } else {
+                "calibration_requires_explicit_human_labels_and_rationale"
+            }),
+            "{reason}"
+        );
+        assert!(!output.exists());
+        assert!(!provenance.exists());
+    }
+    let result = command()
+        .arg("calibrate-nemotron")
+        .arg("--annotations")
+        .arg(&annotation_path)
+        .arg("--out")
+        .arg(&output)
+        .arg("--provenance-out")
+        .arg(&provenance)
+        .arg("--allow-cloud")
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!output.exists());
+    assert!(!provenance.exists());
+}
+
+#[test]
 fn missing_capture_is_explicit_and_produces_a_nonzero_exit_with_a_report() {
     let dir = Temp::new();
     let calls = dir.file("calls.json");

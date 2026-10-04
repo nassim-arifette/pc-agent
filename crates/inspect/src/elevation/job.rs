@@ -24,6 +24,10 @@ impl PreparedElevation {
     /// Prepare a private, immutable request without prompting for elevation.
     pub fn prepare(task: ElevatedTask, budget: Duration) -> Result<Self, ElevationError> {
         let request = ElevationRequest::new(task, budget)?;
+        // No UAC prompt, trace session or ACL changes until hard-exit cleanup is validated.
+        if matches!(request.task, ElevatedTask::PerformanceTrace { .. }) {
+            return Err(ElevationError::Unsupported);
+        }
         super::ensure_unelevated_host()?;
         #[cfg(windows)]
         {

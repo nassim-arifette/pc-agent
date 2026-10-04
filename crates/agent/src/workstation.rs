@@ -178,6 +178,7 @@ pub struct Workstation<'a> {
     sharing: crate::Sharing,
     history: Option<crate::history_tools::HistoryTools>,
     allowed_scopes: Option<Vec<String>>,
+    elevated: Vec<crate::elevated_tools::ApprovedInspection>,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -201,6 +202,7 @@ impl<'a> Workstation<'a> {
             sharing: crate::Sharing::Anonymized,
             history: None,
             allowed_scopes: None,
+            elevated: Vec::new(),
         }
     }
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
@@ -234,6 +236,7 @@ impl<'a> Workstation<'a> {
             .chain(crate::system_tools::TOOLS)
             .chain(crate::history_tools::TOOLS)
             .chain(crate::activity_tools::TOOLS)
+            .chain(crate::elevated_tools::TOOLS)
             .copied()
             .collect()
     }
@@ -243,6 +246,16 @@ impl<'a> Workstation<'a> {
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) {
         self.history = Some(crate::history_tools::HistoryTools { sampler, stop });
+    }
+    /// Host-owned results of locally approved helper jobs; tools cannot acquire elevation.
+    pub fn set_elevated_evidence(
+        &mut self,
+        evidence: Vec<crate::elevated_tools::ApprovedInspection>,
+    ) {
+        self.elevated = evidence
+            .into_iter()
+            .take(crate::elevated_tools::MAX_APPROVED_INSPECTIONS)
+            .collect();
     }
     pub fn set_storage_context(&mut self, context: crate::StorageContext) {
         self.storage_context = context;
@@ -555,6 +568,15 @@ impl Toolbox for Workstation<'_> {
             })
             .or_else(|| crate::history_tools::run(spec, args, self.history.as_ref(), self.sharing))
             .or_else(|| crate::activity_tools::run(spec, args, self.collector, self.sharing));
+        let extension = extension.or_else(|| {
+            crate::elevated_tools::run(
+                spec,
+                args,
+                &self.elevated,
+                self.sharing,
+                &crate::PrivacyContext::local(),
+            )
+        });
         let mut out = if let Some(out) = extension {
             out
         } else {
@@ -956,7 +978,7 @@ mod tests {
             assert!(ws
                 .specs()
                 .iter()
-                .all(|s| !s.name.contains("execute") && !s.name.contains("approve")));
+                .all(|s| !s.name.starts_with("execute_") && !s.name.starts_with("approve_")));
             let calls = Rc::new(Cell::new(0));
             ws.enable_action_proposals(desk("settings", &calls));
             ws.enable_action_proposals(desk("settings", &calls));

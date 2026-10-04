@@ -105,7 +105,11 @@ pub fn run_with_inspection(
     Some(output)
 }
 
-fn project(inspection: &Inspection, sharing: Sharing, privacy: &PrivacyContext) -> ToolOutput {
+pub(crate) fn project(
+    inspection: &Inspection,
+    sharing: Sharing,
+    privacy: &PrivacyContext,
+) -> ToolOutput {
     let retained =
         &inspection.observations[..inspection.observations.len().min(MAX_CLOUD_OBSERVATIONS)];
     let omitted = inspection.observations.len() - retained.len();
@@ -182,7 +186,9 @@ fn project(inspection: &Inspection, sharing: Sharing, privacy: &PrivacyContext) 
     privacy.sanitize_value(&mut cloud);
     ToolOutput {
         status,
-        inspection_complete: retained.iter().any(|o| o.status == CoverageStatus::Ok),
+        inspection_complete: retained.iter().any(|o| {
+            matches!(o.status, CoverageStatus::Ok | CoverageStatus::Partial) && !o.value.is_null()
+        }),
         cloud,
         evidence: Vec::new(),
         findings: Vec::new(),

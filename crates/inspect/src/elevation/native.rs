@@ -7,6 +7,7 @@ use super::{
         ElevationResponse, WorkerArguments, MAX_BUDGET_MS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
     },
     worker::ElevatedProcess,
+    ElevationLimit, ElevationStatus,
 };
 use pcagent_shared::unix_ms;
 use pcagent_storage::CancelToken;
@@ -71,7 +72,14 @@ const REQUEST_FILE: &str = "request.json";
 const RESPONSE_FILE: &str = "response.json";
 const CANCEL_FILE: &str = "cancel";
 const CLAIM_FILE: &str = "running";
-const FIXED_FILES: [&str; 4] = [REQUEST_FILE, RESPONSE_FILE, CANCEL_FILE, CLAIM_FILE];
+const ENERGY_FILE: &str = "energy.csv";
+const FIXED_FILES: [&str; 5] = [
+    REQUEST_FILE,
+    RESPONSE_FILE,
+    CANCEL_FILE,
+    CLAIM_FILE,
+    ENERGY_FILE,
+];
 
 /// All ancestors remain open without delete sharing while any worker/launcher can use this job.
 pub(crate) struct NativeJob {
@@ -84,12 +92,55 @@ pub(crate) struct NativeJob {
     completion: ElevationCompletion,
 }
 impl NativeJob {
+    pub(super) fn owner_sid(&self) -> &str {
+        &self.sid
+    }
+
+    /// The fixed E3 export is private and pinned against replacement while its writer runs.
+    pub(super) fn energy_output(&self) -> Result<(PathBuf, File), ElevationError> {
+        let path = self.path.join(ENERGY_FILE);
+        let descriptor = private_descriptor(&self.sid)?;
+        let attributes = descriptor.attributes();
+        let wide = wide_path(&path)?;
+        // SAFETY: the pinned private directory and descriptor outlive this CREATE_NEW call.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                null_mut(),
+            )
+        };
+        let file = file_from_handle(handle)?;
+        validate_regular(&file)?;
+        validate_acl(&file, &self.sid)?;
+        Ok((path, file))
+    }
+
+    /// Read only the already pinned export after its owned writer has exited.
+    pub(super) fn energy_bytes(
+        &self,
+        file: &mut File,
+        maximum: usize,
+    ) -> Result<Vec<u8>, ElevationError> {
+        validate_regular(file)?;
+        validate_acl(file, &self.sid)?;
+        read_bounded(file, maximum)
+    }
+
     pub(crate) fn create(request: &ElevationRequest) -> Result<Self, ElevationError> {
         Self::create_in(request, &std::env::temp_dir())
     }
 
     fn create_in(request: &ElevationRequest, parent: &Path) -> Result<Self, ElevationError> {
         request.validate_at(unix_ms())?;
+        let bytes = request.encode()?;
+        if bytes.len() > MAX_REQUEST_BYTES {
+            return Err(ElevationError::InvalidRequest);
+        }
         let mut pins = pin_chain(parent)?;
         let sid = current_sid()?;
         let path = parent.join(format!("pcagent-{}", request.job_id));
@@ -100,10 +151,26 @@ impl NativeJob {
         if unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        let root = open_directory(&path)?;
-        validate_acl(&root, &sid)?;
+        let root = match open_directory(&path).and_then(|root| {
+            validate_acl(&root, &sid)?;
+            Ok(root)
+        }) {
+            Ok(root) => root,
+            Err(error) => {
+                // No file has been created and no final-directory pin was acquired. Remove
+                // only the empty directory under the pinned ancestors before returning.
+                let cleanup = std::sync::Mutex::new(PrivateCleanup {
+                    path,
+                    pins,
+                    files_removed: true,
+                    completion: ElevationCompletion::pending(),
+                });
+                wait_for_private_cleanup(&cleanup);
+                return Err(error);
+            }
+        };
         pins.push(root);
-        let mut job = Self {
+        let job = Self {
             path,
             pins,
             request_pin: None,
@@ -112,17 +179,33 @@ impl NativeJob {
             cleanup: true,
             completion: ElevationCompletion::pending(),
         };
-        let bytes = request.encode()?;
-        if bytes.len() > MAX_REQUEST_BYTES {
-            return Err(ElevationError::InvalidRequest);
+        job.finish_creation(|job| {
+            let mut file = job.create_file(REQUEST_FILE)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            job.request_digest = digest(&bytes);
+            job.request_pin = Some(job.open_file(REQUEST_FILE)?);
+            Ok(())
+        })
+    }
+
+    fn finish_creation(
+        mut self,
+        initialize: impl FnOnce(&mut Self) -> Result<(), ElevationError>,
+    ) -> Result<Self, ElevationError> {
+        match initialize(&mut self) {
+            Ok(()) => Ok(self),
+            Err(error) => {
+                // The caller has no completion capability on Err. Do not return before
+                // the private resources have actually gone, even when a local reader
+                // briefly locks a partially written request against deletion.
+                let completion = self.completion();
+                drop(self);
+                completion.wait_until_complete();
+                Err(error)
+            }
         }
-        let mut file = job.create_file(REQUEST_FILE)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        job.request_digest = digest(&bytes);
-        job.request_pin = Some(job.open_file(REQUEST_FILE)?);
-        Ok(job)
     }
 
     pub(crate) fn completion(&self) -> ElevationCompletion {
@@ -235,13 +318,69 @@ impl Drop for NativeJob {
             return;
         }
         self.request_pin.take();
-        // No recursive deletion: only our finite job files, while the directory chain is pinned.
-        for name in FIXED_FILES {
-            let _ = std::fs::remove_file(self.path.join(name));
+        let mut cleanup = PrivateCleanup {
+            path: self.path.clone(),
+            pins: std::mem::take(&mut self.pins),
+            files_removed: false,
+            completion: self.completion.clone(),
+        };
+        if cleanup.attempt() {
+            return;
+        }
+        // A killed exporter or a local reader can briefly retain a deny-delete handle.
+        // Keep the pins and admission closed until the actual private files disappear.
+        let pending = Arc::new(std::sync::Mutex::new(cleanup));
+        let worker = pending.clone();
+        if std::thread::Builder::new()
+            .name("pcagent-private-cleanup".into())
+            .spawn(move || wait_for_private_cleanup(&worker))
+            .is_err()
+        {
+            // Resource exhaustion must not announce cleanup or lose the pinned ownership.
+            wait_for_private_cleanup(&pending);
+        }
+    }
+}
+
+struct PrivateCleanup {
+    path: PathBuf,
+    pins: Vec<File>,
+    files_removed: bool,
+    completion: ElevationCompletion,
+}
+impl PrivateCleanup {
+    fn attempt(&mut self) -> bool {
+        if !self.files_removed {
+            // No recursive deletion: only the finite names in the still-pinned job directory.
+            let mut removed = true;
+            for name in FIXED_FILES {
+                if let Err(error) = std::fs::remove_file(self.path.join(name)) {
+                    removed &= error.kind() == std::io::ErrorKind::NotFound;
+                }
+            }
+            if !removed {
+                return false;
+            }
+            self.files_removed = true;
+            // Release only the final directory pin; ancestors remain pinned during rmdir.
+            self.pins.pop();
+        }
+        if let Err(error) = std::fs::remove_dir(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return false;
+            }
         }
         self.pins.clear();
-        let _ = std::fs::remove_dir(&self.path);
         self.completion.complete();
+        true
+    }
+}
+fn wait_for_private_cleanup(pending: &std::sync::Mutex<PrivateCleanup>) {
+    loop {
+        if pending.lock().unwrap_or_else(|p| p.into_inner()).attempt() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -282,15 +421,31 @@ pub(crate) fn run_approved(
     let job = Arc::new(SupervisedJob {
         native: job,
         request: request.clone(),
+        launched: AtomicBool::new(false),
     });
     run_supervised(job, cancel, budget, |job| {
-        launch(&job.native, &job.request.nonce)
+        let process = launch(&job.native, &job.request.nonce)?;
+        job.launched.store(true, Ordering::Release);
+        Ok(process)
     })
 }
 
 struct SupervisedJob {
     native: Arc<NativeJob>,
     request: ElevationRequest,
+    launched: AtomicBool,
+}
+impl Drop for SupervisedJob {
+    fn drop(&mut self) {
+        if self.launched.load(Ordering::Acquire)
+            && matches!(self.request.task, ElevatedTask::PerformanceTrace { .. })
+        {
+            // The supervisor retains this job until the owned helper has exited.
+            // The current gate returns Unvalidated without any trace or ACL effect.
+            let _ =
+                super::trace_native::cleanup_for_request(&self.request, self.native.owner_sid());
+        }
+    }
 }
 impl HostJob for SupervisedJob {
     type Response = ElevationResponse;
@@ -445,22 +600,148 @@ pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
             let clock = Instant::now();
             while !disarmed.load(Ordering::Acquire) {
                 if clock.elapsed() >= budget.min(Duration::from_millis(MAX_BUDGET_MS)) {
-                    std::process::exit(124);
+                    worker_exit(124);
                 }
                 match watchdog_job.cancelled() {
-                    Ok(true) => std::process::exit(125),
-                    Err(_) => std::process::exit(1),
+                    Ok(true) => worker_exit(125),
+                    Err(_) => worker_exit(1),
                     Ok(false) => {}
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
         })?;
-    let roots = if request.task == ElevatedTask::SystemCaches {
-        system_roots()?
-    } else {
-        Vec::new()
+    let started_at = pcagent_shared::unix_ms();
+    let started_clock = Instant::now();
+    let mut response = ElevationResponse::empty(
+        &request,
+        ElevationStatus::Partial,
+        ElevationLimit::MetadataSnapshot,
+    );
+    let remaining = || {
+        request
+            .budget()
+            .checked_sub(started_clock.elapsed())
+            .filter(|d| !d.is_zero())
+            .ok_or(ElevationError::TimedOut)
     };
-    let response = cache::collect(&request, &roots, &mut || job.cancelled())?;
+    match &request.task {
+        ElevatedTask::SystemCaches => {
+            let windows = system_directory(true)?;
+            let resolution = super::system_native::delivery_cache(&windows);
+            let mut roots = system_roots()?;
+            roots.retain(|r| r.category != CacheCategory::DeliveryOptimization);
+            if let Some(path) = &resolution.path {
+                roots.push(CacheRoot {
+                    category: CacheCategory::DeliveryOptimization,
+                    path: path.clone(),
+                });
+            }
+            response = cache::collect(&request, &roots, &mut || job.cancelled())?;
+            if resolution.path.is_none() {
+                response
+                    .caches
+                    .push(super::protocol::CacheSummary::unavailable(
+                        CacheCategory::DeliveryOptimization,
+                        resolution.status,
+                        ElevationLimit::SourceUnavailable,
+                    ));
+            } else if resolution.source
+                == super::system_native::DeliveryCacheSource::GroupPolicyFolder
+            {
+                if let Some(cache) = response
+                    .caches
+                    .iter_mut()
+                    .find(|c| c.category == CacheCategory::DeliveryOptimization)
+                {
+                    cache
+                        .limitations
+                        .retain(|l| *l != ElevationLimit::DefaultCacheLocationOnly);
+                    cache
+                        .limitations
+                        .push(ElevationLimit::PolicyCacheLocationUnconfirmed);
+                }
+            }
+            if resolution.status == ElevationStatus::Partial {
+                if let Some(cache) = response
+                    .caches
+                    .iter_mut()
+                    .find(|c| c.category == CacheCategory::DeliveryOptimization)
+                {
+                    if cache.status == ElevationStatus::Completed {
+                        cache.status = ElevationStatus::Partial;
+                    }
+                }
+                if response.status == ElevationStatus::Completed {
+                    response.status = ElevationStatus::Partial;
+                }
+            }
+            // The resolver's owned directory handles pin the selected cache until scanning ends.
+            drop(resolution);
+        }
+        ElevatedTask::MftInventory { volume } => {
+            let result = super::mft_native::collect(*volume, remaining()?, &mut || {
+                job.cancelled()
+                    .map_err(|_| super::mft::CollectError::CancelCheck)
+            });
+            match result {
+                Ok(value) => {
+                    response.status = match value.end {
+                        super::mft::CollectionEnd::Cancelled => ElevationStatus::Cancelled,
+                        super::mft::CollectionEnd::TimedOut => ElevationStatus::TimedOut,
+                        _ => ElevationStatus::Partial,
+                    };
+                    response.mft = Some(value);
+                }
+                Err(error) => {
+                    response.status = match error {
+                        super::mft::CollectError::Denied => ElevationStatus::Denied,
+                        super::mft::CollectError::Unsupported => ElevationStatus::Unsupported,
+                        _ => ElevationStatus::Error,
+                    };
+                    response.limitations.push(ElevationLimit::SourceUnavailable);
+                }
+            }
+        }
+        ElevatedTask::ShadowStorage => {
+            let value =
+                super::system_native::shadow_storage(remaining()?, &mut || job.cancelled())?;
+            response.status = value.status;
+            response.shadow_storage = Some(value);
+        }
+        ElevatedTask::DiskReliability => {
+            let value =
+                super::system_native::disk_reliability(remaining()?, &mut || job.cancelled())?;
+            response.status = value.status;
+            response.disk_reliability = Some(value);
+        }
+        ElevatedTask::ProcessImages { targets } => {
+            let value = super::system_native::process_images(targets, remaining()?, &mut || {
+                job.cancelled()
+            })?;
+            response.status = value.status;
+            response.process_images = Some(value);
+        }
+        ElevatedTask::BatteryEnergy => {
+            let value = super::energy_native::collect(&job, remaining()?, &mut || job.cancelled())?;
+            response.status = value.status;
+            response.battery_energy = Some(value);
+        }
+        ElevatedTask::PerformanceTrace { duration_seconds } => {
+            let value = super::trace_native::collect(
+                &request,
+                job.owner_sid(),
+                Duration::from_secs(u64::from(*duration_seconds)),
+                &mut || job.cancelled(),
+            )?;
+            response.status = value.status;
+            response.performance_trace = Some(value);
+        }
+    }
+    response.window = pcagent_shared::Window {
+        started_at_unix_ms: started_at,
+        finished_at_unix_ms: pcagent_shared::unix_ms(),
+        duration_ms: started_clock.elapsed().as_millis() as u64,
+    };
     if response.window.duration_ms > request.budget_ms {
         return Err(ElevationError::TimedOut);
     }
@@ -474,6 +755,10 @@ pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
     file.sync_all()?;
     drop(guard);
     Ok(())
+}
+fn worker_exit(code: i32) -> ! {
+    let _ = super::trace_native::abort_owned_session();
+    std::process::exit(code)
 }
 struct HardDeadline {
     disarmed: Arc<AtomicBool>,
@@ -494,7 +779,7 @@ impl HardDeadline {
                     let Some(remaining) =
                         Duration::from_millis(MAX_BUDGET_MS).checked_sub(clock.elapsed())
                     else {
-                        std::process::exit(124);
+                        worker_exit(124);
                     };
                     std::thread::park_timeout(remaining);
                 }
@@ -1000,6 +1285,78 @@ mod tests {
         drop(worker_job);
         drop(job);
         std::fs::remove_dir(&parent).unwrap();
+    }
+
+    #[test]
+    fn private_export_cleanup_stays_pending_until_the_pinned_file_is_released() {
+        let parent = std::env::temp_dir().join(new_id("elevation-cleanup-fixture"));
+        std::fs::create_dir(&parent).unwrap();
+        let request =
+            ElevationRequest::new(ElevatedTask::BatteryEnergy, Duration::from_secs(10)).unwrap();
+        let job = NativeJob::create_in(&request, &parent).unwrap();
+        let path = job.path.clone();
+        let completion = job.completion();
+        let (export, pin) = job.energy_output().unwrap();
+        std::fs::write(&export, b"synthetic fixture only").unwrap();
+        drop(job);
+        assert!(!completion.is_complete());
+        assert!(export.exists());
+        drop(pin);
+        assert!(completion.wait(Duration::from_secs(3)));
+        assert!(!export.exists());
+        assert!(!path.exists());
+        std::fs::remove_dir(parent).unwrap();
+    }
+
+    #[test]
+    fn failed_preparation_waits_for_private_cleanup_before_returning_an_error() {
+        let parent = std::env::temp_dir().join(new_id("elevation-create-error-fixture"));
+        std::fs::create_dir(&parent).unwrap();
+        let request =
+            ElevationRequest::new(ElevatedTask::BatteryEnergy, Duration::from_secs(10)).unwrap();
+        let job = NativeJob::create_in(&request, &parent).unwrap();
+        let path = job.path.clone();
+        let (export, pin) = job.energy_output().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = job.finish_creation(|_| Err(ElevationError::InvalidRequest));
+            sender
+                .send(matches!(result, Err(ElevationError::InvalidRequest)))
+                .unwrap();
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(export.exists());
+        drop(pin);
+        assert!(receiver.recv_timeout(Duration::from_secs(3)).unwrap());
+        worker.join().unwrap();
+        assert!(!path.exists());
+        std::fs::remove_dir(parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_never_deletes_new_files_after_releasing_the_job_directory_pin() {
+        let parent = std::env::temp_dir().join(new_id("elevation-cleanup-fixture"));
+        std::fs::create_dir(&parent).unwrap();
+        let request =
+            ElevationRequest::new(ElevatedTask::SystemCaches, Duration::from_secs(10)).unwrap();
+        let job = NativeJob::create_in(&request, &parent).unwrap();
+        let path = job.path.clone();
+        let completion = job.completion();
+        let unknown = path.join("unknown-fixture.txt");
+        std::fs::write(&unknown, b"synthetic unknown file").unwrap();
+        drop(job);
+        assert!(!completion.is_complete());
+        let replacement = path.join(ENERGY_FILE);
+        std::fs::write(&replacement, b"synthetic replacement after pin release").unwrap();
+        assert!(!completion.wait(Duration::from_millis(200)));
+        assert!(unknown.exists());
+        assert!(replacement.exists());
+        // Remove only the two files this fixture created, never recurse through a path.
+        std::fs::remove_file(unknown).unwrap();
+        std::fs::remove_file(replacement).unwrap();
+        assert!(completion.wait(Duration::from_secs(3)));
+        assert!(!path.exists());
+        std::fs::remove_dir(parent).unwrap();
     }
 
     #[test]
