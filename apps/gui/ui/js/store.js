@@ -102,7 +102,9 @@ async function liveTick() {
 /** Measures every 5 s while the window is visible; the first sample comes right away. */
 export function startLive() {
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) liveTick();
+    if (document.hidden) return;
+    liveTick();
+    activityTick();
   });
   liveTick();
 }
@@ -110,7 +112,46 @@ export function startLive() {
 export function setLivePaused(paused) {
   state.live.paused = paused;
   notify("live");
-  if (!paused) liveTick();
+  if (!paused) {
+    liveTick();
+    activityTick();
+  }
+}
+
+// Application activity takes a two-second measurement window: it runs only while a view that
+// shows it is visible, every ten seconds, never in the background.
+const ACTIVITY_MS = 10000;
+const activityOwners = new Set();
+let activityTimer = null;
+let activityBusy = false;
+
+async function activityTick() {
+  window.clearTimeout(activityTimer);
+  const wanted = [...activityOwners].some((visible) => visible());
+  if (!wanted || document.hidden || state.live.paused) return;
+  if (!activityBusy) {
+    activityBusy = true;
+    try {
+      state.live.activity = await call("process_activity");
+    } catch {
+      // The resource rows still show; the list keeps its last value.
+    }
+    activityBusy = false;
+    notify("live");
+  }
+  activityTimer = window.setTimeout(activityTick, ACTIVITY_MS);
+}
+
+/** Registers a view that shows applications while `visible()` is true; returns its removal. */
+export function watchActivity(visible) {
+  activityOwners.add(visible);
+  activityTick();
+  return () => activityOwners.delete(visible);
+}
+
+/** Measures applications now if a view needs them, e.g. when it becomes visible. */
+export function pokeActivity() {
+  activityTick();
 }
 
 // ---------- Conversations ----------
@@ -187,6 +228,18 @@ function current(turnId) {
  */
 export async function sendMessage(question, { followUp = false, previewId = null, scopeIds = [] } = {}) {
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
+  return startTurn(question, conversationId, followUp, () => call("send_message", { conversationId, text: question, scopeIds, previewId }));
+}
+
+/**
+ * Starts an Explain or Investigate turn on a selected measurement, in a new conversation, with the
+ * question and reference of the reviewed preview ticket; any difference makes Rust refuse it.
+ */
+export async function sendSelection(question, { reference, intent, previewId }) {
+  return startTurn(question, null, false, () => call("selection_send", { reference, intent, question, conversationId: null, previewId }));
+}
+
+async function startTurn(question, conversationId, followUp, start) {
   if (!followUp || !state.conversation) state.conversation = { id: null, title: question, turns: [] };
   state.inv = {
     turnId: null,
@@ -205,7 +258,7 @@ export async function sendMessage(question, { followUp = false, previewId = null
   notify("conversation");
   notify("inv");
   try {
-    const started = await call("send_message", { conversationId, text: question, scopeIds, previewId });
+    const started = await start();
     if (state.inv && state.inv.turnId == null) state.inv.turnId = started.turn_id;
     if (state.inv && state.inv.turnId === started.turn_id) state.inv.conversationId = started.conversation_id;
     if (state.conversation && state.conversation.id == null) state.conversation.id = started.conversation_id;

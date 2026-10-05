@@ -1,5 +1,6 @@
-// Hash routes: #/chat, #/history, #/storage, #/settings. The old #/home and #/investigate open the chat.
-export const ROUTES = ["chat", "history", "storage", "settings"];
+// Hash routes: #/chat, #/history, #/live, #/storage, #/settings. The old #/home and #/investigate
+// open the chat.
+export const ROUTES = ["chat", "history", "live", "storage", "settings"];
 const ALIASES = { home: "chat", investigate: "chat" };
 
 export function currentRoute() {

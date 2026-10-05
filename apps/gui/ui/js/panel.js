@@ -4,8 +4,7 @@
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
-import { state, subscribe, openPanel, closePanel, setLivePaused, notify } from "./store.js";
-import { call } from "./api.js";
+import { state, subscribe, openPanel, closePanel, setLivePaused, watchActivity, pokeActivity } from "./store.js";
 import { liveView, driveName } from "./live.js";
 import { numbering, citationTitle } from "./citations.js";
 import { bytes, clock, date, labelled, number, price, usd } from "./format.js";
@@ -176,31 +175,11 @@ function storageView() {
   );
 }
 
-// Application activity takes a two-second measurement window: it runs only while the Live PC tab
-// is visible, every ten seconds, never in the background.
-const ACTIVITY_MS = 10000;
-let activityTimer = null;
-let activityBusy = false;
 const appsView = { sort: "memory", expanded: null };
 
-async function activityTick() {
-  window.clearTimeout(activityTimer);
-  const visible = state.panel.open && state.panel.tab === "live" && !document.hidden && !state.live.paused;
-  if (!visible) return;
-  if (!activityBusy) {
-    activityBusy = true;
-    try {
-      state.live.activity = await call("process_activity");
-    } catch {
-      // The dashboard rows above still show; the list keeps its last value.
-    }
-    activityBusy = false;
-    notify("live");
-  }
-  activityTimer = window.setTimeout(activityTick, ACTIVITY_MS);
-}
-
 export function mountPanel(host) {
+  // Applications are measured only while the Live PC tab is open (see watchActivity).
+  watchActivity(() => state.panel.open && state.panel.tab === "live");
   const tabs = h("div", { class: "tabs-pill", role: "tablist", "aria-label": t("panel.label") });
   const body = h("div", { class: "panel-body", role: "tabpanel" });
   fill(
@@ -275,7 +254,7 @@ export function mountPanel(host) {
 
   render();
   subscribe((topic) => {
-    if (topic === "panel") activityTick();
+    if (topic === "panel") pokeActivity();
     if (topic === "panel" || topic === "conversation") render();
     else if (topic === "live" && state.panel.open && (state.panel.tab === "live" || state.panel.tab === "storage")) render();
     else if (topic === "scan" && state.panel.open && state.panel.tab === "storage") render();

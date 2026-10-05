@@ -1,11 +1,12 @@
 // History: what the local sampler measured over time, gaps included, the anomalies it detected,
 // a recording taken during a problem, and what the collection itself costs. Nothing here is sent
-// anywhere; "Investigate" asks a question through the normal consent flow.
+// anywhere; Explain and Investigate go through the selected-evidence preview (select.js).
 import { h, s, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
 import { ask } from "../ask.js";
+import { INTENTS, findReference, runSelection } from "../select.js";
 import { subscribe } from "../store.js";
 import { button, segmented, toast, toggle, dialog } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
@@ -38,6 +39,16 @@ function gapsHint(share) {
   if (share < 0.005) return t("history.gapsFew");
   if (share >= 0.995 && share < 1) return t("history.gapsAlmostAll");
   return t("history.gaps", { share: percent(share) });
+}
+
+/**
+ * Explains or investigates a stored event or recording through its host-issued source. Without
+ * one (history not read yet in this session, or expired), the typed question still works.
+ */
+async function selectOrAsk(match, { label, subject }, intent, fallback) {
+  const reference = await findReference(match);
+  if (reference) return runSelection({ reference, label, subject }, intent);
+  return ask(fallback);
 }
 
 function eventLabel(e) {
@@ -203,11 +214,23 @@ export function mount(page) {
                 refreshStatus();
               },
             })
-          : button(t("history.recording.explain"), {
-              variant: "primary",
-              iconName: "search",
-              onClick: () => ask(t("history.recording.question", { from, to: to ?? from })),
-            }),
+          : h(
+              "div",
+              { class: "row" },
+              INTENTS.map((intent) =>
+                button(t(`inspect.${intent}`), {
+                  variant: intent === "explain" ? "primary" : "",
+                  iconName: intent === "explain" ? "sparkle" : "search",
+                  onClick: () =>
+                    selectOrAsk(
+                      (target) => target.kind === "recording" && target.recording_id === r.id,
+                      { label: t("history.recording.label", { from, to: to ?? from }), subject: t("history.recording.subject", { from, to: to ?? from }) },
+                      intent,
+                      t("history.recording.question", { from, to: to ?? from }),
+                    ),
+                }),
+              ),
+            ),
       ),
     );
   };
@@ -320,11 +343,23 @@ export function mount(page) {
                       "div",
                       { class: "event-actions" },
                       h("p", { class: "note" }, t("history.event.note")),
-                      button(t("history.event.investigate"), {
-                        variant: "primary",
-                        iconName: "search",
-                        onClick: () => ask(t("history.event.question", { what: eventLabel(e).toLowerCase(), when })),
-                      }),
+                      h(
+                        "div",
+                        { class: "row" },
+                        INTENTS.map((intent) =>
+                          button(t(`inspect.${intent}`), {
+                            variant: intent === "explain" ? "primary" : "",
+                            iconName: intent === "explain" ? "sparkle" : "search",
+                            onClick: () =>
+                              selectOrAsk(
+                                (target) => target.kind === "event" && target.event_id === e.id,
+                                { label: `${eventLabel(e)} · ${when}`, subject: t("history.event.subject", { what: eventLabel(e), when }) },
+                                intent,
+                                t("history.event.question", { what: eventLabel(e).toLowerCase(), when }),
+                              ),
+                          }),
+                        ),
+                      ),
                     )
                   : null,
               );

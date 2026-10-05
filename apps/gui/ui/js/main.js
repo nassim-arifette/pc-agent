@@ -1,6 +1,6 @@
 // Entry point: preferences, the Rust bridge, the window layout and the router. The layout is a
-// history sidebar, the conversation (or Storage, Settings) and a context panel that stays closed
-// until a citation, the PC status or a storage link opens it.
+// rail of views, the conversation list (on the chat only), the current view and a context panel
+// that stays closed until a citation, the PC status or a storage link opens it.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -29,15 +29,18 @@ import { usd } from "./format.js";
 import { modelName } from "./models.js";
 import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
+import { mark } from "./brand.js";
 import * as chat from "./views/chat.js";
 import * as history from "./views/history.js";
+import * as live from "./views/live.js";
 import * as storage from "./views/storage.js";
 import * as settings from "./views/settings.js";
 
-const VIEWS = { chat, history, storage, settings };
+const VIEWS = { chat, history, live, storage, settings };
 const narrow = window.matchMedia("(max-width: 900px)");
 
 let app = null;
+let railHost = null;
 let main = null;
 let sidebarHost = null;
 let topbar = null;
@@ -196,18 +199,61 @@ function renderSidebar() {
 }
 
 function renderFoot() {
-  if (!footHost) return;
-  const route = currentRoute();
-  const nav = (name, iconName, label) =>
-    h("button", { type: "button", class: "nav-row", "aria-current": route === name ? "page" : null, onclick: () => navigate(name) }, icon(iconName), h("span", null, t(label)));
-  fill(footHost, nav("history", "history", "nav.history"), nav("storage", "drive", "nav.storage"), nav("settings", "sliders", "nav.settings"), modelStatus());
+  if (footHost) fill(footHost, modelStatus());
+  renderRail();
+}
+
+// ---------- Rail ----------
+
+const RAIL = [
+  { route: "chat", icon: "chat", label: "nav.chat" },
+  { route: "history", icon: "history", label: "nav.history" },
+  { route: "live", icon: "activity", label: "nav.live" },
+  { route: "storage", icon: "drive", label: "nav.storage" },
+];
+
+function railButton({ route: name, icon: iconName, label }, extra = null) {
+  const index = ROUTES.indexOf(name) + 1;
+  return h(
+    "button",
+    {
+      type: "button",
+      class: "rail-item",
+      "aria-current": currentRoute() === name ? "page" : null,
+      title: `${t(label)} (Ctrl+${index})`,
+      onclick: () => navigate(name),
+    },
+    h("span", { class: "rail-icon" }, icon(iconName), extra),
+    h("span", { class: "rail-label" }, t(label)),
+  );
+}
+
+function renderRail() {
+  if (!railHost) return;
+  const cloud = state.info?.cloud;
+  // The settings entry carries the AI status, as the sidebar does on the chat.
+  const tone = cloud?.ready && state.privacy.mode !== "local" ? "good" : cloud && (cloud.key_configured || cloud.model_id) && !cloud.ready ? "warn" : null;
+  fill(
+    railHost,
+    h("span", { class: "rail-mark" }, mark(28)),
+    RAIL.map((item) => railButton(item)),
+    h("span", { class: "spacer" }),
+    railButton({ route: "settings", icon: "sliders", label: "nav.settings" }, tone ? h("span", { class: ["rail-dot", "dot", tone] }) : null),
+  );
 }
 
 function setSidebar(open) {
   sidebarOpen = open;
   app.classList.toggle("sidebar-closed", !open);
-  sidebarHost.inert = !open;
+  sidebarHost.inert = !open || currentRoute() !== "chat";
   renderTopbar();
+}
+
+/** The conversation list belongs to the chat; other views use the full width. */
+function applyRouteLayout() {
+  const chatRoute = currentRoute() === "chat";
+  app.classList.toggle("no-sidebar", !chatRoute);
+  sidebarHost.inert = !sidebarOpen || !chatRoute;
 }
 
 // ---------- Top bar ----------
@@ -220,7 +266,7 @@ function renderTopbar() {
   const title = route === "chat" ? state.conversation?.title || "" : "";
   fill(
     topbar,
-    sidebarOpen ? null : h("button", { type: "button", class: "icon-btn", title: t("sidebar.show"), "aria-label": t("sidebar.show"), onclick: () => setSidebar(true) }, icon("sidebar")),
+    sidebarOpen || route !== "chat" ? null : h("button", { type: "button", class: "icon-btn", title: t("sidebar.show"), "aria-label": t("sidebar.show"), onclick: () => setSidebar(true) }, icon("sidebar")),
     h("div", { class: "topbar-title", title }, title),
     h("span", { class: "spacer" }),
     h(
@@ -249,13 +295,14 @@ function renderTopbar() {
 
 function renderShell() {
   app = document.getElementById("app");
+  railHost = h("nav", { class: "rail", "aria-label": t("rail.label") });
   sidebarHost = h("aside", { class: "sidebar", "aria-label": t("history.title") });
   topbar = h("header", { class: "topbar" });
   main = h("main", { class: "main", id: "main", tabindex: "-1" });
   panelHost = h("aside", { class: "panel", "aria-label": t("panel.label") });
-  fill(app, sidebarHost, h("div", { class: "workspace" }, topbar, main), panelHost);
+  fill(app, railHost, sidebarHost, h("div", { class: "workspace" }, topbar, main), panelHost);
   app.classList.toggle("sidebar-closed", !sidebarOpen);
-  sidebarHost.inert = !sidebarOpen;
+  applyRouteLayout();
   renderSidebar();
   renderTopbar();
   mountPanel(panelHost);
@@ -270,6 +317,7 @@ function route(force = false) {
   fill(main, page);
   main.scrollTop = 0;
   unmount = VIEWS[name].mount(page) || null;
+  applyRouteLayout();
   renderFoot();
   renderTopbar();
   if (historyHost) fill(historyHost, historyView());

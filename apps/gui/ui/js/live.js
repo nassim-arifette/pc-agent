@@ -8,7 +8,7 @@ import { ago, basisPoints, bytes, percent } from "./format.js";
 const GiB = 1024 ** 3;
 
 /** A drive is "almost full" under 5 % or 5 GiB free: a hint for the status line, not a finding. */
-function almostFull(volume) {
+export function almostFull(volume) {
   return volume.free_ratio < 0.05 || volume.free_bytes < 5 * GiB;
 }
 
@@ -28,7 +28,7 @@ export function health(dash) {
 }
 
 /** A small line chart of the last samples; nothing is drawn with fewer than two values. */
-function sparkline(values, tone) {
+export function sparkline(values, tone) {
   const points = values.filter((v) => v != null);
   if (points.length < 2) return h("span", { class: "spark" });
   const max = 1;
@@ -56,7 +56,7 @@ function metric({ iconName, label, value, detail, tone, history }) {
   );
 }
 
-function gpuName(name) {
+export function gpuName(name) {
   return name.replace(/^NVIDIA\s+/i, "").replace(/\s+GPU$/i, "");
 }
 
@@ -150,7 +150,7 @@ function rankValue(app, sort) {
   return (sort === "cpu" ? app.cpu.value : app.working_set.value) ?? -1;
 }
 
-function measureText(measure, kind) {
+export function measureText(measure, kind) {
   if (measure?.value == null) return h("span", { class: "unknown", title: measure?.note || "" }, "—");
   return kind === "bytes" ? bytes(measure.value) : basisPoints(measure.value);
 }
