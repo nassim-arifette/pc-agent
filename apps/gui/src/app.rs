@@ -1765,12 +1765,14 @@ fn save_cloud_settings(
     state: State<'_, AppState>,
     api_key: Option<String>,
     model_id: String,
+    reasoning: Option<pcagent_agent::Reasoning>,
 ) -> Result<view::Cloud, String> {
     let model_id = model_id.trim().to_owned();
     // The same rule as the CLI: an explicit nvidia/ Nemotron ID, never a silent fallback.
     Config::from_lookup(|name| match name {
         "NEBIUS_API_KEY" => Some("checked-separately".into()),
-        _ => Some(model_id.clone()),
+        "NEBIUS_MODEL_ID" => Some(model_id.clone()),
+        _ => None,
     })
     .map_err(|e| e.to_string())?;
     let key = api_key
@@ -1779,6 +1781,10 @@ fn save_cloud_settings(
     let mut updates = vec![("NEBIUS_MODEL_ID", model_id.as_str())];
     if let Some(key) = &key {
         updates.push(("NEBIUS_API_KEY", key.as_str()));
+    }
+    // Absent keeps the saved choice; the composer sends it with the model it shows.
+    if let Some(reasoning) = reasoning {
+        updates.push(("NEBIUS_REASONING", reasoning.as_str()));
     }
     let file = credentials::file_path().ok_or("The APPDATA folder is unknown.")?;
     credentials::save(&file, &updates)?;
