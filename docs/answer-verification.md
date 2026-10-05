@@ -17,7 +17,23 @@ when necessary, and marks unresolved claims. It does not replace the answer with
   the cited source. The initial snapshot is citable as `O0`.
 - Historical observations retain their original measurement time and receive fresh aliases when
   replayed. An earlier answer is context only. A numerical claim using an old source needs explicit
-  historical wording; claiming that it is current triggers repair.
+  historical wording; claiming that it is current triggers repair. When the value itself is right,
+  the issue is `historical_wording` rather than `unsupported_number`, and the repair asks only to
+  date the sentence. The system prompt states this rule whenever the turn has selected evidence.
+
+## Repairs
+
+- A repair request names each problem, the passage and a fix whose example cites a reference that
+  exists in this turn. Number and citation problems also list `valid_references`, each once. A
+  malformed submission gets a closed class and a declared field name, like `missing_field category`,
+  never text the model wrote.
+- Repairs are bounded by C1 (3 per turn). Identical problems twice in a row end them early; the
+  calibrated escalation to a stronger model stays tied to exhausted repairs.
+- A reply cut off at the output limit is asked again once, with a fixed message: inspect first if
+  nothing was inspected yet, otherwise submit at most about 1,500 characters. A second cut-off in a
+  row ends the turn.
+- When repairs run out, the best attempt written since the last measurements is shown, not the
+  latest: fewest unverified claims, then most citations, the newest on a tie.
 
 The original model text and its cited sources are kept separately from the GUI's localized display
 text. CLI chat and the GUI use the same memory projection. Each answer's clickable citations have
