@@ -647,11 +647,27 @@ impl FrozenSelection {
     }
 
     /// Use after constructing ordinary finding aliases and before conversation::prepare.
+    /// The frozen evidence is cited as O0 from the first request on.
     pub fn augment_first_message(&self, mut first: Value) -> Value {
         first["historical"] = json!(true);
         first["initial_observation"] = self.output.cloud.clone();
         first["initial_observation"]["observation_id"] = json!("O0");
+        // Display values like a tool reply's, so numbers can be copied rather than converted.
+        crate::tool_context::add_readable_values(&mut first["initial_observation"]);
+        first["citable_observation_ids"] = json!(["O0"]);
         first
+    }
+
+    /// The frozen evidence as a completed read. Reading an existing capture and its coverage
+    /// completes the inspection, even when the original sensors returned no usable measurement.
+    /// Every native status, value and the exact cloud payload are kept.
+    pub fn read(&self) -> ToolOutput {
+        let mut output = self.output.clone();
+        output.inspection_complete = true;
+        if !matches!(output.status, Status::Ok | Status::Partial) {
+            output.status = Status::Partial;
+        }
+        output
     }
 
     pub fn preview_message(
@@ -861,7 +877,7 @@ fn recording_output(
 pub const GET_SELECTED_EVIDENCE: ToolSpec = ToolSpec {
     name: "get_selected_evidence",
     class: ToolClass::Inspection,
-    description: "Read the exact selected measurements frozen for this turn, with their original dates, windows, coverage and limitations. Starts no collector, scan, recording or action. Historical evidence describes its recorded period, not the current PC.",
+    description: "Read again the exact selected measurements frozen for this turn (initial_observation, O0), with their original dates, windows, coverage and limitations. Starts no collector, scan, recording or action. Historical evidence describes its recorded period, not the current PC: cite its numbers in the past, tied to the measurement.",
     params: &[],
 };
 pub use GET_SELECTED_EVIDENCE as SELECTED_EVIDENCE;
@@ -901,15 +917,7 @@ impl<T: Toolbox> Toolbox for SelectedTools<'_, T> {
     }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         if spec.name == GET_SELECTED_EVIDENCE.name {
-            let mut output = self.selection.output.clone();
-            // Reading an existing capture and its coverage completes this inspection, even
-            // when the original sensors returned no usable measurement. Keep every native
-            // status/value and the exact cloud payload; only the read operation is completed.
-            output.inspection_complete = true;
-            if !matches!(output.status, Status::Ok | Status::Partial) {
-                output.status = Status::Partial;
-            }
-            return output;
+            return self.selection.read();
         }
         if self.selection.intent == SelectionIntent::Investigate
             && self
@@ -1496,6 +1504,18 @@ mod tests {
         let actual: Value =
             serde_json::from_str(model.requests[0][1]["content"].as_str().unwrap()).unwrap();
         assert_eq!(actual, expected);
+        // The re-read lists O0 among the citable IDs, as the checker accepts it, and repeats no
+        // finding the turn already holds.
+        let tool_reply: Value = model.requests[1]
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .map(|message| serde_json::from_str(message["content"].as_str().unwrap()).unwrap())
+            .unwrap();
+        assert_eq!(tool_reply["citable_observation_ids"], json!(["O0", "O1"]));
+        let ids = tool_reply["current_finding_ids"].as_array().unwrap();
+        let unique: std::collections::BTreeSet<_> = ids.iter().filter_map(Value::as_str).collect();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
         assert_eq!(model.definitions[0].as_array().unwrap().len(), 2);
         assert_eq!(report.stats.tool_calls, 1);
         assert_eq!(report.initial_observation.measured_at_unix_ms, 2000);
@@ -1507,6 +1527,75 @@ mod tests {
         assert_eq!(
             report.observations[0].observation["measured_at_unix_ms"],
             2000
+        );
+        // The re-read returns what the first message already held: a short reply points at O0.
+        assert_eq!(tool_reply["same_result_as"], "O0");
+        assert_eq!(actual["citable_observation_ids"], json!(["O0"]));
+
+        // Explain answers from O0 in one request: the selection is the turn's inspection.
+        let mut model = Script {
+            replies: VecDeque::from([reply(
+                "answer",
+                SUBMIT_ANSWER,
+                json!({"answer":"The selected capture measured CPU usage of 93% [O0]. The present state remains unknown.","confidence":"low","category":"cpu"}),
+            )]),
+            requests: vec![],
+            definitions: vec![],
+        };
+        let mut delegate =
+            SnapshotTools::new(|_, _| panic!("Explain cannot reach the native collector"));
+        let mut tools = SelectedTools::new(&mut delegate, &selection);
+        let report = converse_with_selection(
+            &mut model,
+            &[],
+            "Explain the selected CPU capture.",
+            &selection,
+            &mut tools,
+            &privacy(),
+            |_| {},
+            |_, _| false,
+        );
+        assert!(model.requests[0][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("submit_answer directly"));
+        assert_eq!(report.stats.inference_calls, 1);
+        assert_eq!(report.stats.tool_calls, 0);
+        let answer = report.answer.expect("answered from O0");
+        assert_eq!(answer.repairs, 0);
+        assert!(answer.unverified.is_empty(), "{:?}", answer.unverified);
+        assert_eq!(answer.citations[0].reference, "O0");
+
+        // In Explain, a right value written as current is marked, not sent back.
+        let mut model = Script {
+            replies: VecDeque::from([reply(
+                "answer",
+                SUBMIT_ANSWER,
+                json!({"answer":"CPU usage is 93% [O0].","confidence":"low","category":"cpu"}),
+            )]),
+            requests: vec![],
+            definitions: vec![],
+        };
+        let mut delegate =
+            SnapshotTools::new(|_, _| panic!("Explain cannot reach the native collector"));
+        let mut tools = SelectedTools::new(&mut delegate, &selection);
+        let report = converse_with_selection(
+            &mut model,
+            &[],
+            "Explain the selected CPU capture.",
+            &selection,
+            &mut tools,
+            &privacy(),
+            |_| {},
+            |_, _| false,
+        );
+        assert_eq!(report.stats.inference_calls, 1);
+        let answer = report.answer.expect("accepted with a mark");
+        assert_eq!(answer.repairs, 0);
+        assert_eq!(answer.unverified.len(), 1);
+        assert_eq!(
+            answer.unverified[0].kind,
+            answer::IssueKind::HistoricalWording
         );
     }
 

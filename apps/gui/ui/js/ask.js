@@ -9,6 +9,7 @@ import { state, sendMessage, stopInvestigation, setPrivacy } from "./store.js";
 import { button, dialog, toast } from "./ui.js";
 import { bytes } from "./format.js";
 import { navigate } from "./router.js";
+import { closePicker, modelPicker } from "./picker.js";
 
 export const MODES = ["complete", "anonymized", "local"];
 const MODE_ICONS = { complete: "cloud", anonymized: "shield", local: "pc" };
@@ -380,6 +381,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
     area.style.setProperty("height", `${Math.min(area.scrollHeight, 200)}px`);
   };
   const modeHost = h("span", { class: "mode-host" });
+  const pickHost = h("span", { class: "pick-slot" });
   const sendHost = h("span", { class: "send-host" });
   const running = () => Boolean(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"));
   const submit = () => {
@@ -402,6 +404,9 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
         mode === "local" && state.privacy.mode !== "local" ? h("span", { class: "faint" }, `· ${t("mode.pill.noKey")}`) : null,
       ),
     );
+    // The model and its reasoning only matter when the question goes to the AI.
+    closePicker();
+    fill(pickHost, mode === "local" ? null : modelPicker({ disabled: running() }));
     fill(
       sendHost,
       running()
@@ -431,6 +436,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
       h("button", { type: "button", class: "icon-btn", title: t("ask.folder"), "aria-label": t("ask.folder"), onclick: () => navigate("storage") }, icon("folder")),
       modeHost,
       h("span", { class: "spacer" }),
+      pickHost,
       sendHost,
     ),
   );

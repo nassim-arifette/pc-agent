@@ -138,7 +138,8 @@ fn persistent_invented_numbers_remain_flagged_in_the_recorded_report() {
         .as_array()
         .unwrap()
         .is_empty());
-    assert_eq!(run.report["answer"]["repairs"], pcagent_agent::MAX_REPAIRS);
+    // The same invented value twice in a row ends the repairs early.
+    assert_eq!(run.report["answer"]["repairs"], 1);
     assert!(run.report["stats"]["cost"].is_object());
     assert_eq!(
         run.report["stats"]["requests"].as_array().unwrap().len(),

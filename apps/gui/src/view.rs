@@ -637,13 +637,15 @@ pub struct Report {
     pub continuation: Option<ExtensionRequest>,
 }
 
-/// Replaces opaque process references (`proc-1a2b3c4d`) with local names for this window.
+/// Replaces opaque process references (`proc-1a2b3c4d`) with local names for this window. A model
+/// that names a process and adds its reference ("firefox.exe (proc-1a2b3c4d)", needed when several
+/// processes share a name) gets "firefox.exe (PID 42)", not the name twice.
 fn localize(text: &str, processes: &[ProcessInstance]) -> String {
     processes.iter().fold(text.to_owned(), |text, p| {
-        text.replace(
-            &p.entity_ref,
-            &format!("{} (PID {})", process_name(p), p.pid),
-        )
+        let name = process_name(p);
+        let local = format!("{name} (PID {})", p.pid);
+        text.replace(&format!("{name} ({})", p.entity_ref), &local)
+            .replace(&p.entity_ref, &local)
     })
 }
 pub fn finding(f: &Finding, processes: &[ProcessInstance]) -> FindingView {
@@ -977,6 +979,8 @@ pub struct Cloud {
     pub model_source: Option<&'static str>,
     /// Both settings are present and the model ID is an accepted Nemotron ID.
     pub ready: bool,
+    /// How much the model reasons: on (default), low or off.
+    pub reasoning: &'static str,
     pub problem: Option<String>,
     pub file: Option<String>,
     pub file_problem: Option<String>,
@@ -999,6 +1003,11 @@ pub fn cloud(creds: &Credentials) -> Cloud {
         model_id: creds.get("NEBIUS_MODEL_ID"),
         model_source: source_name(creds.source("NEBIUS_MODEL_ID")),
         ready: checked.is_ok(),
+        reasoning: creds
+            .get("NEBIUS_REASONING")
+            .and_then(|text| pcagent_agent::Reasoning::parse(&text))
+            .unwrap_or_default()
+            .as_str(),
         problem: checked.err().map(|e| e.to_string()),
         file: creds.file().map(|p| p.display().to_string()),
         file_problem: creds.problem.clone(),
@@ -1203,6 +1212,14 @@ mod tests {
         let text = serde_json::to_string(&finding(contributor, &inv.local_processes)).unwrap();
         assert!(!text.contains("proc-00000001"), "{text}");
         assert!(text.contains("editor.exe (PID 4242)"), "{text}");
+        // A model that wrote the name and the reference does not get the name twice.
+        assert_eq!(
+            localize(
+                "editor.exe (proc-00000001) uses 5 GiB; proc-00000001 grew.",
+                &inv.local_processes
+            ),
+            "editor.exe (PID 4242) uses 5 GiB; editor.exe (PID 4242) grew."
+        );
     }
 
     #[test]
