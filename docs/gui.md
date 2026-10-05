@@ -6,12 +6,14 @@ diagnostic logic of its own.
 
 ## Layout
 
-One window, three areas, after the hybrid direction chosen on 2026-10-01 (chat first, context on
-demand):
+One window after the hybrid direction chosen on 2026-10-01 (chat first, context on demand), with
+the rail of the phase 2 desktop mockups:
 
-- **Sidebar**: *New conversation*, a search box, saved conversations grouped by day, then
-  *Storage*, *Settings* and the model with the current sharing choice. It folds away (button or
-  narrow window).
+- **Rail**: *Chat*, *History*, *Live PC*, *Storage* and, at the bottom, *Settings* with a dot for
+  the AI status.
+- **Conversation list** (on the chat only): *New conversation*, a search box, saved conversations
+  grouped by day, then the model with the current sharing choice. It folds away (button or
+  narrow window); the other views use the full width.
 - **Conversation**: a welcome screen with the composer and four suggested questions (one names a
   drive that is almost full), then the thread. While a run is going, its real steps appear with
   their durations and Stop replaces Send. Nebius replies are streamed: the answer appears as the
@@ -36,18 +38,39 @@ These thresholds are hints for the status line, not findings.
 The full *Storage* and *Settings* screens open in the conversation area. Storage picks or drops a
 folder, follows the scan and lists the largest folders and files; nothing is deleted there.
 
+## Live PC, selection, Explain and Investigate
+
+The *Live PC* view (`#/live`) shows the resources as selectable cards (memory, processor, each
+fixed drive, each graphics card) and the applications as selectable rows. Selecting one opens the
+inspector on the right with its details and two actions:
+
+- **Explain** uses only the measurements already taken for that item: nothing new is collected and
+  no action is proposed (`get_selected_evidence` only).
+- **Investigate** starts from them with the usual read-only tools; actions stay proposals.
+
+The page never sends measurements or names itself. It passes a host-issued reference
+(`selection_source_id` of the dashboard or of `process_activity`, plus a closed target) to
+`selection_preview`, which freezes that capture and returns the exact first message and a
+single-use ticket; `selection_send` must match it exactly ([selection.md](selection.md)). In a
+cloud mode the preview dialog shows the item, its measurement age, the model, what is sent and
+never sent, and the exact JSON; in local mode the turn starts directly. The question is written in
+the interface language and follows C5 like the data: never a PID, a program name only in complete
+sharing. An application is explained through its largest measured process, which the inspector
+names. History events and finished recordings use the same flow through `selection_sources()`; if
+their source has expired, the typed question of the previous version is used instead.
+
 ## History, recording and startup
 
 The *History* view reads the local sampler (`history_status`, `metric_history`): processor,
 memory, disk activity and graphics card over the last hour, 24 hours or 7 days, as four charts on
 one time axis. Unmeasured periods (PC Agent closed, PC asleep) stay breaks in the lines and are
 counted, never drawn through. Detected anomalies are listed with their peak, duration and the
-program measured at the peak, which is not presented as the proven cause; *Investigate* asks about
-that moment through the normal consent flow.
+program measured at the peak, which is not presented as the proven cause; *Explain* and
+*Investigate* send that event through the selected-evidence preview.
 
 *Record a problem* takes one measurement per second for 30, 60 or 120 seconds
 (`record_activity_start`), with a countdown and *Stop* (`record_activity_cancel`, which keeps the
-measurements); then *Analyze this recording* asks about that exact window. The *Collection* card
+measurements); then *Explain* or *Investigate* sends that exact recording. The *Collection* card
 shows the sampler's measured processor cost against its target and the whole window's memory,
 the optional *Start with Windows* setting (`startup_get`, `startup_set`, off by default) and
 *Clear the history* (`history_clear`), which keeps conversations.
@@ -140,9 +163,9 @@ The first build compiles Tauri and needs about 3 GB for `target\`. On other plat
 only prints a message; the portable view and session code is still built and tested in CI.
 The CI keeps a `pcagent-gui-windows-x64` artifact: an unsigned prototype, not an installer.
 
-Keyboard: `Ctrl+1` to `Ctrl+3` open the conversation, Storage and Settings, `Ctrl+N` starts a new
-conversation, `Ctrl+K` jumps to the question box, `Ctrl+J` shows or hides the panel, `Enter` sends
-and `Shift+Enter` adds a line, `Esc` closes a dialog.
+Keyboard: `Ctrl+1` to `Ctrl+5` open Chat, History, Live PC, Storage and Settings, `Ctrl+N` starts a
+new conversation, `Ctrl+K` jumps to the question box, `Ctrl+J` shows or hides the panel, `Enter`
+sends and `Shift+Enter` adds a line, `Esc` closes a dialog or clears the Live PC selection.
 
 ## Design review without the app
 
@@ -159,8 +182,10 @@ python -m http.server 5173 --bind 127.0.0.1
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage,
-settings) in light and dark themes (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the
-server runs). The mock lives outside `ui/`, so the app never embeds it.
+settings, the Live PC view with Explain and its preview) in light and dark themes
+(`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs). The mock publishes
+selection sources for live captures, history events and recordings. It lives outside `ui/`, so
+the app never embeds it.
 
 ## Validation status
 
@@ -184,6 +209,10 @@ server runs). The mock lives outside `ui/`, so the app never embeds it.
 - Redesign on 2026-10-01: the tour in French and English, light and dark, at 1280 × 800 and 860 ×
   640, plus a follow-up question, the sources of two answers and reopening from the history; no
   JavaScript errors. Not yet checked in the release Windows app.
+- Rail, Live PC view and selection on 2026-10-05, with the mock: the tour in French, light and
+  dark; Explain on memory through the preview to an answer; Explain on a history event; and a
+  check that in anonymized sharing the question for an application carries neither its name nor
+  a PID (in complete sharing: the name, never a PID). No JavaScript errors.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 

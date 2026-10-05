@@ -6,6 +6,7 @@
 // (a confirmed choice; without it the first cloud question asks for one). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
 // stretches the steps. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// Live captures publish selection sources; Explain and Investigate use selection_preview/send.
 
 const params = new URLSearchParams(window.location.search);
 const listeners = new Map();
@@ -46,6 +47,22 @@ function volume(root, totalGiB, freeGiB) {
   return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
 }
 
+// ---------- Selection sources ----------
+// Each live capture publishes a host-issued source reference, as SelectionRegistry does. Sources
+// expire after five minutes; previews are single-use tickets bound to their selection.
+const SELECTION_TTL = 5 * 60 * 1000;
+const selectionSources = new Map();
+const selectionTickets = new Map();
+let selectionSequence = 0;
+function publishSource(targets, measuredAt) {
+  const id = `selection-source-${++selectionSequence}`;
+  selectionSources.set(id, { targets, measuredAt, expires: Date.now() + SELECTION_TTL });
+  return id;
+}
+function sameTarget(a, b) {
+  return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id;
+}
+
 let tick = 0;
 function dashboard() {
   tick += 1;
@@ -80,7 +97,9 @@ function dashboard() {
             slowdown_reasons: [],
           },
         ];
+  const resources = ["memory", "cpu", "disk", ...(gpus.length ? ["gpu"] : [])].map((resource) => ({ kind: "resource", resource }));
   return {
+    selection_source_id: publishSource(resources, Date.now()),
     collected_at_unix_ms: Date.now(),
     memory: {
       total: m(total, fmt(total)),
@@ -493,11 +512,9 @@ export function createMock() {
         working_set_increase: ref === "app-1" ? m(0.2 * GiB, fmt(0.2 * GiB)) : m(0, "0"), io_read: m(120000, "117 KiB/s"), io_write: m(40000, "39 KiB/s"),
         gpu: ref === "app-1" ? m(310, "3.1%") : missing("unsupported", "No GPU counter instance for these processes."),
         services,
-        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `${ref}-p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
+        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
       });
-      return {
-        collected_at_unix_ms: now, window_ms: 2000, status: "partial",
-        applications: [
+      const applications = [
           app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),
           app("app-2", "Code.exe", 9, Math.round(jitter(210, 80)), 1.2, [[5100, 120, 0.51], [5133, 40, 0.28]]),
           app("app-3", "Teams.exe", 6, Math.round(jitter(140, 60)), 0.84, [[6200, 90, 0.42]]),
@@ -507,7 +524,12 @@ export function createMock() {
           ]),
           app("app-5", "MsMpEng.exe", 1, Math.round(jitter(90, 40)), 0.21, [[3200, 90, 0.21]], [{ name: "WinDefend", display_name: "Microsoft Defender Antivirus Service", state: "running" }]),
           app("app-6", "explorer.exe", 2, 30, 0.31, [[2900, 30, 0.31]]),
-        ],
+      ];
+      const processes = applications.flatMap((a) => a.members.map((member) => ({ kind: "process", entity_ref: member.entity_ref })));
+      return {
+        selection_source_id: publishSource(processes, now),
+        collected_at_unix_ms: now, window_ms: 2000, status: "partial",
+        applications,
         applications_total: 74,
         coverage: { status: "partial", enumerated: 231, readable: 214, permission_denied: 17, unavailable: 0, returned: 50, enumeration_truncated: false },
         services_status: "ok", gpu_status: "partial", limitations: [], window,
@@ -530,7 +552,12 @@ export function createMock() {
     history_status: () => samplerStatus(),
     metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
       await wait(150);
-      return historySeries(metric, fromUnixMs, toUnixMs);
+      const series = historySeries(metric, fromUnixMs, toUnixMs);
+      // Reading history publishes its events (and a finished recording) as selection sources.
+      const targets = series.events.map((e) => ({ kind: "event", event_id: e.id }));
+      if (recording && recording.ended_at_unix_ms != null) targets.push({ kind: "recording", recording_id: recording.id });
+      if (targets.length) publishSource(targets, toUnixMs);
+      return series;
     },
     record_activity_start: ({ durationSeconds }) => {
       if (recording && recording.ended_at_unix_ms == null) throw new Error("A recording is already running.");
@@ -572,6 +599,52 @@ export function createMock() {
       const id = `preview-${sequence}`;
       pendingPreview = { id, question, names, conversationId, fileNames };
       return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot, file_name_sharing: fileNames ? fileNameSharing(lastScanRoot) : { names: [], scope: null } };
+    },
+    selection_sources: () => {
+      const now = Date.now();
+      return [...selectionSources.entries()]
+        .filter(([, source]) => source.expires > now)
+        .reverse()
+        .flatMap(([id, source]) => source.targets.map((target) => ({ reference: { source_id: id, target }, measured_at_unix_ms: source.measuredAt, historical: false })));
+    },
+    selection_preview: async ({ reference, intent, question = null, conversationId = null, names, fileNames = false }) => {
+      await wait(250);
+      if (!["explain", "investigate"].includes(intent)) throw new Error("Invalid local selection reference.");
+      const source = selectionSources.get(reference?.source_id);
+      if (!source || source.expires <= Date.now()) throw new Error("The selected capture expired or was invalidated. Select the measured item again.");
+      if (!source.targets.some((target) => sameTarget(target, reference.target))) throw new Error("The target does not belong to this source type.");
+      const verb = intent === "explain" ? "Explain" : "Investigate";
+      const noun = reference.target.kind === "resource" ? `the selected ${reference.target.resource} measurements` : `the selected ${reference.target.kind}`;
+      const asked = question || `${verb} ${noun}, stating what is measured and what remains uncertain.`;
+      const age = Date.now() - source.measuredAt;
+      const evidence = {
+        status: "ok",
+        selection: { target: reference.target, intent, fresh_collection: false },
+        measured_at_unix_ms: source.measuredAt,
+        age_ms: age,
+        freshness: "already_measured",
+        observations: reference.target.kind === "resource" && reference.target.resource === "memory"
+          ? [{ observation_id: "O0", metric: "physical_available_bytes", value: 3326083072, unit: "bytes", status: "ok" }, { observation_id: "O0", metric: "physical_total_bytes", value: 16888365056, unit: "bytes", status: "ok" }]
+          : [{ observation_id: "O0", metric: "cpu_busy_basis_points", value: 1850, unit: "basis_points", status: "ok" }],
+        limitations: ["Measurements were taken before this turn; they cannot verify the current state."],
+      };
+      if (names && reference.target.kind === "process") evidence.process_names = { [reference.target.entity_ref]: "chrome.exe" };
+      const message = { question: sanitize(asked), initial_observation: { selected_evidence: evidence } };
+      const id = `selection-preview-${++previewSequence}`;
+      selectionTickets.set(id, { reference, intent, question, conversationId, names, fileNames, asked });
+      return { preview_id: id, message, selected_evidence: evidence, intent, measured_at_unix_ms: source.measuredAt, age_ms: age, context_revision: 0, file_name_preview: { names: [], scope: null }, model_routing: { mode: "configured" }, configured_model_id: cloud().model_id };
+    },
+    selection_send: async ({ reference, intent, question = null, conversationId = null, previewId }) => {
+      const cloudRun = privacy.mode !== "local" && cloud().ready;
+      if (cloudRun && !privacy.confirmed) throw new Error("Confirm the sharing choice before sending.");
+      const ticket = selectionTickets.get(previewId);
+      if (!ticket) throw new Error("Open the selected-evidence sharing preview before sending.");
+      if (JSON.stringify(ticket.reference) !== JSON.stringify(reference) || ticket.intent !== intent || ticket.question !== question || ticket.conversationId !== conversationId) {
+        throw new Error("The selection, question, conversation, sharing or model settings changed. Open the preview again.");
+      }
+      selectionTickets.delete(previewId);
+      pendingPreview = { id: previewId, question: ticket.asked, names: privacy.mode === "complete", conversationId };
+      return commands.start_investigation({ request: { question: ticket.asked, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
     },
     send_message: async ({ conversationId = null, text, scopeIds = [], previewId = null }) => {
       const cloudRun = privacy.mode !== "local";
