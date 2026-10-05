@@ -257,11 +257,12 @@ fn escalation_does_not_reset_the_total_inference_or_tool_budget() {
 }
 #[test]
 fn verification_escalation_preserves_the_existing_repair_limit() {
-    let bad = "La mémoire mesurée est de 999 Go [O1].";
+    // A different wrong value each time, so the repairs are not cut short by a repeat.
+    let bad = |i: usize| format!("La mémoire mesurée est de 99{i} Go [O1].");
     let mut replies = vec![Ok(inspect("read"))];
-    replies.extend((0..=MAX_REPAIRS).map(|i| Ok(answer(&format!("p{i}"), bad, "medium"))));
+    replies.extend((0..=MAX_REPAIRS).map(|i| Ok(answer(&format!("p{i}"), &bad(i), "medium"))));
     let (primary, _) = script(SUPER, replies);
-    let (ultra, seen) = script(ULTRA, vec![Ok(answer("u0", bad, "medium"))]);
+    let (ultra, seen) = script(ULTRA, vec![Ok(answer("u0", &bad(9), "medium"))]);
     let mut model = routed(primary, ultra, EscalationReason::VerificationFailure);
     let report = investigate(
         &mut model,

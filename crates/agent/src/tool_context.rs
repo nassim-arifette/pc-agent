@@ -15,13 +15,19 @@ pub(crate) struct ToolContext {
 }
 
 impl ToolContext {
+    /// Records a payload the model received outside a tool reply, like the frozen selection in
+    /// the first message, so a tool that returns it again gets the short form.
+    pub(crate) fn seed(&mut self, cloud: &Value, citation: &str) {
+        self.seen
+            .entry(identity(cloud))
+            .or_insert_with(|| citation.into());
+    }
+
     pub(crate) fn message(&mut self, cloud: &Value) -> Value {
         let Some(citation) = cloud["observation_id"].as_str() else {
             return cloud.clone();
         };
-        let mut identity = cloud.clone();
-        remove_bookkeeping(&mut identity);
-        let key = identity.to_string();
+        let key = identity(cloud);
         if let Some(previous) = self.seen.get(&key) {
             let mut short = Map::new();
             for field in [
@@ -79,6 +85,13 @@ impl ToolContext {
             }
         }
     }
+}
+
+/// What two payloads must share to be the same result: everything but the citation bookkeeping.
+fn identity(cloud: &Value) -> String {
+    let mut identity = cloud.clone();
+    remove_bookkeeping(&mut identity);
+    identity.to_string()
 }
 
 fn remove_bookkeeping(value: &mut Value) {

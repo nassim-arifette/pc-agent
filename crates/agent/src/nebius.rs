@@ -17,18 +17,77 @@ use std::{
 };
 
 const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
+/// NVIDIA's sampling for Nemotron 3, from the model cards: Super and Ultra use temperature 1.0 and
+/// top_p 0.95 for every task, tool calling included; Nano's card gives 0.6 for tool calling.
+/// Greedy decoding (temperature 0) let Super loop until the output limit, with almost no
+/// reasoning, on 2026-10-03 and 2026-10-05.
+fn sampling(model_id: &str) -> (f64, f64) {
+    if model_id.to_ascii_lowercase().contains("nano") {
+        (0.6, 0.95)
+    } else {
+        (1.0, 0.95)
+    }
+}
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
+
+/// How much Nemotron 3 reasons before answering, through its chat template: `enable_thinking`,
+/// and the lighter mode, which Super calls `low_effort` and Ultra `medium_effort`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reasoning {
+    #[default]
+    On,
+    Low,
+    Off,
+}
+impl Reasoning {
+    /// The `NEBIUS_REASONING` setting; anything else keeps the default.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "on" => Some(Self::On),
+            "low" => Some(Self::Low),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Low => "low",
+            Self::Off => "off",
+        }
+    }
+    /// With reasoning, the cards ask for `force_nonempty_content` when tools are called, so a
+    /// call is never lost inside the reasoning.
+    fn template_kwargs(self, model_id: &str) -> Value {
+        let ultra = model_id.to_ascii_lowercase().contains("ultra");
+        match self {
+            Self::On => json!({"enable_thinking":true,"force_nonempty_content":true}),
+            Self::Low if ultra => {
+                json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
+            }
+            Self::Low => {
+                json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
+            }
+            Self::Off => json!({"enable_thinking":false}),
+        }
+    }
+}
 
 /// Intentionally does not implement Debug or Serialize: API keys must not enter logs.
 pub struct Config {
     api_key: String,
     model_id: String,
+    reasoning: Reasoning,
 }
 impl Config {
     pub fn model_id(&self) -> &str {
         &self.model_id
+    }
+    pub fn reasoning(&self) -> Reasoning {
+        self.reasoning
     }
     /// Reuse an already local credential for an explicit catalog-checked routing target.
     pub fn for_model(&self, model_id: &str) -> Result<Self, AgentError> {
@@ -36,19 +95,28 @@ impl Config {
         Ok(Self {
             api_key: self.api_key.clone(),
             model_id: model_id.into(),
+            reasoning: self.reasoning,
         })
     }
     pub fn from_env() -> Result<Self, AgentError> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
-    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` from whatever source the caller trusts
-    /// (environment, a per-user credentials file); empty values count as missing.
+    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` (and the optional
+    /// `NEBIUS_REASONING`) from whatever source the caller trusts (environment, a per-user
+    /// credentials file); empty values count as missing.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, AgentError> {
         let get = |name: &str| lookup(name).filter(|s| !s.trim().is_empty());
         let api_key = get("NEBIUS_API_KEY").ok_or(AgentError::MissingKey)?;
         let model_id = get("NEBIUS_MODEL_ID").ok_or(AgentError::MissingModel)?;
         validate_model_id(&model_id)?;
-        Ok(Self { api_key, model_id })
+        let reasoning = get("NEBIUS_REASONING")
+            .and_then(|text| Reasoning::parse(&text))
+            .unwrap_or_default();
+        Ok(Self {
+            api_key,
+            model_id,
+            reasoning,
+        })
     }
 }
 
@@ -168,6 +236,7 @@ impl Nebius {
         let client = Self::new(Config {
             api_key,
             model_id: String::new(),
+            reasoning: Reasoning::default(),
         })?;
         client.available_models(timeout)
     }
@@ -222,6 +291,14 @@ fn parse_reply(envelope: Envelope) -> Reply {
     };
     match choice.finish_reason.as_str() {
         "stop" | "tool_calls" => {}
+        // Nemotron sometimes keeps writing after complete tool calls (closing tags, then tabs)
+        // until the limit. The calls were finished before: keep them, drop what followed.
+        "length" if complete_calls(choice.message.tool_calls.as_deref()) => {
+            return Reply {
+                calls: choice.message.tool_calls.unwrap_or_default(),
+                ..billed
+            };
+        }
         "length" => return reject(AgentError::OutputLimit),
         _ => return reject(AgentError::IncompleteResponse),
     }
@@ -235,6 +312,20 @@ fn parse_reply(envelope: Envelope) -> Reply {
         ..billed
     }
 }
+/// At least one call, each with arguments that form a whole JSON object.
+fn complete_calls(calls: Option<&[ToolCall]>) -> bool {
+    calls.is_some_and(|calls| {
+        !calls.is_empty()
+            && calls.iter().all(|c| {
+                serde_json::from_str::<serde_json::Map<String, Value>>(&c.function.arguments)
+                    .is_ok()
+            })
+    })
+}
+
+/// Text written after complete tool calls, past which the rest of the stream is not read.
+const TEXT_AFTER_CALLS: usize = 2048;
+
 /// One server-sent event of a streamed completion.
 #[derive(Deserialize)]
 struct Chunk {
@@ -290,6 +381,9 @@ fn read_stream(
     let mut usage = None;
     let mut seen = false;
     let mut malformed = false;
+    // Text since the last tool-call delta, and the length at which it is checked next.
+    let mut after_calls = 0usize;
+    let mut check_at = TEXT_AFTER_CALLS;
     loop {
         line.clear();
         let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
@@ -326,7 +420,16 @@ fn read_stream(
             }
             let Some(delta) = choice.delta else { continue };
             if let Some(text) = delta.content {
+                after_calls += text.len();
                 content.get_or_insert_with(String::new).push_str(&text);
+            }
+            if delta
+                .tool_calls
+                .as_ref()
+                .is_some_and(|parts| !parts.is_empty())
+            {
+                after_calls = 0;
+                check_at = TEXT_AFTER_CALLS;
             }
             for part in delta.tool_calls.unwrap_or_default() {
                 if part.index > calls.len() || part.index >= MAX_STREAMED_CALLS {
@@ -349,6 +452,20 @@ fn read_stream(
                         on_call(&call.name, &call.arguments);
                     }
                 }
+            }
+        }
+        // Long text after finished calls is never part of them: stop reading instead of waiting
+        // for the output limit. The provider's usage, sent last, is then unknown.
+        if after_calls >= check_at {
+            check_at = after_calls + TEXT_AFTER_CALLS;
+            let finished = !calls.is_empty()
+                && calls.iter().all(|c| {
+                    serde_json::from_str::<serde_json::Map<String, Value>>(&c.arguments).is_ok()
+                });
+            if finished {
+                finish = Some("tool_calls".into());
+                content = None;
+                break;
             }
         }
     }
@@ -413,9 +530,13 @@ impl Model for Nebius {
             ToolChoice::Required => "required",
         };
         // Streamed so the answer can be shown while it is written; usage comes in the last event.
-        let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
-            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,"temperature":0.0,
+        let mut body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
+            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,
             "stream":true,"stream_options":{"include_usage":true}});
+        let (temperature, top_p) = sampling(&self.config.model_id);
+        body["temperature"] = json!(temperature);
+        body["top_p"] = json!(top_p);
+        body["chat_template_kwargs"] = self.config.reasoning.template_kwargs(&self.config.model_id);
         let response = self.send(
             self.client
                 .post(format!("{BASE_URL}/chat/completions"))
@@ -452,8 +573,9 @@ mod tests {
     #[test]
     fn truncated_filtered_and_malformed_replies_are_rejected_but_keep_their_usage() {
         let usage = json!({"prompt_tokens":4700,"completion_tokens":4096,"total_tokens":8796});
+        // Arguments cut before the end of the object: nothing can run.
         let call = json!([{"id":"c","type":"function",
-            "function":{"name":"get_system_snapshot","arguments":"{}"}}]);
+            "function":{"name":"get_system_snapshot","arguments":"{\"scope\":\"al"}}]);
         for (choices, error) in [
             (
                 json!([{"message":{"content":"{}","tool_calls":call},"finish_reason":"length"}]),
@@ -635,6 +757,48 @@ mod tests {
     }
 
     #[test]
+    fn complete_calls_survive_text_written_after_them() {
+        let call = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
+            "type":"function","function":{"name":"submit_answer",
+            "arguments":"{\"answer\":\"Lors de la mesure [O0].\"}"}}]}}]});
+        let junk = |text: &str| json!({"choices":[{"index":0,"delta":{"content":text}}]});
+        let usage = json!({"choices":[],
+            "usage":{"prompt_tokens":10,"completion_tokens":8192,"total_tokens":8202}});
+        // Cut at the output limit after a finished call: the call is kept, the rest dropped.
+        let long = json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]});
+        let reply = replay(&stream(&[
+            call.clone(),
+            junk("\n</tool_call>\n</function>"),
+            long,
+            usage,
+        ]));
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls.len(), 1);
+        assert!(reply.content.is_none());
+        assert_eq!(reply.completion_tokens, Some(8192));
+        // A long run of text after it is not read to the end: the stream stops early.
+        let mut events = vec![call];
+        events.extend((0..400).map(|_| junk("\t\t\t\t\t\t\t\t")));
+        events.push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}));
+        let reply = replay(&stream(&events));
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls[0].function.name, "submit_answer");
+        assert!(reply.content.is_none());
+        // The provider's usage comes last and was not read.
+        assert_eq!(reply.completion_tokens, None);
+        // Text after an unfinished call is read on: it may still be part of the arguments.
+        let open = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c2",
+            "type":"function","function":{"name":"submit_answer","arguments":"{\"answer\":\"x"}}]}}]});
+        let mut events = vec![open];
+        events.extend((0..400).map(|_| junk("\t\t\t\t\t\t\t\t")));
+        events.push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}));
+        assert_eq!(
+            replay(&stream(&events)).rejected,
+            Some(AgentError::OutputLimit)
+        );
+    }
+
+    #[test]
     fn plain_text_replies_stream_too() {
         let reply = replay(&stream(&[
             json!({"choices":[{"index":0,"delta":{"content":"Hel"}}]}),
@@ -643,6 +807,53 @@ mod tests {
         assert_eq!(reply.content.as_deref(), Some("Hello"));
         assert!(reply.calls.is_empty());
         assert_eq!(reply.total_tokens, None);
+    }
+
+    #[test]
+    fn reasoning_setting_maps_to_nemotron_template_switches() {
+        let lookup = |reasoning: Option<&'static str>| {
+            move |name: &str| match name {
+                "NEBIUS_API_KEY" => Some("k".to_owned()),
+                "NEBIUS_MODEL_ID" => Some("nvidia/nemotron-3-super-120b-a12b".to_owned()),
+                "NEBIUS_REASONING" => reasoning.map(str::to_owned),
+                _ => None,
+            }
+        };
+        const SUPER: &str = "nvidia/nemotron-3-super-120b-a12b";
+        const ULTRA: &str = "nvidia/Nemotron-3-Ultra-550b-a55b";
+        // Missing or unknown values keep full reasoning, with non-empty content for tool calls.
+        for absent in [None, Some(""), Some("max"), Some("OFF")] {
+            let config = Config::from_lookup(lookup(absent)).unwrap();
+            assert_eq!(config.reasoning(), Reasoning::On);
+            assert_eq!(
+                config.reasoning().template_kwargs(SUPER),
+                json!({"enable_thinking":true,"force_nonempty_content":true})
+            );
+        }
+        // The lighter mode has a different switch on each model.
+        let low = Config::from_lookup(lookup(Some("low"))).unwrap();
+        assert_eq!(
+            low.reasoning().template_kwargs(SUPER),
+            json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
+        );
+        assert_eq!(
+            low.reasoning().template_kwargs(ULTRA),
+            json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
+        );
+        let off = Config::from_lookup(lookup(Some(" off "))).unwrap();
+        assert_eq!(
+            off.reasoning().template_kwargs(ULTRA),
+            json!({"enable_thinking":false})
+        );
+        assert_eq!(sampling(SUPER), (1.0, 0.95));
+        assert_eq!(sampling(ULTRA), (1.0, 0.95));
+        assert_eq!(sampling("nvidia/nemotron-3-nano-30b-a3b"), (0.6, 0.95));
+        // A routing target keeps the chosen reasoning.
+        let ultra = off.for_model(ULTRA).unwrap();
+        assert_eq!(ultra.reasoning(), Reasoning::Off);
+        for mode in [Reasoning::On, Reasoning::Low, Reasoning::Off] {
+            assert_eq!(Reasoning::parse(mode.as_str()), Some(mode));
+        }
     }
 
     #[test]

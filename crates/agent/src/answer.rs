@@ -61,17 +61,68 @@ const CATEGORIES: [&str; 13] = [
     "other",
 ];
 
-/// The arguments of `submit_answer`, exactly as the model sent them.
+/// The arguments of `submit_answer`. Reading is lenient on form, never on content: an extra field
+/// is ignored, a list sent as one text is split into lines, and a missing or unknown confidence or
+/// category falls back to `medium` or `other`. Only the answer text itself is required.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct Submission {
     answer: String,
+    #[serde(default = "medium", deserialize_with = "lenient_confidence")]
     confidence: Confidence,
+    #[serde(default = "other", deserialize_with = "lenient_category")]
     category: Category,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text_list")]
     action_refs: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text_list")]
     follow_ups: Vec<String>,
+}
+
+fn medium() -> Confidence {
+    Confidence::Medium
+}
+fn other() -> Category {
+    Category::Other
+}
+
+/// A known value written in another case or with spaces or dashes, like `Medium` or `storage space`.
+fn known_word<T: serde::de::DeserializeOwned>(value: &Value) -> Option<T> {
+    let word = value
+        .as_str()?
+        .trim()
+        .to_lowercase()
+        .replace([' ', '-'], "_");
+    serde_json::from_value(json!(word)).ok()
+}
+
+fn lenient_confidence<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Confidence, D::Error> {
+    Ok(known_word(&Value::deserialize(d)?).unwrap_or(Confidence::Medium))
+}
+
+fn lenient_category<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Category, D::Error> {
+    Ok(known_word(&Value::deserialize(d)?).unwrap_or(Category::Other))
+}
+
+/// A list of texts, or one text with an item per line (bullets and numbering removed).
+fn text_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        Value::String(text) => text
+            .lines()
+            .map(|line| {
+                line.trim()
+                    .trim_start_matches(|c: char| {
+                        c.is_ascii_digit() || matches!(c, '-' | '*' | '•' | '.' | ')')
+                    })
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|line| !line.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +147,8 @@ pub enum IssueKind {
     UnknownCitation,
     MissingCitation,
     UnsupportedNumber,
+    /// The value is in a source measured before this turn, but the sentence presents it as current.
+    HistoricalWording,
     UnseenName,
     Command,
     Link,
@@ -113,12 +166,14 @@ pub enum IssueKind {
     NoToolCall,
 }
 impl IssueKind {
-    /// What the model must change, sent with the repair request.
+    /// What the model must change, sent with the repair request. `{ref}` stands for a reference
+    /// the answer may really cite.
     fn fix(self) -> &'static str {
         match self {
-            Self::UnknownCitation => "Cite only references listed in valid_references, written like [O2] or [F1].",
-            Self::MissingCitation => "Cite the observation each number comes from right after it, like [O2].",
-            Self::UnsupportedNumber => "The citation does not support this value for the named entity, even rounded or as a simple ratio. Cite the matching measurement immediately after the claim, or remove the number. Questions and previous answers are not measurements.",
+            Self::UnknownCitation => "Cite only references listed in valid_references, written like [{ref}].",
+            Self::MissingCitation => "Put the source of each number right after the number, before the period, like [{ref}]. Only the references in valid_references exist.",
+            Self::UnsupportedNumber => "The cited source does not hold this value for the named entity, even rounded or as a simple ratio. Copy the value from the measurement and cite that measurement right after it, or remove the number. Questions and previous answers are not measurements.",
+            Self::HistoricalWording => "This value is in the cited source, but that source was measured before this turn. Keep the number and its citation, and rewrite this sentence in the past, tied to the measurement, like 'When it was measured, ... was ... [{ref}].' or 'Lors de la mesure, ... était de ... [{ref}].' Do not write now, currently, still, actuellement, maintenant or toujours in it.",
             Self::UnseenName => "No tool result contains this name. Do not guess program names; use the names or references the tools returned.",
             Self::Command => "Do not give commands to run. Describe the step in words, or propose an action with prepare_action_plan when it is offered.",
             Self::Link => "Remove links and images.",
@@ -132,8 +187,13 @@ impl IssueKind {
             Self::NoToolCall => "Answer by calling submit_answer; do not write the answer as a plain message.",
         }
     }
+    /// Marked in the shown answer without sending it back: an unknown action reference is already
+    /// dropped from `action_refs`.
+    pub(crate) fn mark_only(self) -> bool {
+        self == Self::UnknownAction
+    }
     /// A problem of the text itself: the answer can still be shown, marked as unverified.
-    fn in_text(self) -> bool {
+    pub(crate) fn in_text(self) -> bool {
         !matches!(
             self,
             Self::Malformed | Self::NoInspection | Self::NotAlone | Self::NoToolCall | Self::Empty
@@ -186,12 +246,12 @@ pub(crate) struct Context<'a> {
 
 pub(crate) fn definition() -> Value {
     json!({"type":"function","function":{"name":SUBMIT_ANSWER,
-        "description":"Finish the investigation with your answer. Call it alone, after at least one inspection.",
+        "description":"Finish the investigation with your answer. Call it alone, after at least one inspection; selected evidence in the first message counts as one.",
         "parameters":{"type":"object","additionalProperties":false,
             "required":["answer","confidence","category"],
             "properties":{
                 "answer":{"type":"string","maxLength":MAX_ANSWER_CHARS,
-                    "description":"The answer in the language of the question: the direct answer first, then what the user can do, then what supports it and what remains uncertain. Plain prose and short lists; cite the source of every number right after it, like [O2] or [F1]."},
+                    "description":"The answer in the language of the question: the direct answer first, then what the user can do, then what supports it and what remains uncertain. Plain prose and short lists; cite the source of every number right after it, like [O1] or [F1]. Numbers from an earlier measurement are written in the past."},
                 "confidence":{"type":"string","enum":["high","medium","low"],
                     "description":"How well the measurements support the answer."},
                 "category":{"type":"string","enum":CATEGORIES,
@@ -209,21 +269,127 @@ pub(crate) fn repair_request(
     issues: &[Issue],
     references: &[(String, CitationKind, String)],
 ) -> Value {
+    let mut valid: Vec<&str> = Vec::new();
+    for (reference, _, _) in references {
+        if !valid.contains(&reference.as_str()) {
+            valid.push(reference);
+        }
+    }
+    // Examples name a reference that exists in this turn, never a made-up one.
+    let example = references
+        .iter()
+        .find(|(_, kind, _)| *kind == CitationKind::Observation)
+        .map_or("O1", |(reference, _, _)| reference.as_str());
     let problems: Vec<Value> = issues
         .iter()
-        .map(|i| json!({"kind":i.kind,"excerpt":i.excerpt,"fix":i.kind.fix()}))
+        .map(|i| json!({"kind":i.kind,"excerpt":i.excerpt,"fix":i.kind.fix().replace("{ref}", example)}))
         .collect();
-    let mut request = json!({"accepted":false,"problems":problems,
-        "next":"Correct only these problems and call submit_answer again with the complete answer."});
+    let kinds = |kind: IssueKind| issues.iter().any(|i| i.kind == kind);
+    let next = if kinds(IssueKind::NoInspection) {
+        "Call an inspection tool now; call submit_answer only after its result."
+    } else if kinds(IssueKind::NotAlone) {
+        "Call submit_answer alone, with the complete answer."
+    } else if kinds(IssueKind::NoToolCall) {
+        "Call submit_answer with your complete answer."
+    } else {
+        "Correct only these problems and call submit_answer again with the complete answer."
+    };
+    let mut request = json!({"accepted":false,"problems":problems,"next":next});
     if issues.iter().any(|i| {
         matches!(
             i.kind,
-            IssueKind::UnknownCitation | IssueKind::MissingCitation
+            IssueKind::UnknownCitation
+                | IssueKind::MissingCitation
+                | IssueKind::UnsupportedNumber
+                | IssueKind::HistoricalWording
         )
     }) {
-        request["valid_references"] = references.iter().map(|(r, _, _)| r.as_str()).collect();
+        request["valid_references"] = json!(valid);
     }
     request
+}
+
+/// Fields of the submit_answer schema, the only names a malformed-submission note may repeat.
+const SUBMISSION_FIELDS: [&str; 5] = [
+    "answer",
+    "confidence",
+    "category",
+    "action_refs",
+    "follow_ups",
+];
+
+/// A closed description of why a submission does not parse, like `missing_field category`: a
+/// class and a declared field name, never text the model wrote.
+fn malformed(error: &serde_json::Error) -> String {
+    let message = error.to_string();
+    let class = if message.starts_with("unknown field") {
+        "unknown_field"
+    } else if message.starts_with("missing field") {
+        "missing_field"
+    } else if message.starts_with("invalid type") {
+        "invalid_type"
+    } else if message.starts_with("unknown variant") || message.starts_with("invalid value") {
+        "invalid_value"
+    } else {
+        "syntax"
+    };
+    // Only the part before serde's list of expected names says which field is at fault.
+    let subject = message.split(", expected").next().unwrap_or_default();
+    let field = SUBMISSION_FIELDS
+        .iter()
+        .find(|field| subject.contains(&format!("`{field}`")))
+        .copied()
+        .unwrap_or("unknown");
+    format!("{class} {field}")
+}
+
+/// How much of a shown answer is unverified: one per number without a source, one per other
+/// problem in the text. Used to keep the best of several attempts.
+pub(crate) fn unverified_claims(answer: &Answer) -> usize {
+    answer
+        .unverified
+        .iter()
+        .map(|issue| match issue.kind {
+            IssueKind::MissingCitation => claims(&issue.excerpt).len().max(1),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Prefixes of the opaque references a model may write (`proc-1a2b3c4d`, `file-3`, `dir-7`).
+const REFERENCE_PREFIXES: [&str; 4] = ["proc", "app", "file", "dir"];
+/// Typographic dashes models write instead of the ASCII hyphen, e.g. `proc‑1a2b` (U+2011).
+const REFERENCE_DASHES: [char; 6] = [
+    '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2212}', '\u{fe63}',
+];
+
+/// Rewrites a typographic dash inside an opaque reference as the ASCII hyphen, so the reference
+/// is recognised by the checks and replaced by the local name in the window. Only a dash between
+/// a known prefix word and an ASCII alphanumeric character changes; other text is untouched.
+fn ascii_reference_hyphens(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if REFERENCE_DASHES.contains(&c)
+            && chars.get(i + 1).is_some_and(char::is_ascii_alphanumeric)
+        {
+            let word: String = chars[..i]
+                .iter()
+                .rev()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let boundary = i == word.len() || !chars[i - word.len() - 1].is_alphanumeric();
+            if boundary && REFERENCE_PREFIXES.contains(&word.as_str()) {
+                out.push('-');
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The problems of a submission and, when its text could be checked, the answer to show if
@@ -232,11 +398,17 @@ pub(crate) type Rejection = (Vec<Issue>, Option<Box<Answer>>);
 
 /// Parses and checks one submission. `Ok` is an answer without problems.
 pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejection> {
-    let Ok(submission) = serde_json::from_str::<Submission>(arguments) else {
-        return Err((vec![Issue::new(IssueKind::Malformed, "")], None));
+    let submission = match serde_json::from_str::<Submission>(arguments) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return Err((
+                vec![Issue::new(IssueKind::Malformed, malformed(&error))],
+                None,
+            ));
+        }
     };
     let mut issues = Vec::new();
-    let mut text = submission.answer.trim().to_owned();
+    let mut text = ascii_reference_hyphens(submission.answer.trim());
     if text.is_empty() {
         return Err((vec![Issue::new(IssueKind::Empty, "")], None));
     }
@@ -284,8 +456,11 @@ pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejec
         unverified: Vec::new(),
         repairs: 0,
     };
-    if issues.is_empty() {
-        Ok(answer)
+    if issues.iter().all(|i| i.kind.mark_only()) {
+        Ok(Answer {
+            unverified: issues,
+            ..answer
+        })
     } else {
         let shown = Answer {
             unverified: issues
@@ -1553,28 +1728,56 @@ mod tests {
             references: &references,
             plans: &plans,
         };
-        let malformed = review(
-            r#"{"answer":"x","confidence":"sure","category":"memory"}"#,
+        // Form is read leniently: an unknown confidence is medium, an extra field is ignored and
+        // a list sent as one text has one item per line.
+        let lenient = review(
+            r#"{"answer":"x","confidence":"Sure","category":"Storage space","verdict":"ok","follow_ups":"- Et le disque D: ?\n2. Et la mémoire ?"}"#,
             &ctx,
+        )
+        .unwrap();
+        assert_eq!(lenient.confidence, Confidence::Medium);
+        assert_eq!(lenient.category, Category::StorageSpace);
+        assert_eq!(lenient.follow_ups, ["Et le disque D: ?", "Et la mémoire ?"]);
+        let missing = review(r#"{"answer":"x"}"#, &ctx).unwrap();
+        assert_eq!(
+            (missing.confidence, missing.category),
+            (Confidence::Medium, Category::Other)
         );
+        let malformed = review(r#"{"confidence":"low"}"#, &ctx);
         assert!(matches!(malformed, Err((ref i, None)) if i[0].kind == IssueKind::Malformed));
-        let extra = review(
-            r#"{"answer":"x","confidence":"low","category":"memory","verdict":"ok"}"#,
-            &ctx,
-        );
-        assert!(extra.is_err());
         let args =
             json!({"answer":"Free space [O1].","confidence":"low","category":"storage_space",
             "action_refs":["plan-1","plan-9"],
             "follow_ups":["  Et le disque D: ?  ","See https://x.test",""]})
             .to_string();
-        let Err((issues, Some(shown))) = review(&args, &ctx) else {
-            panic!("an unknown plan is a problem");
-        };
-        assert_eq!(issues[0].kind, IssueKind::UnknownAction);
+        // An unknown plan is dropped and marked; the answer is not sent back for it.
+        let shown = review(&args, &ctx).unwrap();
+        assert_eq!(shown.unverified[0].kind, IssueKind::UnknownAction);
         assert_eq!(shown.action_refs, ["plan-1"]);
         assert_eq!(shown.follow_ups, ["Et le disque D: ?"]);
         assert_eq!(shown.unverified.len(), 1);
+    }
+
+    #[test]
+    fn typographic_dashes_in_references_become_ascii_hyphens() {
+        // Seen in a real answer: "firefox.exe (proc‑5580aed9)" with U+2011.
+        assert_eq!(
+            ascii_reference_hyphens("firefox.exe (proc\u{2011}5580aed9) utilisait 2,25 GiB"),
+            "firefox.exe (proc-5580aed9) utilisait 2,25 GiB"
+        );
+        assert_eq!(
+            ascii_reference_hyphens("file\u{2013}3 et dir\u{2010}7"),
+            "file-3 et dir-7"
+        );
+        // Ordinary text keeps its dashes: no known prefix, or not followed by a reference.
+        for text in [
+            "Mesure \u{2013} 3 GiB",
+            "approc\u{2011}12",
+            "proc\u{2011} seul",
+            "2\u{2212}3",
+        ] {
+            assert_eq!(ascii_reference_hyphens(text), text);
+        }
     }
 
     #[test]
@@ -1589,10 +1792,90 @@ mod tests {
         assert!(request["problems"][0]["fix"]
             .as_str()
             .unwrap()
-            .contains("citation"));
-        assert!(request.get("valid_references").is_none());
+            .contains("cite that measurement"));
+        assert_eq!(request["valid_references"], json!(["O0", "O1", "F1"]));
         let request = repair_request(&[Issue::new(IssueKind::UnknownCitation, "[O9]")], &refs());
         assert_eq!(request["valid_references"], json!(["O0", "O1", "F1"]));
+        // Examples name a reference that exists, listed once.
+        let mut doubled = refs();
+        doubled.push(("F1".into(), CitationKind::Finding, "finding-real".into()));
+        let request = repair_request(
+            &[Issue::new(IssueKind::MissingCitation, "11,75 GiB")],
+            &doubled,
+        );
+        let fix = request["problems"][0]["fix"].as_str().unwrap();
+        assert!(fix.contains("[O0]") && !fix.contains("[O2]"), "{fix}");
+        assert_eq!(request["valid_references"], json!(["O0", "O1", "F1"]));
+        let request = repair_request(
+            &[Issue::new(IssueKind::HistoricalWording, "11,75 GiB")],
+            &refs(),
+        );
+        assert!(request["problems"][0]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("in the past"));
+        assert!(request["valid_references"].is_array());
+        // A protocol problem asks for the next step, not for the same answer again.
+        let request = repair_request(&[Issue::new(IssueKind::NoInspection, "")], &refs());
+        assert!(!request["next"].as_str().unwrap().contains("again"));
+        assert!(request.get("valid_references").is_none());
+    }
+
+    #[test]
+    fn a_malformed_submission_says_which_field_is_wrong() {
+        let ctx = Context {
+            received: &[],
+            references: &refs(),
+            plans: &[],
+        };
+        // A closed class and a declared field, never text the model wrote.
+        let Err((issues, None)) = review(r#"{"confidence":"high","citations":[]}"#, &ctx) else {
+            panic!("an answer without text is malformed");
+        };
+        assert_eq!(issues[0].kind, IssueKind::Malformed);
+        assert_eq!(issues[0].excerpt, "missing_field answer");
+        let Err((issues, None)) = review(r#"{"answer":"x","#, &ctx) else {
+            panic!("broken JSON is malformed");
+        };
+        assert_eq!(issues[0].excerpt, "syntax unknown");
+    }
+
+    #[test]
+    fn earlier_values_cited_as_current_ask_for_past_wording() {
+        let received = vec![json!({"historical":true,
+            "initial_observation":{"observation_id":"O0","historical":true,
+                "values":{"system":{"physical_memory_total":12_616_466_432_u64}},
+                "units":{"physical_memory_total":"bytes"}}})];
+        let ctx = Context {
+            received: &received,
+            references: &refs(),
+            plans: &[],
+        };
+        let kinds = |text: &str| -> Vec<IssueKind> {
+            let args = json!({"answer":text,"confidence":"high","category":"memory"});
+            match review(&args.to_string(), &ctx) {
+                Ok(_) => Vec::new(),
+                Err((issues, _)) => issues.into_iter().map(|i| i.kind).collect(),
+            }
+        };
+        assert_eq!(
+            kinds("La mémoire physique totale est de 11,75 Gio [O0]."),
+            [IssueKind::HistoricalWording]
+        );
+        assert_eq!(
+            kinds("La mémoire physique totale est de 99 Gio [O0]."),
+            [IssueKind::UnsupportedNumber]
+        );
+        assert!(
+            kinds("Lors de la mesure, la mémoire physique totale était de 11,75 Gio [O0].")
+                .is_empty()
+        );
+        assert!(kinds("Les mesures montrent 11,75 Gio de mémoire physique [O0].").is_empty());
+        assert!(kinds("The measured total memory was 11.75 GiB [O0].").is_empty());
+        assert_eq!(
+            kinds("La mémoire physique totale était de 11,75 Gio et reste toujours la même [O0]."),
+            [IssueKind::HistoricalWording]
+        );
     }
 
     #[test]
@@ -1613,6 +1896,37 @@ mod tests {
         assert_eq!(claims("moins de 3 ms")[0].bound, Bound::AtMost);
         assert_eq!(claims("plus de 2 Go")[0].bound, Bound::AtLeast);
         assert_eq!(claims("environ 80 %")[0].bound, Bound::About);
+    }
+
+    #[test]
+    fn one_instance_of_a_program_named_once_is_any_of_its_processes() {
+        let received = vec![json!({"observation_id":"O1",
+            "process_names":{"proc-a":"firefox.exe","proc-b":"firefox.exe","proc-c":"chrome.exe"},
+            "measurements":{"values":{
+                "proc-a":{"process_working_set_bytes":2_373_000_000_u64},
+                "proc-b":{"process_working_set_bytes":540_000_000_u64},
+                "proc-c":{"process_working_set_bytes":900_000_000_u64}},
+            "units":{"process_working_set_bytes":"bytes"}}})];
+        let references = refs();
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "Une instance de Firefox utilisait 2,21 GiB [O1].",
+            "Une instance de firefox.exe utilisait 540 MB [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_ok(), "{text}");
+        }
+        for text in [
+            // No instance holds this value.
+            "Une instance de Firefox utilisait 9 GiB [O1].",
+            // Different programs keep strict attribution: chrome.exe never borrows firefox.exe's.
+            "chrome.exe et firefox.exe utilisaient 2,21 GiB [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_err(), "{text}");
+        }
     }
 
     #[test]

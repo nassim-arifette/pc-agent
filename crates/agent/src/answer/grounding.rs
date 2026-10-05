@@ -2,7 +2,7 @@
 //! Conversation prose is useful context, but cannot certify a measurement.
 use super::{claims, is_reference, Context, Dim, Issue, IssueKind, Known};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) {
     for passage in passages(text) {
@@ -16,55 +16,113 @@ pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issu
             continue;
         }
         let mentioned = subjects(ctx.received, passage);
+        // Several processes of one program named once ("une instance de Firefox"): the claim is
+        // about one of them. Different programs keep strict attribution.
+        let instances: Vec<BTreeSet<String>> = if same_program(ctx.received, &mentioned) {
+            mentioned
+                .iter()
+                .map(|s| BTreeSet::from([s.clone()]))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for claim in claims {
             let references = &groups
                 .iter()
                 .find(|(at, _)| *at >= claim.end)
                 .unwrap_or_else(|| groups.last().expect("non-empty groups"))
                 .1;
-            let query = Query {
-                passage,
-                subjects: &mentioned,
-                topic: topic(passage, claim.dim),
+            let supported = |any_wording: bool| {
+                std::iter::once(&mentioned)
+                    .chain(&instances)
+                    .any(|subjects| {
+                        let query = Query {
+                            passage,
+                            subjects,
+                            topic: topic(passage, claim.dim),
+                            any_wording,
+                        };
+                        known(ctx, references, &query).supports(&claim)
+                    })
             };
-            let mut values = Vec::new();
-            let mut facts = Vec::new();
-            for reference in references {
-                if !ctx.references.iter().any(|(r, _, _)| r == reference) {
-                    continue;
-                }
-                for received in ctx.received {
-                    collect_source(received, reference, &query, &mut values, &mut facts);
-                }
+            if supported(false) {
+                continue;
             }
-            let mut known =
-                Known::from_received(&values, !matches!(query.topic, Topic::Battery(_)));
-            // Findings are generated locally from measured facts. Do not parse their hypotheses,
-            // missing-data notes or recommendations as numerical evidence.
-            for fact in facts {
-                if query.subjects.len() > 1
-                    || (!query.subjects.is_empty()
-                        && subjects(ctx.received, &fact) != *query.subjects)
-                {
-                    continue;
-                }
-                for claim in super::claims(&fact) {
-                    if query.topic != Topic::Any && topic(&fact, claim.dim) != query.topic {
-                        continue;
-                    }
-                    known.values.extend(
-                        claim
-                            .values
-                            .into_iter()
-                            .map(|(value, _)| (claim.dim, value)),
-                    );
-                }
-            }
-            if !known.supports(&claim) {
-                issues.push(Issue::new(IssueKind::UnsupportedNumber, claim.excerpt));
-            }
+            // A value of an earlier measurement cited as if it were current: the number is right,
+            // the sentence must say when it was measured.
+            let kind = if supported(true) {
+                IssueKind::HistoricalWording
+            } else {
+                IssueKind::UnsupportedNumber
+            };
+            issues.push(Issue::new(kind, claim.excerpt));
         }
     }
+}
+
+/// Whether every reference was named through the same executable name, like several firefox.exe.
+fn same_program(received: &[Value], references: &BTreeSet<String>) -> bool {
+    fn collect(value: &Value, names: &mut BTreeMap<String, String>) {
+        match value {
+            Value::Object(map) => {
+                for key in ["process_names", "shared_names"] {
+                    if let Some(found) = map.get(key).and_then(Value::as_object) {
+                        for (reference, name) in found {
+                            if let Some(name) = name.as_str() {
+                                names.insert(reference.clone(), name.to_lowercase());
+                            }
+                        }
+                    }
+                }
+                map.values().for_each(|child| collect(child, names));
+            }
+            Value::Array(items) => items.iter().for_each(|child| collect(child, names)),
+            _ => {}
+        }
+    }
+    if references.len() < 2 {
+        return false;
+    }
+    let mut names = BTreeMap::new();
+    received.iter().for_each(|value| collect(value, &mut names));
+    let programs: BTreeSet<_> = references.iter().map(|r| names.get(r)).collect();
+    programs.len() == 1 && programs.iter().all(Option::is_some)
+}
+
+/// The values the cited references hold for this claim's subjects and topic.
+fn known(ctx: &Context<'_>, references: &[&str], query: &Query<'_>) -> Known {
+    let mut values = Vec::new();
+    let mut facts = Vec::new();
+    for reference in references {
+        if !ctx.references.iter().any(|(r, _, _)| r == reference) {
+            continue;
+        }
+        for received in ctx.received {
+            collect_source(received, reference, query, &mut values, &mut facts);
+        }
+    }
+    let mut known = Known::from_received(&values, !matches!(query.topic, Topic::Battery(_)));
+    // Findings are generated locally from measured facts. Do not parse their hypotheses,
+    // missing-data notes or recommendations as numerical evidence.
+    for fact in facts {
+        if query.subjects.len() > 1
+            || (!query.subjects.is_empty() && subjects(ctx.received, &fact) != *query.subjects)
+        {
+            continue;
+        }
+        for fact_claim in super::claims(&fact) {
+            if query.topic != Topic::Any && topic(&fact, fact_claim.dim) != query.topic {
+                continue;
+            }
+            known.values.extend(
+                fact_claim
+                    .values
+                    .into_iter()
+                    .map(|(value, _)| (fact_claim.dim, value)),
+            );
+        }
+    }
+    known
 }
 
 /// A source must be in the same sentence or list item as its claims. Decimal separators and
@@ -116,6 +174,8 @@ struct Query<'a> {
     passage: &'a str,
     subjects: &'a BTreeSet<String>,
     topic: Topic,
+    /// Read earlier measurements whatever the wording, to tell a dating problem from a wrong value.
+    any_wording: bool,
 }
 
 fn accepts_record(record: &Value, query: &Query<'_>) -> bool {
@@ -213,7 +273,7 @@ fn accepts_recording_metric(metric: &str, query: &Query<'_>) -> bool {
 /// remain in the received payload for provenance; they are not runtime measurements. Likewise,
 /// derivation inputs remain inspectable there without becoming interchangeable result values.
 fn recording_battery_values(value: &Value, query: &Query<'_>) -> Value {
-    if !describes_history(query.passage) {
+    if !query.any_wording && !describes_history(query.passage) {
         return json!({});
     }
     let Some(batteries) = value["batteries"].as_array() else {
@@ -280,7 +340,7 @@ fn collect_source(
     facts: &mut Vec<String>,
 ) {
     let Some(map) = value.as_object() else { return };
-    if value["historical"] == true && !describes_history(query.passage) {
+    if value["historical"] == true && !query.any_wording && !describes_history(query.passage) {
         return;
     }
     if map.get("observation_id").and_then(Value::as_str) == Some(reference) {
@@ -331,8 +391,18 @@ fn describes_history(passage: &str) -> bool {
         "capturé",
         "capturée",
         "mesure",
+        "mesures",
         "mesuré",
         "mesurée",
+        "mesurés",
+        "mesurées",
+        "relevé",
+        "relevée",
+        "relevés",
+        "relevées",
+        "measured",
+        "measurement",
+        "measurements",
         "history",
         "historical",
         "enregistrement",
@@ -344,8 +414,24 @@ fn describes_history(passage: &str) -> bool {
         "yesterday",
         "était",
         "étaient",
+        "avait",
+        "avaient",
+        "utilisait",
+        "utilisaient",
+        "occupait",
+        "occupaient",
+        "consommait",
+        "consommaient",
+        "montrait",
+        "montraient",
+        "restait",
+        "restaient",
+        "atteignait",
+        "atteignaient",
         "was",
         "were",
+        "showed",
+        "reached",
     ];
     let current = [
         "now",
@@ -918,14 +1004,26 @@ mod tests {
     #[test]
     fn recorded_battery_evidence_requires_historical_language() {
         let mut received = recorded_batteries();
-        unsupported(
+        // The recorded value is right; only its wording claims it is current.
+        let dated = |text: &str, received: &Value| {
+            let kinds: Vec<_> = number_issues(text, received)
+                .into_iter()
+                .map(|i| i.kind)
+                .collect();
+            assert_eq!(kinds, [IssueKind::HistoricalWording], "{text}");
+        };
+        dated(
             &format!("Battery {BATTERY_A} has 1 Wh remaining now [O1]."),
             &received,
         );
         // The recording structure is historical even if its enclosing flag was omitted.
         received.as_object_mut().unwrap().remove("historical");
-        unsupported(
+        dated(
             &format!("Battery {BATTERY_A} has 1 Wh remaining now [O1]."),
+            &received,
+        );
+        unsupported(
+            &format!("Battery {BATTERY_A} has 7 Wh remaining now [O1]."),
             &received,
         );
         assert!(number_issues(
@@ -980,6 +1078,7 @@ mod tests {
                 passage: &text,
                 subjects: &mentioned,
                 topic: topic(&text, Dim::WattHours),
+                any_wording: false,
             },
         );
         assert_eq!(
