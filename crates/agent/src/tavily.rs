@@ -194,18 +194,32 @@ pub(crate) fn parse_response(value: &Value, domains: &[String]) -> Result<WebSea
 /// The host of an `https://` URL without `www.`, lowercase; `None` for any other scheme.
 pub fn domain(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://")?;
-    let host = rest.split(['/', '?', '#']).next()?;
-    let host = host
-        .rsplit('@')
-        .next()?
-        .split(':')
-        .next()?
-        .to_ascii_lowercase();
-    let valid = !host.is_empty()
-        && host.contains('.')
-        && host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    // URLs with user information, a backslash, a bad port or any space, quote or control
+    // character are refused: browsers and this parser could disagree on their host.
+    if !url
+        .bytes()
+        .all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'\\' | b'^' | b'`' | b'<' | b'>'))
+    {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    if port.is_some_and(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+    let valid = host.contains('.')
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
     valid.then(|| host.strip_prefix("www.").unwrap_or(&host).to_owned())
 }
 
@@ -305,9 +319,12 @@ mod tests {
             Some("intel.com")
         );
         assert_eq!(
-            domain("https://user@learn.microsoft.com:443/x").as_deref(),
+            domain("https://learn.microsoft.com:443/x").as_deref(),
             Some("learn.microsoft.com")
         );
+        assert_eq!(domain("https://user@learn.microsoft.com/x"), None);
+        assert_eq!(domain("https://evil.com\\@nvidia.com/"), None);
+        assert_eq!(domain("https://nvidia.com:80a/"), None);
         assert_eq!(domain("http://intel.com"), None);
         assert_eq!(domain("javascript:alert(1)"), None);
         assert_eq!(domain("https://localhost/x"), None);

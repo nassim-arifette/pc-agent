@@ -346,26 +346,17 @@ pub fn show_in_explorer(path: &Path) -> Result<(), EffectError> {
     spawn_explorer(&arg).map(|_| ())
 }
 /// Opens an `https://` page in the default browser, at the user's click on a cited web source.
-/// Only a plain URL is accepted: no other scheme, quote, space or control character.
+/// Explorer receives the address as its only argument. [`crate::web_url_allowed`] refuses commas
+/// and semicolons, Explorer's separators, so no part of the address can become a switch or a
+/// second object to open.
 pub fn open_web_page(url: &str) -> Result<(), EffectError> {
-    if !web_url_allowed(url) {
+    if !crate::web_url_allowed(url) {
         return Err(EffectError::new(
             Status::Error,
-            "only https web pages can be opened",
+            "only plain https web pages can be opened",
         ));
     }
     spawn_explorer(url).map(|_| ())
-}
-pub(crate) fn web_url_allowed(url: &str) -> bool {
-    url.len() <= 2048
-        && url.strip_prefix("https://").is_some_and(|rest| {
-            rest.split('/')
-                .next()
-                .is_some_and(|host| host.contains('.'))
-        })
-        && url
-            .bytes()
-            .all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'^' | b'`'))
 }
 pub fn open_settings_page(page: SettingsPage) -> Result<EffectOutcome, EffectError> {
     spawn_explorer(page.uri())

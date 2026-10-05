@@ -140,8 +140,8 @@ const CURRENCIES: [&str; 7] = ["€", "$", "£", "eur", "usd", "gbp", "euros"];
 /// Amounts written with a currency, like `89,99 €`, `$129` or `1 299 EUR`: the excerpt and the
 /// values it can mean (a comma can separate decimals or thousands).
 fn prices(passage: &str) -> Vec<(String, Vec<f64>)> {
-    let lower = passage.to_lowercase();
-    let chars: Vec<(usize, char)> = lower.char_indices().collect();
+    // Positions come from the passage itself: lowercasing can change byte lengths.
+    let chars: Vec<(usize, char)> = passage.char_indices().collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
@@ -158,10 +158,10 @@ fn prices(passage: &str) -> Vec<(String, Vec<f64>)> {
         {
             j += 1;
         }
-        let end = chars.get(j).map_or(lower.len(), |(at, _)| *at);
-        let number = &lower[start..end];
-        let before = lower[..start].trim_end();
-        let after = lower[end..].trim_start();
+        let end = chars.get(j).map_or(passage.len(), |(at, _)| *at);
+        let number = &passage[start..end];
+        let before = passage[..start].trim_end().to_lowercase();
+        let after = passage[end..].trim_start().to_lowercase();
         let currency = CURRENCIES
             .iter()
             .any(|c| after.starts_with(c) || before.ends_with(c));

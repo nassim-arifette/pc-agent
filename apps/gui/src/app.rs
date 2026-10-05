@@ -1821,10 +1821,13 @@ fn save_cloud_settings(
 fn save_search_key(api_key: Option<String>) -> Result<view::Cloud, String> {
     let file = credentials::file_path().ok_or("The APPDATA folder is unknown.")?;
     let key = api_key.map(|k| k.trim().to_owned()).unwrap_or_default();
-    if !key.is_empty() && !key.starts_with("tvly-") {
+    if key.is_empty() {
+        credentials::remove(&file, &["TAVILY_API_KEY"])?;
+    } else if !key.starts_with("tvly-") {
         return Err("A Tavily key starts with tvly-.".into());
+    } else {
+        credentials::save(&file, &[("TAVILY_API_KEY", key.as_str())])?;
     }
-    credentials::save(&file, &[("TAVILY_API_KEY", key.as_str())])?;
     Ok(view::cloud(&Credentials::load()))
 }
 
@@ -1855,6 +1858,11 @@ fn open_web_source(
         .find(|c| c["reference"] == reference.as_str() && c["kind"] == "web")
         .and_then(|c| c["web"]["url"].as_str())
         .ok_or("This answer has no such web source.")?;
+    // Even a stored report that was altered can only open a site the lookups search.
+    let host = pcagent_agent::tavily::domain(url).ok_or("Only https web pages can be opened.")?;
+    if !pcagent_agent::external_tools::searchable(&host) {
+        return Err("This address is not one of the sites web lookups search.".into());
+    }
     pcagent_actions::open_web_page(url).map_err(|e| e.detail)
 }
 
