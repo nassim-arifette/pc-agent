@@ -1,10 +1,14 @@
 //! The answer text while `submit_answer` is still being written. A streamed tool call arrives as
-//! growing, incomplete JSON; this reads its top-level `text` string as far as it has arrived so
+//! growing, incomplete JSON; this reads its top-level `answer` string as far as it has arrived so
 //! an interface can show the draft. A draft is never evidence and is never checked: the answer
 //! that counts is the complete call, reviewed by the controller.
 
-/// The `text` field received so far, or `None` before its value starts. Escapes cut in half at
+/// The `answer` field received so far, or `None` before its value starts. Escapes cut in half at
 /// the end are left out until the rest arrives.
+/// The answer field of submit_answer (answer.rs). It was once `text`, which left the live draft
+/// empty for every real answer.
+const ANSWER_KEY: &str = "answer";
+
 pub fn draft_text(arguments: &str) -> Option<String> {
     let bytes = arguments.as_bytes();
     let mut i = 0;
@@ -23,7 +27,7 @@ pub fn draft_text(arguments: &str) -> Option<String> {
             b'"' => {
                 let (key, end) = read_string(arguments, i + 1);
                 i = end?;
-                if depth != 1 || key != "text" {
+                if depth != 1 || key != ANSWER_KEY {
                     continue;
                 }
                 // A key is followed by a colon; a string value is not.
@@ -118,33 +122,38 @@ mod tests {
     fn reads_the_text_as_far_as_it_arrived() {
         assert_eq!(draft_text(""), None);
         assert_eq!(draft_text("{\"te"), None);
-        assert_eq!(draft_text("{\"text\": "), None);
-        assert_eq!(draft_text("{\"text\": \"Votre PC"), Some("Votre PC".into()));
+        assert_eq!(draft_text("{\"answer\": "), None);
         assert_eq!(
-            draft_text("{\"confidence\":\"high\",\"text\":\"Ligne 1\\nLigne 2 [O1] \\\"cité\\\"\",\"follow_ups\":[]}"),
+            draft_text("{\"answer\": \"Votre PC"),
+            Some("Votre PC".into())
+        );
+        assert_eq!(
+            draft_text("{\"confidence\":\"high\",\"answer\":\"Ligne 1\\nLigne 2 [O1] \\\"cité\\\"\",\"follow_ups\":[]}"),
             Some("Ligne 1\nLigne 2 [O1] \"cité\"".into())
         );
     }
 
     #[test]
     fn half_escapes_wait_for_the_rest() {
-        assert_eq!(draft_text("{\"text\":\"a\\"), Some("a".into()));
-        assert_eq!(draft_text("{\"text\":\"a\\u00"), Some("a".into()));
-        assert_eq!(draft_text("{\"text\":\"a\\u00e9b"), Some("aéb".into()));
+        assert_eq!(draft_text("{\"answer\":\"a\\"), Some("a".into()));
+        assert_eq!(draft_text("{\"answer\":\"a\\u00"), Some("a".into()));
+        assert_eq!(draft_text("{\"answer\":\"a\\u00e9b"), Some("aéb".into()));
         assert_eq!(
-            draft_text("{\"text\":\"\\ud83d\\ude00!"),
+            draft_text("{\"answer\":\"\\ud83d\\ude00!"),
             Some("😀!".into())
         );
     }
 
     #[test]
-    fn only_the_top_level_text_counts() {
-        // A nested "text" or a value equal to "text" is not the answer.
-        let nested = "{\"meta\":{\"text\":\"no\"},\"category\":\"text\",\"text\":\"yes";
+    fn only_the_top_level_answer_counts() {
+        // A nested "answer" or a value equal to "answer" is not the answer, and the old "text"
+        // key is not read.
+        let nested = "{\"meta\":{\"answer\":\"no\"},\"category\":\"answer\",\"answer\":\"yes";
         assert_eq!(draft_text(nested), Some("yes".into()));
-        assert_eq!(draft_text("{\"category\":\"text\"}"), None);
+        assert_eq!(draft_text("{\"category\":\"answer\"}"), None);
+        assert_eq!(draft_text("{\"text\":\"old key\"}"), None);
         assert_eq!(
-            draft_text("{\"note\":\"a { brace\",\"text\":\"ok\"}"),
+            draft_text("{\"note\":\"a { brace\",\"answer\":\"ok\"}"),
             Some("ok".into())
         );
     }
