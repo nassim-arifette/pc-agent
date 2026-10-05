@@ -115,7 +115,13 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les chiffres
    et les citations, la liste des références valides. Une valeur juste tirée d'une mesure
    antérieure mais écrite au présent est signalée à part (`historical_wording`) : il suffit de la
-   dater. Au plus 3 réparations par enquête, partagées avec les appels d'outils refusés, le texte
+   dater. En Expliquer, où tout le tour décrit une capture affichée avec son heure, ce cas est
+   seulement marqué, sans réparation. La forme est lue avec souplesse et le contenu strictement :
+   seul le texte de la réponse est obligatoire, un champ en trop est ignoré, une liste envoyée en
+   un seul texte est découpée par ligne, une confiance ou une catégorie inconnue devient `medium`
+   ou `other`, et une référence d'action inconnue est retirée et marquée. Des appels d'outils
+   terminés (arguments JSON complets) sont gardés même si la réponse est ensuite coupée par la
+   limite de sortie. Au plus 3 réparations par enquête, partagées avec les appels d'outils refusés, le texte
    sans appel d'outil et les réponses coupées par la limite de sortie. Une réponse coupée est
    redemandée une fois, plus courte ; une deuxième coupure de suite termine le tour. Si le modèle
    renvoie deux fois de suite exactement les mêmes écarts, les réparations s'arrêtent ;
