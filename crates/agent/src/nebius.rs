@@ -17,16 +17,23 @@ use std::{
 };
 
 const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
-/// NVIDIA's sampling for Nemotron 3 tool calling. Greedy decoding (temperature 0) let Super loop
-/// until the output limit, with almost no reasoning, on 2026-10-03 and 2026-10-05.
-const TEMPERATURE: f64 = 0.6;
-const TOP_P: f64 = 0.95;
+/// NVIDIA's sampling for Nemotron 3, from the model cards: Super and Ultra use temperature 1.0 and
+/// top_p 0.95 for every task, tool calling included; Nano's card gives 0.6 for tool calling.
+/// Greedy decoding (temperature 0) let Super loop until the output limit, with almost no
+/// reasoning, on 2026-10-03 and 2026-10-05.
+fn sampling(model_id: &str) -> (f64, f64) {
+    if model_id.to_ascii_lowercase().contains("nano") {
+        (0.6, 0.95)
+    } else {
+        (1.0, 0.95)
+    }
+}
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
 
-/// How much Nemotron 3 reasons before answering, through its chat template
-/// (`enable_thinking`, `low_effort`). `On` sends nothing and keeps the model's default.
+/// How much Nemotron 3 reasons before answering, through its chat template: `enable_thinking`,
+/// and the lighter mode, which Super calls `low_effort` and Ultra `medium_effort`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reasoning {
@@ -52,11 +59,19 @@ impl Reasoning {
             Self::Off => "off",
         }
     }
-    fn template_kwargs(self) -> Option<Value> {
+    /// With reasoning, the cards ask for `force_nonempty_content` when tools are called, so a
+    /// call is never lost inside the reasoning.
+    fn template_kwargs(self, model_id: &str) -> Value {
+        let ultra = model_id.to_ascii_lowercase().contains("ultra");
         match self {
-            Self::On => None,
-            Self::Low => Some(json!({"enable_thinking":true,"low_effort":true})),
-            Self::Off => Some(json!({"enable_thinking":false})),
+            Self::On => json!({"enable_thinking":true,"force_nonempty_content":true}),
+            Self::Low if ultra => {
+                json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
+            }
+            Self::Low => {
+                json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
+            }
+            Self::Off => json!({"enable_thinking":false}),
         }
     }
 }
@@ -469,11 +484,11 @@ impl Model for Nebius {
         // Streamed so the answer can be shown while it is written; usage comes in the last event.
         let mut body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
             "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,
-            "temperature":TEMPERATURE,"top_p":TOP_P,
             "stream":true,"stream_options":{"include_usage":true}});
-        if let Some(kwargs) = self.config.reasoning.template_kwargs() {
-            body["chat_template_kwargs"] = kwargs;
-        }
+        let (temperature, top_p) = sampling(&self.config.model_id);
+        body["temperature"] = json!(temperature);
+        body["top_p"] = json!(top_p);
+        body["chat_template_kwargs"] = self.config.reasoning.template_kwargs(&self.config.model_id);
         let response = self.send(
             self.client
                 .post(format!("{BASE_URL}/chat/completions"))
@@ -713,24 +728,37 @@ mod tests {
                 _ => None,
             }
         };
-        // Missing or unknown values keep the model's default and send nothing extra.
+        const SUPER: &str = "nvidia/nemotron-3-super-120b-a12b";
+        const ULTRA: &str = "nvidia/Nemotron-3-Ultra-550b-a55b";
+        // Missing or unknown values keep full reasoning, with non-empty content for tool calls.
         for absent in [None, Some(""), Some("max"), Some("OFF")] {
             let config = Config::from_lookup(lookup(absent)).unwrap();
             assert_eq!(config.reasoning(), Reasoning::On);
-            assert_eq!(config.reasoning().template_kwargs(), None);
+            assert_eq!(
+                config.reasoning().template_kwargs(SUPER),
+                json!({"enable_thinking":true,"force_nonempty_content":true})
+            );
         }
+        // The lighter mode has a different switch on each model.
         let low = Config::from_lookup(lookup(Some("low"))).unwrap();
         assert_eq!(
-            low.reasoning().template_kwargs(),
-            Some(json!({"enable_thinking":true,"low_effort":true}))
+            low.reasoning().template_kwargs(SUPER),
+            json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
+        );
+        assert_eq!(
+            low.reasoning().template_kwargs(ULTRA),
+            json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
         );
         let off = Config::from_lookup(lookup(Some(" off "))).unwrap();
         assert_eq!(
-            off.reasoning().template_kwargs(),
-            Some(json!({"enable_thinking":false}))
+            off.reasoning().template_kwargs(ULTRA),
+            json!({"enable_thinking":false})
         );
+        assert_eq!(sampling(SUPER), (1.0, 0.95));
+        assert_eq!(sampling(ULTRA), (1.0, 0.95));
+        assert_eq!(sampling("nvidia/nemotron-3-nano-30b-a3b"), (0.6, 0.95));
         // A routing target keeps the chosen reasoning.
-        let ultra = off.for_model("nvidia/Nemotron-3-Ultra-550b-a55b").unwrap();
+        let ultra = off.for_model(ULTRA).unwrap();
         assert_eq!(ultra.reasoning(), Reasoning::Off);
         for mode in [Reasoning::On, Reasoning::Low, Reasoning::Off] {
             assert_eq!(Reasoning::parse(mode.as_str()), Some(mode));
