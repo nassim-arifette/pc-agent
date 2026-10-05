@@ -691,7 +691,13 @@ impl Investigation {
             }
             self.findings = current;
         }
-        self.findings.extend(output.findings);
+        // Finding IDs are deterministic per capture: a tool that returns findings the turn already
+        // holds (get_selected_evidence re-reads O0) must not list them twice.
+        for finding in output.findings {
+            if !self.findings.iter().any(|known| known.id == finding.id) {
+                self.findings.push(finding);
+            }
+        }
         self.evidence.extend(output.evidence);
         for p in output.processes {
             if !self
@@ -1259,7 +1265,13 @@ fn converse_inner(
             on_event(&event);
             result.tool_events.push(event);
             let mut cloud = output.cloud.clone();
-            let fresh = output.findings.clone();
+            // Only findings the model has not been shown yet are listed again in full.
+            let fresh: Vec<Finding> = output
+                .findings
+                .iter()
+                .filter(|f| !result.findings.iter().any(|known| known.id == f.id))
+                .cloned()
+                .collect();
             result.append(output);
             if let Some(object) = cloud.as_object_mut() {
                 // The model cites short references; local observation IDs stay here.
@@ -1275,11 +1287,11 @@ fn converse_inner(
                     .map(|f| aliases.alias(&f.id))
                     .collect();
                 object.insert("current_finding_ids".into(), json!(current));
+                // The same list the checker accepts (references()): O0 included when citable.
                 object.insert(
                     "citable_observation_ids".into(),
-                    json!(result
-                        .observations
-                        .iter()
+                    json!(std::iter::once(&result.initial_observation)
+                        .chain(&result.observations)
                         .filter(|o| o.citable)
                         .map(|o| &o.citation)
                         .collect::<Vec<_>>()),
