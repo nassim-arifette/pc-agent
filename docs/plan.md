@@ -113,10 +113,23 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
    du contrôle sont décrites dans [answer-verification.md](answer-verification.md).
 3. Chaque nom d'exécutable cité figure dans ce qui a été envoyé au modèle.
 4. Aucune commande, aucun lien, aucun HTML.
-5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les citations,
-   la liste des références valides. Au plus 3 réparations par enquête, partagées avec les appels
-   d'outils refusés, le texte sans appel d'outil et les réponses coupées par la limite de sortie.
-   Si un écart persiste, la réponse s'affiche avec les passages concernés marqués « non vérifié ».
+5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les chiffres
+   et les citations, la liste des références valides. Une valeur juste tirée d'une mesure
+   antérieure mais écrite au présent est signalée à part (`historical_wording`) : il suffit de la
+   dater. En Expliquer, où tout le tour décrit une capture affichée avec son heure, ce cas est
+   seulement marqué, sans réparation. La forme est lue avec souplesse et le contenu strictement :
+   seul le texte de la réponse est obligatoire, un champ en trop est ignoré, une liste envoyée en
+   un seul texte est découpée par ligne, une confiance ou une catégorie inconnue devient `medium`
+   ou `other`, et une référence d'action inconnue est retirée et marquée. Des appels d'outils
+   terminés (arguments JSON complets) sont gardés même si la réponse est ensuite coupée par la
+   limite de sortie. Au plus 3 réparations par enquête, partagées avec les appels d'outils refusés, le texte
+   sans appel d'outil et les réponses coupées par la limite de sortie. Une réponse coupée est
+   redemandée une fois, plus courte ; une deuxième coupure de suite termine le tour. Si le modèle
+   renvoie deux fois de suite exactement les mêmes écarts, les réparations s'arrêtent ;
+   l'escalade du chantier 14 reste liée aux 3 réparations épuisées. Une soumission mal formée est
+   décrite par une classe fermée et un champ déclaré, jamais par le texte du modèle. Si un écart
+   persiste, la meilleure tentative écrite depuis les dernières mesures (le moins de passages non
+   vérifiés) s'affiche, avec les passages concernés marqués « non vérifié ».
 
 ### C2 — Conversation et stockage
 
@@ -164,9 +177,11 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
 | `selection_send(reference, intent, question?, conversation_id?, preview_id)` | consomme l'aperçu correspondant puis démarre le tour avec les identifiants et événements C3 existants |
 | `model_routing_get()`, `model_routing_set(settings)` | mode configuré, toujours Super, toujours Ultra ou automatique ; paramètres locaux fermés, sans clé ni adresse de fournisseur |
 
-- `intent` vaut `explain` ou `investigate`. Expliquer expose au LLM seulement les mesures figées
-  via `get_selected_evidence` ; aucun collecteur, enregistrement ni proposition d'action n'y est
-  disponible. Enquêter ajoute ces mesures au contexte de l'enquête normale et garde sa politique
+- `intent` vaut `explain` ou `investigate`. Expliquer expose au LLM seulement les mesures figées :
+  elles arrivent dans le premier message (`initial_observation`, citée `O0`) et comptent comme
+  l'inspection du tour, si bien que le modèle peut répondre dès la première requête ;
+  `get_selected_evidence` les relit (réponse courte `same_result_as` `O0`). Aucun collecteur,
+  enregistrement ni proposition d'action n'y est disponible. Enquêter ajoute ces mesures au contexte de l'enquête normale et garde sa politique
   d'action. Le LLM rédige ; le vérificateur C1 contrôle les preuves effectivement reçues.
 - Les références se résolvent exclusivement dans l'état local du moteur, jamais dans des objets
   ou des chemins fournis par la page. Un nouveau relevé crée une autre source, sans réécrire la
@@ -887,7 +902,7 @@ Règles de travail :
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
 | 12 — Soumission | D | à faire | |
-| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider | #33 |
+| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider ; en cours : fiabilité de la boucle (Expliquer en une requête, datation des mesures, réparations, coupures) | #33, wp13-agent-reliability |
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
