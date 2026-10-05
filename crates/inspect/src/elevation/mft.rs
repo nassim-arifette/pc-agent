@@ -1001,6 +1001,10 @@ pub use collection::{
     Source, VolumeSnapshot,
 };
 
+#[cfg(any(windows, test))]
+#[path = "mft_chunked.rs"]
+pub(crate) mod chunked;
+
 #[cfg(test)]
 mod tests {
     use super::*;
