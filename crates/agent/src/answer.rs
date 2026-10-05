@@ -226,6 +226,42 @@ pub(crate) fn repair_request(
     request
 }
 
+/// Prefixes of the opaque references a model may write (`proc-1a2b3c4d`, `file-3`, `dir-7`).
+const REFERENCE_PREFIXES: [&str; 4] = ["proc", "app", "file", "dir"];
+/// Typographic dashes models write instead of the ASCII hyphen, e.g. `proc‑1a2b` (U+2011).
+const REFERENCE_DASHES: [char; 6] = [
+    '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2212}', '\u{fe63}',
+];
+
+/// Rewrites a typographic dash inside an opaque reference as the ASCII hyphen, so the reference
+/// is recognised by the checks and replaced by the local name in the window. Only a dash between
+/// a known prefix word and an ASCII alphanumeric character changes; other text is untouched.
+fn ascii_reference_hyphens(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if REFERENCE_DASHES.contains(&c)
+            && chars.get(i + 1).is_some_and(char::is_ascii_alphanumeric)
+        {
+            let word: String = chars[..i]
+                .iter()
+                .rev()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let boundary = i == word.len() || !chars[i - word.len() - 1].is_alphanumeric();
+            if boundary && REFERENCE_PREFIXES.contains(&word.as_str()) {
+                out.push('-');
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The problems of a submission and, when its text could be checked, the answer to show if
 /// the repairs run out.
 pub(crate) type Rejection = (Vec<Issue>, Option<Box<Answer>>);
@@ -236,7 +272,7 @@ pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejec
         return Err((vec![Issue::new(IssueKind::Malformed, "")], None));
     };
     let mut issues = Vec::new();
-    let mut text = submission.answer.trim().to_owned();
+    let mut text = ascii_reference_hyphens(submission.answer.trim());
     if text.is_empty() {
         return Err((vec![Issue::new(IssueKind::Empty, "")], None));
     }
@@ -1575,6 +1611,28 @@ mod tests {
         assert_eq!(shown.action_refs, ["plan-1"]);
         assert_eq!(shown.follow_ups, ["Et le disque D: ?"]);
         assert_eq!(shown.unverified.len(), 1);
+    }
+
+    #[test]
+    fn typographic_dashes_in_references_become_ascii_hyphens() {
+        // Seen in a real answer: "firefox.exe (proc‑5580aed9)" with U+2011.
+        assert_eq!(
+            ascii_reference_hyphens("firefox.exe (proc\u{2011}5580aed9) utilisait 2,25 GiB"),
+            "firefox.exe (proc-5580aed9) utilisait 2,25 GiB"
+        );
+        assert_eq!(
+            ascii_reference_hyphens("file\u{2013}3 et dir\u{2010}7"),
+            "file-3 et dir-7"
+        );
+        // Ordinary text keeps its dashes: no known prefix, or not followed by a reference.
+        for text in [
+            "Mesure \u{2013} 3 GiB",
+            "approc\u{2011}12",
+            "proc\u{2011} seul",
+            "2\u{2212}3",
+        ] {
+            assert_eq!(ascii_reference_hyphens(text), text);
+        }
     }
 
     #[test]
