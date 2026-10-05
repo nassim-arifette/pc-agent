@@ -40,8 +40,10 @@ function cloud() {
   if (cloudMode === "problem") {
     return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "meta/llama", model_source: "file", ready: false, problem: "Select an explicit nvidia/ Nemotron model ID; no fallback model is allowed", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
   }
-  return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "nvidia/nemotron-3-super-120b-a12b", model_source: "file", ready: true, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
+  return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: cloudModel, model_source: "file", ready: true, reasoning: cloudReasoning, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
 }
+let cloudModel = "nvidia/nemotron-3-super-120b-a12b";
+let cloudReasoning = "on";
 
 function volume(root, totalGiB, freeGiB) {
   return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
@@ -731,8 +733,13 @@ export function createMock() {
     },
     scan_page: ({ kind, offset }) => page(kind, lastScanRoot, offset),
     reveal: () => null,
-    save_cloud_settings: ({ modelId }) => {
+    save_cloud_settings: ({ modelId, reasoning = null }) => {
       cloudMode = modelId.startsWith("nvidia/") ? "ready" : "problem";
+      if (cloudMode === "ready") cloudModel = modelId;
+      if (reasoning) {
+        if (!["on", "low", "off"].includes(reasoning)) throw new Error("unknown reasoning");
+        cloudReasoning = reasoning;
+      }
       return cloud();
     },
     test_cloud: async () => {

@@ -25,14 +25,54 @@ const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
 
+/// How much Nemotron 3 reasons before answering, through its chat template
+/// (`enable_thinking`, `low_effort`). `On` sends nothing and keeps the model's default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reasoning {
+    #[default]
+    On,
+    Low,
+    Off,
+}
+impl Reasoning {
+    /// The `NEBIUS_REASONING` setting; anything else keeps the default.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "on" => Some(Self::On),
+            "low" => Some(Self::Low),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Low => "low",
+            Self::Off => "off",
+        }
+    }
+    fn template_kwargs(self) -> Option<Value> {
+        match self {
+            Self::On => None,
+            Self::Low => Some(json!({"enable_thinking":true,"low_effort":true})),
+            Self::Off => Some(json!({"enable_thinking":false})),
+        }
+    }
+}
+
 /// Intentionally does not implement Debug or Serialize: API keys must not enter logs.
 pub struct Config {
     api_key: String,
     model_id: String,
+    reasoning: Reasoning,
 }
 impl Config {
     pub fn model_id(&self) -> &str {
         &self.model_id
+    }
+    pub fn reasoning(&self) -> Reasoning {
+        self.reasoning
     }
     /// Reuse an already local credential for an explicit catalog-checked routing target.
     pub fn for_model(&self, model_id: &str) -> Result<Self, AgentError> {
@@ -40,19 +80,28 @@ impl Config {
         Ok(Self {
             api_key: self.api_key.clone(),
             model_id: model_id.into(),
+            reasoning: self.reasoning,
         })
     }
     pub fn from_env() -> Result<Self, AgentError> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
-    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` from whatever source the caller trusts
-    /// (environment, a per-user credentials file); empty values count as missing.
+    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` (and the optional
+    /// `NEBIUS_REASONING`) from whatever source the caller trusts (environment, a per-user
+    /// credentials file); empty values count as missing.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, AgentError> {
         let get = |name: &str| lookup(name).filter(|s| !s.trim().is_empty());
         let api_key = get("NEBIUS_API_KEY").ok_or(AgentError::MissingKey)?;
         let model_id = get("NEBIUS_MODEL_ID").ok_or(AgentError::MissingModel)?;
         validate_model_id(&model_id)?;
-        Ok(Self { api_key, model_id })
+        let reasoning = get("NEBIUS_REASONING")
+            .and_then(|text| Reasoning::parse(&text))
+            .unwrap_or_default();
+        Ok(Self {
+            api_key,
+            model_id,
+            reasoning,
+        })
     }
 }
 
@@ -172,6 +221,7 @@ impl Nebius {
         let client = Self::new(Config {
             api_key,
             model_id: String::new(),
+            reasoning: Reasoning::default(),
         })?;
         client.available_models(timeout)
     }
@@ -417,10 +467,13 @@ impl Model for Nebius {
             ToolChoice::Required => "required",
         };
         // Streamed so the answer can be shown while it is written; usage comes in the last event.
-        let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
+        let mut body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
             "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,
             "temperature":TEMPERATURE,"top_p":TOP_P,
             "stream":true,"stream_options":{"include_usage":true}});
+        if let Some(kwargs) = self.config.reasoning.template_kwargs() {
+            body["chat_template_kwargs"] = kwargs;
+        }
         let response = self.send(
             self.client
                 .post(format!("{BASE_URL}/chat/completions"))
@@ -648,6 +701,40 @@ mod tests {
         assert_eq!(reply.content.as_deref(), Some("Hello"));
         assert!(reply.calls.is_empty());
         assert_eq!(reply.total_tokens, None);
+    }
+
+    #[test]
+    fn reasoning_setting_maps_to_nemotron_template_switches() {
+        let lookup = |reasoning: Option<&'static str>| {
+            move |name: &str| match name {
+                "NEBIUS_API_KEY" => Some("k".to_owned()),
+                "NEBIUS_MODEL_ID" => Some("nvidia/nemotron-3-super-120b-a12b".to_owned()),
+                "NEBIUS_REASONING" => reasoning.map(str::to_owned),
+                _ => None,
+            }
+        };
+        // Missing or unknown values keep the model's default and send nothing extra.
+        for absent in [None, Some(""), Some("max"), Some("OFF")] {
+            let config = Config::from_lookup(lookup(absent)).unwrap();
+            assert_eq!(config.reasoning(), Reasoning::On);
+            assert_eq!(config.reasoning().template_kwargs(), None);
+        }
+        let low = Config::from_lookup(lookup(Some("low"))).unwrap();
+        assert_eq!(
+            low.reasoning().template_kwargs(),
+            Some(json!({"enable_thinking":true,"low_effort":true}))
+        );
+        let off = Config::from_lookup(lookup(Some(" off "))).unwrap();
+        assert_eq!(
+            off.reasoning().template_kwargs(),
+            Some(json!({"enable_thinking":false}))
+        );
+        // A routing target keeps the chosen reasoning.
+        let ultra = off.for_model("nvidia/Nemotron-3-Ultra-550b-a55b").unwrap();
+        assert_eq!(ultra.reasoning(), Reasoning::Off);
+        for mode in [Reasoning::On, Reasoning::Low, Reasoning::Off] {
+            assert_eq!(Reasoning::parse(mode.as_str()), Some(mode));
+        }
     }
 
     #[test]
