@@ -1926,6 +1926,8 @@ mod tests {
             "Une barrette de 16 Go DDR5 coûte environ 54,95 € [W1].",
             "Le pilote 566.36 corrige les saccades [W2].",
             "La version 32.0.15.6636 est la plus récente [W2].",
+            // Lowercasing İ changes its length: positions must come from the text itself.
+            "İİİ : une barrette de 16 Go DDR5 coûte 54,95 € [W1].",
         ] {
             let answer = review(&submit(text), &ctx);
             assert!(answer.is_ok(), "{text}: {answer:?}");

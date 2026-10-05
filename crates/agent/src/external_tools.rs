@@ -75,6 +75,24 @@ pub fn is_external(tool: &str) -> bool {
     TOOLS.iter().any(|spec| spec.name == tool)
 }
 
+/// Whether a host belongs to a site the lookups can search: only such a source may be opened.
+pub fn searchable(host: &str) -> bool {
+    let lists = [
+        VENDORS.iter().map(|(_, d)| *d).collect::<Vec<_>>(),
+        MAKERS.iter().map(|(_, d)| *d).collect(),
+        MICROSOFT.to_vec(),
+        SHOPS
+            .iter()
+            .flat_map(|(_, d, _)| d.iter().copied())
+            .collect(),
+        DEFAULT_SHOPS.to_vec(),
+    ];
+    lists
+        .iter()
+        .flatten()
+        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+}
+
 /// A driver as `get_drivers` measured it, with its local names.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Driver {
@@ -326,8 +344,9 @@ impl ExternalTools {
     }
 }
 
+const MICROSOFT: [&str; 2] = ["learn.microsoft.com", "support.microsoft.com"];
+
 fn known_issue_query(kb: Option<&str>, code: Option<&str>) -> Result<WebQuery, &'static str> {
-    const MICROSOFT: [&str; 2] = ["learn.microsoft.com", "support.microsoft.com"];
     let query = match (kb, code) {
         (Some(kb), None) => {
             let digits = &kb[2..];
@@ -390,116 +409,135 @@ fn hardware(inspection: &Inspection) -> Hardware {
 }
 
 /// Official sites of common chip and driver makers, matched on the provider and model text.
+const VENDORS: [(&str, &str); 11] = [
+    ("nvidia", "nvidia.com"),
+    ("intel", "intel.com"),
+    ("advanced micro devices", "amd.com"),
+    ("amd", "amd.com"),
+    ("radeon", "amd.com"),
+    ("realtek", "realtek.com"),
+    ("qualcomm", "qualcomm.com"),
+    ("mediatek", "mediatek.com"),
+    ("broadcom", "broadcom.com"),
+    ("marvell", "marvell.com"),
+    ("samsung", "samsung.com"),
+];
+
 fn vendor_domains(text: &str) -> Option<Vec<String>> {
     let text = text.to_ascii_lowercase();
-    let domain = [
-        ("nvidia", "nvidia.com"),
-        ("intel", "intel.com"),
-        ("advanced micro devices", "amd.com"),
-        ("amd", "amd.com"),
-        ("radeon", "amd.com"),
-        ("realtek", "realtek.com"),
-        ("qualcomm", "qualcomm.com"),
-        ("mediatek", "mediatek.com"),
-        ("broadcom", "broadcom.com"),
-        ("marvell", "marvell.com"),
-        ("samsung", "samsung.com"),
-    ]
-    .iter()
-    .find(|(word, _)| {
-        text.split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|w| w == *word)
-            || (word.contains(' ') && text.contains(word))
-    })
-    .map(|(_, domain)| (*domain).to_owned())?;
+    let domain = VENDORS
+        .iter()
+        .find(|(word, _)| {
+            text.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w == *word)
+                || (word.contains(' ') && text.contains(word))
+        })
+        .map(|(_, domain)| (*domain).to_owned())?;
     Some(vec![domain])
 }
 
 /// The website of a PC maker, as the firmware names it.
+const MAKERS: [(&str, &str); 17] = [
+    ("dell", "dell.com"),
+    ("hewlett", "hp.com"),
+    ("hp", "hp.com"),
+    ("lenovo", "lenovo.com"),
+    ("asus", "asus.com"),
+    ("acer", "acer.com"),
+    ("micro-star", "msi.com"),
+    ("msi", "msi.com"),
+    ("microsoft", "microsoft.com"),
+    ("samsung", "samsung.com"),
+    ("gigabyte", "gigabyte.com"),
+    ("razer", "razer.com"),
+    ("huawei", "consumer.huawei.com"),
+    ("dynabook", "dynabook.com"),
+    ("toshiba", "dynabook.com"),
+    ("lg electronics", "lg.com"),
+    ("framework", "frame.work"),
+];
+
 fn maker_domain(manufacturer: &str) -> Option<String> {
     let maker = manufacturer.to_ascii_lowercase();
-    [
-        ("dell", "dell.com"),
-        ("hewlett", "hp.com"),
-        ("hp", "hp.com"),
-        ("lenovo", "lenovo.com"),
-        ("asus", "asus.com"),
-        ("acer", "acer.com"),
-        ("micro-star", "msi.com"),
-        ("msi", "msi.com"),
-        ("microsoft", "microsoft.com"),
-        ("samsung", "samsung.com"),
-        ("gigabyte", "gigabyte.com"),
-        ("razer", "razer.com"),
-        ("huawei", "consumer.huawei.com"),
-        ("dynabook", "dynabook.com"),
-        ("toshiba", "dynabook.com"),
-        ("lg electronics", "lg.com"),
-        ("framework", "frame.work"),
-    ]
-    .iter()
-    .find(|(word, _)| {
-        maker
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|w| w == *word)
-            || ((word.contains(' ') || word.contains('-')) && maker.contains(word))
-    })
-    .map(|(_, domain)| (*domain).to_owned())
+    MAKERS
+        .iter()
+        .find(|(word, _)| {
+            maker
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w == *word)
+                || ((word.contains(' ') || word.contains('-')) && maker.contains(word))
+        })
+        .map(|(_, domain)| (*domain).to_owned())
 }
+
+/// Shops and price comparators by Windows region, with Tavily's country boost.
+const SHOPS: [(&str, &[&str], &str); 7] = [
+    (
+        "FR",
+        &[
+            "ldlc.com",
+            "materiel.net",
+            "amazon.fr",
+            "idealo.fr",
+            "ledenicheur.fr",
+        ],
+        "france",
+    ),
+    (
+        "BE",
+        &["coolblue.be", "amazon.com.be", "alternate.be"],
+        "belgium",
+    ),
+    (
+        "CH",
+        &["digitec.ch", "galaxus.ch", "toppreise.ch"],
+        "switzerland",
+    ),
+    (
+        "CA",
+        &["newegg.ca", "amazon.ca", "canadacomputers.com"],
+        "canada",
+    ),
+    (
+        "DE",
+        &["geizhals.de", "idealo.de", "alternate.de", "amazon.de"],
+        "germany",
+    ),
+    (
+        "GB",
+        &[
+            "scan.co.uk",
+            "overclockers.co.uk",
+            "amazon.co.uk",
+            "pricespy.co.uk",
+        ],
+        "united kingdom",
+    ),
+    (
+        "US",
+        &[
+            "newegg.com",
+            "bestbuy.com",
+            "amazon.com",
+            "pcpartpicker.com",
+        ],
+        "united states",
+    ),
+];
+const DEFAULT_SHOPS: [&str; 3] = ["amazon.com", "newegg.com", "pcpartpicker.com"];
 
 /// Shops and price comparators for the region's country, and Tavily's country boost.
 fn shops(country: Option<&str>) -> (Vec<String>, Option<String>) {
-    let (domains, name): (&[&str], Option<&str>) = match country {
-        Some("FR") => (
-            &[
-                "ldlc.com",
-                "materiel.net",
-                "amazon.fr",
-                "idealo.fr",
-                "ledenicheur.fr",
-            ],
-            Some("france"),
+    match SHOPS.iter().find(|(code, _, _)| Some(*code) == country) {
+        Some((_, domains, name)) => (
+            domains.iter().map(|d| (*d).to_owned()).collect(),
+            Some((*name).to_owned()),
         ),
-        Some("BE") => (
-            &["coolblue.be", "amazon.com.be", "alternate.be"],
-            Some("belgium"),
+        None => (
+            DEFAULT_SHOPS.iter().map(|d| (*d).to_owned()).collect(),
+            None,
         ),
-        Some("CH") => (
-            &["digitec.ch", "galaxus.ch", "toppreise.ch"],
-            Some("switzerland"),
-        ),
-        Some("CA") => (
-            &["newegg.ca", "amazon.ca", "canadacomputers.com"],
-            Some("canada"),
-        ),
-        Some("DE") => (
-            &["geizhals.de", "idealo.de", "alternate.de", "amazon.de"],
-            Some("germany"),
-        ),
-        Some("GB") => (
-            &[
-                "scan.co.uk",
-                "overclockers.co.uk",
-                "amazon.co.uk",
-                "pricespy.co.uk",
-            ],
-            Some("united kingdom"),
-        ),
-        Some("US") => (
-            &[
-                "newegg.com",
-                "bestbuy.com",
-                "amazon.com",
-                "pcpartpicker.com",
-            ],
-            Some("united states"),
-        ),
-        _ => (&["amazon.com", "newegg.com", "pcpartpicker.com"], None),
-    };
-    (
-        domains.iter().map(|d| (*d).to_owned()).collect(),
-        name.map(str::to_owned),
-    )
+    }
 }
 
 fn unavailable(tool: &str, status: Status, reason: &str, query: Option<&WebQuery>) -> ToolOutput {
@@ -726,5 +764,10 @@ mod tests {
             vendor_domains("Intel Corporation Intel(R) Wi-Fi 6"),
             Some(vec!["intel.com".to_owned()])
         );
+        assert!(
+            searchable("support.microsoft.com")
+                && searchable("www.nvidia.com".trim_start_matches("www."))
+        );
+        assert!(searchable("ldlc.com") && !searchable("evil.com") && !searchable("evilnvidia.com"));
     }
 }
