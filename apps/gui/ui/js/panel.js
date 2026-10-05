@@ -6,7 +6,8 @@ import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { state, subscribe, openPanel, closePanel, setLivePaused, watchActivity, pokeActivity } from "./store.js";
 import { liveView, driveName } from "./live.js";
-import { numbering, citationTitle } from "./citations.js";
+import { numbering, citationTitle, isWeb } from "./citations.js";
+import { webSourceCard } from "./web.js";
 import { bytes, clock, date, labelled, number, price, usd } from "./format.js";
 import { navigate } from "./router.js";
 
@@ -103,7 +104,12 @@ function sourcesView() {
           icon(unverified ? "alert" : "check"),
           h("span", null, unverified ? t("sources.unverified", { count: unverified }) : t("sources.verified")),
         ),
-        answer.citations.map((c) => sourceCard(c, numbers.get(c.reference), focus && focus.turn === index && focus.reference === c.reference)),
+        answer.citations.map((c) => {
+          const focused = focus && focus.turn === index && focus.reference === c.reference;
+          // A web page opens through the Rust side, which finds its address in the saved turn.
+          if (isWeb(c)) return webSourceCard(c, numbers.get(c.reference), focused, { conversationId: state.conversation?.id, turnId: turn.id, reference: c.reference });
+          return sourceCard(c, numbers.get(c.reference), focused);
+        }),
         runDetails(turn.report),
       );
     }),

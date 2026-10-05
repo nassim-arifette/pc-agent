@@ -3,6 +3,8 @@
 // (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
+// TOUR_BASE and TOUR_DEBUG_PORT override the page URL and Chrome's debugging port, for a server
+// on another port (e.g. when several worktrees are reviewed at once).
 import { launch } from "./cdp.mjs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +13,9 @@ const out = process.argv[2] || "tour";
 const chrome = process.argv[3] || undefined;
 const language = process.argv[4] || "en";
 mkdirSync(out, { recursive: true });
-const base = "http://127.0.0.1:5173/ui/index.html";
-const { proc, page } = await launch(chrome ? { chrome } : {});
+const base = process.env.TOUR_BASE || "http://127.0.0.1:5173/ui/index.html";
+const port = Number(process.env.TOUR_DEBUG_PORT) || undefined;
+const { proc, page } = await launch({ ...(chrome ? { chrome } : {}), ...(port ? { port } : {}) });
 const shot = (name) => page.shot(join(out, `${name}.png`));
 const prefs = JSON.stringify({ language, mode: "cloud" });
 try {
@@ -73,6 +76,32 @@ try {
     await page.waitFor("document.querySelector('.answer-foot')", 20000);
     await page.sleep(300);
     await shot(`12-explain-answer-${theme}`);
+    // Web search (C6): the settings card with a saved key, the consent note, the exact query
+    // under its step, then a cited web page in the Sources panel.
+    await page.goto(`${base}?cloud=ready&privacy=complete&web=on#/settings`);
+    await page.waitFor("document.querySelector('.web-card .web-key')");
+    await page.eval("document.querySelector('.web-card').scrollIntoView({ block: 'start' })");
+    await page.sleep(300);
+    await shot(`13-settings-web-${theme}`);
+    await page.goto(`${base}?cloud=ready&privacy=complete&web=on#/chat`);
+    await page.waitFor("document.querySelector('.welcome')");
+    await page.click(".suggestion", 0);
+    await page.waitFor("document.querySelector('.dialog .web-consent') && !document.querySelector('.dialog .btn-primary').disabled", 10000);
+    await page.sleep(300);
+    await shot(`14-web-consent-${theme}`);
+    await page.click(".dialog .btn-primary");
+    await page.waitFor("document.querySelector('.answer-foot') && document.querySelector('.answer-text .web-cite')", 30000);
+    await page.click(".steps-fold > summary");
+    await page.eval("document.querySelector('.web-step-query').scrollIntoView({ block: 'center' })");
+    await page.sleep(300);
+    await shot(`15-web-steps-${theme}`);
+    await page.click(".answer-text .web-cite", 0);
+    await page.waitFor("document.querySelector('.panel.open .web-source.focused')");
+    await page.sleep(400);
+    await shot(`16-web-source-${theme}`);
+    // "Open in browser" asks the Rust side (open_web_source); the mock records it, never navigates.
+    await page.click(".panel.open .web-source.focused .web-actions .btn");
+    await page.waitFor("window.__pcagentMock.openedWebSources.length === 1");
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {
