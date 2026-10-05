@@ -291,9 +291,13 @@ fn answers_are_checked_and_repaired_before_acceptance() {
 #[test]
 fn repairs_are_bounded_and_the_last_answer_is_shown_with_its_problems() {
     let mut replies = vec![tools(vec![call("a", "get_system_snapshot", "{}")])];
-    replies.extend(
-        (0..=MAX_REPAIRS).map(|i| submit_with(&format!("answer-{i}"), "Windows needs 32 GB [O1].")),
-    );
+    // A different wrong value each time: the model keeps trying, up to the repair limit.
+    replies.extend((0..=MAX_REPAIRS).map(|i| {
+        submit_with(
+            &format!("answer-{i}"),
+            &format!("Windows needs 3{i} GB [O1]."),
+        )
+    }));
     let mut m = script(replies);
     let r = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
     assert!(r.error.is_none(), "{:?}", r.error);
@@ -302,7 +306,66 @@ fn repairs_are_bounded_and_the_last_answer_is_shown_with_its_problems() {
     assert_eq!(answer.repairs, MAX_REPAIRS);
     assert_eq!(answer.unverified.len(), 1);
     assert_eq!(answer.unverified[0].kind, IssueKind::UnsupportedNumber);
+    assert_eq!(answer.unverified[0].excerpt, format!("3{MAX_REPAIRS} GB"));
+}
+#[test]
+fn the_same_problems_twice_end_the_repairs_early() {
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        submit_with("first", "Windows needs 32 GB [O1]."),
+        submit_with("second", "Windows needs 32 GB [O1]."),
+        done("O1"),
+    ]);
+    let r = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
+    assert_eq!(m.calls, 3, "the unused reply is never requested");
+    assert_eq!(r.stats.inference_calls, 3);
+    let answer = r.answer.unwrap();
+    assert_eq!(answer.repairs, 1);
     assert_eq!(answer.unverified[0].excerpt, "32 GB");
+}
+#[test]
+fn the_best_attempt_is_shown_not_the_latest() {
+    let better = "Windows needs 32 GB [O1].";
+    let worse = "Windows needs 32 GB and 48 GB.";
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        submit_with("first", better),
+        submit_with("second", worse),
+        submit_with("third", worse),
+    ]);
+    let r = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
+    assert_eq!(r.stats.inference_calls, 4);
+    let answer = r.answer.unwrap();
+    assert_eq!(answer.text, better);
+    assert_eq!(answer.repairs, 2);
+    assert_eq!(answer.unverified.len(), 1);
+}
+#[test]
+fn a_second_cut_off_in_a_row_ends_the_turn() {
+    let cut_off = || Reply {
+        rejected: Some(AgentError::OutputLimit),
+        ..Reply::default()
+    };
+    let snapshot_call = || tools(vec![call("a", "get_system_snapshot", "{}")]);
+    let mut m = script(vec![snapshot_call(), cut_off(), cut_off(), done("O1")]);
+    let r = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
+    assert_eq!(r.error, Some(AgentError::OutputLimit));
+    assert_eq!(m.calls, 3);
+    let retry = m.messages[2].last().unwrap();
+    assert_eq!(retry["role"], "user");
+    assert!(retry["content"]
+        .as_str()
+        .unwrap()
+        .contains("at most about 1,500 characters"));
+    // A reply in between resets the count; before any inspection the retry asks for tools.
+    let mut m = script(vec![cut_off(), snapshot_call(), cut_off(), done("O1")]);
+    let r = investigate(&mut m, "test", &fixture(), &mut tb(usable_snapshot), |_| {});
+    assert!(r.error.is_none(), "{:?}", r.error);
+    assert_eq!(m.calls, 4);
+    assert!(m.messages[1].last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("do not write the answer yet"));
 }
 #[test]
 fn cancellation_during_answer_repair_does_not_publish_the_existing_fallback() {
@@ -485,10 +548,11 @@ fn instructions_mention_proposals_only_when_the_tool_is_offered() {
         SnapshotTools::new(|_, _| fixture()).specs(),
         Sharing::Anonymized,
         false,
+        None,
     );
     assert!(plain.ends_with(NO_ACTIONS));
     assert!(!plain.contains("prepare_action_plan"));
-    let with_plans = system_prompt(&[PREPARE_ACTION_PLAN], Sharing::Complete, true);
+    let with_plans = system_prompt(&[PREPARE_ACTION_PLAN], Sharing::Complete, true, None);
     assert!(with_plans.contains("previous_turns"));
     assert!(!plain.contains("Earlier questions"));
     assert!(with_plans.contains("process_names"));
@@ -1031,14 +1095,15 @@ fn cost_needs_complete_usage_and_a_verified_catalog_price() {
         r.stats.completion_tokens,
         Some(u64::from(MAX_OUTPUT_TOKENS) + 2)
     );
+    // A second cut-off in a row ends the turn.
     let r = run(vec![cut_off; MAX_REPAIRS + 1], Some(pricing));
     assert_eq!(r.status, Status::Partial);
     assert_eq!(r.error, Some(AgentError::OutputLimit));
-    assert_eq!(r.stats.inference_calls, MAX_REPAIRS + 1);
+    assert_eq!(r.stats.inference_calls, 2);
     assert_eq!(r.stats.tool_calls, 0);
     assert_eq!(
         r.stats.completion_tokens,
-        Some(u64::from(MAX_OUTPUT_TOKENS) * (MAX_REPAIRS as u64 + 1))
+        Some(u64::from(MAX_OUTPUT_TOKENS) * 2)
     );
     assert!(r.stats.cost.is_some());
 }

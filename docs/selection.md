@@ -53,8 +53,11 @@ labelled local evidence; it must not claim to be an LLM explanation. `selection_
 accepts the optional existing `file_names` consent choice for its finite name allowlist.
 
 **Explain** runs the existing analyst and C1 verifier with only the read-only
-`get_selected_evidence()` tool. This tool returns the frozen measurements, source dates, windows,
-coverage and limitations. It starts no collector, scan, recording or action proposal.
+`get_selected_evidence()` tool. The frozen measurements, source dates, windows, coverage and
+limitations already arrive in the first message as `initial_observation` (`O0`, with display
+values and `citable_observation_ids`). They count as the turn's inspection, so the analyst can
+answer in its first request. `get_selected_evidence()` returns the same evidence again, as a short
+`same_result_as: "O0"` reply. It starts no collector, scan, recording or action proposal.
 Reading a retained capture with unavailable sensors still completes this inspection: the analyst
 may explain insufficient evidence, while all missing values and original sensor statuses remain
 unchanged. Such a read cannot certify a numerical claim.
