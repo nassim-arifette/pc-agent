@@ -99,6 +99,8 @@ struct Driver {
     provider: Option<String>,
     model: Option<String>,
     version: Option<String>,
+    /// NVIDIA's public number (581.83) for the Windows version (32.0.15.8183): its notes use it.
+    public_version: Option<String>,
 }
 
 /// The memory and model facts that compose price and specification lookups.
@@ -156,6 +158,9 @@ impl ExternalTools {
                         "driver_model_ref" => driver.model = name(inspection, &observation.value),
                         "driver_version" => {
                             driver.version = observation.value.as_str().map(str::to_owned)
+                        }
+                        "nvidia_driver_public_version" => {
+                            driver.public_version = observation.value.as_str().map(str::to_owned)
                         }
                         _ => {}
                     }
@@ -272,8 +277,8 @@ impl ExternalTools {
             format!("{provider} {model}")
         };
         query.push_str(" driver");
-        if let Some(version) = &driver.version {
-            query.push_str(&format!(" {version}"));
+        if let Some(version) = driver.public_version.as_ref().or(driver.version.as_ref()) {
+            query.push_str(&format!(" {}", bounded(version)));
         }
         query.push_str(" release notes known issues");
         Ok(WebQuery {
@@ -651,6 +656,7 @@ mod tests {
                 ("device-1", "driver_provider_ref", json!("name-1")),
                 ("device-1", "driver_model_ref", json!("name-2")),
                 ("device-1", "driver_version", json!("32.0.15.6636")),
+                ("device-1", "nvidia_driver_public_version", json!("566.36")),
             ],
             &[("name-1", "NVIDIA"), ("name-2", "NVIDIA GeForce RTX 3060")],
         );
@@ -662,7 +668,7 @@ mod tests {
         let query = seen.lock().unwrap()[0].clone();
         assert_eq!(
             query.query,
-            "NVIDIA GeForce RTX 3060 driver 32.0.15.6636 release notes known issues"
+            "NVIDIA GeForce RTX 3060 driver 566.36 release notes known issues"
         );
         assert_eq!(query.domains, ["nvidia.com"]);
         assert_eq!(out.cloud["sources"][0]["source_id"], "W1");
