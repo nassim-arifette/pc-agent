@@ -461,7 +461,7 @@ mod tests {
                 function: FunctionCall {
                     name: SUBMIT_ANSWER.into(),
                     arguments:
-                        json!({"text": "Votre PC ralentit parce que la mémoire est pleine."})
+                        json!({"answer": "Votre PC ralentit parce que la mémoire est pleine.", "confidence": "high", "category": "memory"})
                             .to_string(),
                 },
             }],
