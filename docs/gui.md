@@ -59,6 +59,19 @@ sharing. An application is explained through its largest measured process, which
 names. History events and finished recordings use the same flow through `selection_sources()`; if
 their source has expired, the typed question of the previous version is used instead.
 
+## Quick drive analysis
+
+The Storage view also offers a *Quick drive analysis* of a fixed NTFS drive. It runs the closed
+`mft_inventory` task of the separate elevated helper (`pcagent-elevated`, no network, no model): the
+page calls `elevation_prepare` with the drive letter and the 120 s budget, shows exactly what will
+happen, and only the local *Allow and start* click calls `elevation_run`, after which Windows asks
+for administrator consent. The helper reads the `$MFT` in bulk (see [mft.md](mft.md)): names, folders
+and sizes, never file contents, and changes nothing. The result stays in the window: files examined,
+supported data measured, the share of the index walked (partial when a bound is reached) and the
+largest attributed folders and files (`local_mft_tree`), whose parent/child sizes overlap. *Stop*
+calls `elevation_cancel`; after an error or a stop the page waits for `elevation_status` to return
+`null` before offering another analysis, and a reload recovers a prepared or running task.
+
 ## History, recording and startup
 
 The *History* view reads the local sampler (`history_status`, `metric_history`): processor,
