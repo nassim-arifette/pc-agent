@@ -1129,6 +1129,13 @@ a {
 .pick-item:focus-visible {
   background: var(--hover);
 }
+.pick-item[aria-disabled="true"] {
+  color: var(--text-3);
+  cursor: default;
+}
+.pick-item[aria-disabled="true"]:hover {
+  background: transparent;
+}
 .pick-check {
   display: flex;
   padding-top: 2px;

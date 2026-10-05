@@ -30,6 +30,7 @@ import { modelName } from "./models.js";
 import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import { mark } from "./brand.js";
+import { refreshRouting } from "./picker.js";
 import * as chat from "./views/chat.js";
 import * as history from "./views/history.js";
 import * as live from "./views/live.js";
@@ -410,6 +411,8 @@ async function boot() {
   } catch {
     // The status keeps its local default.
   }
+  // The composer's picker shows Auto when the engine's routing policy is automatic.
+  refreshRouting();
 }
 
 boot();
