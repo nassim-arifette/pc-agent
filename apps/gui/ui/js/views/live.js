@@ -1,7 +1,8 @@
 // Live PC as a full view: resource cards and applications on the left, the inspector of the
-// selected item on the right with Explain and Investigate. A selection names a kind and a key;
-// its measurements are always the latest ones, and the Rust side freezes them when a preview is
-// prepared, so what the inspector shows is what the preview starts from.
+// selected item on the right. Selecting an item shows the action bar under it (Explain,
+// Investigate). A selection names a kind and a key; its measurements are always the latest ones,
+// and the Rust side freezes them when a preview is prepared, so what the inspector shows is what
+// the preview starts from.
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
@@ -9,7 +10,7 @@ import { state, subscribe, setLivePaused, watchActivity, pokeActivity } from "..
 import { almostFull, driveName, gpuName, measureText, sparkline } from "../live.js";
 import { ago, basisPoints, bytes, number, percent } from "../format.js";
 import { runSelection } from "../select.js";
-import { button, dialogOpen } from "../ui.js";
+import { actionBar, selectionKeys } from "../actionbar.js";
 import { currentRoute } from "../router.js";
 
 // Kept across visits so coming back to the view shows the same selection.
@@ -215,8 +216,24 @@ function appDetails(item) {
   ];
 }
 
-function inspector(cards) {
-  const item = resolve(cards);
+/** Explain or Investigate on the resolved item, through the exact preview (select.js). */
+function act(item, intent) {
+  return runSelection({ reference: item.reference, label: item.label, name: item.name }, intent);
+}
+
+/** The action bar of the resolved item, drawn under the card or application row it belongs to. */
+function itemBar(item, key) {
+  return actionBar({
+    key,
+    label: item.label,
+    ready: Boolean(item.reference),
+    unavailable: t("inspect.unavailable"),
+    explain: () => act(item, "explain"),
+    investigate: () => act(item, "investigate"),
+  });
+}
+
+function inspector(item) {
   if (!item) {
     return h(
       "aside",
@@ -228,7 +245,6 @@ function inspector(cards) {
   }
   const kindLabel = t(`inspect.kind.${item.kind}`);
   const ready = Boolean(item.reference);
-  const act = (intent) => runSelection({ reference: item.reference, label: item.label, name: item.name }, intent);
   return h(
     "aside",
     { class: "insp", "aria-label": t("inspect.label") },
@@ -239,36 +255,49 @@ function inspector(cards) {
       h("button", { type: "button", class: "icon-btn", title: t("inspect.clear"), "aria-label": t("inspect.clear"), onclick: () => select(null) }, icon("x")),
     ),
     h("p", { class: "insp-measured" }, t("inspect.measured", { ago: ago(item.measuredAt) })),
+    h("div", { class: "insp-body" }, item.kind === "resource" ? resourceDetails(item.card) : appDetails(item)),
+    // The action bar under the item is the main place for the actions; this is the way further.
     h(
       "div",
-      { class: "insp-actions", role: "group", "aria-label": item.label },
-      button(t("inspect.explain"), { variant: "primary", iconName: "sparkle", disabled: !ready, onClick: () => act("explain") }),
-      button(t("inspect.investigate"), { iconName: "search", disabled: !ready, onClick: () => act("investigate") }),
+      { class: "insp-next" },
+      h("p", null, ready ? t("inspect.note") : t("inspect.unavailable")),
+      h(
+        "button",
+        { type: "button", class: "insp-more", disabled: !ready, "data-key": "insp:investigate", onclick: () => act(item, "investigate") },
+        icon("search"),
+        t("inspect.more"),
+      ),
     ),
-    h("p", { class: "note" }, ready ? t("inspect.note") : t("inspect.unavailable")),
-    h("div", { class: "insp-body" }, item.kind === "resource" ? resourceDetails(item.card) : appDetails(item)),
   );
 }
 
-function card(c) {
+function card(c, item) {
   const pressed = selected?.kind === "resource" && selected.key === c.key;
+  const bar = pressed && item ? itemBar(item, `resource:${c.key}`) : null;
   return h(
-    "button",
-    {
-      type: "button",
-      class: ["livepage-card", c.warn ? "warn" : "", pressed ? "selected" : ""],
-      "aria-pressed": String(pressed),
-      "data-key": `resource:${c.key}`,
-      onclick: () => select(pressed ? null : { kind: "resource", key: c.key }),
-    },
-    h("span", { class: "livepage-card-head" }, h("span", { class: "livepage-card-icon" }, icon(RESOURCE_ICONS[c.resource])), h("span", { class: "livepage-card-label" }, c.label)),
-    h("span", { class: "livepage-card-value" }, c.value ?? t("metric.notMeasured")),
-    h("span", { class: "livepage-card-detail" }, c.detail),
-    sparkline(c.history, c.warn ? "warn" : ""),
+    "div",
+    { class: "actbar-anchor livepage-card-slot" },
+    h(
+      "button",
+      {
+        type: "button",
+        class: ["livepage-card", c.warn ? "warn" : "", pressed ? "selected" : ""],
+        "aria-pressed": String(pressed),
+        "aria-keyshortcuts": bar && item.reference ? "E Enter" : null,
+        "data-key": `resource:${c.key}`,
+        "data-actbar-item": Boolean(bar),
+        onclick: () => select(pressed ? null : { kind: "resource", key: c.key }),
+      },
+      h("span", { class: "livepage-card-head" }, h("span", { class: "livepage-card-icon" }, icon(RESOURCE_ICONS[c.resource])), h("span", { class: "livepage-card-label" }, c.label)),
+      h("span", { class: "livepage-card-value" }, c.value ?? t("metric.notMeasured")),
+      h("span", { class: "livepage-card-detail" }, c.detail),
+      sparkline(c.history, c.warn ? "warn" : ""),
+    ),
+    bar,
   );
 }
 
-function applications() {
+function applications(item) {
   const activity = state.live.activity;
   const head = h(
     "div",
@@ -295,20 +324,29 @@ function applications() {
       { class: "livepage-app-list" },
       apps.map((app) => {
         const pressed = selected && selected.kind !== "resource" && selected.app === app.entity_ref;
+        // A process chosen in the inspector keeps its application's row: the bar acts on it.
+        const bar = pressed && item ? itemBar(item, `${selected.kind}:${selected.key ?? app.entity_ref}`) : null;
         return h(
-          "button",
-          {
-            type: "button",
-            class: ["livepage-app", pressed ? "selected" : ""],
-            "aria-pressed": String(pressed),
-            "data-key": `app:${app.entity_ref}`,
-            onclick: () => select(pressed && selected.kind === "app" ? null : { kind: "app", app: app.entity_ref }),
-          },
-          h("span", { class: "livepage-app-name", title: app.name }, app.name),
-          h("span", { class: "livepage-app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
-          h("span", { class: "livepage-app-value" }, measureText(app.cpu, "cpu")),
-          h("span", { class: "livepage-app-value" }, measureText(app.working_set, "bytes")),
-          h("span", { class: "meter" }, h("span", { style: { width: `${(Math.max(0, rankValue(app)) / max) * 100}%` } })),
+          "div",
+          { class: "actbar-anchor livepage-app-slot" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: ["livepage-app", pressed ? "selected" : ""],
+              "aria-pressed": String(pressed),
+              "aria-keyshortcuts": bar && item.reference ? "E Enter" : null,
+              "data-key": `app:${app.entity_ref}`,
+              "data-actbar-item": Boolean(bar),
+              onclick: () => select(pressed && selected.kind === "app" ? null : { kind: "app", app: app.entity_ref }),
+            },
+            h("span", { class: "livepage-app-name", title: app.name }, app.name),
+            h("span", { class: "livepage-app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
+            h("span", { class: "livepage-app-value" }, measureText(app.cpu, "cpu")),
+            h("span", { class: "livepage-app-value" }, measureText(app.working_set, "bytes")),
+            h("span", { class: "meter" }, h("span", { style: { width: `${(Math.max(0, rankValue(app)) / max) * 100}%` } })),
+          ),
+          bar,
         );
       }),
     ),
@@ -343,6 +381,7 @@ function render() {
     return;
   }
   const cards = resources(dash, live.history);
+  const item = resolve(cards);
   const hidden = dash.process_coverage.permission_denied;
   fill(
     host,
@@ -352,13 +391,13 @@ function render() {
       { class: "livepage" },
       h(
         "div",
-        { class: "livepage-main" },
+        { class: "livepage-main", "data-actbar-bounds": true },
         h("h2", { class: "caption" }, t("livepage.resources")),
-        h("div", { class: "livepage-cards" }, cards.map(card)),
-        applications(),
+        h("div", { class: "livepage-cards" }, cards.map((c) => card(c, item))),
+        applications(item),
         hidden ? h("p", { class: "note" }, t("procs.hidden", { count: hidden })) : null,
       ),
-      inspector(cards),
+      inspector(item),
     ),
   );
   if (focusedKey) host.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus({ preventScroll: true });
@@ -367,10 +406,14 @@ function render() {
 export function mount(page) {
   host = page;
   const stopWatching = watchActivity(() => currentRoute() === "live");
-  const onKey = (e) => {
-    if (e.key === "Escape" && selected && !dialogOpen()) select(null);
-  };
-  document.addEventListener("keydown", onKey);
+  // E explains and Enter investigates the selected item; Escape clears the selection.
+  const stopKeys = selectionKeys({
+    current: () => {
+      const item = selected && state.live.dash ? resolve(resources(state.live.dash, state.live.history)) : null;
+      return item && { ready: Boolean(item.reference), explain: () => act(item, "explain"), investigate: () => act(item, "investigate") };
+    },
+    clear: () => select(null),
+  });
   render();
   pokeActivity();
   const unsubscribe = subscribe((topic) => {
@@ -380,6 +423,6 @@ export function mount(page) {
     host = null;
     stopWatching();
     unsubscribe();
-    document.removeEventListener("keydown", onKey);
+    stopKeys();
   };
 }

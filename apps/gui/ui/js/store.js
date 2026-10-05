@@ -512,8 +512,10 @@ export async function morePage(kind) {
   const view = state.scan.view;
   const page = view?.[kind];
   if (!page || page.next_offset == null) return;
-  const next = await call("scan_page", { scopeId: view.scope_id, kind, offset: page.next_offset });
-  page.items.push(...next.items);
+  const offset = page.next_offset;
+  const next = await call("scan_page", { scopeId: view.scope_id, kind, offset });
+  // Each page is its own selection source: its items keep that source and where to read it again.
+  page.items.push(...next.items.map((item) => ({ ...item, page_offset: offset, selection_source_id: next.selection_source_id ?? null })));
   page.next_offset = next.next_offset;
   notify("scan");
 }

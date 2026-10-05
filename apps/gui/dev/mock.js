@@ -4,11 +4,14 @@
 //
 // URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
 // (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow,
-// ?recording=short (3-second recordings), ?battery=none (no battery). Questions containing
+// ?recording=short (3-second recordings), ?battery=none (no battery), ?sources=short (selection
+// sources expire after 5 s instead of five minutes, to exercise a scan page read again on Explain
+// or Investigate). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
 // stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
 // off. Both event families are emitted, like the Rust side: turn:* and inv:*.
-// Live captures publish selection sources; Explain and Investigate use selection_preview/send.
+// Live captures, history reads and scan pages publish selection sources; Explain and Investigate
+// use selection_preview/send.
 
 const params = new URLSearchParams(window.location.search);
 const listeners = new Map();
@@ -68,17 +71,17 @@ function volume(root, totalGiB, freeGiB) {
 // ---------- Selection sources ----------
 // Each live capture publishes a host-issued source reference, as SelectionRegistry does. Sources
 // expire after five minutes; previews are single-use tickets bound to their selection.
-const SELECTION_TTL = 5 * 60 * 1000;
+const SELECTION_TTL = params.get("sources") === "short" ? 5000 : 5 * 60 * 1000;
 const selectionSources = new Map();
 const selectionTickets = new Map();
 let selectionSequence = 0;
-function publishSource(targets, measuredAt) {
+function publishSource(targets, measuredAt, extra = {}) {
   const id = `selection-source-${++selectionSequence}`;
-  selectionSources.set(id, { targets, measuredAt, expires: Date.now() + SELECTION_TTL });
+  selectionSources.set(id, { targets, measuredAt, expires: Date.now() + SELECTION_TTL, ...extra });
   return id;
 }
 function sameTarget(a, b) {
-  return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id;
+  return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id && a.scope_id === b.scope_id && a.item_ref === b.item_ref;
 }
 
 let tick = 0;
@@ -583,8 +586,23 @@ function page(kind, root, offset) {
   const count = Math.min(50, total - offset);
   return { kind, items: items(kind, root, count, offset), total, next_offset: offset + count < total ? offset + count : null };
 }
+// Like retain_storage_page: each page of a completed scan is published as a selection source
+// whose targets are its items; the page carries its selection_source_id.
+function publishPage(scopeId, shown, measuredAt) {
+  const targets = shown.items.map((item) => ({ kind: "storage", scope_id: scopeId, item_ref: item.item_ref }));
+  const storage = Object.fromEntries(shown.items.map((item, i) => [item.item_ref, { kind: shown.kind, alias: `${shown.kind === "dirs" ? "dir" : "file"}-${i + 1}`, allocated_bytes: item.allocated_bytes, files: item.files }]));
+  return { ...shown, selection_source_id: targets.length ? publishSource(targets, measuredAt, { storage }) : null };
+}
+// Replacing a scan revokes every source of the previous one, as invalidate_storage does.
+function invalidateStorage() {
+  for (const [id, source] of selectionSources) {
+    if (source.targets.some((target) => target.kind === "storage")) selectionSources.delete(id);
+  }
+}
+let scanFinishedAt = 0;
 async function scan(scopeId, root) {
   const started = Date.now();
+  scanFinishedAt = 0;
   let entries = 0;
   while (Date.now() - started < 2600) {
     if (scanCancel) break;
@@ -602,8 +620,8 @@ async function scan(scopeId, root) {
     volume: { total_bytes: 476 * GiB, free_bytes: 61 * GiB, total_text: "476.00 GiB", free_text: "61.00 GiB", filesystem: "NTFS" },
     coverage: { files: entries, dirs: Math.round(entries / 9), denied_dirs: 3, denied_files: 0, reparse_skipped: 12, placeholders: 41, placeholder_logical_bytes: 3 * GiB, other_volume_skipped: 0, special_skipped: 0, vanished: 0, changed_during_scan: 5, errors: scanCancel ? 0 : 2, hard_link_aliases: 0, allocation_unknown_files: 0, truncated: null, cancelled: scanCancel },
     denied: [`${root}\\Private`],
-    dirs: page("dirs", root, 0),
-    files: page("files", root, 0),
+    dirs: publishPage(scopeId, page("dirs", root, 0), (scanFinishedAt = Date.now())),
+    files: publishPage(scopeId, page("files", root, 0), scanFinishedAt),
     limitations: ["Modification times are not last-use times; last use is unknown."],
   });
 }
@@ -865,18 +883,24 @@ export function createMock() {
       if (!source || source.expires <= Date.now()) throw new Error("The selected capture expired or was invalidated. Select the measured item again.");
       if (!source.targets.some((target) => sameTarget(target, reference.target))) throw new Error("The target does not belong to this source type.");
       const verb = intent === "explain" ? "Explain" : "Investigate";
-      const noun = reference.target.kind === "resource" ? `the selected ${reference.target.resource} measurements` : `the selected ${reference.target.kind}`;
+      const noun = reference.target.kind === "resource" ? `the selected ${reference.target.resource} measurements` : reference.target.kind === "storage" ? "the selected scan item" : `the selected ${reference.target.kind}`;
+      // A scan item leaves under its alias: never its name or path without the file-name opt-in.
+      const stored = reference.target.kind === "storage" ? source.storage?.[reference.target.item_ref] : null;
       const asked = question || `${verb} ${noun}, stating what is measured and what remains uncertain.`;
       const age = Date.now() - source.measuredAt;
       const evidence = {
         status: "ok",
-        selection: { target: reference.target, intent, fresh_collection: false },
+        // Like the host's projection: a scan item is named by its alias, never by its scope or scan.
+        selection: { target: stored ? { kind: "storage", alias: stored.alias } : reference.target, intent, fresh_collection: false },
         measured_at_unix_ms: source.measuredAt,
         age_ms: age,
         freshness: "already_measured",
-        observations: reference.target.kind === "resource" && reference.target.resource === "memory"
-          ? [{ observation_id: "O0", metric: "physical_available_bytes", value: 3326083072, unit: "bytes", status: "ok" }, { observation_id: "O0", metric: "physical_total_bytes", value: 16888365056, unit: "bytes", status: "ok" }]
-          : [{ observation_id: "O0", metric: "cpu_busy_basis_points", value: 1850, unit: "basis_points", status: "ok" }],
+        observations: stored
+          ? [{ observation_id: "O0", entity_ref: stored.alias, metric: "allocated_bytes", value: stored.allocated_bytes, unit: "bytes", status: "ok" }]
+          : reference.target.kind === "resource" && reference.target.resource === "memory"
+            ? [{ observation_id: "O0", metric: "physical_available_bytes", value: 3326083072, unit: "bytes", status: "ok" }, { observation_id: "O0", metric: "physical_total_bytes", value: 16888365056, unit: "bytes", status: "ok" }]
+            : [{ observation_id: "O0", metric: "cpu_busy_basis_points", value: 1850, unit: "basis_points", status: "ok" }],
+        storage_items: stored ? [{ item_ref: stored.alias, alias_path: `<scope>/${stored.alias}`, kind: stored.kind, allocated_bytes: stored.allocated_bytes, files: stored.files, last_used: "unknown" }] : undefined,
         limitations: ["Measurements were taken before this turn; they cannot verify the current state."],
       };
       if (names && reference.target.kind === "process") evidence.process_names = { [reference.target.entity_ref]: "chrome.exe" };
@@ -972,6 +996,7 @@ export function createMock() {
     start_scan: ({ path }) => {
       scanId += 1;
       scanCancel = false;
+      invalidateStorage();
       const scopeId = `scope-${scanId}`;
       lastScanRoot = path;
       scan(scopeId, path);
@@ -980,7 +1005,10 @@ export function createMock() {
     cancel_scan: () => {
       scanCancel = true;
     },
-    scan_page: ({ kind, offset }) => page(kind, lastScanRoot, offset),
+    scan_page: ({ scopeId, kind, offset }) => {
+      if (scopeId !== `scope-${scanId}` || !scanFinishedAt) throw new Error("This scan is no longer available. Scan the folder again.");
+      return publishPage(scopeId, page(kind, lastScanRoot, offset), scanFinishedAt);
+    },
     reveal: () => null,
     // ?routing=calibrated makes Auto available, as a reviewed local calibration would.
     model_routing_get: () => routingView(),

@@ -2145,6 +2145,7 @@ details.more > div {
   color: var(--text-3);
 }
 .list-name .text {
+  display: block;
   min-width: 0;
 }
 .list-name strong {
@@ -2154,7 +2155,7 @@ details.more > div {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.list-name span {
+.list-name .text > span {
   display: block;
   color: var(--text-3);
   font-size: 12px;
@@ -2169,6 +2170,41 @@ details.more > div {
 }
 .item-row {
   grid-template-columns: minmax(0, 1fr) minmax(90px, 22%) 92px 108px 36px;
+  border-radius: var(--radius-sm);
+}
+/* The name is the row's control; its hit area covers the whole row (the reveal button and the
+   partial mark stay above it). */
+.item-select {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.item-select::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-sm);
+}
+.item-select:focus-visible {
+  box-shadow: none;
+}
+.item-select:focus-visible::after {
+  box-shadow: var(--focus-ring);
+}
+.item-row:hover {
+  background: var(--raised);
+}
+.item-row.selected {
+  background: var(--accent-soft);
+}
+.item-row > .btn,
+.item-row .partial-mark {
+  position: relative;
+  z-index: 1;
+}
+.storage-select-hint {
+  margin-bottom: 4px;
 }
 .item-row .date {
   color: var(--text-3);
@@ -2693,19 +2729,56 @@ details.more > div {
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
-.event-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.event-note {
   padding: 0 10px 10px 54px;
-}
-.event-actions .note {
-  flex: 1;
 }
 .callout.recording {
   align-items: center;
   border-color: transparent;
   background: var(--bad-soft);
+}
+/* A finished recording is selected like an event: its title is the control, covering the callout. */
+.rec-anchor {
+  margin-bottom: 16px;
+}
+.rec-done {
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.rec-done > div {
+  flex: 1;
+  min-width: 0;
+}
+.rec-anchor:hover .rec-done {
+  border-color: var(--stroke-strong);
+}
+.rec-done.selected,
+.rec-anchor:hover .rec-done.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.rec-select {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.rec-select::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+}
+.rec-select:focus-visible {
+  box-shadow: none;
+}
+.rec-select:focus-visible::after {
+  box-shadow: var(--focus-ring);
+}
+.rec-chevron {
+  display: flex;
+  align-self: flex-start;
+  color: var(--text-3);
 }
 /* The recording's Explain and Investigate stay side by side (.callout > div stacks its children). */
 .callout > .row {
@@ -2999,6 +3072,10 @@ details.more > div {
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 10px;
 }
+.livepage-card-slot > .livepage-card {
+  width: 100%;
+  height: 100%;
+}
 .livepage-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -3063,15 +3140,26 @@ details.more > div {
   align-items: center;
   gap: 8px;
 }
+/* Not clipped: the action bar of a selected row floats over the rows below it. The first and last
+   rows round their own corners instead. */
 .livepage-app-list {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--stroke);
   border-radius: var(--radius);
   background: var(--surface);
-  overflow: hidden;
+}
+.livepage-app-slot:first-child > .livepage-app {
+  border-top-left-radius: calc(var(--radius) - 1px);
+  border-top-right-radius: calc(var(--radius) - 1px);
+}
+.livepage-app-slot:last-child > .livepage-app {
+  border-bottom: 0;
+  border-bottom-left-radius: calc(var(--radius) - 1px);
+  border-bottom-right-radius: calc(var(--radius) - 1px);
 }
 .livepage-app {
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 110px 70px 90px;
   align-items: center;
@@ -3084,9 +3172,6 @@ details.more > div {
   color: var(--text);
   text-align: left;
   font-variant-numeric: tabular-nums;
-}
-.livepage-app:last-child {
-  border-bottom: 0;
 }
 .livepage-app:hover {
   background: var(--raised);
@@ -3154,11 +3239,6 @@ details.more > div {
   font-size: 12.5px;
   color: var(--text-3);
 }
-.insp-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .insp-body {
   display: flex;
   flex-direction: column;
@@ -3215,6 +3295,42 @@ details.more > div {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* What the actions use, and the way further; the action bar under the item is the main place. */
+.insp-next {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.insp-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -2px -6px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+.insp-more .icon {
+  width: 15px;
+  height: 15px;
+}
+.insp-more:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.insp-more:disabled {
+  color: var(--text-3);
+}
 @container (max-width: 860px) {
   .livepage {
     grid-template-columns: minmax(0, 1fr);
@@ -3231,6 +3347,107 @@ details.more > div {
   }
   .livepage-app-count {
     display: none;
+  }
+}
+
+/* ---------- Action bar: the selected item's actions, anchored under it ---------- */
+.actbar-anchor {
+  position: relative;
+}
+.actbar {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  top: calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  white-space: nowrap;
+}
+:root[data-theme="dark"] .actbar {
+  border-color: var(--stroke-strong);
+  background: var(--raised);
+}
+/* Kept in view: aligned to the item's end near the right edge, above it near the bottom. */
+.actbar.actbar-end {
+  left: auto;
+  right: 0;
+}
+.actbar.actbar-above {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+.actbar-in {
+  animation: actbar-in 140ms var(--ease);
+}
+.actbar-btn {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.actbar-btn .icon {
+  width: 15px;
+  height: 15px;
+}
+.actbar-btn:hover {
+  background: var(--hover);
+}
+.actbar-btn.actbar-primary {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+/* Two layers of the soft accent: a little stronger on hover, in every accent and theme. */
+.actbar-btn.actbar-primary:hover {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--accent-soft);
+}
+.actbar-btn.actbar-muted {
+  color: var(--text-3);
+}
+.actbar-btn[aria-disabled="true"] {
+  cursor: default;
+}
+.actbar-btn[aria-disabled="true"]:hover {
+  background: transparent;
+}
+.actbar-btn[aria-disabled="true"]:not(.actbar-muted),
+.actbar-idle .actbar-btn.actbar-muted {
+  opacity: 0.5;
+}
+.actbar-btn.actbar-primary[aria-disabled="true"]:hover {
+  background: var(--accent-soft);
+}
+.actbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--stroke);
+}
+:root[data-theme="dark"] .actbar-sep {
+  background: var(--stroke-strong);
+}
+.actbar .actbar-hint {
+  padding: 0 8px 0 4px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+@keyframes actbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
 }
 
