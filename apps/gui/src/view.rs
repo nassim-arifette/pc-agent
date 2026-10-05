@@ -977,6 +977,8 @@ pub struct Cloud {
     pub model_source: Option<&'static str>,
     /// Both settings are present and the model ID is an accepted Nemotron ID.
     pub ready: bool,
+    /// How much the model reasons: on (default), low or off.
+    pub reasoning: &'static str,
     pub problem: Option<String>,
     pub file: Option<String>,
     pub file_problem: Option<String>,
@@ -999,6 +1001,11 @@ pub fn cloud(creds: &Credentials) -> Cloud {
         model_id: creds.get("NEBIUS_MODEL_ID"),
         model_source: source_name(creds.source("NEBIUS_MODEL_ID")),
         ready: checked.is_ok(),
+        reasoning: creds
+            .get("NEBIUS_REASONING")
+            .and_then(|text| pcagent_agent::Reasoning::parse(&text))
+            .unwrap_or_default()
+            .as_str(),
         problem: checked.err().map(|e| e.to_string()),
         file: creds.file().map(|p| p.display().to_string()),
         file_problem: creds.problem.clone(),

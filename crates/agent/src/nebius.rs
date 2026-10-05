@@ -17,18 +17,77 @@ use std::{
 };
 
 const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
+/// NVIDIA's sampling for Nemotron 3, from the model cards: Super and Ultra use temperature 1.0 and
+/// top_p 0.95 for every task, tool calling included; Nano's card gives 0.6 for tool calling.
+/// Greedy decoding (temperature 0) let Super loop until the output limit, with almost no
+/// reasoning, on 2026-10-03 and 2026-10-05.
+fn sampling(model_id: &str) -> (f64, f64) {
+    if model_id.to_ascii_lowercase().contains("nano") {
+        (0.6, 0.95)
+    } else {
+        (1.0, 0.95)
+    }
+}
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
+
+/// How much Nemotron 3 reasons before answering, through its chat template: `enable_thinking`,
+/// and the lighter mode, which Super calls `low_effort` and Ultra `medium_effort`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reasoning {
+    #[default]
+    On,
+    Low,
+    Off,
+}
+impl Reasoning {
+    /// The `NEBIUS_REASONING` setting; anything else keeps the default.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "on" => Some(Self::On),
+            "low" => Some(Self::Low),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Low => "low",
+            Self::Off => "off",
+        }
+    }
+    /// With reasoning, the cards ask for `force_nonempty_content` when tools are called, so a
+    /// call is never lost inside the reasoning.
+    fn template_kwargs(self, model_id: &str) -> Value {
+        let ultra = model_id.to_ascii_lowercase().contains("ultra");
+        match self {
+            Self::On => json!({"enable_thinking":true,"force_nonempty_content":true}),
+            Self::Low if ultra => {
+                json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
+            }
+            Self::Low => {
+                json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
+            }
+            Self::Off => json!({"enable_thinking":false}),
+        }
+    }
+}
 
 /// Intentionally does not implement Debug or Serialize: API keys must not enter logs.
 pub struct Config {
     api_key: String,
     model_id: String,
+    reasoning: Reasoning,
 }
 impl Config {
     pub fn model_id(&self) -> &str {
         &self.model_id
+    }
+    pub fn reasoning(&self) -> Reasoning {
+        self.reasoning
     }
     /// Reuse an already local credential for an explicit catalog-checked routing target.
     pub fn for_model(&self, model_id: &str) -> Result<Self, AgentError> {
@@ -36,19 +95,28 @@ impl Config {
         Ok(Self {
             api_key: self.api_key.clone(),
             model_id: model_id.into(),
+            reasoning: self.reasoning,
         })
     }
     pub fn from_env() -> Result<Self, AgentError> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
-    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` from whatever source the caller trusts
-    /// (environment, a per-user credentials file); empty values count as missing.
+    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` (and the optional
+    /// `NEBIUS_REASONING`) from whatever source the caller trusts (environment, a per-user
+    /// credentials file); empty values count as missing.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, AgentError> {
         let get = |name: &str| lookup(name).filter(|s| !s.trim().is_empty());
         let api_key = get("NEBIUS_API_KEY").ok_or(AgentError::MissingKey)?;
         let model_id = get("NEBIUS_MODEL_ID").ok_or(AgentError::MissingModel)?;
         validate_model_id(&model_id)?;
-        Ok(Self { api_key, model_id })
+        let reasoning = get("NEBIUS_REASONING")
+            .and_then(|text| Reasoning::parse(&text))
+            .unwrap_or_default();
+        Ok(Self {
+            api_key,
+            model_id,
+            reasoning,
+        })
     }
 }
 
@@ -168,6 +236,7 @@ impl Nebius {
         let client = Self::new(Config {
             api_key,
             model_id: String::new(),
+            reasoning: Reasoning::default(),
         })?;
         client.available_models(timeout)
     }
@@ -413,9 +482,13 @@ impl Model for Nebius {
             ToolChoice::Required => "required",
         };
         // Streamed so the answer can be shown while it is written; usage comes in the last event.
-        let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
-            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,"temperature":0.0,
+        let mut body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
+            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,
             "stream":true,"stream_options":{"include_usage":true}});
+        let (temperature, top_p) = sampling(&self.config.model_id);
+        body["temperature"] = json!(temperature);
+        body["top_p"] = json!(top_p);
+        body["chat_template_kwargs"] = self.config.reasoning.template_kwargs(&self.config.model_id);
         let response = self.send(
             self.client
                 .post(format!("{BASE_URL}/chat/completions"))
@@ -643,6 +716,53 @@ mod tests {
         assert_eq!(reply.content.as_deref(), Some("Hello"));
         assert!(reply.calls.is_empty());
         assert_eq!(reply.total_tokens, None);
+    }
+
+    #[test]
+    fn reasoning_setting_maps_to_nemotron_template_switches() {
+        let lookup = |reasoning: Option<&'static str>| {
+            move |name: &str| match name {
+                "NEBIUS_API_KEY" => Some("k".to_owned()),
+                "NEBIUS_MODEL_ID" => Some("nvidia/nemotron-3-super-120b-a12b".to_owned()),
+                "NEBIUS_REASONING" => reasoning.map(str::to_owned),
+                _ => None,
+            }
+        };
+        const SUPER: &str = "nvidia/nemotron-3-super-120b-a12b";
+        const ULTRA: &str = "nvidia/Nemotron-3-Ultra-550b-a55b";
+        // Missing or unknown values keep full reasoning, with non-empty content for tool calls.
+        for absent in [None, Some(""), Some("max"), Some("OFF")] {
+            let config = Config::from_lookup(lookup(absent)).unwrap();
+            assert_eq!(config.reasoning(), Reasoning::On);
+            assert_eq!(
+                config.reasoning().template_kwargs(SUPER),
+                json!({"enable_thinking":true,"force_nonempty_content":true})
+            );
+        }
+        // The lighter mode has a different switch on each model.
+        let low = Config::from_lookup(lookup(Some("low"))).unwrap();
+        assert_eq!(
+            low.reasoning().template_kwargs(SUPER),
+            json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
+        );
+        assert_eq!(
+            low.reasoning().template_kwargs(ULTRA),
+            json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
+        );
+        let off = Config::from_lookup(lookup(Some(" off "))).unwrap();
+        assert_eq!(
+            off.reasoning().template_kwargs(ULTRA),
+            json!({"enable_thinking":false})
+        );
+        assert_eq!(sampling(SUPER), (1.0, 0.95));
+        assert_eq!(sampling(ULTRA), (1.0, 0.95));
+        assert_eq!(sampling("nvidia/nemotron-3-nano-30b-a3b"), (0.6, 0.95));
+        // A routing target keeps the chosen reasoning.
+        let ultra = off.for_model(ULTRA).unwrap();
+        assert_eq!(ultra.reasoning(), Reasoning::Off);
+        for mode in [Reasoning::On, Reasoning::Low, Reasoning::Off] {
+            assert_eq!(Reasoning::parse(mode.as_str()), Some(mode));
+        }
     }
 
     #[test]

@@ -40,7 +40,14 @@ function cloud() {
   if (cloudMode === "problem") {
     return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "meta/llama", model_source: "file", ready: false, problem: "Select an explicit nvidia/ Nemotron model ID; no fallback model is allowed", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
   }
-  return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "nvidia/nemotron-3-super-120b-a12b", model_source: "file", ready: true, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
+  return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: cloudModel, model_source: "file", ready: true, reasoning: cloudReasoning, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
+}
+let cloudModel = "nvidia/nemotron-3-super-120b-a12b";
+let cloudReasoning = "on";
+let routingSettings = { mode: "configured", super_model_id: null, ultra_model_id: null };
+function routingView() {
+  const calibrated = params.get("routing") === "calibrated";
+  return { settings: { ...routingSettings }, revision: 0, automatic_available: calibrated, calibration_reviewed_at_unix_ms: calibrated ? Date.now() - 86400000 : null, calibrated_rules: [], limitation: null };
 }
 
 function volume(root, totalGiB, freeGiB) {
@@ -763,6 +770,13 @@ export function createMock() {
     },
     scan_page: ({ kind, offset }) => page(kind, lastScanRoot, offset),
     reveal: () => null,
+    // ?routing=calibrated makes Auto available, as a reviewed local calibration would.
+    model_routing_get: () => routingView(),
+    model_routing_set: ({ settings }) => {
+      if (settings.mode === "automatic" && params.get("routing") !== "calibrated") throw new Error("Automatic routing requires a reviewed local Nemotron calibration.");
+      routingSettings = { mode: settings.mode, super_model_id: settings.super_model_id ?? null, ultra_model_id: settings.ultra_model_id ?? null };
+      return routingView();
+    },
     // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail.
     elevation_status: () => (elevation ? { request_id: elevation.id, task: elevation.task, budget_ms: elevation.budget, state: elevation.state } : null),
     elevation_prepare: async ({ task, budgetMs }) => {
@@ -799,8 +813,13 @@ export function createMock() {
         elevation.state = "cancelling";
       }
     },
-    save_cloud_settings: ({ modelId }) => {
+    save_cloud_settings: ({ modelId, reasoning = null }) => {
       cloudMode = modelId.startsWith("nvidia/") ? "ready" : "problem";
+      if (cloudMode === "ready") cloudModel = modelId;
+      if (reasoning) {
+        if (!["on", "low", "off"].includes(reasoning)) throw new Error("unknown reasoning");
+        cloudReasoning = reasoning;
+      }
       return cloud();
     },
     test_cloud: async () => {

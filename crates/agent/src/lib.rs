@@ -43,7 +43,7 @@ pub use budget::{BudgetLimit, ExtensionRequest, MAX_EXTENSIONS};
 pub use cost::{estimate as estimate_cost, Cost, Pricing};
 pub use history_tools::METRICS as HISTORY_TOOL_METRICS;
 pub use models::{validate_model_id, ModelCatalog, ModelInfo};
-pub use nebius::{Config, Nebius};
+pub use nebius::{Config, Nebius, Reasoning};
 pub use payload::{measurements, FindingAliases, Measurements, ModelFinding, NotMeasured};
 use pcagent_diagnostics::{analyze, Classification, Finding, Support};
 pub use pcagent_inspect::QUERY_NAMES as SYSTEM_QUERY_NAMES;
