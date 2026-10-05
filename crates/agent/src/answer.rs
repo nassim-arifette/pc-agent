@@ -61,17 +61,68 @@ const CATEGORIES: [&str; 13] = [
     "other",
 ];
 
-/// The arguments of `submit_answer`, exactly as the model sent them.
+/// The arguments of `submit_answer`. Reading is lenient on form, never on content: an extra field
+/// is ignored, a list sent as one text is split into lines, and a missing or unknown confidence or
+/// category falls back to `medium` or `other`. Only the answer text itself is required.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct Submission {
     answer: String,
+    #[serde(default = "medium", deserialize_with = "lenient_confidence")]
     confidence: Confidence,
+    #[serde(default = "other", deserialize_with = "lenient_category")]
     category: Category,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text_list")]
     action_refs: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text_list")]
     follow_ups: Vec<String>,
+}
+
+fn medium() -> Confidence {
+    Confidence::Medium
+}
+fn other() -> Category {
+    Category::Other
+}
+
+/// A known value written in another case or with spaces or dashes, like `Medium` or `storage space`.
+fn known_word<T: serde::de::DeserializeOwned>(value: &Value) -> Option<T> {
+    let word = value
+        .as_str()?
+        .trim()
+        .to_lowercase()
+        .replace([' ', '-'], "_");
+    serde_json::from_value(json!(word)).ok()
+}
+
+fn lenient_confidence<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Confidence, D::Error> {
+    Ok(known_word(&Value::deserialize(d)?).unwrap_or(Confidence::Medium))
+}
+
+fn lenient_category<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Category, D::Error> {
+    Ok(known_word(&Value::deserialize(d)?).unwrap_or(Category::Other))
+}
+
+/// A list of texts, or one text with an item per line (bullets and numbering removed).
+fn text_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        Value::String(text) => text
+            .lines()
+            .map(|line| {
+                line.trim()
+                    .trim_start_matches(|c: char| {
+                        c.is_ascii_digit() || matches!(c, '-' | '*' | '•' | '.' | ')')
+                    })
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|line| !line.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +186,11 @@ impl IssueKind {
             Self::NotAlone => "Call submit_answer alone, in a turn without other tool calls.",
             Self::NoToolCall => "Answer by calling submit_answer; do not write the answer as a plain message.",
         }
+    }
+    /// Marked in the shown answer without sending it back: an unknown action reference is already
+    /// dropped from `action_refs`.
+    pub(crate) fn mark_only(self) -> bool {
+        self == Self::UnknownAction
     }
     /// A problem of the text itself: the answer can still be shown, marked as unverified.
     pub(crate) fn in_text(self) -> bool {
@@ -400,8 +456,11 @@ pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejec
         unverified: Vec::new(),
         repairs: 0,
     };
-    if issues.is_empty() {
-        Ok(answer)
+    if issues.iter().all(|i| i.kind.mark_only()) {
+        Ok(Answer {
+            unverified: issues,
+            ..answer
+        })
     } else {
         let shown = Answer {
             unverified: issues
@@ -1669,25 +1728,31 @@ mod tests {
             references: &references,
             plans: &plans,
         };
-        let malformed = review(
-            r#"{"answer":"x","confidence":"sure","category":"memory"}"#,
+        // Form is read leniently: an unknown confidence is medium, an extra field is ignored and
+        // a list sent as one text has one item per line.
+        let lenient = review(
+            r#"{"answer":"x","confidence":"Sure","category":"Storage space","verdict":"ok","follow_ups":"- Et le disque D: ?\n2. Et la mémoire ?"}"#,
             &ctx,
+        )
+        .unwrap();
+        assert_eq!(lenient.confidence, Confidence::Medium);
+        assert_eq!(lenient.category, Category::StorageSpace);
+        assert_eq!(lenient.follow_ups, ["Et le disque D: ?", "Et la mémoire ?"]);
+        let missing = review(r#"{"answer":"x"}"#, &ctx).unwrap();
+        assert_eq!(
+            (missing.confidence, missing.category),
+            (Confidence::Medium, Category::Other)
         );
+        let malformed = review(r#"{"confidence":"low"}"#, &ctx);
         assert!(matches!(malformed, Err((ref i, None)) if i[0].kind == IssueKind::Malformed));
-        let extra = review(
-            r#"{"answer":"x","confidence":"low","category":"memory","verdict":"ok"}"#,
-            &ctx,
-        );
-        assert!(extra.is_err());
         let args =
             json!({"answer":"Free space [O1].","confidence":"low","category":"storage_space",
             "action_refs":["plan-1","plan-9"],
             "follow_ups":["  Et le disque D: ?  ","See https://x.test",""]})
             .to_string();
-        let Err((issues, Some(shown))) = review(&args, &ctx) else {
-            panic!("an unknown plan is a problem");
-        };
-        assert_eq!(issues[0].kind, IssueKind::UnknownAction);
+        // An unknown plan is dropped and marked; the answer is not sent back for it.
+        let shown = review(&args, &ctx).unwrap();
+        assert_eq!(shown.unverified[0].kind, IssueKind::UnknownAction);
         assert_eq!(shown.action_refs, ["plan-1"]);
         assert_eq!(shown.follow_ups, ["Et le disque D: ?"]);
         assert_eq!(shown.unverified.len(), 1);
@@ -1763,19 +1828,16 @@ mod tests {
             references: &refs(),
             plans: &[],
         };
-        let Err((issues, None)) = review(
-            r#"{"answer":"x","confidence":"high","category":"memory","citations":[]}"#,
-            &ctx,
-        ) else {
-            panic!("an unknown field is malformed");
+        // A closed class and a declared field, never text the model wrote.
+        let Err((issues, None)) = review(r#"{"confidence":"high","citations":[]}"#, &ctx) else {
+            panic!("an answer without text is malformed");
         };
         assert_eq!(issues[0].kind, IssueKind::Malformed);
-        // A closed class, never the key the model wrote.
-        assert_eq!(issues[0].excerpt, "unknown_field unknown");
-        let Err((issues, None)) = review(r#"{"answer":"x","confidence":"high"}"#, &ctx) else {
-            panic!("a missing field is malformed");
+        assert_eq!(issues[0].excerpt, "missing_field answer");
+        let Err((issues, None)) = review(r#"{"answer":"x","#, &ctx) else {
+            panic!("broken JSON is malformed");
         };
-        assert_eq!(issues[0].excerpt, "missing_field category");
+        assert_eq!(issues[0].excerpt, "syntax unknown");
     }
 
     #[test]
