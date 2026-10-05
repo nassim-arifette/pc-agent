@@ -40,7 +40,7 @@ let cloudMode = params.get("cloud") || "ready";
 const webParam = params.get("web");
 let searchKey = webParam === "on" || webParam === "key" ? "tvly-synthetic-mock-key-x9Qa" : null;
 function searchKeyState() {
-  return { search_key_configured: Boolean(searchKey), search_key_hint: searchKey && searchKey.length >= 12 ? searchKey.slice(-4) : null };
+  return { search_key_configured: Boolean(searchKey), search_key_hint: searchKey && searchKey.length >= 12 ? searchKey.slice(-4) : null, search_key_source: searchKey ? "file" : null };
 }
 function cloud() {
   if (cloudMode === "none") {

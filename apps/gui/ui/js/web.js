@@ -174,6 +174,7 @@ function keyForm(cloud) {
       icon(configured ? "check" : "key"),
       configured ? (hint ? t("web.key.savedHint", { hint }) : t("web.key.savedNoHint")) : t("web.key.none"),
     ),
+    cloud.search_key_source === "environment" ? h("p", { class: "hint" }, icon("info"), " ", t("web.key.env")) : null,
     h(
       "div",
       { class: "row wrap" },

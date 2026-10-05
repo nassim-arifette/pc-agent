@@ -407,6 +407,7 @@ const en = {
   "web.key.invalid": "A Tavily key starts with tvly-.",
   "web.key.saved": "Tavily key saved.",
   "web.key.removed": "Tavily key removed.",
+  "web.key.env": "The TAVILY_API_KEY environment variable is set: it takes precedence over the saved key.",
   "web.key.note": "Optional: everything else works without it. Stored in %APPDATA%\\pcagent\\.env like the Nebius key, readable only by your Windows account, and never shown here again.",
 
   "answer.next": "Suggested next step",
@@ -1055,6 +1056,7 @@ const fr = {
   "web.key.none": "Aucune clé enregistrée.",
   "web.key.remove": "Supprimer",
   "web.key.empty": "Collez d'abord une clé.",
+  "web.key.env": "La variable d'environnement TAVILY_API_KEY est définie : elle prime sur la clé enregistrée.",
   "web.key.invalid": "Une clé Tavily commence par tvly-.",
   "web.key.saved": "Clé Tavily enregistrée.",
   "web.key.removed": "Clé Tavily supprimée.",
