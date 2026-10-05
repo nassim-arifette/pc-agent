@@ -23,6 +23,17 @@ when necessary, and marks unresolved claims. It does not replace the answer with
 
 ## Repairs
 
+Form is read leniently, content strictly. Only the answer text is required: an extra field is
+ignored, a list sent as one text gets one item per line, and a missing or unknown confidence or
+category becomes `medium` or `other`. An unknown action reference is dropped and marked without a
+repair. In Explain, where the whole turn describes one capture shown with its time, a right value
+written as current is accepted and marked `historical_wording`; elsewhere it is sent back.
+
+Nemotron sometimes keeps writing after complete tool calls (closing tags, then whitespace) until
+the output limit. Calls whose arguments form whole JSON objects are kept when the reply is cut
+off, and after 2 KiB of text following them the rest of the stream is not read. The provider's
+usage, sent last, is then unknown for that request.
+
 - A repair request names each problem, the passage and a fix whose example cites a reference that
   exists in this turn. Number and citation problems also list `valid_references`, each once. A
   malformed submission gets a closed class and a declared field name, like `missing_field category`,

@@ -1190,6 +1190,19 @@ fn converse_inner(
                     },
                 )
             };
+            // Explain describes one dated capture, shown with its time in the window: an earlier
+            // value written as current is marked in the answer, not sent back.
+            let outcome = match outcome {
+                Err((issues, Some(shown)))
+                    if explain_ready
+                        && issues.iter().all(|i| {
+                            i.kind == IssueKind::HistoricalWording || i.kind.mark_only()
+                        }) =>
+                {
+                    Ok(*shown)
+                }
+                other => other,
+            };
             let issues = match outcome {
                 Ok(answer) => {
                     let reason = if answer.category == Category::InsufficientEvidence {

@@ -1565,6 +1565,38 @@ mod tests {
         assert_eq!(answer.repairs, 0);
         assert!(answer.unverified.is_empty(), "{:?}", answer.unverified);
         assert_eq!(answer.citations[0].reference, "O0");
+
+        // In Explain, a right value written as current is marked, not sent back.
+        let mut model = Script {
+            replies: VecDeque::from([reply(
+                "answer",
+                SUBMIT_ANSWER,
+                json!({"answer":"CPU usage is 93% [O0].","confidence":"low","category":"cpu"}),
+            )]),
+            requests: vec![],
+            definitions: vec![],
+        };
+        let mut delegate =
+            SnapshotTools::new(|_, _| panic!("Explain cannot reach the native collector"));
+        let mut tools = SelectedTools::new(&mut delegate, &selection);
+        let report = converse_with_selection(
+            &mut model,
+            &[],
+            "Explain the selected CPU capture.",
+            &selection,
+            &mut tools,
+            &privacy(),
+            |_| {},
+            |_, _| false,
+        );
+        assert_eq!(report.stats.inference_calls, 1);
+        let answer = report.answer.expect("accepted with a mark");
+        assert_eq!(answer.repairs, 0);
+        assert_eq!(answer.unverified.len(), 1);
+        assert_eq!(
+            answer.unverified[0].kind,
+            answer::IssueKind::HistoricalWording
+        );
     }
 
     #[test]

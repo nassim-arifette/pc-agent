@@ -291,6 +291,14 @@ fn parse_reply(envelope: Envelope) -> Reply {
     };
     match choice.finish_reason.as_str() {
         "stop" | "tool_calls" => {}
+        // Nemotron sometimes keeps writing after complete tool calls (closing tags, then tabs)
+        // until the limit. The calls were finished before: keep them, drop what followed.
+        "length" if complete_calls(choice.message.tool_calls.as_deref()) => {
+            return Reply {
+                calls: choice.message.tool_calls.unwrap_or_default(),
+                ..billed
+            };
+        }
         "length" => return reject(AgentError::OutputLimit),
         _ => return reject(AgentError::IncompleteResponse),
     }
@@ -304,6 +312,20 @@ fn parse_reply(envelope: Envelope) -> Reply {
         ..billed
     }
 }
+/// At least one call, each with arguments that form a whole JSON object.
+fn complete_calls(calls: Option<&[ToolCall]>) -> bool {
+    calls.is_some_and(|calls| {
+        !calls.is_empty()
+            && calls.iter().all(|c| {
+                serde_json::from_str::<serde_json::Map<String, Value>>(&c.function.arguments)
+                    .is_ok()
+            })
+    })
+}
+
+/// Text written after complete tool calls, past which the rest of the stream is not read.
+const TEXT_AFTER_CALLS: usize = 2048;
+
 /// One server-sent event of a streamed completion.
 #[derive(Deserialize)]
 struct Chunk {
@@ -359,6 +381,9 @@ fn read_stream(
     let mut usage = None;
     let mut seen = false;
     let mut malformed = false;
+    // Text since the last tool-call delta, and the length at which it is checked next.
+    let mut after_calls = 0usize;
+    let mut check_at = TEXT_AFTER_CALLS;
     loop {
         line.clear();
         let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
@@ -395,7 +420,16 @@ fn read_stream(
             }
             let Some(delta) = choice.delta else { continue };
             if let Some(text) = delta.content {
+                after_calls += text.len();
                 content.get_or_insert_with(String::new).push_str(&text);
+            }
+            if delta
+                .tool_calls
+                .as_ref()
+                .is_some_and(|parts| !parts.is_empty())
+            {
+                after_calls = 0;
+                check_at = TEXT_AFTER_CALLS;
             }
             for part in delta.tool_calls.unwrap_or_default() {
                 if part.index > calls.len() || part.index >= MAX_STREAMED_CALLS {
@@ -418,6 +452,20 @@ fn read_stream(
                         on_call(&call.name, &call.arguments);
                     }
                 }
+            }
+        }
+        // Long text after finished calls is never part of them: stop reading instead of waiting
+        // for the output limit. The provider's usage, sent last, is then unknown.
+        if after_calls >= check_at {
+            check_at = after_calls + TEXT_AFTER_CALLS;
+            let finished = !calls.is_empty()
+                && calls.iter().all(|c| {
+                    serde_json::from_str::<serde_json::Map<String, Value>>(&c.arguments).is_ok()
+                });
+            if finished {
+                finish = Some("tool_calls".into());
+                content = None;
+                break;
             }
         }
     }
@@ -525,8 +573,9 @@ mod tests {
     #[test]
     fn truncated_filtered_and_malformed_replies_are_rejected_but_keep_their_usage() {
         let usage = json!({"prompt_tokens":4700,"completion_tokens":4096,"total_tokens":8796});
+        // Arguments cut before the end of the object: nothing can run.
         let call = json!([{"id":"c","type":"function",
-            "function":{"name":"get_system_snapshot","arguments":"{}"}}]);
+            "function":{"name":"get_system_snapshot","arguments":"{\"scope\":\"al"}}]);
         for (choices, error) in [
             (
                 json!([{"message":{"content":"{}","tool_calls":call},"finish_reason":"length"}]),
@@ -705,6 +754,48 @@ mod tests {
             Some(AgentError::InvalidResponse)
         );
         assert_eq!(replay("").rejected, Some(AgentError::InvalidResponse));
+    }
+
+    #[test]
+    fn complete_calls_survive_text_written_after_them() {
+        let call = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
+            "type":"function","function":{"name":"submit_answer",
+            "arguments":"{\"answer\":\"Lors de la mesure [O0].\"}"}}]}}]});
+        let junk = |text: &str| json!({"choices":[{"index":0,"delta":{"content":text}}]});
+        let usage = json!({"choices":[],
+            "usage":{"prompt_tokens":10,"completion_tokens":8192,"total_tokens":8202}});
+        // Cut at the output limit after a finished call: the call is kept, the rest dropped.
+        let long = json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]});
+        let reply = replay(&stream(&[
+            call.clone(),
+            junk("\n</tool_call>\n</function>"),
+            long,
+            usage,
+        ]));
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls.len(), 1);
+        assert!(reply.content.is_none());
+        assert_eq!(reply.completion_tokens, Some(8192));
+        // A long run of text after it is not read to the end: the stream stops early.
+        let mut events = vec![call];
+        events.extend((0..400).map(|_| junk("\t\t\t\t\t\t\t\t")));
+        events.push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}));
+        let reply = replay(&stream(&events));
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls[0].function.name, "submit_answer");
+        assert!(reply.content.is_none());
+        // The provider's usage comes last and was not read.
+        assert_eq!(reply.completion_tokens, None);
+        // Text after an unfinished call is read on: it may still be part of the arguments.
+        let open = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c2",
+            "type":"function","function":{"name":"submit_answer","arguments":"{\"answer\":\"x"}}]}}]});
+        let mut events = vec![open];
+        events.extend((0..400).map(|_| junk("\t\t\t\t\t\t\t\t")));
+        events.push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}));
+        assert_eq!(
+            replay(&stream(&events)).rejected,
+            Some(AgentError::OutputLimit)
+        );
     }
 
     #[test]
