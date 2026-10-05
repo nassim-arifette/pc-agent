@@ -1,5 +1,6 @@
 // Storage: pick or drop a folder, watch the scan, then browse the largest folders and files; or
-// analyse a whole drive quickly from its file system index (quickscan.js, administrator consent).
+// analyse a whole drive quickly from its file system index (quickscan.js), or run one of the
+// deeper read-only checks (adminchecks.js); both ask for administrator consent.
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
@@ -9,6 +10,7 @@ import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
 import { quickScanCard } from "../quickscan.js";
+import { adminChecksCard } from "../adminchecks.js";
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];
@@ -264,11 +266,13 @@ export function mount(page) {
 
   // The elevated helper exists on Windows only; elsewhere the backend reports unsupported.
   const quickCard = quickScanCard();
+  const adminCard = adminChecksCard();
   fill(
     page,
     h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("storage.title")), h("p", { class: "page-sub" }, t("storage.sub")))),
     picker,
     quickCard.el,
+    adminCard.el,
     body,
   );
   render();
@@ -283,11 +287,18 @@ export function mount(page) {
   let lastStatus = state.scan.status;
   const unsubscribe = subscribe((topic) => {
     if (topic !== "scan" && topic !== "info") return;
+    const active = (status) => status === "starting" || status === "scanning";
+    const started = active(state.scan.status) && !active(lastStatus);
     if (state.scan.status !== lastStatus) {
       lastStatus = state.scan.status;
       if (lastStatus === "done") announce(t("say.storage.done"));
     }
     render();
+    // The scan follows the two administrator cards: bring its progress into view when it starts.
+    if (started) {
+      const still = document.documentElement.classList.contains("reduce-motion");
+      body.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" });
+    }
   });
   const stopDrop = onDrop((event) => {
     const type = event?.type;
@@ -298,5 +309,6 @@ export function mount(page) {
     unsubscribe();
     stopDrop?.();
     quickCard.dispose();
+    adminCard.dispose();
   };
 }
