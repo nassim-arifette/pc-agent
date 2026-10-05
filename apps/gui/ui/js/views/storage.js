@@ -1,11 +1,14 @@
-// Storage: pick or drop a folder, watch the scan, then browse the largest folders and files; or
-// analyse a whole drive quickly from its file system index (quickscan.js), or run one of the
-// deeper read-only checks (adminchecks.js); both ask for administrator consent.
+// Storage: pick or drop a folder, watch the scan, then browse the largest folders and files and
+// select one to explain it or investigate (action bar); or analyse a whole drive quickly from its
+// file system index (quickscan.js), or run one of the deeper read-only checks (adminchecks.js);
+// both ask for administrator consent.
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call, onDrop } from "../api.js";
 import { askWithAi, cloudReady } from "../ask.js";
+import { findReference, runSelection } from "../select.js";
+import { actionBar, keepFocus, selectionKeys } from "../actionbar.js";
 import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
@@ -23,11 +26,72 @@ function isDriveRoot(path) {
   return /^[A-Za-z]:\\?$/.test(path || "");
 }
 
+/**
+ * The host-issued reference of a scan item. Each page of results is published as a selection
+ * source that expires after a few minutes; when it is gone, reading the same page of the same
+ * scan again (scan_page) publishes it anew. Null when the scan was replaced.
+ */
+async function storageReference(view, kind, item) {
+  const target = { kind: "storage", scope_id: view.scope_id, item_ref: item.item_ref };
+  const live = await findReference((x) => x.kind === "storage" && x.scope_id === target.scope_id && x.item_ref === target.item_ref);
+  if (live) return live;
+  try {
+    const page = await call("scan_page", { scopeId: view.scope_id, kind, offset: item.page_offset ?? 0 });
+    return page.selection_source_id && page.items.some((x) => x.item_ref === item.item_ref) ? { source_id: page.selection_source_id, target } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What the action bar and the shortcuts do for a scanned folder or file. */
+function storageItem(view, kind, item) {
+  const run = async (intent) => {
+    const reference = await storageReference(view, kind, item);
+    if (!reference) {
+      toast(t("storage.select.unavailable"), "bad");
+      return;
+    }
+    // The name stays on this PC: the question and the preview name the item generically.
+    const what = kind === "dirs" ? "folder" : "file";
+    return runSelection({ reference, label: item.name, subject: t(`select.what.${what}`), sent: t(`select.sent.${what}`) }, intent);
+  };
+  return {
+    key: `storage:${view.scope_id}:${item.item_ref}`,
+    label: item.name,
+    // The host publishes each page it returns; without a source the scan cannot be selected.
+    ready: Boolean("selection_source_id" in item ? item.selection_source_id : view[kind].selection_source_id),
+    unavailable: t("storage.select.unavailable"),
+    explain: () => run("explain"),
+    investigate: () => run("investigate"),
+  };
+}
+
 export function mount(page) {
   const picker = h("section", { class: "dropzone" });
   const body = h("div", { class: "section" });
   let tab = "dirs";
   let quick = [];
+  // The selected result: { scope, kind, ref }; cleared by another tab or another scan.
+  let selected = null;
+  // A redraw that only moves the selection keeps the size bars still.
+  let still = false;
+
+  /** The selected item of the current results, or null. */
+  const selectedItem = () => {
+    const view = state.scan.status === "done" ? state.scan.view : null;
+    if (!view || !selected || selected.scope !== view.scope_id || selected.kind !== tab) return null;
+    const item = view[tab].items.find((x) => x.item_ref === selected.ref);
+    return item ? storageItem(view, tab, item) : null;
+  };
+  const select = (item) => {
+    selected = item ? { scope: state.scan.view.scope_id, kind: tab, ref: item.item_ref } : null;
+    still = true;
+    try {
+      render();
+    } finally {
+      still = false;
+    }
+  };
 
   const choose = async () => {
     try {
@@ -76,17 +140,29 @@ export function mount(page) {
       .map((k) => t(`storage.reason.${k}`, { n: number(coverage[k]) }))
       .concat(coverage.truncated ? [t("storage.reason.truncated")] : []);
 
-  const itemRow = (item, max, kind) =>
-    h(
+  const itemRow = (item, max, kind, view) => {
+    const isSelected = Boolean(selected && selected.scope === view.scope_id && selected.kind === kind && selected.ref === item.item_ref);
+    const actions = isSelected ? storageItem(view, kind, item) : null;
+    return h(
       "div",
-      { class: "list-row item-row" },
+      { class: ["list-row", "item-row", "actbar-anchor", isSelected ? "selected" : ""] },
+      // The name is the row's control; its hit area covers the row, the reveal button stays apart.
       h(
-        "div",
-        { class: "list-name" },
+        "button",
+        {
+          type: "button",
+          class: "list-name item-select",
+          title: item.path,
+          "aria-pressed": String(isSelected),
+          "aria-keyshortcuts": actions?.ready ? "E Enter" : null,
+          "data-key": `item:${item.item_ref}`,
+          "data-actbar-item": isSelected,
+          onclick: () => select(isSelected ? null : item),
+        },
         icon(kind === "dirs" ? "folder" : "file"),
-        h("div", { class: "text" }, h("strong", { title: item.path }, item.name), h("span", { title: item.path }, item.parent ? `…\\${item.parent}` : folderName(state.scan.view?.root))),
+        h("span", { class: "text" }, h("strong", null, item.name), h("span", null, item.parent ? `…\\${item.parent}` : folderName(view.root))),
       ),
-      bar(max ? item.size / max : 0, kind === "dirs" ? "" : "mint"),
+      bar(max ? item.size / max : 0, kind === "dirs" ? "" : "mint", { animate: !still }),
       h(
         "div",
         { class: "list-value" },
@@ -101,7 +177,9 @@ export function mount(page) {
           toast(error.message, "bad");
         }
       }),
+      actions ? actionBar(actions) : null,
     );
+  };
 
   const renderResults = (view) => {
     const scanned = view.scanned;
@@ -130,7 +208,7 @@ export function mount(page) {
           { class: "card stat" },
           h("span", { class: "stat-label" }, t("storage.drive")),
           h("span", { class: "stat-value" }, used != null ? percent(used) : "—"),
-          used != null ? bar(used, used > 0.95 ? "warn" : "") : null,
+          used != null ? bar(used, used > 0.95 ? "warn" : "", { animate: !still }) : null,
           h("span", { class: "hint" }, volume.free_text && volume.total_text ? t("storage.drive.free", { free: volume.free_text, total: volume.total_text }) : ""),
         ),
         h(
@@ -162,6 +240,7 @@ export function mount(page) {
                   "aria-selected": String(tab === k),
                   onclick: () => {
                     tab = k;
+                    selected = null;
                     render();
                   },
                 },
@@ -171,7 +250,9 @@ export function mount(page) {
           ),
           askButton,
         ),
-        current.items.length ? h("div", { class: "list" }, current.items.map((item) => itemRow(item, max, tab))) : h("p", { class: "muted" }, t("storage.empty")),
+        current.items.length
+          ? [h("p", { class: "hint storage-select-hint" }, t("storage.select.hint")), h("div", { class: "list" }, current.items.map((item) => itemRow(item, max, tab, view)))]
+          : h("p", { class: "muted" }, t("storage.empty")),
         current.next_offset != null
           ? h(
               "div",
@@ -244,6 +325,7 @@ export function mount(page) {
       return;
     }
     shownStatus = status;
+    if (status !== "done") selected = null;
     if (status === "idle") {
       fill(body, h("p", { class: "hint" }, t("say.storage.idle")));
       return;
@@ -252,15 +334,17 @@ export function mount(page) {
       fill(body, h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("say.storage.failed")), h("span", null, scan.error))));
       return;
     }
-    fill(
-      body,
-      h(
-        "div",
-        { class: "row wrap", style: { "justify-content": "space-between", "margin-bottom": "14px" } },
-        h("div", { class: "row", style: { "min-width": "0" } }, icon("folder"), h("strong", { style: { "word-break": "break-all" } }, scan.view.root)),
-        button(t("storage.again"), { iconName: "refresh", size: "sm", onClick: () => startScan(scan.view.root) }),
+    keepFocus(body, () =>
+      fill(
+        body,
+        h(
+          "div",
+          { class: "row wrap", style: { "justify-content": "space-between", "margin-bottom": "14px" } },
+          h("div", { class: "row", style: { "min-width": "0" } }, icon("folder"), h("strong", { style: { "word-break": "break-all" } }, scan.view.root)),
+          button(t("storage.again"), { iconName: "refresh", size: "sm", onClick: () => startScan(scan.view.root) }),
+        ),
+        ...renderResults(scan.view),
       ),
-      ...renderResults(scan.view),
     );
   };
 
@@ -300,6 +384,8 @@ export function mount(page) {
       body.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" });
     }
   });
+  // E explains and Enter investigates the selected result; Escape clears it.
+  const stopKeys = selectionKeys({ current: selectedItem, clear: () => select(null) });
   const stopDrop = onDrop((event) => {
     const type = event?.type;
     picker.classList.toggle("drag", type === "enter" || type === "over");
@@ -307,6 +393,7 @@ export function mount(page) {
   });
   return () => {
     unsubscribe();
+    stopKeys();
     stopDrop?.();
     quickCard.dispose();
     adminCard.dispose();
