@@ -7,11 +7,12 @@ import { t, classificationLabel } from "../i18n.js";
 import { markdown } from "../markdown.js";
 import { mark } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "../ask.js";
-import { state, subscribe, openPanel, runPlan, declinePlan } from "../store.js";
+import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
 import { showSource } from "../panel.js";
 import { health } from "../live.js";
 import { numbering, citationTitle, toolLabel } from "../citations.js";
-import { button, copyText, dialog } from "../ui.js";
+import { button, copyText, dialog, toast } from "../ui.js";
+import { call } from "../api.js";
 import { bytes, duration, labelled, usd } from "../format.js";
 import { modelName } from "../models.js";
 import { navigate } from "../router.js";
@@ -168,7 +169,7 @@ function iconButton(name, label, onClick) {
 // The model only proposes. Each card says exactly what would happen; "Review and confirm" lists
 // every target before anything runs, and the result is measured afterwards.
 
-const KIND_ICONS = { recycle_selected_files: "x", run_cleanup_adapter: "x", open_settings_page: "sliders", open_in_explorer: "folder", request_normal_close: "stop" };
+const KIND_ICONS = { recycle_selected_files: "x", run_cleanup_adapter: "x", open_settings_page: "sliders", open_in_explorer: "folder", request_normal_close: "stop", disable_user_startup: "pause", restore_user_startup: "play" };
 
 function planTitle(plan) {
   const key = `action.kind.${plan.kind}`;
@@ -221,6 +222,53 @@ async function review(turn, plan) {
   if (go) runPlan(turn, plan);
 }
 
+/**
+ * Puts back a start-up entry that an approved action turned off. The Rust side reads that
+ * action's local journal and prepares a fresh restoration plan (startup_restore_prepare), which
+ * goes through the same review and click as any proposal; nothing runs before "Run now".
+ */
+async function restoreStartup(plan) {
+  plan.restore = { preparing: true, plan: null, turnId: null };
+  notify("conversation");
+  try {
+    const restoration = await call("startup_restore_prepare", { sourcePlanId: plan.plan_id, itemIndex: 0 });
+    plan.restore = { preparing: false, plan: restoration.plan, turnId: restoration.turn_id };
+  } catch (error) {
+    plan.restore = null;
+    notify("conversation");
+    toast(error.message, "bad");
+    return;
+  }
+  notify("conversation");
+  // The restoration is its own local action group, not a conversation turn.
+  await review({ id: plan.restore.turnId }, plan.restore.plan);
+}
+
+function restoreText(restore) {
+  const decision = restore.plan?.decision;
+  if (restore.preparing) return t("action.restore.preparing");
+  if (decision === "running") return t("action.restore.running");
+  if (decision === "completed") return t("action.restore.done");
+  if (decision === "refused") return restore.plan.error ? `${t("action.restore.refused")} ${restore.plan.error}` : t("action.restore.refused");
+  return decision ? `${t("action.restore.prefix")} ${t(`action.outcome.${decision}`)}` : null;
+}
+
+/** A Restore button for a start-up entry turned off here, once nothing else would be lost. */
+function restoreControl(plan) {
+  if (plan.kind !== "disable_user_startup" || plan.decision !== "completed") return null;
+  const decision = plan.restore?.plan?.decision;
+  if (plan.restore?.preparing || decision === "running" || decision === "completed") return null;
+  // Preparing a restoration replaces the proposals still waiting under the latest answer.
+  const latest = state.conversation?.turns?.at(-1);
+  const waiting = (latest?.plans || []).some((other) => other !== plan && !other.decision);
+  return h(
+    "button",
+    { type: "button", class: "btn btn-sm", disabled: waiting, title: t(waiting ? "action.restore.wait" : "action.restore.title"), onclick: () => restoreStartup(plan) },
+    icon("refresh"),
+    t("action.restore"),
+  );
+}
+
 function actionCards(turn, current) {
   const plans = turn.plans || [];
   if (!plans.length) return null;
@@ -237,7 +285,14 @@ function actionCards(turn, current) {
           "div",
           { class: ["action-card", plan.decision ? `is-${plan.decision}` : ""] },
           h("span", { class: "action-icon" }, icon(plan.decision === "completed" ? "check" : KIND_ICONS[plan.kind] || "flag")),
-          h("div", { class: "action-text" }, h("strong", null, planTitle(plan)), h("span", null, plan.decision ? outcomeText(plan) : planSummary(plan))),
+          h(
+            "div",
+            { class: "action-text" },
+            h("strong", null, planTitle(plan)),
+            h("span", null, plan.decision ? outcomeText(plan) : planSummary(plan)),
+            plan.restore && restoreText(plan.restore) ? h("span", null, restoreText(plan.restore)) : null,
+          ),
+          restoreControl(plan),
           open
             ? h(
                 "div",
@@ -400,7 +455,7 @@ export function mount(page) {
     const turns = state.conversation?.turns || [];
     const inv = state.inv;
     // Action proposals load after the turn and change when decided: they are part of the key.
-    const plans = turns.map((turn) => (turn.plans || []).map((p) => p.decision || "-").join("")).join("|");
+    const plans = turns.map((turn) => (turn.plans || []).map((p) => `${p.decision || "-"}${p.restore ? `:${p.restore.preparing ? "p" : p.restore.plan?.decision || "r"}` : ""}`).join("")).join("|");
     const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}|${plans}`;
     if (key === turnsKey) return;
     turnsKey = key;

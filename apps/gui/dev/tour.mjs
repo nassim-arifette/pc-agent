@@ -1,8 +1,10 @@
 // Screenshots of the main states (welcome, consent, running, answer, sources, live PC, history,
-// storage, settings, the Live PC view with Explain) in light and dark themes, against the mock
-// (dev/mock.js).
+// storage with the deeper checks, settings, the Live PC view with Explain) in light and dark
+// themes, against the mock (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
+// TOUR_BASE and TOUR_DEBUG_PORT override the page URL and Chrome's debugging port, for a server
+// on another port (e.g. when several worktrees are reviewed at once).
 import { launch } from "./cdp.mjs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +13,9 @@ const out = process.argv[2] || "tour";
 const chrome = process.argv[3] || undefined;
 const language = process.argv[4] || "en";
 mkdirSync(out, { recursive: true });
-const base = "http://127.0.0.1:5173/ui/index.html";
-const { proc, page } = await launch(chrome ? { chrome } : {});
+const base = process.env.TOUR_BASE || "http://127.0.0.1:5173/ui/index.html";
+const port = Number(process.env.TOUR_DEBUG_PORT) || undefined;
+const { proc, page } = await launch({ ...(chrome ? { chrome } : {}), ...(port ? { port } : {}) });
 const shot = (name) => page.shot(join(out, `${name}.png`));
 const prefs = JSON.stringify({ language, mode: "cloud" });
 try {
@@ -55,6 +58,22 @@ try {
     await page.click(".chip", 0);
     await page.waitFor("document.querySelector('.tabs')", 10000);
     await shot(`8-storage-${theme}`);
+    // Deeper checks: the list, the review of the disk health check, then its result.
+    await page.goto(`${base}?cloud=ready&privacy=complete&disk=ok#/storage`);
+    await page.waitFor("document.querySelectorAll('.admin-check').length === 4");
+    await page.eval("document.querySelector('.admin-card').scrollIntoView({ block: 'start' })");
+    await page.sleep(300);
+    await shot(`8a-admin-${theme}`);
+    await page.click(".admin-check:nth-child(3) .admin-check-actions .btn:last-child");
+    await page.waitFor("document.querySelector('.admin-review')");
+    await page.eval("document.querySelector('.admin-card').scrollIntoView({ block: 'start' })");
+    await page.sleep(300);
+    await shot(`8b-admin-review-${theme}`);
+    await page.click(".admin-review .btn-primary");
+    await page.waitFor("document.querySelector('.admin-result .admin-group')", 10000);
+    await page.eval("document.querySelector('.admin-result').scrollIntoView({ block: 'start' })");
+    await page.sleep(300);
+    await shot(`8c-admin-result-${theme}`);
     await page.goto(`${base}?cloud=ready#/settings`);
     await page.waitFor("document.querySelector('select')");
     await shot(`9-settings-${theme}`);
