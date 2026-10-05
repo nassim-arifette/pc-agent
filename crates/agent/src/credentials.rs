@@ -9,7 +9,12 @@ use std::{
 };
 
 /// The only names read from the file; any other line is ignored.
-pub const KEYS: [&str; 3] = ["NEBIUS_API_KEY", "NEBIUS_MODEL_ID", "NEBIUS_REASONING"];
+pub const KEYS: [&str; 4] = [
+    "NEBIUS_API_KEY",
+    "NEBIUS_MODEL_ID",
+    "NEBIUS_REASONING",
+    "TAVILY_API_KEY",
+];
 const MAX_FILE_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +179,26 @@ pub fn save(path: &Path, updates: &[(&str, &str)]) -> Result<(), String> {
             lines.push(format!("{name}={value}"));
         }
     }
+    write(path, &lines)
+}
+
+/// Removes PC Agent settings from the file and keeps every other line.
+pub fn remove(path: &Path, names: &[&str]) -> Result<(), String> {
+    if let Some(name) = names.iter().find(|name| !KEYS.contains(name)) {
+        return Err(format!("{name} is not a PC Agent setting"));
+    }
+    let Some(existing) = read(path)? else {
+        return Ok(());
+    };
+    let lines: Vec<String> = existing
+        .lines()
+        .filter(|line| setting(line).is_none_or(|(key, _)| !names.contains(&key)))
+        .map(str::to_owned)
+        .collect();
+    write(path, &lines)
+}
+
+fn write(path: &Path, lines: &[String]) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("{} has no folder", path.display()))?;
@@ -190,6 +215,23 @@ pub fn save(path: &Path, updates: &[(&str, &str)]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn removing_a_setting_keeps_every_other_line() {
+        let dir = std::env::temp_dir().join(format!("pcagent-remove-{}", std::process::id()));
+        let file = dir.join("pcagent").join(".env");
+        save(&file, &[("NEBIUS_MODEL_ID", "nvidia/nemotron-a")]).unwrap();
+        save(&file, &[("TAVILY_API_KEY", "tvly-test-0000")]).unwrap();
+        remove(&file, &["TAVILY_API_KEY"]).unwrap();
+        let c = Credentials::load_from(|_| None, Some(file.clone()));
+        assert_eq!(c.get("TAVILY_API_KEY"), None);
+        assert_eq!(
+            c.get("NEBIUS_MODEL_ID").as_deref(),
+            Some("nvidia/nemotron-a")
+        );
+        assert!(remove(&file, &["OTHER"]).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn saving_replaces_only_pc_agent_settings_and_keeps_other_lines() {
         let dir = std::env::temp_dir().join(format!("pcagent-save-{}", std::process::id()));

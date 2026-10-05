@@ -179,6 +179,7 @@ pub struct Workstation<'a> {
     history: Option<crate::history_tools::HistoryTools>,
     allowed_scopes: Option<Vec<String>>,
     elevated: Vec<crate::elevated_tools::ApprovedInspection>,
+    external: Option<crate::external_tools::ExternalTools>,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -203,7 +204,26 @@ impl<'a> Workstation<'a> {
             history: None,
             allowed_scopes: None,
             elevated: Vec::new(),
+            external: None,
         }
+    }
+    /// Declares the typed web lookups (C6), only after the user's web search consent and with a
+    /// key. Their queries are composed locally from this turn's measurements.
+    pub fn enable_web_search(
+        &mut self,
+        searcher: Box<dyn crate::tavily::WebSearcher + Send>,
+        country: Option<String>,
+    ) {
+        if self.external.is_none() {
+            self.specs.extend(crate::external_tools::TOOLS);
+        }
+        self.external = Some(crate::external_tools::ExternalTools::new(searcher, country));
+    }
+    /// Tavily credits used by this turn's web lookups.
+    pub fn web_credits(&self) -> f64 {
+        self.external
+            .as_ref()
+            .map_or(0.0, |external| external.credits)
     }
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
     /// here; the caller reviews [`Workstation::take_actions`] locally.
@@ -550,12 +570,24 @@ impl Toolbox for Workstation<'_> {
                 json!({"scope_id":scope,"error":"Scope was not approved for this turn."}),
             );
         }
+        if let Some(out) = self
+            .external
+            .as_mut()
+            .and_then(|external| external.run(spec, args))
+        {
+            return out;
+        }
         let targets = &mut self.action_targets;
         let desk = self.actions.as_ref();
         let policy = self.policy;
         let prefs = self.prefs;
+        let external = &mut self.external;
         let extension =
             crate::system_tools::run_with_inspection(spec, args, self.sharing, |inspection| {
+                // Local facts for web lookups: names stay here, only composed queries leave.
+                if let Some(external) = external {
+                    external.retain(spec.name, inspection);
+                }
                 if let Some(desk) = desk {
                     targets.retain_inspection(
                         spec.name,

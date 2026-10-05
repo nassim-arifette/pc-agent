@@ -345,6 +345,19 @@ pub fn show_in_explorer(path: &Path) -> Result<(), EffectError> {
         .ok_or_else(|| EffectError::new(Status::Error, "path cannot be passed to Explorer"))?;
     spawn_explorer(&arg).map(|_| ())
 }
+/// Opens an `https://` page in the default browser, at the user's click on a cited web source.
+/// Explorer receives the address as its only argument. [`crate::web_url_allowed`] refuses commas
+/// and semicolons, Explorer's separators, so no part of the address can become a switch or a
+/// second object to open.
+pub fn open_web_page(url: &str) -> Result<(), EffectError> {
+    if !crate::web_url_allowed(url) {
+        return Err(EffectError::new(
+            Status::Error,
+            "only plain https web pages can be opened",
+        ));
+    }
+    spawn_explorer(url).map(|_| ())
+}
 pub fn open_settings_page(page: SettingsPage) -> Result<EffectOutcome, EffectError> {
     spawn_explorer(page.uri())
 }

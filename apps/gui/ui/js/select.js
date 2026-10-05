@@ -10,6 +10,7 @@ import { button, dialog, toast } from "./ui.js";
 import { choosePrivacy, effectiveMode, namesShared } from "./ask.js";
 import { ago, bytes } from "./format.js";
 import { modelName } from "./models.js";
+import { webConsentNote } from "./web.js";
 import { navigate } from "./router.js";
 
 export const INTENTS = ["explain", "investigate"];
@@ -58,6 +59,8 @@ function reviewDialog(selection, intent, preview) {
         h("div", null, h("h4", null, icon("cloud"), t("consent.sent.title")), h("ul", null, sent.map((x) => h("li", null, x)))),
         h("div", null, h("h4", null, icon("lock"), t("consent.never.title")), h("ul", null, never.map((x) => h("li", null, x)))),
       ),
+      // Explain reads only the selected measurements; Investigate may also look things up.
+      intent === "investigate" ? webConsentNote() : null,
       h(
         "details",
         { class: "select-exact" },

@@ -35,14 +35,23 @@ const absent = () => ({ value: null, text: null, status: null, note: null });
 const jitter = (base, spread) => base + (Math.random() - 0.5) * spread;
 
 let cloudMode = params.get("cloud") || "ready";
+// Web lookups (C6). ?web=on: a Tavily key is saved and web search is allowed, so an AI
+// investigation also reads the graphics driver's notes and its answer cites web pages [W1], [W2];
+// ?web=key: a key is saved but web search is off. Like the Rust side, the page only ever sees
+// whether a key exists and its last four characters.
+const webParam = params.get("web");
+let searchKey = webParam === "on" || webParam === "key" ? "tvly-synthetic-mock-key-x9Qa" : null;
+function searchKeyState() {
+  return { search_key_configured: Boolean(searchKey), search_key_hint: searchKey && searchKey.length >= 12 ? searchKey.slice(-4) : null, search_key_source: searchKey ? "file" : null };
+}
 function cloud() {
   if (cloudMode === "none") {
-    return { key_configured: false, key_hint: null, key_source: null, model_id: null, model_source: null, ready: false, problem: "NEBIUS_API_KEY is missing or empty", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
+    return { key_configured: false, key_hint: null, key_source: null, model_id: null, model_source: null, ready: false, problem: "NEBIUS_API_KEY is missing or empty", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
   }
   if (cloudMode === "problem") {
-    return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "meta/llama", model_source: "file", ready: false, problem: "Select an explicit nvidia/ Nemotron model ID; no fallback model is allowed", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
+    return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "meta/llama", model_source: "file", ready: false, problem: "Select an explicit nvidia/ Nemotron model ID; no fallback model is allowed", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
   }
-  return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: cloudModel, model_source: "file", ready: true, reasoning: cloudReasoning, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null };
+  return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: cloudModel, model_source: "file", ready: true, reasoning: cloudReasoning, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
 }
 let cloudModel = "nvidia/nemotron-3-super-120b-a12b";
 let cloudReasoning = "on";
@@ -167,12 +176,46 @@ function finding(classification, label, support, summary, extra = {}) {
   };
 }
 
-// A written answer as the model returns it, in the language of the question.
-function mockAnswer(question) {
+// The query lookup_driver_notes composes from the measured driver, as external_tools.rs does.
+const DRIVER_QUERY = "NVIDIA GeForce RTX 4060 Laptop GPU driver 32.0.15.6094 release notes known issues";
+
+/** The installed driver (O3) and two pages its lookup found (W1, W2), one without a date. */
+function webCitations() {
+  const now = Date.now();
+  const web = (domain, path, publishedDate) => ({ domain, url: `https://www.${domain}/${path}`, published_date: publishedDate, searched_at_unix_ms: now - 6000, query: DRIVER_QUERY });
+  return [
+    { reference: "O3", kind: "observation", title: "get_drivers", facts: ["NVIDIA GeForce RTX 4060 Laptop GPU: driver 32.0.15.6094 (NVIDIA 560.94), dated 2024-08-14."], earlier: false, measured_at_unix_ms: now - 7000 },
+    {
+      reference: "W1",
+      kind: "web",
+      title: "GeForce Game Ready Driver 566.36 | Release Notes",
+      facts: ["Fixed issues in version 566.36: higher than expected memory usage in some web browsers when hardware acceleration is enabled. Open issues: none related to memory."],
+      earlier: false,
+      measured_at_unix_ms: null,
+      web: web("nvidia.com", "synthetic/566-36-release-notes", "2024-12-05"),
+    },
+    {
+      reference: "W2",
+      kind: "web",
+      title: "Known issues with GeForce drivers and web browsers",
+      facts: ["Some browsers may use more memory than expected with hardware acceleration on drivers older than 566.36. Updating the driver or turning hardware acceleration off avoids it."],
+      earlier: false,
+      measured_at_unix_ms: null,
+      web: web("nvidia.com", "synthetic/known-issues", null),
+    },
+  ];
+}
+
+// A written answer as the model returns it, in the language of the question. With web lookups it
+// adds a lead from the driver's notes, cited as web pages, never as measurements.
+function mockAnswer(question, web = false) {
   const french = /pourquoi|mon |est-ce|[éèàç]/i.test(question);
-  const text = french
+  const lead = french
+    ? "\n\nUne piste en plus : ton pilote graphique est en version 32.0.15.6094 [O3], et les notes de NVIDIA pour la version 566.36 corrigent une consommation de mémoire trop élevée dans les navigateurs avec l'accélération matérielle [W1] ; NVIDIA la décrit aussi comme un problème connu [W2]. C'est un indice venu du web, pas une mesure : mets à jour le pilote seulement si le ralentissement continue après avoir fermé des onglets."
+    : "\n\nOne more lead: your graphics driver is 32.0.15.6094 [O3], and NVIDIA's notes for version 566.36 fix higher than expected memory use in browsers with hardware acceleration [W1]; NVIDIA also lists it as a known issue [W2]. This is a hint from the web, not a measurement: update the driver only if the slowdown continues after closing tabs.";
+  const text = (french
     ? "Ton PC rame surtout parce que la mémoire vive est presque pleine : il ne restait que 1,54 Gio de libre sur 15,73 Gio [O1], et Windows relisait 12,4 pages par seconde depuis le disque pour compenser [F2]. J'en suis moyennement sûr : c'est une mesure d'une seconde.\n\nCe que tu peux faire :\n1. Ferme les onglets de **chrome.exe (PID 4000)** dont tu n'as pas besoin : il occupe 2,31 Gio [O1].\n2. Garde PC Agent ouvert pendant le prochain ralentissement et repose la question, pour confirmer.\n\nLe processeur n'était pas saturé (18,5 % [O1]) et le disque répondait en moins de 3 ms [O1] : ils ne semblent pas en cause."
-    : "Your PC is slow mainly because memory is almost full: only 1.54 GiB of 15.73 GiB was available [O1], and Windows read 12.4 pages per second back from disk to compensate [F2]. I'm moderately sure: this is a one-second measurement.\n\nWhat you can do:\n1. Close the **chrome.exe (PID 4000)** tabs you don't need: it holds 2.31 GiB [O1].\n2. Keep PC Agent open during the next slowdown and ask again to confirm.\n\nThe processor was not saturated (18.5% [O1]) and the disk answered in under 3 ms [O1], so they don't look involved.";
+    : "Your PC is slow mainly because memory is almost full: only 1.54 GiB of 15.73 GiB was available [O1], and Windows read 12.4 pages per second back from disk to compensate [F2]. I'm moderately sure: this is a one-second measurement.\n\nWhat you can do:\n1. Close the **chrome.exe (PID 4000)** tabs you don't need: it holds 2.31 GiB [O1].\n2. Keep PC Agent open during the next slowdown and ask again to confirm.\n\nThe processor was not saturated (18.5% [O1]) and the disk answered in under 3 ms [O1], so they don't look involved.") + (web ? lead : "");
   return {
     text,
     confidence: "medium",
@@ -180,6 +223,7 @@ function mockAnswer(question) {
     citations: [
       { reference: "O1", kind: "observation", title: "get_system_snapshot", facts: ["Available physical memory: 1.54 GiB of 15.73 GiB (9.8%).", "chrome.exe (PID 4000) used 2.31 GiB of RAM (working set).", "CPU busy: 18.5%.", "Disk read response time: 1.3 ms."] },
       { reference: "F2", kind: "finding", title: "Heavy hard-fault paging", facts: ["12.4 pages per second were read from disk to resolve hard faults."] },
+      ...(web ? webCitations() : []),
     ],
     follow_ups: french
       ? ["Quels onglets ou extensions utilisent le plus de mémoire ?", "Ai-je besoin de plus de RAM ?"]
@@ -189,7 +233,7 @@ function mockAnswer(question) {
   };
 }
 
-function report(question, cloudRun, error = null) {
+function report(question, cloudRun, error = null, { web = false, toolEvents = [] } = {}) {
   const selected = error
     ? finding("insufficient_evidence", "Insufficient evidence", "insufficient", "The available measurements do not support a conclusion yet.", {
         missing: ["An observation taken while the slowdown happens."],
@@ -232,15 +276,16 @@ function report(question, cloudRun, error = null) {
           finding("largest_memory_contributor", "Largest memory contributor", "supported", "chrome.exe (PID 4000) held 2.31 GiB of RAM, the most of any readable program."),
           finding("hard_fault_pressure", "Heavy hard-fault paging", "plausible", "12.4 pages per second were read from disk to resolve hard faults."),
         ],
-    answer: cloudRun && !error ? mockAnswer(question) : null,
+    answer: cloudRun && !error ? mockAnswer(question, web) : null,
     observations: cloudRun && !error
       ? [{ tool: "get_metric_history", status: "ok", facts: ["CPU busy: 12 usable samples, observed range 9.5% to 31.0%.", "Observed interval: 60000 ms."], limitations: [] }]
       : [],
+    tool_events: toolEvents,
     limitations: ["Short observations cannot prove a cause, a leak or a hardware purchase need."],
     usage: cloudRun
       ? {
           requests: error === "output_limit" ? 1 : 3,
-          tool_calls: 2,
+          tool_calls: toolEvents.length || 2,
           extensions: 0,
           prompt_tokens: 13596,
           completion_tokens: 354,
@@ -387,18 +432,18 @@ let nextId = 1;
 // Saved conversations, as the Rust side keeps them in SQLite.
 const conversations = [];
 let nextConversation = 1;
-function saveTurn(conversationId, question, report) {
+function saveTurn(conversationId, turnId, question, report) {
   const c = conversations.find((x) => x.id === conversationId);
   if (!c) return null;
-  c.turns.push({ id: `turn-${c.turns.length + 1}`, question, asked_at_unix_ms: Date.now(), report });
+  c.turns.push({ id: turnId, question, asked_at_unix_ms: Date.now(), report, tool_events: report.tool_events || [] });
   c.updated_at_unix_ms = Date.now();
   return c.id;
 }
 function done(id, report) {
   const own = running && running.id === id;
-  const conversationId = own ? saveTurn(running.conversationId, running.question, report) : null;
+  const conversationId = own ? saveTurn(running.conversationId, running.turnId, running.question, report) : null;
   if (own) {
-    const turn = { id: running.turnId, question: running.question, asked_at_unix_ms: running.askedAt, answer: report.answer, report };
+    const turn = { id: running.turnId, question: running.question, asked_at_unix_ms: running.askedAt, answer: report.answer, tool_events: report.tool_events || [], report };
     if (report.error) emit("turn:failed", { turn_id: running.turnId, conversation_id: conversationId, code: report.error.code, message: report.error.message, turn });
     else emit("turn:done", { turn_id: running.turnId, conversation_id: conversationId, turn });
   }
@@ -407,7 +452,12 @@ function done(id, report) {
 let running = null;
 let nextTurn = 1;
 const privacyParam = params.get("privacy");
-let privacy = ["complete", "anonymized", "local"].includes(privacyParam) ? { mode: privacyParam, confirmed: true } : { mode: "complete", confirmed: false };
+let privacy = ["complete", "anonymized", "local"].includes(privacyParam) ? { mode: privacyParam, confirmed: true, web_search: webParam === "on" } : { mode: "complete", confirmed: false, web_search: webParam === "on" };
+/** Lookups run only in a cloud mode, with the separate consent and a saved key, as in app.rs. */
+const webActive = () => privacy.mode !== "local" && privacy.web_search && Boolean(searchKey);
+// Web pages "opened" through open_web_source: recorded for review scripts, never navigated to.
+const openedWebSources = [];
+window.__pcagentMock = { openedWebSources };
 /** What PrivacyContext removes from free text: the profile path, the user and machine names. */
 function sanitize(text) {
   return text
@@ -451,10 +501,14 @@ async function investigate(id, question, cloudRun) {
     await wait(ms * slow);
     step({ kind: "model_finished", request, duration_ms: ms, prompt_tokens: prompt, completion_tokens: completion, outcome });
   };
-  const tool = async (name, ms, status = "ok") => {
+  const toolEvents = [];
+  const tool = async (name, ms, status = "ok", query = null) => {
     step({ kind: "tool_started", tool: name });
     await wait(ms * slow);
-    step({ kind: "tool_finished", tool: name, status, duration_ms: ms });
+    // A web lookup reports the exact query it sent; other tools have none (skipped like serde).
+    const event = { tool: name, status, duration_ms: ms, ...(query ? { query } : {}) };
+    toolEvents.push(event);
+    step({ kind: "tool_finished", ...event });
   };
   if (running.stop) return done(id, report(question, true, "cancelled"));
   await model(1400, 4627, 83);
@@ -465,6 +519,11 @@ async function investigate(id, question, cloudRun) {
   if (running.stop) return done(id, report(question, true, "cancelled"));
   await tool("get_processes", 420);
   await tool("get_metric_history", 180);
+  const web = webActive();
+  if (web) {
+    await tool("get_drivers", 260);
+    await tool("lookup_driver_notes", 1100, "ok", DRIVER_QUERY);
+  }
   if (/extend|prolong/i.test(question)) {
     const answer = new Promise((resolve) => {
       running.answer = resolve;
@@ -480,7 +539,7 @@ async function investigate(id, question, cloudRun) {
   }
   if (running.stop) return done(id, report(question, true, "cancelled"));
   // The last request writes the answer: its text arrives in pieces, like Nebius's stream.
-  const final = report(question, true);
+  const final = report(question, true, null, { web, toolEvents });
   request += 1;
   step({ kind: "model_started", request });
   await wait(500 * slow);
@@ -770,9 +829,12 @@ export function createMock() {
       return startupEnabled;
     },
     privacy_get: () => ({ ...privacy }),
+    // Same shape as PrivacySettings: unknown fields are refused, a missing web_search is false.
     privacy_set: ({ settings }) => {
+      const unknown = Object.keys(settings).filter((key) => !["mode", "confirmed", "web_search"].includes(key));
+      if (unknown.length) throw new Error(`unknown field ${unknown[0]}`);
       if (settings.mode !== privacy.mode || !settings.confirmed) pendingPreview = null;
-      privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed) };
+      privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed), web_search: Boolean(settings.web_search) };
       return { ...privacy };
     },
     cloud_preview: async ({ question, names, conversationId = null, fileNames = false }) => {
@@ -980,6 +1042,24 @@ export function createMock() {
     test_cloud: async () => {
       await wait(800);
       return { price: { model_id: "nvidia/nemotron-3-super-120b-a12b", input_per_million: "0.30", output_per_million: "0.90", read_at_unix_ms: Date.now() } };
+    },
+    save_search_key: ({ apiKey = null }) => {
+      const key = (apiKey || "").trim();
+      if (key && !key.startsWith("tvly-")) throw new Error("A Tavily key starts with tvly-.");
+      searchKey = key || null;
+      return cloud();
+    },
+    // The Rust side reads the address from the stored turn and opens it in the browser; the mock
+    // only records the request.
+    open_web_source: ({ conversationId, turnId, reference }) => {
+      const conversation = conversations.find((c) => c.id === conversationId);
+      if (!conversation) throw new Error("This conversation no longer exists.");
+      const turn = conversation.turns.find((x) => x.id === turnId);
+      if (!turn) throw new Error("This answer no longer exists.");
+      const cited = (turn.report?.answer?.citations || []).find((c) => c.reference === reference && c.kind === "web");
+      if (!cited?.web?.url) throw new Error("This answer has no such web source.");
+      openedWebSources.push({ conversationId, turnId, reference, at: Date.now() });
+      return null;
     },
   };
   let lastScanRoot = null;

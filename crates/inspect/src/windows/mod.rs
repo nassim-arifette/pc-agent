@@ -20,6 +20,10 @@ mod system;
 mod updates;
 mod wmi;
 
+pub(crate) fn region_country() -> Option<String> {
+    registry::region_country()
+}
+
 pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }

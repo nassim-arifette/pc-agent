@@ -16,8 +16,11 @@ export const state = {
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
   /** "Don't ask again until I close PC Agent" was ticked in the consent dialog. */
   skipConsent: false,
-  /** The stored sharing choice: complete, anonymized or local; cloud modes need confirmation. */
-  privacy: { mode: "complete", confirmed: false },
+  /**
+   * The stored sharing choice: complete, anonymized or local; cloud modes need confirmation.
+   * `web_search` is the separate consent for web lookups through Tavily (C6).
+   */
+  privacy: { mode: "complete", confirmed: false, web_search: false },
   /** Live measurements shared by the status pill and the panel, with a short history for sparklines. */
   live: { dash: null, error: null, paused: false, history: [] },
   /** The context panel: closed by default, opened on a tab, optionally pointing at one source. */
@@ -37,19 +40,47 @@ export async function refreshPrivacy() {
   try {
     state.privacy = await call("privacy_get");
   } catch {
-    state.privacy = { mode: "local", confirmed: false };
+    state.privacy = { mode: "local", confirmed: false, web_search: false };
   }
   notify("privacy");
   return state.privacy;
 }
 
-/** Stores a sharing choice. Changing the mode invalidates any reviewed preview on the Rust side. */
-export async function setPrivacy(mode, confirmed) {
+/**
+ * Stores a sharing choice. Changing the mode invalidates any reviewed preview on the Rust side.
+ * The whole settings object is always sent: Rust fills a missing `web_search` with false, so
+ * leaving it out would silently turn web search off.
+ */
+export async function setPrivacy(mode, confirmed, webSearch = Boolean(state.privacy.web_search)) {
   const previous = state.privacy.mode;
-  state.privacy = await call("privacy_set", { settings: { mode, confirmed } });
+  state.privacy = await call("privacy_set", { settings: { mode, confirmed, web_search: webSearch } });
   if (state.privacy.mode !== previous) state.skipConsent = false;
   notify("privacy");
   return state.privacy;
+}
+
+/** Turns the web search consent on or off, keeping the sharing choice as it is. */
+export function setWebSearch(on) {
+  return setPrivacy(state.privacy.mode, state.privacy.confirmed, Boolean(on));
+}
+
+/** Web lookups can run: a usable cloud mode, the consent, and a saved Tavily key. */
+export function webSearchActive() {
+  const cloud = state.info?.cloud;
+  return state.privacy.mode !== "local" && Boolean(cloud?.ready) && Boolean(state.privacy.web_search) && Boolean(cloud?.search_key_configured);
+}
+
+/** Saves the Tavily key (null or "" removes it); the page never reads a key back. */
+export async function saveSearchKey(apiKey) {
+  const cloud = await call("save_search_key", { apiKey: apiKey || null });
+  state.info = { ...state.info, cloud };
+  notify("info");
+  return cloud;
+}
+
+/** Asks the Rust side to open a cited web page; it resolves the URL from the stored turn. */
+export function openWebSource(conversationId, turnId, reference) {
+  return call("open_web_source", { conversationId, turnId, reference });
 }
 
 export async function refreshInfo() {
@@ -179,7 +210,8 @@ export async function openConversation(id) {
   state.conversation = {
     id: saved.id,
     title: saved.title,
-    turns: saved.turns.map((turn) => ({ question: turn.question, report: turn.report, at: turn.asked_at_unix_ms })),
+    // The turn ID lets the Rust side find a cited web page again (open_web_source).
+    turns: saved.turns.map((turn) => ({ id: turn.id, question: turn.question, report: turn.report, at: turn.asked_at_unix_ms })),
   };
   // A running turn keeps going; it shows only in its own conversation.
   if (!running()) state.inv = null;
@@ -340,6 +372,8 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
         state: step.status === "ok" ? "done" : step.status === "partial" ? "partial" : "failed",
         status: step.status,
         duration: step.duration_ms,
+        // A web lookup's exact query, as sent to Tavily (C6).
+        query: step.query ?? null,
       };
       if (running) Object.assign(running, patch);
       else inv.steps.push({ key: `tool-${inv.steps.length}`, type: "tool", tool: step.tool, at, ...patch });

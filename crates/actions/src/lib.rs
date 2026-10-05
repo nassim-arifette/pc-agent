@@ -49,7 +49,66 @@ pub use user_cleanup::{
     MAX_USER_CLEANUP_FILES, MIN_TEMP_AGE,
 };
 #[cfg(windows)]
-pub use windows::show_in_explorer;
+pub use windows::{open_web_page, show_in_explorer};
+
+/// A plain `https://` address with a host name: no user information, backslash, port other than
+/// digits, space, quote, control character, comma or semicolon (Explorer's argument separators).
+pub fn web_url_allowed(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    if url.len() > 2048
+        || !url.bytes().all(|b| {
+            b.is_ascii_graphic()
+                && !matches!(b, b'"' | b'\\' | b'^' | b'`' | b'<' | b'>' | b',' | b';')
+        })
+    {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && host.contains('.')
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+#[cfg(test)]
+mod web_url_tests {
+    use super::web_url_allowed;
+    #[test]
+    fn only_plain_https_pages_can_be_opened() {
+        assert!(web_url_allowed(
+            "https://www.nvidia.com/en-us/drivers/details/237728/"
+        ));
+        assert!(web_url_allowed("https://learn.microsoft.com:443/a?b=c#d"));
+        for url in [
+            "http://nvidia.com/",
+            "https://evil.com\\@nvidia.com/",
+            "https://user@nvidia.com/",
+            "https://nvidia.com/a b",
+            "https://nvidia.com/\"x",
+            "https://nvidia.com:80a/",
+            "https://localhost/",
+            "file:///C:/Windows/System32/calc.exe",
+            "https://nvidia.com/,/root,C:\\Windows",
+            // A comma would let Explorer read a second object to open.
+            "https://nvidia.com/a,file:C:/Windows/System32/calc.exe",
+            "https://nvidia.com/a;b",
+        ] {
+            assert!(!web_url_allowed(url), "{url}");
+        }
+    }
+}
 
 use pcagent_shared::Status;
 
