@@ -51,6 +51,74 @@ async function selectOrAsk(match, { label, subject }, intent, fallback) {
   return ask(fallback);
 }
 
+// ---------- Battery during a recording ----------
+
+/** The last usable value of `metric` in a battery's points, or null. */
+function batteryValue(points, metric, { first = false } = {}) {
+  const ordered = first ? points : [...points].reverse();
+  for (const point of ordered) {
+    const o = point.observations.find((x) => x.metric === metric && x.status === "ok" && x.value != null);
+    if (o) return o.value;
+  }
+  return null;
+}
+
+function watts(milliwatts) {
+  return `${number(Math.abs(milliwatts) / 1000, 1)} W`;
+}
+
+/** Seconds to "3 h 10 min" (or the short form under an hour). */
+function longDuration(seconds) {
+  if (seconds < 3600) return duration(Math.round(seconds) * 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
+}
+
+/**
+ * What the battery did during a finished recording (battery_recording): charge at the start and
+ * end, the last measured rate, and the loss measured between capacity readings when Windows gave
+ * them. Nothing is collected again. Null when the PC reported no battery.
+ */
+function batteryFacts(recording) {
+  const batteries = (recording?.batteries || []).filter((b) => b.points?.length);
+  if (!batteries.length) return null;
+  return batteries.map((battery, index) => {
+    const rows = [];
+    const first = batteryValue(battery.points, "battery_charge_percent", { first: true });
+    const last = batteryValue(battery.points, "battery_charge_percent");
+    if (first != null && last != null) rows.push(["history.battery.charge", first === last ? percent(last / 100) : `${percent(first / 100)} → ${percent(last / 100)}`]);
+    const state = batteryValue(battery.points, "battery_charge_state");
+    const rate = batteryValue(battery.points, "battery_power_rate_mw");
+    if (state === "discharging" || state === "charging") {
+      const power = rate ?? batteryValue(battery.points, state === "charging" ? "battery_charge_power_mw" : "battery_discharge_power_mw");
+      rows.push(["history.battery.rate", power != null ? t(`history.battery.${state}`, { power: watts(power) }) : t(`history.battery.${state}.only`)]);
+    } else if (state === "idle") rows.push(["history.battery.rate", t("history.battery.idle")]);
+    // The longest continuous discharge segment carries the measured loss and its derived rate.
+    const segment = [...(battery.evolution || [])].sort((a, b) => b.to_unix_ms - b.from_unix_ms - (a.to_unix_ms - a.from_unix_ms))[0];
+    const derived = (metric) => segment?.observations.find((o) => o.metric === metric && o.status === "ok" && o.value != null)?.value ?? null;
+    const lost = derived("battery_measured_capacity_decrease_mwh");
+    const average = derived("battery_average_power_rate_mw");
+    if (lost != null && segment) {
+      const energy = `${number(lost / 1000, 2)} Wh`;
+      const time = duration(segment.to_unix_ms - segment.from_unix_ms);
+      rows.push(["history.battery.lost", average != null ? t("history.battery.lostRate", { energy, time, power: watts(average) }) : t("history.battery.lostValue", { energy, time })]);
+    }
+    const runtime = derived("battery_estimated_runtime_from_recording_seconds");
+    if (runtime != null) rows.push(["history.battery.left", t("history.battery.leftValue", { time: longDuration(runtime) })]);
+    const windows = batteryValue(battery.points, "battery_estimated_runtime_windows_seconds");
+    if (windows != null) rows.push(["history.battery.windows", t("history.battery.windowsValue", { time: longDuration(windows) })]);
+    return h(
+      "div",
+      { class: "rec-battery" },
+      h("strong", null, batteries.length > 1 ? t("history.battery.titleN", { n: index + 1 }) : t("history.battery.title")),
+      rows.length
+        ? h("dl", { class: "rec-battery-facts" }, rows.map(([key, value]) => [h("dt", null, t(key)), h("dd", null, value)]))
+        : h("span", null, t("history.battery.none")),
+    );
+  });
+}
+
 function eventLabel(e) {
   const key = `history.event.${e.kind}`;
   const label = t(key);
@@ -120,6 +188,8 @@ export function mount(page) {
   // person can ask about it.
   let lastRecording = null;
   let cancelledByUs = false;
+  // The battery points of the finished recording shown, read once from the local store.
+  let battery = { id: null, data: null };
   const head = h("div", { class: "page-head" });
   const recordHost = h("div");
   const chartsHost = h("section", { class: "card card-pad history-card" });
@@ -182,6 +252,16 @@ export function mount(page) {
       return;
     }
     const running = r.ended_at_unix_ms == null;
+    if (!running && battery.id !== r.id) {
+      battery = { id: r.id, data: null };
+      call("battery_recording", { recordingId: r.id })
+        .then((data) => {
+          if (disposed || battery.id !== r.id) return;
+          battery.data = data;
+          renderRecording();
+        })
+        .catch(() => {});
+    }
     const elapsed = Math.min(r.duration_seconds * 1000, Date.now() - r.started_at_unix_ms);
     const left = Math.max(0, r.duration_seconds * 1000 - elapsed);
     // A recording lasts seconds to minutes: minute precision would read "from 20:01 to 20:01".
@@ -199,6 +279,7 @@ export function mount(page) {
           h("strong", null, running ? t("history.recording", { left: duration(left) }) : t(`history.recording.${r.status}`, { from, to: to ?? "" })),
           h("span", null, t(running ? "history.recording.samples" : "history.recording.samplesDone", { count: r.samples })),
           running ? h("div", { class: "rec-bar" }, h("span", { style: { width: `${(elapsed / (r.duration_seconds * 1000)) * 100}%` } })) : null,
+          running || battery.id !== r.id ? null : batteryFacts(battery.data),
         ),
         h("span", { class: "spacer" }),
         running

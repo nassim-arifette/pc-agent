@@ -2431,6 +2431,31 @@ details.more > div {
   border-color: transparent;
   background: var(--bad-soft);
 }
+/* The recording's Explain and Investigate stay side by side (.callout > div stacks its children). */
+.callout > .row {
+  flex-direction: row;
+  align-self: flex-start;
+}
+.rec-battery {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.rec-battery-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.rec-battery-facts dt {
+  color: var(--text-2);
+}
+.rec-battery-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
 .rec-dot {
   width: 10px;
   height: 10px;
