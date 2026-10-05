@@ -118,9 +118,11 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
    dater. Au plus 3 réparations par enquête, partagées avec les appels d'outils refusés, le texte
    sans appel d'outil et les réponses coupées par la limite de sortie. Une réponse coupée est
    redemandée une fois, plus courte ; une deuxième coupure de suite termine le tour. Si le modèle
-   renvoie deux fois de suite exactement les mêmes écarts, les réparations s'arrêtent (après
-   l'escalade éventuelle du chantier 14). Si un écart persiste, la meilleure tentative (le moins
-   de passages non vérifiés) s'affiche, avec les passages concernés marqués « non vérifié ».
+   renvoie deux fois de suite exactement les mêmes écarts, les réparations s'arrêtent ;
+   l'escalade du chantier 14 reste liée aux 3 réparations épuisées. Une soumission mal formée est
+   décrite par une classe fermée et un champ déclaré, jamais par le texte du modèle. Si un écart
+   persiste, la meilleure tentative écrite depuis les dernières mesures (le moins de passages non
+   vérifiés) s'affiche, avec les passages concernés marqués « non vérifié ».
 
 ### C2 — Conversation et stockage
 
