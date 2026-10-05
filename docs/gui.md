@@ -36,17 +36,32 @@ The *PC status* pill in the top bar names the most important thing in a few word
 These thresholds are hints for the status line, not findings.
 
 The full *Storage* and *Settings* screens open in the conversation area. Storage picks or drops a
-folder, follows the scan and lists the largest folders and files; nothing is deleted there.
+folder, follows the scan and lists the largest folders and files, each of which can be selected
+to explain it or investigate (see the action bar below); nothing is deleted there.
 
 ## Live PC, selection, Explain and Investigate
 
 The *Live PC* view (`#/live`) shows the resources as selectable cards (memory, processor, each
-fixed drive, each graphics card) and the applications as selectable rows. Selecting one opens the
-inspector on the right with its details and two actions:
+fixed drive, each graphics card) and the applications as selectable rows. Selecting one shows the
+**action bar** right under it and fills the inspector on the right with its details:
 
 - **Explain** uses only the measurements already taken for that item: nothing new is collected and
   no action is proposed (`get_selected_evidence` only).
 - **Investigate** starts from them with the usual read-only tools; actions stay proposals.
+- **Monitor** is shown disabled with *Coming soon*: watching a resource against a threshold does
+  not exist yet, and the bar does not pretend it does.
+
+The action bar (`ui/js/actionbar.js`) is the same in Live PC, History and Storage: a floating
+toolbar (`role="toolbar"`) under the selected item, one tab stop with the arrow keys between its
+enabled buttons, and the *E · Enter* hint. Only one item is selected at a time; selecting another
+moves the bar, and Escape or a second click on the item clears it. Near the right edge it aligns to
+the item's end, near the bottom of the window it opens above the item; History puts it under the
+right end of its full-width rows. While an item is selected and the focus is not in a text field,
+`E` runs Explain and `Enter` runs Investigate (Enter keeps its own meaning on any other button).
+Without a host-issued reference yet, Explain and Investigate are disabled and their tooltip says
+why. The inspector keeps what the actions use and an *Investigate to go further* link; a process
+chosen among an application's members keeps the bar under that application's row, and the bar then
+acts on the process the inspector names.
 
 The page never sends measurements or names itself. It passes a host-issued reference
 (`selection_source_id` of the dashboard or of `process_activity`, plus a closed target) to
@@ -58,6 +73,19 @@ the interface language and follows C5 like the data: never a PID, a program name
 sharing. An application is explained through its largest measured process, which the inspector
 names. History events and finished recordings use the same flow through `selection_sources()`; if
 their source has expired, the typed question of the previous version is used instead.
+
+## Storage selection
+
+Each page of scan results the host returns is published as a selection source
+(`retain_storage_page`): the page carries its `selection_source_id` and the target of an item is
+`{ kind: "storage", scope_id, item_ref }`. Selecting a folder or a file of the results shows the
+action bar. The question and the preview name it generically (*the folder chosen in the scan*) and
+the consent dialog says it leaves under an alias, its name and path staying on this PC; file names
+are not offered from here. Sources expire after five minutes (or earlier when newer captures fill
+the registry): before a preview, the page looks the item up in `selection_sources()` and, when its
+source is gone, reads the same page of the same scan again with `scan_page`, which publishes it
+anew. A new scan revokes the previous one's sources; a page the host could not publish leaves the
+bar disabled with *scan the folder again*.
 
 ## Quick drive analysis
 
@@ -98,12 +126,14 @@ The *History* view reads the local sampler (`history_status`, `metric_history`):
 memory, disk activity and graphics card over the last hour, 24 hours or 7 days, as four charts on
 one time axis. Unmeasured periods (PC Agent closed, PC asleep) stay breaks in the lines and are
 counted, never drawn through. Detected anomalies are listed with their peak, duration and the
-program measured at the peak, which is not presented as the proven cause; *Explain* and
-*Investigate* send that event through the selected-evidence preview.
+program measured at the peak, which is not presented as the proven cause (a selected event says
+so). Selecting an event shows the action bar, whose *Explain* and *Investigate* send that event
+through the selected-evidence preview.
 
 *Record a problem* takes one measurement per second for 30, 60 or 120 seconds
 (`record_activity_start`), with a countdown and *Stop* (`record_activity_cancel`, which keeps the
-measurements); then *Explain* or *Investigate* sends that exact recording. When the PC reported a
+measurements); the finished recording is then selected like an event, and the action bar's
+*Explain* or *Investigate* sends that exact recording. When the PC reported a
 battery during it, the finished recording also shows the battery's charge at the start and end, the
 last measured rate, the loss measured between capacity readings (with its average power and the time
 left at that rate) and Windows' own estimate, read once from the local store
@@ -243,7 +273,9 @@ The CI keeps a `pcagent-gui-windows-x64` artifact: an unsigned prototype, not an
 
 Keyboard: `Ctrl+1` to `Ctrl+5` open Chat, History, Live PC, Storage and Settings, `Ctrl+N` starts a
 new conversation, `Ctrl+K` jumps to the question box, `Ctrl+J` shows or hides the panel, `Enter`
-sends and `Shift+Enter` adds a line, `Esc` closes a dialog or clears the Live PC selection.
+sends and `Shift+Enter` adds a line, `Esc` closes a dialog or clears the selection. With an item
+selected in Live PC, History or Storage, `E` explains it and `Enter` investigates it; the arrow
+keys move between the action bar's buttons.
 
 ## Design review without the app
 
@@ -255,18 +287,20 @@ cd apps\gui
 python -m http.server 5173 --bind 127.0.0.1
 # open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok,
 # ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
-# ?recording=short, ?battery=none)
+# ?recording=short, ?battery=none, ?sources=short for selection sources that expire after 5 s)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run; `space` or `clean` proposes cleanup actions and `startup` a start-up entry
 to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage, the
-deeper checks with a review and a result, settings, the Live PC view with Explain and its preview)
-in light and dark themes (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs;
-`TOUR_BASE` and `TOUR_DEBUG_PORT` point it at a server on another port). The mock publishes
-selection sources for live captures, history events and recordings. It lives outside `ui/`, so
-the app never embeds it.
+deeper checks with a review and a result, settings, the Live PC view with the action bar under an
+application (`10a`) and under memory, Explain and its preview, and the action bar under a History
+event (`17`) and a Storage folder (`18`)) in light and dark themes
+(`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and
+`TOUR_DEBUG_PORT` point it at a server on another port). The mock publishes selection sources for
+live captures, history events, recordings and each page of scan results (revoked by a new scan).
+It lives outside `ui/`, so the app never embeds it.
 
 ## Validation status
 
@@ -299,6 +333,13 @@ the app never embeds it.
   a key (only the last four characters shown), a turn without consent (no lookup), a source without
   a date, reopening a conversation (recorded steps with the query) and *Open in browser* on the saved
   turn. No JavaScript errors. Not yet checked in the release Windows app or with a real Tavily key.
+- Action bar on 2026-10-05, with the mock: the tour in French and English, light and dark, plus
+  checks at 1280 × 800 and 860 × 640 of the bar under a card, an application, a process chosen in
+  the inspector, an event, a recording and scan results (first page, a page from *Show more*, an
+  expired source read again); alignment to the right edge and opening above near the bottom; one
+  bar at a time; `E`, `Enter`, the arrow keys and Escape (focus back on the item, kept across the
+  periodic refreshes); the disabled state without a reference. No JavaScript errors. Not yet
+  checked in the release Windows app.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 

@@ -46,7 +46,8 @@ function reviewDialog(selection, intent, preview) {
   const exact = JSON.stringify(preview.message, null, 2);
   const measured = preview.measured_at_unix_ms != null ? t("select.measured", { ago: ago(preview.measured_at_unix_ms) }) : t("select.measured.unknown");
   const model = preview.configured_model_id ? modelName(preview.configured_model_id) : t("mode.cloud");
-  const sent = [t("select.sent.item", { what: selection.label }), t("select.sent.measures"), names ? t("consent.sent.namesAny") : t("consent.sent.refs")];
+  // A view may say how the item itself leaves (a scanned folder goes under an alias, never by name).
+  const sent = [selection.sent ?? t("select.sent.item", { what: selection.label }), t("select.sent.measures"), names ? t("consent.sent.namesAny") : t("consent.sent.refs")];
   const never = [names ? t("consent.never.pids") : t("consent.never.names"), t("consent.never.paths"), t("consent.never.ids"), t("consent.never.key")];
   return dialog(
     (close) => [
@@ -92,10 +93,11 @@ export async function findReference(match) {
 }
 
 /**
- * Runs Explain or Investigate on `selection` = { reference, label, name?, subject? }: prepares the
- * exact preview, asks before a cloud send, then starts the turn in a new conversation and opens
- * the chat. `label` is shown on this PC only; `name` is the program name a question may carry;
- * `subject` replaces the generic "of …" part of the question and must hold no name or ID.
+ * Runs Explain or Investigate on `selection` = { reference, label, name?, subject?, sent? }:
+ * prepares the exact preview, asks before a cloud send, then starts the turn in a new conversation
+ * and opens the chat. `label` is shown on this PC only; `name` is the program name a question may
+ * carry; `subject` replaces the generic "of …" part of the question and must hold no name or ID;
+ * `sent` replaces the dialog's "the selected item: <label>" line when the item leaves differently.
  */
 export async function runSelection(selection, intent) {
   if (!INTENTS.includes(intent) || !selection?.reference) return;
