@@ -11,6 +11,7 @@ import { state } from "./store.js";
 import { badge, bar, button, toast } from "./ui.js";
 import { bytes, clock, duration, number, percent } from "./format.js";
 import { driveName } from "./live.js";
+import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
 
 /** Collection budget asked for: the helper's maximum; most drives finish well before. */
 export const BUDGET_MS = 120000;
@@ -25,11 +26,17 @@ function changed() {
   for (const listener of [...listeners]) listener();
 }
 
+/** Tells the deeper checks card whether this analysis holds the single elevated slot. */
+function publishSlot() {
+  holdSlot("quick", ["preparing", "review", "running", "cancelling", "orphaned"].includes(quick.status) || poller != null);
+}
+
 function set(patch) {
   Object.assign(quick, patch);
   window.clearInterval(ticker);
   ticker = quick.status === "running" ? window.setInterval(changed, 1000) : null;
   changed();
+  publishSlot();
 }
 
 /** Waits until the elevated slot is free again, e.g. after a cancellation or an error. */
@@ -41,11 +48,13 @@ function waitForFreeSlot(then) {
         window.clearInterval(poller);
         poller = null;
         then();
+        publishSlot();
       }
     } catch {
       // Keep waiting; the next poll retries.
     }
   }, 1000);
+  publishSlot();
 }
 
 /** Fixed drive letters from the live measurements, C: first. */
@@ -244,6 +253,8 @@ export function quickScanCard() {
     } else {
       const letters = volumes();
       if (!letters.includes(volume)) volume = letters[0];
+      // The deeper checks card holds the single elevated slot: wait for it instead of failing.
+      const blocked = slotHeldElsewhere("quick");
       body = h(
         "div",
         { class: "row wrap" },
@@ -257,7 +268,8 @@ export function quickScanCard() {
             letters.map((l) => h("option", { value: l, selected: l === volume ? true : null }, `${l}:`)),
           ),
         ),
-        button(t(quick.status === "preparing" ? "quick.preparing" : "quick.prepare"), { variant: quick.result ? "" : "primary", iconName: "bolt", disabled: busy, onClick: () => prepare(volume) }),
+        button(t(quick.status === "preparing" ? "quick.preparing" : "quick.prepare"), { variant: quick.result ? "" : "primary", iconName: "bolt", disabled: busy || blocked, onClick: () => prepare(volume) }),
+        blocked && !busy ? h("span", { class: "hint" }, t("admin.slotBusy")) : null,
         quick.status === "failed" ? h("div", { class: "callout bad", style: { "flex-basis": "100%" } }, icon("alert"), h("div", null, h("strong", null, t("quick.failed")), h("span", null, quick.error || ""))) : null,
         quick.status === "cancelled" ? h("span", { class: "hint" }, t("quick.cancelled")) : null,
       );
@@ -270,7 +282,14 @@ export function quickScanCard() {
     fill(resultHost, quick.status === "done" && quick.result ? resultView(renderAll) : null);
   };
   listeners.add(renderAll);
+  const stopSlot = onSlotChange(renderAll);
   renderAll();
   recoverQuickScan();
-  return { el: h("div", null, host, resultHost), dispose: () => listeners.delete(renderAll) };
+  return {
+    el: h("div", null, host, resultHost),
+    dispose: () => {
+      listeners.delete(renderAll);
+      stopSlot();
+    },
+  };
 }

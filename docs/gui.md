@@ -72,6 +72,26 @@ largest attributed folders and files (`local_mft_tree`), whose parent/child size
 calls `elevation_cancel`; after an error or a stop the page waits for `elevation_status` to return
 `null` before offering another analysis, and a reload recovers a prepared or running task.
 
+## Deeper checks
+
+Below it, a *Deeper checks* card offers four other closed tasks of the same helper, all without
+arguments: *Windows caches* (`system_caches`: the size of `Windows.old`, downloaded updates and the
+Delivery Optimization cache), *Restore points and shadow copies* (`shadow_storage`, from
+`Win32_ShadowStorage`), *Disk health* (`disk_reliability`: temperature, wear, hours powered on,
+errors and slowest responses as each disk reports them) and *Battery use by app*
+(`battery_energy`: Windows' historical energy estimates on battery, for the current account). The
+flow is the quick analysis's: *Prepare* calls `elevation_prepare` with the 120 s budget (which also
+counts the time the Windows consent prompt stays open), the review says exactly what the check
+reads, that it changes nothing and that Windows will ask for consent, and only *Allow and start*
+calls `elevation_run`. The result is drawn generically from the inspection (`adminchecks.js`):
+observations grouped by entity, a label per metric, values formatted by unit, a value the source
+did not give shown as not reported, and incomplete coverage under *Limits of this check*. For five
+minutes after it completes, the chat's AI answers can read the result through
+`get_approved_elevated_inspection`, with the sharing choice applied; the card says so and offers to
+ask about it. The two cards share the helper's single slot: while one holds it (prepared, running
+or cleaning up), the other's buttons are disabled with a hint. Process images and the performance
+trace are not offered here.
+
 ## History, recording and startup
 
 The *History* view reads the local sampler (`history_status`, `metric_history`): processor,
@@ -189,14 +209,15 @@ browser:
 cd apps\gui
 python -m http.server 5173 --bind 127.0.0.1
 # open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok,
-# ?privacy=complete|anonymized|local for a confirmed choice)
+# ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
-screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage,
-settings, the Live PC view with Explain and its preview) in light and dark themes
-(`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs). The mock publishes
+screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage, the
+deeper checks with a review and a result, settings, the Live PC view with Explain and its preview)
+in light and dark themes (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs;
+`TOUR_BASE` and `TOUR_DEBUG_PORT` point it at a server on another port). The mock publishes
 selection sources for live captures, history events and recordings. It lives outside `ui/`, so
 the app never embeds it.
 
@@ -232,7 +253,9 @@ the app never embeds it.
 ## Known gaps
 
 Finding texts come from the core in English,
-also when the interface is in French. Conversation history is stored locally in SQLite; older
+also when the interface is in French, and so do the coverage notes of the deeper checks. Their
+disks and battery apps are numbered, not named: the inspection keeps names on the Rust side and the
+window does not receive them. Conversation history is stored locally in SQLite; older
 display-only reports remain readable but are not reused as evidence. There is no tray icon or
 installer. See [answer verification](answer-verification.md) for covered and intentional limits of
 the evidence checks and sharing previews.
