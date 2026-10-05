@@ -3,9 +3,11 @@
 // never loads this file: it is outside the embedded ui folder.
 //
 // URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
-// (a confirmed choice; without it the first cloud question asks for one). Questions containing
+// (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow,
+// ?recording=short (3-second recordings), ?battery=none (no battery). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
-// stretches the steps. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
+// off. Both event families are emitted, like the Rust side: turn:* and inv:*.
 // Live captures publish selection sources; Explain and Investigate use selection_preview/send.
 
 const params = new URLSearchParams(window.location.search);
@@ -313,10 +315,60 @@ function samplerStatus() {
 }
 
 
+// One opaque battery discharging steadily, one point per recorded second, with the derived loss
+// of its continuous discharge segment (pcagent_store::BatteryRecording).
+function batteryRecording(rec) {
+  const end = rec.ended_at_unix_ms ?? Date.now();
+  const ticks = Math.max(1, Math.min(128, Math.floor((end - rec.started_at_unix_ms) / 1000)));
+  const ref = "battery-00000000-0000-4000-8000-00000000b001";
+  const window = (at) => ({ started_at_unix_ms: at - 40, finished_at_unix_ms: at, duration_ms: 40 });
+  const source = "DeviceIoControl/IOCTL_BATTERY_QUERY_STATUS";
+  const o = (at, metric, value, unit) => ({ observation_id: `${ref}-measurement-${at}-${metric}`, measured_at_unix_ms: at, window: window(at), entity_ref: ref, metric, value, unit, status: "ok", source, origin: "synthetic_fixture" });
+  const startCapacity = 41250;
+  const rate = -8400;
+  const points = params.get("battery") === "none" ? [] : Array.from({ length: ticks }, (_, i) => {
+    const at = rec.started_at_unix_ms + (i + 1) * 1000;
+    const capacity = Math.round(startCapacity + (rate * (i + 1)) / 3600);
+    return {
+      recorded_at_unix_ms: at, recording_elapsed_ms: (i + 1) * 1000, clock_consistent: true, status: "ok",
+      observations: [
+        o(at, "battery_kind", "system", "category"), o(at, "battery_capacity_units", "milliwatt_hours", "category"), o(at, "battery_charge_state", "discharging", "category"), o(at, "battery_on_ac", false, "boolean"),
+        o(at, "battery_remaining_capacity_mwh", capacity, "milliwatt_hours"), o(at, "battery_charge_percent", Math.round((capacity / 52800) * 100), "percent"),
+        o(at, "battery_power_rate_mw", Math.round(rate + (Math.random() - 0.5) * 600), "milliwatts"), o(at, "battery_estimated_runtime_windows_seconds", 17400 - i, "seconds"),
+      ],
+    };
+  });
+  const first = points[0];
+  const last = points[points.length - 1];
+  const capacityOf = (p) => p.observations.find((x) => x.metric === "battery_remaining_capacity_mwh");
+  const lost = points.length > 1 ? capacityOf(first).value - capacityOf(last).value : null;
+  const elapsed = points.length > 1 ? last.recording_elapsed_ms - first.recording_elapsed_ms : 0;
+  const derived = (metric, value, unit) => ({ ...o(last.recorded_at_unix_ms, metric, value, unit), source: "derived/recording_battery_capacity_endpoints", derivation: "synthetic", inputs: [capacityOf(first), capacityOf(last)] });
+  const evolution = lost > 0 && elapsed > 0
+    ? [{ from_unix_ms: first.recorded_at_unix_ms, to_unix_ms: last.recorded_at_unix_ms, measured_points: points.length, observations: [
+        derived("battery_measured_capacity_decrease_mwh", lost, "milliwatt_hours"),
+        derived("battery_average_power_rate_mw", (-lost * 3600000) / elapsed, "milliwatts"),
+        derived("battery_estimated_runtime_from_recording_seconds", (capacityOf(last).value * elapsed) / lost / 1000, "seconds"),
+      ] }]
+    : [];
+  return {
+    status: points.length ? "ok" : "partial", started_at_unix_ms: rec.started_at_unix_ms, ended_at_unix_ms: rec.ended_at_unix_ms, interval_ms: 1000,
+    coverage: { expected_ticks: rec.duration_seconds, recorded_ticks: ticks, ticks_without_battery: points.length ? 0 : ticks, unavailable_observations: 0, rejected_observations: 0, points_returned: points.length, points_omitted_from_response: 0, batteries_omitted_from_response: 0, battery_tick_points_omitted_during_collection: 0 },
+    gaps: [], batteries: points.length ? [{ battery_ref: ref, status: "ok", points, gaps: [], evolution }] : [], limitations: [],
+  };
+}
+
 // ---------- Action proposals ----------
-// A question about freeing space proposes two plans; running one reports space freed.
+// A question about freeing space proposes two plans; running one reports space freed. A question
+// about start-up proposes turning one program off; once done, it can be restored from the journal.
 const turnPlans = new Map();
 function proposePlans(turnId, question) {
+  if (/startup|start-up|boot|démarr/i.test(question)) {
+    turnPlans.set(turnId, [
+      { plan_id: `plan-${turnId}-startup`, kind: "disable_user_startup", targets: [{ kind: "startup", label: "Spotify", files: null, bytes: null }], recovery: "restore_previous_startup_approval", checks: ["user_startup_entry_unchanged", "known_startup_approval_format"], decision: null },
+    ]);
+    return;
+  }
   if (!/supprim|delete|clean|nettoy|place|space|free/i.test(question)) return;
   turnPlans.set(turnId, [
     { plan_id: `plan-${turnId}-1`, kind: "run_cleanup_adapter", targets: [{ kind: "cleanup", label: "C:\\Users\\Alex\\AppData\\Local\\Temp", files: 1840, bytes: 18.7 * GiB }], recovery: "none_synthetic_regenerable_data", checks: ["identity_revalidated", "not_protected"], decision: null },
@@ -648,6 +700,17 @@ export function createMock() {
       };
     },
     action_plans: ({ turnId }) => (turnPlans.get(turnId) || []).map((p) => ({ ...p })),
+    // Journal-based restoration of a start-up entry turned off by a completed plan: a fresh plan
+    // in its own local action group, still run only through action_run.
+    startup_restore_prepare: async ({ sourcePlanId, itemIndex }) => {
+      await wait(300);
+      const source = [...turnPlans.values()].flat().find((p) => p.plan_id === sourcePlanId);
+      if (!source || source.kind !== "disable_user_startup" || source.decision !== "completed" || itemIndex !== 0) throw new Error("startup disable is not durably completed");
+      const turnId = `local-restore-${sourcePlanId}`;
+      const plan = { plan_id: `plan-restore-${Date.now()}`, kind: "restore_user_startup", targets: source.targets.map((x) => ({ ...x })), recovery: "restore_previous_startup_approval", checks: ["user_startup_entry_unchanged", "known_startup_approval_format"], decision: null };
+      turnPlans.set(turnId, [plan]);
+      return { turn_id: turnId, plan: { ...plan } };
+    },
     action_decline: ({ turnId, planId }) => {
       const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
       if (!plan) throw new Error("These proposals are no longer current.");
@@ -677,6 +740,13 @@ export function createMock() {
       const seconds = params.get("recording") === "short" ? 3 : durationSeconds;
       recording = { id: `rec-${Date.now()}`, started_at_unix_ms: Date.now(), ended_at_unix_ms: null, duration_seconds: seconds, status: "recording", samples: 0, markers: [{ at_unix_ms: Date.now(), kind: "start" }] };
       return { ...recording };
+    },
+    // The battery points of a recording, as Store::battery_recording returns them; ?battery=none
+    // is a desktop PC without a battery.
+    battery_recording: async ({ recordingId }) => {
+      await wait(150);
+      if (!recording || recording.id !== recordingId) return null;
+      return batteryRecording(recording);
     },
     record_activity_cancel: ({ recordingId }) => {
       if (!recording || recording.id !== recordingId || recording.ended_at_unix_ms != null) throw new Error("This recording is over.");

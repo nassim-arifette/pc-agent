@@ -103,7 +103,11 @@ program measured at the peak, which is not presented as the proven cause; *Expla
 
 *Record a problem* takes one measurement per second for 30, 60 or 120 seconds
 (`record_activity_start`), with a countdown and *Stop* (`record_activity_cancel`, which keeps the
-measurements); then *Explain* or *Investigate* sends that exact recording. The *Collection* card
+measurements); then *Explain* or *Investigate* sends that exact recording. When the PC reported a
+battery during it, the finished recording also shows the battery's charge at the start and end, the
+last measured rate, the loss measured between capacity readings (with its average power and the time
+left at that rate) and Windows' own estimate, read once from the local store
+(`battery_recording`) without collecting again. The *Collection* card
 shows the sampler's measured processor cost against its target and the whole window's memory,
 the optional *Start with Windows* setting (`startup_get`, `startup_set`, off by default) and
 *Clear the history* (`history_clear`), which keeps conversations.
@@ -119,6 +123,12 @@ cannot run twice. The same broker, guard, protection policy and journal as the C
 target just before running and refuse anything changed or protected; the result reports what was
 done and the free space or system measurements before and after. *Ignore* calls
 `action_decline`. A newer turn replaces older proposals, which can no longer run.
+
+A start-up entry turned off from here offers *Restore*: `startup_restore_prepare` reads that
+action's local journal and prepares a fresh restoration plan, which opens in the same review and
+runs only through *Run now* (`action_run`). Preparing it replaces the proposals still waiting, so the
+button stays disabled until they are decided or ignored. The plan identifiers are known only in the
+session that ran the action; afterwards the CLI's `restore-startup` remains the way back.
 
 ## Visual system
 
@@ -209,11 +219,13 @@ browser:
 cd apps\gui
 python -m http.server 5173 --bind 127.0.0.1
 # open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok,
-# ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow)
+# ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
+# ?recording=short, ?battery=none)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
-answer and a long run. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
+answer and a long run; `space` or `clean` proposes cleanup actions and `startup` a start-up entry
+to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with Explain and its preview)
 in light and dark themes (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs;
