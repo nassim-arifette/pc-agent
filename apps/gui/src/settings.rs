@@ -30,6 +30,9 @@ impl PrivacyMode {
 pub struct PrivacySettings {
     pub mode: PrivacyMode,
     pub confirmed: bool,
+    /// Web lookups (C6): a separate, remembered consent; never in local mode.
+    #[serde(default)]
+    pub web_search: bool,
 }
 
 fn path() -> Option<PathBuf> {
@@ -110,6 +113,7 @@ mod tests {
             let expected = PrivacySettings {
                 mode,
                 confirmed: true,
+                web_search: mode != PrivacyMode::Local,
             };
             save_to(&path, &expected).unwrap();
             assert_eq!(load_from(&path).unwrap(), expected);

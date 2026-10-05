@@ -49,7 +49,7 @@ pub use user_cleanup::{
     MAX_USER_CLEANUP_FILES, MIN_TEMP_AGE,
 };
 #[cfg(windows)]
-pub use windows::show_in_explorer;
+pub use windows::{open_web_page, show_in_explorer};
 
 use pcagent_shared::Status;
 

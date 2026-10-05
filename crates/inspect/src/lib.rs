@@ -211,6 +211,19 @@ impl Inspection {
     }
 }
 
+/// The two-letter country of the Windows region setting, for country-specific web lookups
+/// (C6). It is a setting, not an identifier of the machine.
+pub fn region_country() -> Option<String> {
+    #[cfg(windows)]
+    {
+        windows::region_country()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// The caller cannot supply SQL, WQL, registry paths, event filters or executable commands.
 pub fn inspect(query: Query<'_>) -> Inspection {
     #[cfg(windows)]

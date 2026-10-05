@@ -60,6 +60,9 @@ pub enum Step {
         tool: String,
         status: Status,
         duration_ms: u64,
+        /// The exact query a web lookup sent (C6).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
     },
 }
 

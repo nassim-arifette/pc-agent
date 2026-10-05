@@ -116,6 +116,13 @@ impl Key {
     }
 }
 
+/// The two-letter country of the user's Windows region (Settings > Time & language > Region).
+pub(super) fn region_country() -> Option<String> {
+    let key = Key::open(HKEY_CURRENT_USER, r"Control Panel\International\Geo", 0).ok()??;
+    let name = key.string("Name")?.trim().to_ascii_uppercase();
+    (name.len() == 2 && name.bytes().all(|b| b.is_ascii_uppercase())).then_some(name)
+}
+
 pub(super) fn apps(out: &mut Inspection, limit: usize) {
     const PATH: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
     const SOURCE: &str = "Registry.Uninstall (HKLM/HKCU, 64/32-bit views)";

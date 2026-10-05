@@ -894,6 +894,8 @@ struct Ask<'a> {
     selected: Option<&'a FrozenSelection>,
     routing: Option<&'a RoutingReview>,
     elevated_evidence: Vec<pcagent_agent::elevated_tools::ApprovedInspection>,
+    /// The person consented to web lookups (C6); a key is still required.
+    web_search: bool,
 }
 
 enum ApprovedCapture {
@@ -1101,6 +1103,8 @@ fn launch_investigation(
             PrivacyMode::Anonymized
         },
         confirmed: true,
+        // The web consent is its own choice and survives a change of sharing mode.
+        web_search: lock(&state.privacy).web_search,
     };
     settings::save(&remembered)?;
     if lock(&state.privacy).mode != remembered.mode {
@@ -1160,6 +1164,7 @@ fn launch_investigation(
     let sampler = state.sampler.clone();
     let proposals = state.actions.clone();
     let elevated_evidence = state.elevation.completed_evidence();
+    let web_search = cloud && lock(&state.privacy).web_search;
     let saved_in = conversation_id.clone();
     let worker_turn_id = turn_id.clone();
     thread::Builder::new()
@@ -1179,6 +1184,7 @@ fn launch_investigation(
                 selected: prepared.as_ref().and_then(ApprovedCapture::selected),
                 routing: prepared.as_ref().and_then(ApprovedCapture::routing),
                 elevated_evidence,
+                web_search,
             };
             let outcome = investigation(&app, id, &ask, storage, &stop, &answer, sampler.as_ref(), &proposals);
             let stored_report = match &outcome {
@@ -1349,6 +1355,7 @@ fn investigation(
                         tool: event.tool.clone(),
                         status: event.status,
                         duration_ms: event.duration_ms,
+                        query: event.query.clone(),
                     })
                 },
                 |partial, request| {
@@ -1367,6 +1374,15 @@ fn investigation(
         workstation.set_sharing(sharing);
         workstation.set_allowed_scopes(ask.scope_ids.clone());
         workstation.set_elevated_evidence(ask.elevated_evidence.clone());
+        // Web lookups (C6): only after the separate consent and with a saved Tavily key.
+        if ask.web_search {
+            if let Some(tavily) = Credentials::load()
+                .get("TAVILY_API_KEY")
+                .and_then(|key| pcagent_agent::tavily::Tavily::new(&key))
+            {
+                workstation.enable_web_search(Box::new(tavily), pcagent_inspect::region_country());
+            }
+        }
         if let Some(sampler) = sampler {
             workstation.set_history(sampler.clone(), stop.clone());
         }
@@ -1395,6 +1411,7 @@ fn investigation(
                         tool: event.tool.clone(),
                         status: event.status,
                         duration_ms: event.duration_ms,
+                        query: event.query.clone(),
                     })
                 },
                 |partial, request| {
@@ -1419,6 +1436,7 @@ fn investigation(
                         tool: event.tool.clone(),
                         status: event.status,
                         duration_ms: event.duration_ms,
+                        query: event.query.clone(),
                     })
                 },
                 |partial, request| {
@@ -1798,6 +1816,48 @@ fn save_cloud_settings(
     Ok(view::cloud(&Credentials::load()))
 }
 
+/// Saves or removes the Tavily key for web lookups. The page sends it once and never reads it back.
+#[tauri::command]
+fn save_search_key(api_key: Option<String>) -> Result<view::Cloud, String> {
+    let file = credentials::file_path().ok_or("The APPDATA folder is unknown.")?;
+    let key = api_key.map(|k| k.trim().to_owned()).unwrap_or_default();
+    if !key.is_empty() && !key.starts_with("tvly-") {
+        return Err("A Tavily key starts with tvly-.".into());
+    }
+    credentials::save(&file, &[("TAVILY_API_KEY", key.as_str())])?;
+    Ok(view::cloud(&Credentials::load()))
+}
+
+/// Opens a cited web source in the browser. The URL is read from the stored turn, never taken
+/// from the page, and only an https page opens.
+#[tauri::command]
+fn open_web_source(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    turn_id: String,
+    reference: String,
+) -> Result<(), String> {
+    let conversation = lock(&state.history)
+        .as_ref()
+        .ok_or("The local history is unavailable.")?
+        .get(&conversation_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("This conversation no longer exists.")?;
+    let turn = conversation
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .ok_or("This answer no longer exists.")?;
+    let url = turn.report["answer"]["citations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["reference"] == reference.as_str() && c["kind"] == "web")
+        .and_then(|c| c["web"]["url"].as_str())
+        .ok_or("This answer has no such web source.")?;
+    pcagent_actions::open_web_page(url).map_err(|e| e.detail)
+}
+
 #[derive(Serialize)]
 struct CloudCheck {
     price: Option<view::PriceView>,
@@ -1934,6 +1994,8 @@ pub fn run() {
             scan_page,
             reveal,
             save_cloud_settings,
+            save_search_key,
+            open_web_source,
             test_cloud,
             cloud_models,
             elevation_prepare,
