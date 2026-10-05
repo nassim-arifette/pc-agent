@@ -1030,6 +1030,8 @@ pub struct Cloud {
     /// A Tavily key is saved for web lookups (C6); the key itself never reaches the page.
     pub search_key_configured: bool,
     pub search_key_hint: Option<String>,
+    /// `environment` when a variable overrides the saved key, as for Nebius.
+    pub search_key_source: Option<&'static str>,
 }
 fn source_name(s: Option<Source>) -> Option<&'static str> {
     s.map(|s| match s {
@@ -1062,6 +1064,7 @@ pub fn cloud(creds: &Credentials) -> Cloud {
             .get("TAVILY_API_KEY")
             .filter(|k| k.chars().count() >= 12)
             .map(|k| k.chars().skip(k.chars().count() - 4).collect()),
+        search_key_source: source_name(creds.source("TAVILY_API_KEY")),
     }
 }
 #[derive(Debug, Clone, Serialize)]

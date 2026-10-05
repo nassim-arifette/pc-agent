@@ -793,7 +793,13 @@ fn privacy_set(
     settings: PrivacySettings,
 ) -> Result<PrivacySettings, String> {
     settings::save(&settings)?;
-    let invalidates_preview = lock(&state.privacy).mode != settings.mode || !settings.confirmed;
+    // A reviewed preview says whether web lookups may run: changing that consent needs a new one.
+    let invalidates_preview = {
+        let current = lock(&state.privacy);
+        current.mode != settings.mode
+            || current.web_search != settings.web_search
+            || !settings.confirmed
+    };
     *lock(&state.privacy) = settings.clone();
     if invalidates_preview {
         state.preview_revision.fetch_add(1, Ordering::SeqCst);
