@@ -15,6 +15,7 @@ import { button, copyText, dialog } from "../ui.js";
 import { bytes, duration, labelled, usd } from "../format.js";
 import { modelName } from "../models.js";
 import { navigate } from "../router.js";
+import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "../web.js";
 
 // ---------- Small pieces ----------
 
@@ -79,15 +80,38 @@ function stepRow(step, index = -1, steps = []) {
     failed: h("span", { class: "step-bad" }, icon("x")),
     cancelled: h("span", { class: "step-off" }, icon("x")),
   }[step.state] || h("span", { class: "step-off" });
-  const detail = step.state === "running" ? t("chat.inProgress") : step.status && step.status !== "ok" ? t(`step.status.${step.status === "partial" ? "partial" : "error"}`) : "";
+  const detail = step.state === "running" ? t("chat.inProgress") : step.status && step.status !== "ok" ? statusText(step.status) : "";
   return h(
     "div",
-    { class: ["step", step.state] },
+    { class: ["step", step.state, step.query ? "web-step" : ""] },
     mark,
     h("span", { class: "step-label" }, stepLabel(step, steps, index)),
     h("span", { class: "step-detail" }, detail),
     h("span", { class: "step-time" }, step.duration != null ? duration(step.duration) : ""),
+    webStepQuery(step.query),
   );
+}
+
+function statusText(status) {
+  const key = `step.status.${status}`;
+  const label = t(key);
+  return label === key ? t("step.status.error") : label;
+}
+
+/**
+ * The tool steps a saved turn recorded (`tool_events`), for an answer whose live run is no longer
+ * on screen: what was checked, how it went, and the exact query of each web lookup.
+ */
+function recordedSteps(report) {
+  return (report?.tool_events || []).map((event, i) => ({
+    key: `recorded-${i}`,
+    type: "tool",
+    tool: event.tool,
+    state: event.status === "ok" ? "done" : event.status === "partial" ? "partial" : "failed",
+    status: event.status,
+    duration: event.duration_ms,
+    query: event.query ?? null,
+  }));
 }
 
 function stepList(steps) {
@@ -99,10 +123,10 @@ function stepList(steps) {
 function answerText(question, report) {
   const a = report.answer;
   const numbers = numbering(a);
-  const text = a.text.replace(/\[((?:[OF]\d{1,5})(?:\s*[,;]\s*[OF]\d{1,5})*)\]/g, (_, refs) => refs.split(/\s*[,;]\s*/).map((r) => `[${numbers.get(r) ?? r}]`).join(""));
+  const text = a.text.replace(/\[((?:[OFW]\d{1,5})(?:\s*[,;]\s*[OFW]\d{1,5})*)\]/g, (_, refs) => refs.split(/\s*[,;]\s*/).map((r) => `[${numbers.get(r) ?? r}]`).join(""));
   const lines = [`PC Agent — ${question}`, "", text];
   if (a.unverified.length) lines.push("", `${t("answer.unverified")}:`, ...a.unverified.map((i) => `- "${i.excerpt}": ${t(`issue.${i.kind}`)}`));
-  for (const c of a.citations) lines.push("", `[${numbers.get(c.reference)}] ${citationTitle(c)}`, ...c.facts.map((x) => `- ${x}`));
+  for (const c of a.citations) lines.push("", `[${numbers.get(c.reference)}] ${citationTitle(c)}${webOrigin(c)}`, ...c.facts.map((x) => `- ${x}`));
   if (report.usage?.cost) lines.push("", `${t("usage.cost")}: ${usd(report.usage.cost.usd)}`);
   return lines.join("\n");
 }
@@ -128,7 +152,7 @@ function errorCallout(report) {
 function writtenAnswer(report, index) {
   const a = report.answer;
   const numbers = numbering(a);
-  return h("div", { class: "answer-text" }, markdown(a.text, (reference) => showSource(index, reference), (reference) => numbers.get(reference) ?? reference));
+  return h("div", { class: "answer-text" }, markdown(a.text, (reference) => showSource(index, reference), (reference) => numbers.get(reference) ?? reference, webDescriber(a)));
 }
 
 /** A local analysis: the rules' best finding, kept short. */
@@ -258,16 +282,18 @@ function turnView(turn, index, { last, inv, cloud }) {
   const report = turn.report;
   const a = report?.answer;
   const cited = a ? a.citations.length : 0;
-  // The run's steps fold out in place; the cited measurements open in the panel.
-  const steps = inv?.steps?.length
-    ? h("details", { class: "steps-fold" }, h("summary", { class: "summary" }, icon("chevron"), h("span", { class: "summary-main" }, t("chat.steps", { count: inv.steps.length }))), stepList(inv.steps))
+  // The run's steps fold out in place; the cited measurements open in the panel. A saved turn
+  // whose run is no longer on screen shows the tool steps it recorded.
+  const shown = inv?.steps?.length ? inv.steps : recordedSteps(report);
+  const steps = shown.length
+    ? h("details", { class: "steps-fold" }, h("summary", { class: "summary" }, icon("chevron"), h("span", { class: "summary-main" }, t("chat.steps", { count: shown.length }))), stepList(shown))
     : null;
   const sources = cited
     ? h(
         "button",
         { type: "button", class: "summary", onclick: () => openPanel("sources", { turn: index, reference: null }) },
         icon("eye"),
-        h("span", { class: "summary-main" }, t(cited === 1 ? "chat.cited.one" : "chat.cited", { count: cited })),
+        h("span", { class: "summary-main" }, sourcesLabel(a)),
       )
     : null;
   const summary = steps || sources ? h("div", { class: "summaries" }, steps, sources) : null;

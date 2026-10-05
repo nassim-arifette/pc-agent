@@ -10,6 +10,7 @@ import { button, dialog, toast } from "./ui.js";
 import { bytes } from "./format.js";
 import { navigate } from "./router.js";
 import { closePicker, modelPicker } from "./picker.js";
+import { webConsentNote } from "./web.js";
 
 export const MODES = ["complete", "anonymized", "local"];
 const MODE_ICONS = { complete: "cloud", anonymized: "shield", local: "pc" };
@@ -252,6 +253,7 @@ async function consent(question, conversationId) {
         modeRow,
         questionHost,
         listHost,
+        webConsentNote(),
         storageRow,
         filesRow,
         filesHost,

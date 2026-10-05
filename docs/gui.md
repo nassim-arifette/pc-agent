@@ -128,6 +128,41 @@ clickable prototype live on a private design canvas; the decisions are recorded 
 - The key is written to `%APPDATA%\pcagent\.env` (the CLI's file) by the Rust side and never sent
   back to the page, which only sees whether a key exists and its last four characters.
 
+## Web search
+
+Typed web lookups through Tavily (contract C6): `lookup_driver_notes`, `lookup_known_issue`,
+`lookup_upgrade_price` and `lookup_pc_specs`. The model never writes the query; the Rust side
+composes it from measurements.
+
+- **Settings**, *Web search (Tavily)*: a switch for the separate, remembered consent
+  (`web_search` in `privacy_get`/`privacy_set`), what a lookup sends (a short query from the
+  hardware model, a driver version, an update number or an error code, a program or module name
+  only in complete sharing, the country for prices) and never sends (the question, text written by
+  the model, the user name, paths, command lines, file contents, serial numbers and identifiers).
+  The switch works only in a cloud mode with a saved key; otherwise it is disabled and says why.
+- `privacy_set` always receives the whole object, `web_search` included: Rust fills a missing field
+  with `false`, so an older call that sent `{mode, confirmed}` alone would turn web search off.
+- **The Tavily key** is optional; everything else works without it. `save_search_key` stores it in
+  `%APPDATA%\pcagent\.env` beside the Nebius key and refuses keys that do not start with `tvly-`
+  (sending `null` removes it). The page sees only `search_key_configured` and the last four
+  characters (`search_key_hint`).
+- **Consent dialog**: when lookups can run, a line says that queries may also go to Tavily and
+  appear in the steps.
+- **Steps**: `tool_finished` carries the exact `query` of a lookup, shown under its step as *Sent to
+  Tavily*. A reopened conversation shows the tool steps its turns recorded (`tool_events`), with
+  their queries.
+- **Citations**: `[W1]` chips carry a globe and an outline, unlike the filled chips of
+  measurements. The source card shows the page title, the site, the publication date (*date
+  unknown* when Tavily gives none), when it was read, the snippet, the query, and a note that a web
+  page is not a measurement of this PC. *Open in browser* calls `open_web_source` with the
+  conversation, turn and reference; Rust reads the address from the stored turn and opens only an
+  https page. The page never renders the address, links it or opens it.
+- In the mock, `?web=on` saves a synthetic key and turns web search on, so an AI investigation also
+  calls `get_drivers` and `lookup_driver_notes` and the answer cites two web pages (one without a
+  date); `?web=key` saves a key with web search off. `open_web_source` is recorded in
+  `window.__pcagentMock.openedWebSources`, never navigated to. The tour captures the settings card,
+  the consent line, the query under its step and an open web source (`13` to `16`).
+
 ## Turns and events
 
 A question and its answer form a turn. `send_message` returns a stable `turn_id`; the window
@@ -226,6 +261,11 @@ the app never embeds it.
   dark; Explain on memory through the preview to an answer; Explain on a history event; and a
   check that in anonymized sharing the question for an application carries neither its name nor
   a PID (in complete sharing: the name, never a PID). No JavaScript errors.
+- Web search on 2026-10-05, with the mock: the tour in French and English, light and dark, plus
+  checks of the switch (no key, local mode, a mode change keeping the consent), saving and removing
+  a key (only the last four characters shown), a turn without consent (no lookup), a source without
+  a date, reopening a conversation (recorded steps with the query) and *Open in browser* on the saved
+  turn. No JavaScript errors. Not yet checked in the release Windows app or with a real Tavily key.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 
