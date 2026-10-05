@@ -3075,3 +3075,71 @@ details.more > div {
   line-height: 1.5;
   white-space: pre;
 }
+/* ---------- Storage: quick drive analysis (file system index, elevated helper) ---------- */
+.quick-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.quick-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.quick-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex: none;
+}
+.quick-text {
+  min-width: 0;
+}
+.quick-title {
+  font-size: 16px;
+  line-height: 22px;
+}
+.quick-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+.quick-running {
+  padding: 12px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--raised);
+}
+.quick-drive {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.quick-drive .select {
+  width: 84px;
+}
+.quick-result {
+  margin-bottom: 16px;
+}
+.quick-row {
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 22%) 104px 96px;
+}
+.quick-files {
+  color: var(--text-3);
+  font-size: 12.5px;
+  text-align: right;
+}
+@media (max-width: 820px) {
+  .quick-row {
+    grid-template-columns: minmax(0, 1fr) 92px;
+  }
+  .quick-row .bar,
+  .quick-files {
+    display: none;
+  }
+}

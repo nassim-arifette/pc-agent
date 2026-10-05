@@ -497,6 +497,38 @@ async function scan(scopeId, root) {
   });
 }
 
+// ---------- Elevated quick drive analysis ----------
+let elevation = null;
+function mftResult(volume) {
+  const now = Date.now();
+  const o = (metric, value, unit = "count") => ({ observation_id: `obs-${metric}`, measured_at_unix_ms: now, window: { started_at_unix_ms: now - 9000, finished_at_unix_ms: now, duration_ms: 9000 }, entity_ref: "ntfs-volume-1", metric, value, unit, status: "partial", source: "synthetic_fixture", origin: "synthetic_fixture" });
+  const item = (path, files, size, unknown = 0) => ({ path, files, logical_bytes_known: Math.round(size * 0.97), data_cluster_bytes_known: size, unknown_logical_files: unknown, unknown_allocation_files: unknown, hard_linked_files: 0 });
+  return {
+    status: "partial", measured_at_unix_ms: now, window: { started_at_unix_ms: now - 9000, finished_at_unix_ms: now, duration_ms: 9000 }, origin: "synthetic_fixture",
+    observations: [
+      o("ntfs_files_examined", 1284311), o("ntfs_supported_data_allocation_bytes_known", 187.4 * GiB, "bytes"), o("ntfs_supported_logical_bytes_known", 179.2 * GiB, "bytes"),
+      o("ntfs_record_slots_walked", 1000000), o("ntfs_record_slots_not_walked", 312480),
+    ],
+    coverage: [
+      { scope: "ntfs_inventory", status: "partial", source: "FSCTL_GET_NTFS_VOLUME_DATA, $MFT", detail: "Record limit reached: 312,480 record slots were not walked. Live volume, not an atomic snapshot." },
+      { scope: "ntfs_tree", status: "partial", source: "FILE_NAME metadata", detail: "Largest 16 attributed folders and files; parents and children overlap." },
+    ],
+    local_mft_tree: {
+      directories: [
+        item("Users", 412004, 96.3 * GiB, 12), item("Users\\Alex", 398110, 91.8 * GiB, 12), item("Users\\Alex\\AppData", 301442, 54.1 * GiB, 9),
+        item("Windows", 512881, 31.6 * GiB, 40), item("Program Files", 98102, 22.4 * GiB), item("Users\\Alex\\Downloads", 1204, 18.7 * GiB),
+      ],
+      files: [
+        item("Users\\Alex\\Downloads\\windows-11-24h2.iso", 1, 6.1 * GiB), item("hiberfil.sys", 1, 4.7 * GiB), item("pagefile.sys", 1, 4.0 * GiB),
+        item("Users\\Alex\\Videos\\vacances.mp4", 1, 2.2 * GiB),
+      ],
+      indexed_nodes: 250000, indexed_name_links: 262114, retained_bytes: 31 * MiB, attributed_files: 1190220, unattributed_files: 94091,
+      attributed_logical_bytes_known: 170.1 * GiB, unattributed_logical_bytes_known: 9.1 * GiB, attributed_data_cluster_bytes_known: 177.9 * GiB, unattributed_data_cluster_bytes_known: 9.5 * GiB,
+      limitations: ["index_node_limit", "top_directories_truncated", "top_files_truncated"],
+    },
+  };
+}
+
 export function createMock() {
   const commands = {
     app_info: () => ({ version: "0.1.0", cloud: cloud(), models: [
@@ -744,6 +776,42 @@ export function createMock() {
       if (settings.mode === "automatic" && params.get("routing") !== "calibrated") throw new Error("Automatic routing requires a reviewed local Nemotron calibration.");
       routingSettings = { mode: settings.mode, super_model_id: settings.super_model_id ?? null, ultra_model_id: settings.ultra_model_id ?? null };
       return routingView();
+    },
+    // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail.
+    elevation_status: () => (elevation ? { request_id: elevation.id, task: elevation.task, budget_ms: elevation.budget, state: elevation.state } : null),
+    elevation_prepare: async ({ task, budgetMs }) => {
+      if (elevation) throw new Error("Another administrator task is already prepared or running.");
+      if (task?.kind !== "mft_inventory" || !/^[A-Z]$/.test(task.volume)) throw new Error("Unsupported task.");
+      await wait(300);
+      elevation = { id: `elevation-${Date.now()}`, task, budget: budgetMs, state: "awaiting_local_approval", cancelled: false };
+      return { request_id: elevation.id, task, budget_ms: budgetMs, state: elevation.state };
+    },
+    elevation_run: async ({ requestId }) => {
+      if (!elevation || elevation.id !== requestId || elevation.state !== "awaiting_local_approval") throw new Error("This request cannot run.");
+      const job = elevation;
+      job.state = "running";
+      await wait(2500);
+      const finish = () => {
+        if (elevation === job) elevation = null;
+      };
+      if (job.cancelled) {
+        finish();
+        throw new Error("The administrator task was cancelled.");
+      }
+      if (params.get("elevation") === "fail") {
+        finish();
+        throw new Error("Windows consent was declined.");
+      }
+      finish();
+      return mftResult(job.task.volume);
+    },
+    elevation_cancel: ({ requestId }) => {
+      if (!elevation || elevation.id !== requestId) throw new Error("No matching administrator task.");
+      if (elevation.state === "awaiting_local_approval") elevation = null;
+      else {
+        elevation.cancelled = true;
+        elevation.state = "cancelling";
+      }
     },
     save_cloud_settings: ({ modelId, reasoning = null }) => {
       cloudMode = modelId.startsWith("nvidia/") ? "ready" : "problem";
