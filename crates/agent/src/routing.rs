@@ -42,6 +42,7 @@ impl CalibrationRuntime {
                     crate::ToolClass::Inspection => "inspection",
                     crate::ToolClass::Context => "context",
                     crate::ToolClass::Proposal => "proposal",
+                    crate::ToolClass::External => "external",
                 };
                 serde_json::json!({"class":class,"definition":spec.definition()})
             })

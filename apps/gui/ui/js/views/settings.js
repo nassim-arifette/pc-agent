@@ -1,4 +1,4 @@
-// Settings: the Nebius connection, privacy and appearance.
+// Settings: the Nebius connection, privacy, web search and appearance.
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
@@ -9,6 +9,7 @@ import { state, subscribe, refreshInfo, clearConversations, setPrivacy } from ".
 import { badge, button, segmented, toast, toggle } from "../ui.js";
 import { price } from "../format.js";
 import { modelName } from "../models.js";
+import { webSettingsCard } from "../web.js";
 
 function aiCard() {
   const info = state.info;
@@ -252,14 +253,16 @@ function appearanceCard(redraw) {
 }
 
 export function mount(page) {
+  let web = null;
   const render = () => {
+    web = webSettingsCard();
     fill(
       page,
       h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("settings.title")), h("p", { class: "page-sub" }, t("settings.sub")))),
       h(
         "div",
         { class: "split" },
-        h("div", { class: "stack" }, aiCard(), privacyCard()),
+        h("div", { class: "stack" }, aiCard(), privacyCard(), web.el),
         h(
           "div",
           { class: "stack" },
@@ -277,5 +280,7 @@ export function mount(page) {
   render();
   return subscribe((topic) => {
     if (topic === "info") render();
+    // Web search exists only with AI analysis: its card follows the sharing choice.
+    else if (topic === "privacy") web?.redraw();
   });
 }

@@ -596,6 +596,19 @@ pub struct CitationView {
     /// A finding a fresher measurement has since replaced: it describes an earlier moment.
     pub earlier: bool,
     pub measured_at_unix_ms: Option<u64>,
+    /// A web source (C6): where it comes from and when it was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebSourceView>,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct WebSourceView {
+    pub domain: String,
+    /// Opened only by the `open_web_source` command, which reads it from the stored turn.
+    pub url: String,
+    pub published_date: Option<String>,
+    pub searched_at_unix_ms: Option<u64>,
+    /// The exact query that found it.
+    pub query: Option<String>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct IssueView {
@@ -727,6 +740,34 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                     earlier: true,
                     measured_at_unix_ms: (old.measured_at_unix_ms > 0)
                         .then_some(old.measured_at_unix_ms),
+                    web: None,
+                });
+            }
+            if c.kind == CitationKind::Web {
+                let (observation_id, id) = c.target.split_once('#')?;
+                let o = r
+                    .observations
+                    .iter()
+                    .find(|o| o.observation_id == observation_id)?;
+                let source = o.observation["sources"]
+                    .as_array()?
+                    .iter()
+                    .find(|s| s["source_id"] == id)?;
+                let text = |key: &str| source[key].as_str().map(str::to_owned);
+                return Some(CitationView {
+                    reference: c.reference.clone(),
+                    kind: c.kind,
+                    title: text("title").unwrap_or_default(),
+                    facts: text("snippet").into_iter().collect(),
+                    earlier: false,
+                    measured_at_unix_ms: None,
+                    web: Some(WebSourceView {
+                        domain: text("domain").unwrap_or_default(),
+                        url: text("url")?,
+                        published_date: text("published_date"),
+                        searched_at_unix_ms: o.observation["searched_at_unix_ms"].as_u64(),
+                        query: o.observation["query"].as_str().map(str::to_owned),
+                    }),
                 });
             }
             let (title, facts, earlier) = match c.kind {
@@ -754,6 +795,7 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                         .collect();
                     (f.classification.label().to_owned(), facts, earlier)
                 }
+                CitationKind::Web => return None,
             };
             Some(CitationView {
                 reference: c.reference.clone(),
@@ -768,6 +810,7 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                     .find(|o| o.observation_id == c.target)
                     .map(|o| o.measured_at_unix_ms)
                     .filter(|at| *at > 0),
+                web: None,
             })
         })
         .collect();
@@ -984,6 +1027,11 @@ pub struct Cloud {
     pub problem: Option<String>,
     pub file: Option<String>,
     pub file_problem: Option<String>,
+    /// A Tavily key is saved for web lookups (C6); the key itself never reaches the page.
+    pub search_key_configured: bool,
+    pub search_key_hint: Option<String>,
+    /// `environment` when a variable overrides the saved key, as for Nebius.
+    pub search_key_source: Option<&'static str>,
 }
 fn source_name(s: Option<Source>) -> Option<&'static str> {
     s.map(|s| match s {
@@ -1011,6 +1059,12 @@ pub fn cloud(creds: &Credentials) -> Cloud {
         problem: checked.err().map(|e| e.to_string()),
         file: creds.file().map(|p| p.display().to_string()),
         file_problem: creds.problem.clone(),
+        search_key_configured: creds.get("TAVILY_API_KEY").is_some(),
+        search_key_hint: creds
+            .get("TAVILY_API_KEY")
+            .filter(|k| k.chars().count() >= 12)
+            .map(|k| k.chars().skip(k.chars().count() - 4).collect()),
+        search_key_source: source_name(creds.source("TAVILY_API_KEY")),
     }
 }
 #[derive(Debug, Clone, Serialize)]

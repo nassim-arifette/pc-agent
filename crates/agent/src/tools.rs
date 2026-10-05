@@ -32,6 +32,8 @@ pub enum ToolClass {
     Inspection,
     Context,
     Proposal,
+    /// Consults a source outside the PC (C6): separate consent, budget and query display.
+    External,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {

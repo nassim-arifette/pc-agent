@@ -130,6 +130,8 @@ fn text_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::E
 pub enum CitationKind {
     Observation,
     Finding,
+    /// A web source returned by an external lookup (C6), cited `[W1]`.
+    Web,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -418,6 +420,7 @@ pub(crate) fn review(arguments: &str, ctx: &Context<'_>) -> Result<Answer, Rejec
     }
     let citations = check_citations(&text, ctx, &mut issues);
     grounding::check_numbers(&text, ctx, &mut issues);
+    grounding::check_web(&text, ctx, &mut issues);
     check_names(&text, ctx, &mut issues);
     check_markup(&text, &mut issues);
     let mut action_refs: Vec<String> = Vec::new();
@@ -510,7 +513,7 @@ fn check_citations(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) -> Ve
 
 pub(super) fn is_reference(token: &str) -> bool {
     let mut chars = token.chars();
-    matches!(chars.next(), Some('O' | 'F'))
+    matches!(chars.next(), Some('O' | 'F' | 'W'))
         && (2..=6).contains(&token.len())
         && chars.all(|c| c.is_ascii_digit())
 }
@@ -1896,6 +1899,67 @@ mod tests {
         assert_eq!(claims("moins de 3 ms")[0].bound, Bound::AtMost);
         assert_eq!(claims("plus de 2 Go")[0].bound, Bound::AtLeast);
         assert_eq!(claims("environ 80 %")[0].bound, Bound::About);
+    }
+
+    #[test]
+    fn web_prices_versions_and_capacities_must_be_in_the_cited_snippet() {
+        let received = vec![
+            json!({"observation_id":"O1","measurements":{"values":{"system":{
+                "physical_memory_total_bytes":17_179_869_184_u64}},
+                "units":{"physical_memory_total_bytes":"bytes"}}}),
+            json!({"origin":"web","sources":[
+                {"source_id":"W1","domain":"ldlc.com","title":"Kingston 16 Go DDR5",
+                 "snippet":"Kingston FURY Impact 16 Go DDR5 SO-DIMM 5600 MHz : 54,95 € TTC"},
+                {"source_id":"W2","domain":"nvidia.com","title":"GeForce driver",
+                 "snippet":"Version 566.36 (32.0.15.6636) fixes stuttering. Supports up to 4 displays."}]}),
+        ];
+        let mut references = refs();
+        for id in ["W1", "W2"] {
+            references.push((id.into(), CitationKind::Web, format!("obs-web#{id}")));
+        }
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "Une barrette de 16 Go DDR5 coûte environ 54,95 € [W1].",
+            "Le pilote 566.36 corrige les saccades [W2].",
+            "La version 32.0.15.6636 est la plus récente [W2].",
+            // Lowercasing İ changes its length: positions must come from the text itself.
+            "İİİ : une barrette de 16 Go DDR5 coûte 54,95 € [W1].",
+        ] {
+            let answer = review(&submit(text), &ctx);
+            assert!(answer.is_ok(), "{text}: {answer:?}");
+            assert_eq!(answer.unwrap().citations[0].kind, CitationKind::Web);
+        }
+        for (text, kind) in [
+            // A price absent from the snippet.
+            (
+                "Une barrette coûte 39 € [W1].",
+                IssueKind::UnsupportedNumber,
+            ),
+            // A price is never a measurement of this PC.
+            (
+                "Une barrette coûte 54,95 € [O1].",
+                IssueKind::MissingCitation,
+            ),
+            // A version the source does not give.
+            (
+                "Le pilote 571.96 corrige ce problème [W2].",
+                IssueKind::UnsupportedNumber,
+            ),
+            // A PC measurement never comes from the web.
+            (
+                "Ce PC a 16 GiB de mémoire [W2].",
+                IssueKind::UnsupportedNumber,
+            ),
+        ] {
+            let Err((issues, _)) = review(&submit(text), &ctx) else {
+                panic!("accepted: {text}");
+            };
+            assert!(issues.iter().any(|i| i.kind == kind), "{text}: {issues:?}");
+        }
     }
 
     #[test]

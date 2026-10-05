@@ -89,6 +89,143 @@ fn same_program(received: &[Value], references: &BTreeSet<String>) -> bool {
     programs.len() == 1 && programs.iter().all(Option::is_some)
 }
 
+/// Prices and versions come from the web (C6): each must appear in the snippet of a `[W…]` source
+/// cited in its passage, a price to the written precision and a version exactly. A price is never
+/// a measurement of this PC.
+pub(super) fn check_web(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) {
+    for passage in passages(text) {
+        let prices = prices(passage);
+        let versions = versions(passage);
+        if prices.is_empty() && versions.is_empty() {
+            continue;
+        }
+        let web: Vec<&str> = reference_groups(passage)
+            .into_iter()
+            .flat_map(|(_, refs)| refs)
+            .filter(|r| r.starts_with('W'))
+            .collect();
+        let snippets: Vec<&str> = ctx
+            .received
+            .iter()
+            .flat_map(|payload| payload["sources"].as_array().into_iter().flatten())
+            .filter(|s| s["source_id"].as_str().is_some_and(|id| web.contains(&id)))
+            .filter_map(|s| s["snippet"].as_str())
+            .collect();
+        for (excerpt, amounts) in prices {
+            let found = snippets.iter().any(|snippet| {
+                let known = amount_values(snippet);
+                amounts
+                    .iter()
+                    .any(|a| known.iter().any(|k| (a - k).abs() < 0.005))
+            });
+            if !found {
+                let kind = if web.is_empty() {
+                    IssueKind::MissingCitation
+                } else {
+                    IssueKind::UnsupportedNumber
+                };
+                issues.push(Issue::new(kind, excerpt));
+            }
+        }
+        for version in versions {
+            if !web.is_empty() && !snippets.iter().any(|snippet| snippet.contains(&version)) {
+                issues.push(Issue::new(IssueKind::UnsupportedNumber, version));
+            }
+        }
+    }
+}
+
+const CURRENCIES: [&str; 7] = ["€", "$", "£", "eur", "usd", "gbp", "euros"];
+
+/// Amounts written with a currency, like `89,99 €`, `$129` or `1 299 EUR`: the excerpt and the
+/// values it can mean (a comma can separate decimals or thousands).
+fn prices(passage: &str) -> Vec<(String, Vec<f64>)> {
+    // Positions come from the passage itself: lowercasing can change byte lengths.
+    let chars: Vec<(usize, char)> = passage.char_indices().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].1.is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = chars[i].0;
+        let mut j = i;
+        while j < chars.len()
+            && (chars[j].1.is_ascii_digit()
+                || matches!(chars[j].1, ',' | '.' | ' ' | '\u{a0}' | '\u{202f}')
+                    && chars.get(j + 1).is_some_and(|(_, c)| c.is_ascii_digit()))
+        {
+            j += 1;
+        }
+        let end = chars.get(j).map_or(passage.len(), |(at, _)| *at);
+        let number = &passage[start..end];
+        let before = passage[..start].trim_end().to_lowercase();
+        let after = passage[end..].trim_start().to_lowercase();
+        let currency = CURRENCIES
+            .iter()
+            .any(|c| after.starts_with(c) || before.ends_with(c));
+        if currency {
+            out.push((passage[start..end].trim().to_owned(), amount_values(number)));
+        }
+        i = j.max(i + 1);
+    }
+    out
+}
+
+/// Every value the numbers of a text can mean, for amounts.
+fn amount_values(text: &str) -> Vec<f64> {
+    let mut values = Vec::new();
+    for token in text.split(|c: char| !(c.is_ascii_digit() || matches!(c, ',' | '.'))) {
+        let token = token.trim_matches([',', '.']);
+        if token.is_empty() {
+            continue;
+        }
+        let plain = token.replace(',', "");
+        if let Ok(v) = plain.parse::<f64>() {
+            values.push(v);
+        }
+        if let Ok(v) = token.replace('.', "").replace(',', ".").parse::<f64>() {
+            values.push(v);
+        }
+    }
+    // Thousands written with spaces, like "1 299", read as one amount.
+    let joined: String = text
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}'))
+        .collect();
+    if joined != text {
+        values.extend(amount_values(&joined));
+    }
+    values
+}
+
+/// Version numbers like `32.0.15.6636` or `version 566.36`: two dots or more, or one dot right
+/// after the word version.
+fn versions(passage: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let words: Vec<&str> = passage
+        .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | ';' | ':' | '['))
+        .filter(|w| !w.is_empty())
+        .collect();
+    for (i, word) in words.iter().enumerate() {
+        let token = word.trim_end_matches(['.', ']']);
+        let numeric = token
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+        let dots = token.matches('.').count();
+        let named = i > 0
+            && matches!(
+                words[i - 1].to_lowercase().as_str(),
+                "version" | "v" | "pilote" | "driver"
+            );
+        if numeric && (dots >= 2 || (dots == 1 && named)) {
+            out.push(token.to_owned());
+        }
+    }
+    out
+}
+
 /// The values the cited references hold for this claim's subjects and topic.
 fn known(ctx: &Context<'_>, references: &[&str], query: &Query<'_>) -> Known {
     let mut values = Vec::new();
@@ -348,6 +485,14 @@ fn collect_source(
     }
     if let Some(initial) = map.get("initial_observation") {
         collect_source(initial, reference, query, values, facts);
+    }
+    // A web source's numbers are those of its snippet (C6); they never certify a PC measurement.
+    if let Some(sources) = map.get("sources").and_then(Value::as_array) {
+        for source in sources.iter().filter(|s| s["source_id"] == reference) {
+            if let Some(snippet) = source["snippet"].as_str() {
+                facts.push(snippet.to_owned());
+            }
+        }
     }
     if let Some(findings) = map.get("findings").and_then(Value::as_array) {
         for finding in findings.iter().filter(|f| f["id"] == reference) {
