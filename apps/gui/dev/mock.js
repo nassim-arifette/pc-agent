@@ -44,6 +44,11 @@ function cloud() {
 }
 let cloudModel = "nvidia/nemotron-3-super-120b-a12b";
 let cloudReasoning = "on";
+let routingSettings = { mode: "configured", super_model_id: null, ultra_model_id: null };
+function routingView() {
+  const calibrated = params.get("routing") === "calibrated";
+  return { settings: { ...routingSettings }, revision: 0, automatic_available: calibrated, calibration_reviewed_at_unix_ms: calibrated ? Date.now() - 86400000 : null, calibrated_rules: [], limitation: null };
+}
 
 function volume(root, totalGiB, freeGiB) {
   return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
@@ -733,6 +738,13 @@ export function createMock() {
     },
     scan_page: ({ kind, offset }) => page(kind, lastScanRoot, offset),
     reveal: () => null,
+    // ?routing=calibrated makes Auto available, as a reviewed local calibration would.
+    model_routing_get: () => routingView(),
+    model_routing_set: ({ settings }) => {
+      if (settings.mode === "automatic" && params.get("routing") !== "calibrated") throw new Error("Automatic routing requires a reviewed local Nemotron calibration.");
+      routingSettings = { mode: settings.mode, super_model_id: settings.super_model_id ?? null, ultra_model_id: settings.ultra_model_id ?? null };
+      return routingView();
+    },
     save_cloud_settings: ({ modelId, reasoning = null }) => {
       cloudMode = modelId.startsWith("nvidia/") ? "ready" : "problem";
       if (cloudMode === "ready") cloudModel = modelId;
