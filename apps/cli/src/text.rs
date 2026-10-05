@@ -626,6 +626,30 @@ fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()>
             continue;
         }
         match citation.kind {
+            CitationKind::Web => {
+                // A web source: its title, site and address, from the lookup that found it.
+                let Some((id, source)) = citation.target.split_once('#') else {
+                    continue;
+                };
+                let Some(found) = r
+                    .observations
+                    .iter()
+                    .find(|o| o.observation_id == id)
+                    .and_then(|o| o.observation["sources"].as_array())
+                    .and_then(|sources| sources.iter().find(|s| s["source_id"] == source))
+                else {
+                    continue;
+                };
+                let text = |key: &str| clean(found[key].as_str().unwrap_or_default());
+                writeln!(
+                    out,
+                    "  [{}] {} ({}, web)",
+                    citation.reference,
+                    text("title"),
+                    text("domain")
+                )?;
+                writeln!(out, "      {}", text("url"))?;
+            }
             CitationKind::Observation => {
                 let Some(o) = r
                     .observations

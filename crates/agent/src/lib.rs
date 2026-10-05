@@ -6,6 +6,7 @@ mod action_targets;
 pub mod activity_tools;
 mod answer;
 pub mod elevated_tools;
+pub mod external_tools;
 pub use answer::{
     Answer, Category, Citation, CitationKind, Confidence, Issue, IssueKind, SUBMIT_ANSWER,
 };
@@ -31,6 +32,7 @@ pub mod routing;
 pub mod selection;
 mod storage_context;
 pub mod system_tools;
+pub mod tavily;
 pub use storage_context::{
     ContentContext, LocalStorageItem, SharedName, StorageContext, MAX_SHARED_NAMES,
 };
@@ -387,6 +389,9 @@ pub struct ToolEvent {
     pub tool: String,
     pub status: Status,
     pub duration_ms: u64,
+    /// The exact query a web lookup sent (C6), shown in the turn's steps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
 }
 /// Usage the provider reported for one inference request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -586,6 +591,26 @@ impl Investigation {
                 .iter()
                 .map(|o| (o.reference.clone(), o.kind, o.reference.clone())),
         );
+        // Web sources of this turn's lookups, resolved to their observation (C6).
+        for observation in self
+            .observations
+            .iter()
+            .filter(|o| external_tools::is_external(&o.tool))
+        {
+            for source in observation.observation["sources"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if let Some(id) = source["source_id"].as_str() {
+                    references.push((
+                        id.to_owned(),
+                        CitationKind::Web,
+                        format!("{}#{id}", observation.observation_id),
+                    ));
+                }
+            }
+        }
         references
     }
     /// `plan_id` of every plan prepared in this investigation.
@@ -808,6 +833,7 @@ const NAMES_HIDDEN: &str = "\nThe user chose not to share program names: process
 const FOLLOW_UP: &str = "\nThe first message includes previous_turns. Their prose is conversation context, not measured evidence. Their observations have fresh citation aliases and a measured_at_unix_ms date. Cite those only with explicit historical wording ('Earlier measurement' / 'Mesure précédente'). Current claims require a measurement from this turn. If a previous assertion has no retained measurement, say it is unverified and measure again.";
 const SELECTED: &str = "\nThe first message's initial_observation, cited as [O0], is evidence the user selected. It and the findings computed from it were measured before this turn, at measured_at_unix_ms: they describe that moment, not the PC now. In every sentence or list item that gives one of their numbers, say so in the past and cite the source right after the number, before the period, like 'When it was measured, available memory was 0.34 GiB [O0].' or 'Lors de la mesure, la mémoire disponible était de 0,34 Gio [O0].' Never write now, currently, still, actuellement, maintenant or toujours in such a sentence.";
 const EXPLAIN: &str = "\nThis turn explains the selected evidence and takes no new measurement. The selection already counts as the inspection: answer by calling submit_answer directly, from [O0] and its findings. get_selected_evidence only returns the same evidence again.";
+const WEB: &str = "\nThe lookup_* tools search a few official or shopping websites with a query composed on this PC from measured references. Use them only when the measurements raise a question the web can answer: driver notes, a known issue for a measured update number or stop code, a compatible memory price, this PC model's specification sheet. Their results are web snippets cited [W1], [W2]: they are not measurements of this PC and may be outdated or wrong. Cite a web fact right after it with its [W…]; never cite a PC number with [W…] or a web number with [O…]. A match with a known issue is a hint, not proof: say so and keep confidence at most medium. A price is a dated range from its source. Suggest a newer driver only if its notes fix the measured symptom or a security issue.";
 const NO_ACTIONS: &str =
     "\nNo actions can be proposed here: describe the steps the user can take themselves.";
 const MAY_PROPOSE: &str = "\nTo offer a remedy the evidence supports, call prepare_action_plan (at most three times) before answering and list the returned plan_id values in action_refs. The user reviews each plan locally after the investigation; nothing runs without their explicit approval. Never claim that an action was performed.";
@@ -821,8 +847,9 @@ fn system_prompt(
     selected: Option<selection::SelectionIntent>,
 ) -> String {
     let proposals = specs.iter().any(|s| s.name == PREPARE_ACTION_PLAN.name);
+    let web = specs.iter().any(|s| matches!(s.class, ToolClass::External));
     format!(
-        "{SYSTEM}{CURRENT_FINDINGS}{}{}{}{}{}",
+        "{SYSTEM}{CURRENT_FINDINGS}{}{}{}{}{}{}",
         match sharing {
             Sharing::Complete => NAMES_SHARED,
             Sharing::Anonymized => NAMES_HIDDEN,
@@ -834,7 +861,8 @@ fn system_prompt(
             EXPLAIN
         } else {
             ""
-        }
+        },
+        if web { WEB } else { "" }
     )
 }
 
@@ -1360,6 +1388,9 @@ fn converse_inner(
                 tool: spec.name.into(),
                 status: output.status,
                 duration_ms: tool_started.elapsed().as_millis() as u64,
+                query: matches!(spec.class, ToolClass::External)
+                    .then(|| output.cloud["query"].as_str().map(str::to_owned))
+                    .flatten(),
             };
             on_event(&event);
             result.tool_events.push(event);

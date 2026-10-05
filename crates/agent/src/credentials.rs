@@ -9,7 +9,12 @@ use std::{
 };
 
 /// The only names read from the file; any other line is ignored.
-pub const KEYS: [&str; 3] = ["NEBIUS_API_KEY", "NEBIUS_MODEL_ID", "NEBIUS_REASONING"];
+pub const KEYS: [&str; 4] = [
+    "NEBIUS_API_KEY",
+    "NEBIUS_MODEL_ID",
+    "NEBIUS_REASONING",
+    "TAVILY_API_KEY",
+];
 const MAX_FILE_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

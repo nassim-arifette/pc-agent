@@ -94,6 +94,8 @@ impl PastTurn {
                             });
                         }
                     }
+                    // Web snippets stay with the turn that searched; a follow-up searches again.
+                    CitationKind::Web => {}
                     CitationKind::Finding => {
                         if let Some(f) = report
                             .findings
@@ -200,6 +202,7 @@ pub(crate) fn prepare(
             let prefix = match source.kind {
                 CitationKind::Observation => 'O',
                 CitationKind::Finding => 'F',
+                CitationKind::Web => 'W',
             };
             let reference = format!("{prefix}{}", 10_000 + retained.len());
             aliases.insert(source.reference.clone(), reference.clone());
