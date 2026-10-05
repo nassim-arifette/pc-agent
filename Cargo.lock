@@ -2381,6 +2381,7 @@ dependencies = [
  "pcagent-actions",
  "pcagent-agent",
  "pcagent-diagnostics",
+ "pcagent-inspect",
  "pcagent-policy",
  "pcagent-shared",
  "pcagent-storage",
@@ -2418,6 +2419,7 @@ dependencies = [
  "reqwest 0.12.24",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.17",
 ]
 
@@ -2430,11 +2432,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcagent-elevated"
+version = "0.1.0"
+dependencies = [
+ "pcagent-inspect",
+]
+
+[[package]]
 name = "pcagent-eval"
 version = "0.1.0"
 dependencies = [
  "clap",
  "pcagent-agent",
+ "pcagent-inspect",
  "pcagent-policy",
  "pcagent-shared",
  "pcagent-storage",
@@ -2470,10 +2480,13 @@ name = "pcagent-inspect"
 version = "0.1.0"
 dependencies = [
  "pcagent-shared",
+ "pcagent-storage",
  "pcagent-telemetry",
  "serde",
  "serde_json",
+ "sha2",
  "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 
@@ -2513,6 +2526,7 @@ dependencies = [
 name = "pcagent-store"
 version = "0.1.0"
 dependencies = [
+ "pcagent-inspect",
  "pcagent-shared",
  "pcagent-telemetry",
  "rusqlite",

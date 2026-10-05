@@ -474,8 +474,7 @@ fn excerpt(text: &str, at: usize, max: usize) -> String {
     text[at..].chars().take(max).collect()
 }
 
-/// A physical dimension, in its canonical unit: bytes, percent, milliseconds, °C, MHz, watts, or
-/// events per second.
+/// A physical dimension in a canonical unit, including energy separately from power.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Dim {
     Bytes,
@@ -484,6 +483,8 @@ enum Dim {
     Celsius,
     Megahertz,
     Watts,
+    WattHours,
+    Volts,
     PerSecond,
     BytesPerSecond,
     Count,
@@ -532,13 +533,19 @@ struct Known {
     values: Vec<(Dim, f64)>,
 }
 impl Known {
-    fn from_received(received: &[Value]) -> Self {
+    fn from_received(received: &[Value], derive_shares: bool) -> Self {
         let mut found: Vec<Quantity> = Vec::new();
         let mut groups = 0;
         for value in received {
             walk(value, None, 0, &mut groups, &mut found);
         }
         let mut values: Vec<(Dim, f64)> = found.iter().map(|q| (q.dim, q.value)).collect();
+        // Metric-specific battery claims must retain their role: the complement of wear is
+        // retention, not another wear measurement. The collector already provides these
+        // derivations with their own metric, source and status.
+        if !derive_shares {
+            return Self { values };
+        }
         for total in found.iter().filter(|q| q.total && q.value > 0.0) {
             for part in &found {
                 let related = part.group == total.group || total.memory_total;
@@ -657,10 +664,18 @@ fn walk(
             } else {
                 None
             };
+            let is_record = map.contains_key("value")
+                && map.contains_key("metric")
+                && map.contains_key("entity_ref")
+                && map.contains_key("observation_id");
             let inherit_all = unit.is_some() && map.values().all(Value::is_number);
             for (key, child) in map {
-                // A wall-clock timestamp is not a latency or measurement duration.
-                if key.ends_with("_unix_ms") {
+                // Provenance windows and operands cannot certify a result's quantity. A C4
+                // record contributes its typed value only; its payload stays intact in Context.
+                if key.ends_with("_unix_ms")
+                    || matches!(key.as_str(), "window" | "inputs")
+                    || (is_record && key != "value")
+                {
                     continue;
                 }
                 if key == "values" && map.contains_key("units") {
@@ -722,8 +737,22 @@ fn unit_of(name: &str) -> Option<(Dim, f64)> {
         Some((Dim::Celsius, 1.0))
     } else if is("megahertz") {
         Some((Dim::Megahertz, 1.0))
-    } else if is("milliwatts") {
+    } else if is("milliwatt_hours") || is("mwh") {
+        Some((Dim::WattHours, 0.001))
+    } else if is("watt_hours") {
+        Some((Dim::WattHours, 1.0))
+    } else if name == "mJ" || is("millijoules") {
+        Some((Dim::WattHours, 1.0 / 3_600_000.0))
+    } else if name == "J" || is("joules") {
+        Some((Dim::WattHours, 1.0 / 3_600.0))
+    } else if is("hours") {
+        Some((Dim::Millis, 3_600_000.0))
+    } else if is("milliwatts") || is("mw") {
         Some((Dim::Watts, 0.001))
+    } else if is("millivolts") || is("mv") {
+        Some((Dim::Volts, 0.001))
+    } else if is("volts") {
+        Some((Dim::Volts, 1.0))
     } else if n.contains("per_second_x100") {
         Some((Dim::PerSecond, 0.01))
     } else if is("percent") {
@@ -755,8 +784,32 @@ fn claims(text: &str) -> Vec<Claim> {
             continue;
         }
         let prev = i.checked_sub(1).map(|p| chars[p].1);
+        let mut sign_index = i.checked_sub(1);
+        while sign_index.is_some_and(|p| THOUSANDS_SPACES.contains(&chars[p].1)) {
+            sign_index = sign_index.and_then(|p| p.checked_sub(1));
+        }
+        let negative_index = sign_index.filter(|p| {
+            let (offset, sign) = chars[*p];
+            let separated = *p + 1 < i;
+            // A Markdown list marker is not the sign of its first number.
+            let bullet = sign == '-'
+                && separated
+                && text[..offset]
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty();
+            matches!(sign, '-' | '−') && !bullet && (*p == 0 || !chars[*p - 1].1.is_alphanumeric())
+        });
         let joined = prev.is_some_and(|p| p.is_alphanumeric() || p == '_')
-            || (prev == Some('-') && i >= 2 && chars[i - 2].1.is_alphanumeric());
+            || (matches!(prev, Some('-' | '−' | '‐' | '‑' | '‒' | '–' | '—'))
+                && i >= 2
+                && chars[i - 2].1.is_alphanumeric());
+        let negative = negative_index.is_some() && !joined;
+        let claim_start = negative_index
+            .filter(|_| negative)
+            .map_or(start, |p| chars[p].0);
         // Parse digit groups and their separators.
         let mut groups = vec![String::new()];
         let mut seps: Vec<char> = Vec::new();
@@ -811,18 +864,23 @@ fn claims(text: &str) -> Vec<Claim> {
         let per_second = unit_text.to_lowercase().ends_with("/s")
             || text[unit_end..].to_lowercase().starts_with(" par seconde")
             || text[unit_end..].to_lowercase().starts_with(" per second");
-        if let Some((dim, factors)) = unit(&unit_text, per_second) {
-            let bound = bound_before(&text[..start]);
+        if let Some((dim, factors)) =
+            unit(&unit_text, per_second).filter(|_| at_token_end(text, unit_end))
+        {
+            let bound = bound_before(&text[..claim_start]);
+            let sign = if negative { -1.0 } else { 1.0 };
             let values = readings
                 .iter()
                 .flat_map(|(value, decimals)| {
                     factors
                         .iter()
-                        .map(move |f| (value * f, 0.5 * 10f64.powi(-(*decimals as i32)) * f))
+                        .map(move |f| (sign * value * f, 0.5 * 10f64.powi(-(*decimals as i32)) * f))
                 })
                 .collect();
             out.push(Claim {
-                excerpt: text[start..unit_end.max(end_number)].trim().to_owned(),
+                excerpt: text[claim_start..unit_end.max(end_number)]
+                    .trim()
+                    .to_owned(),
                 end: unit_end.max(end_number),
                 dim,
                 values,
@@ -842,7 +900,15 @@ fn unit_start(text: &str, at: usize) -> bool {
         .chars()
         .take_while(|c| c.is_alphabetic() || matches!(c, '%' | '°' | '/' | 'µ'))
         .collect();
-    unit(&word, word.to_lowercase().ends_with("/s")).is_some()
+    at_token_end(text, at + word.len())
+        && unit(&word, word.to_lowercase().ends_with("/s")).is_some()
+}
+
+fn at_token_end(text: &str, at: usize) -> bool {
+    text[at..]
+        .chars()
+        .next()
+        .is_none_or(|c| !c.is_alphanumeric() && c != '_')
 }
 
 /// Possible values of a written number with their count of decimals.
@@ -906,20 +972,35 @@ fn unit(written: &str, per_second: bool) -> Option<(Dim, Vec<f64>)> {
         return Some((Dim::Bytes, factors));
     }
     let one = |dim: Dim, factor: f64| Some((dim, vec![factor]));
+    // The prefixes are case-sensitive: mJ and MJ differ by a billion.
+    match written {
+        "mJ" => return one(Dim::WattHours, 1.0 / 3_600_000.0),
+        "MJ" => return one(Dim::WattHours, 1_000_000.0 / 3_600.0),
+        "J" => return one(Dim::WattHours, 1.0 / 3_600.0),
+        "kJ" => return one(Dim::WattHours, 1_000.0 / 3_600.0),
+        _ => {}
+    }
     match lower.as_str() {
         "%" => one(Dim::Percent, 1.0),
         "ms" => one(Dim::Millis, 1.0),
         "µs" | "us" => one(Dim::Millis, 0.001),
         "s" | "sec" | "seconde" | "secondes" | "second" | "seconds" => one(Dim::Millis, 1_000.0),
         "min" | "minute" | "minutes" => one(Dim::Millis, 60_000.0),
+        "heure" | "heures" | "hour" | "hours" => one(Dim::Millis, 3_600_000.0),
         "°c" | "°" | "degrés" | "degres" | "degrees" => one(Dim::Celsius, 1.0),
         "mhz" => one(Dim::Megahertz, 1.0),
         "ghz" => one(Dim::Megahertz, 1_000.0),
         "w" | "watt" | "watts" => one(Dim::Watts, 1.0),
         "mw" => one(Dim::Watts, 0.001),
+        "wh" => one(Dim::WattHours, 1.0),
+        "mwh" => one(Dim::WattHours, 0.001),
+        "joule" | "joules" => one(Dim::WattHours, 1.0 / 3_600.0),
+        "millijoule" | "millijoules" => one(Dim::WattHours, 1.0 / 3_600_000.0),
+        "v" | "volt" | "volts" => one(Dim::Volts, 1.0),
+        "mv" | "millivolt" | "millivolts" => one(Dim::Volts, 0.001),
         "processes" | "processus" | "services" | "applications" | "apps" | "programs"
         | "programmes" | "slots" | "emplacements" | "modules" | "files" | "fichiers"
-        | "folders" | "dossiers" | "entries" | "entrées" => one(Dim::Count, 1.0),
+        | "folders" | "dossiers" | "entries" | "entrées" | "cycles" => one(Dim::Count, 1.0),
         _ => None,
     }
 }
@@ -998,6 +1079,231 @@ fn bound_before(before: &str) -> Bound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_energy_estimates_convert_units_without_proving_capacity_or_power() {
+        let received = vec![json!({"observation_id":"O1", "historical":true,
+            "observations":[{"observation_id":"energy-fixture-1", "entity_ref":"battery-app-1", "metric":"battery_app_energy_estimated",
+            "value":3_600_000,"unit":"mJ","status":"ok","source":"synthetic E3 fixture"}]})];
+        let references = refs();
+        let context = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "Earlier measurement: estimated energy consumption was 3 600 000 mJ [O1].",
+            "Earlier measurement: estimated energy consumption was 3 600 J [O1].",
+            "Mesure précédente : la consommation d'énergie estimée était de 1 Wh [O1].",
+        ] {
+            assert!(review(&submit(text), &context).is_ok(), "{text}");
+        }
+        for text in [
+            "Earlier measurement: estimated energy consumption was 3 600 000 MJ [O1].",
+            "Earlier measurement: measured energy consumption was 1 Wh [O1].",
+            "La capacité de la batterie était de 1 Wh lors de la mesure précédente [O1].",
+            "Earlier measurement: estimated power consumption was 1 W [O1].",
+            "Estimated energy consumption is currently 1 Wh [O1].",
+        ] {
+            assert!(review(&submit(text), &context).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn battery_energy_runtime_and_signed_power_require_matching_measured_units() {
+        let rows: Vec<_> = [
+            ("battery_design_capacity_mwh", 50_000, "milliwatt_hours"),
+            (
+                "battery_full_charge_capacity_mwh",
+                40_000,
+                "milliwatt_hours",
+            ),
+            ("battery_power_rate_mw", -15_000, "milliwatts"),
+            (
+                "battery_estimated_runtime_windows_seconds",
+                7_200,
+                "seconds",
+            ),
+            ("battery_cycle_count", 200, "count"),
+            ("gpu_power_milliwatts", 42_000, "milliwatts"),
+            ("battery_discharge_power_mw", 15_000, "milliwatts"),
+            ("battery_remaining_capacity_mwh", 20_000, "milliwatt_hours"),
+            ("battery_estimated_wear_percent", 20, "percent"),
+            ("battery_capacity_retention_percent", 80, "percent"),
+            ("battery_voltage_mv", 12_000, "millivolts"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (metric, value, unit))| {
+            json!({
+                "observation_id":format!("measurement-{i}"), "entity_ref":"system",
+                "metric":metric, "value":value, "unit":unit, "status":"ok",
+                "source":"fixture", "measured_at_unix_ms":1,
+            })
+        })
+        .collect();
+        let received = vec![json!({"observation_id":"O1", "observations":rows})];
+        let references = refs();
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "La batterie a une capacité d'origine de 50 Wh [O1].",
+            "La batterie a une capacité actuelle de 40 000 mWh [O1].",
+            "La batterie a une capacité restante de 20 Wh [O1].",
+            "Battery full charge capacity: 40 Wh [O1].",
+            "Battery discharge consumption: 15 W [O1].",
+            "L'usure estimée de la batterie est de 20 % [O1].",
+            "La rétention de la batterie est de 80 % [O1].",
+            "Le débit net de la batterie est de -15 W [O1].",
+            "Le débit net de la batterie est de −15 W [O1].",
+            "Le débit net de la batterie est de − 15 W [O1].",
+            "Le débit net de la batterie est de -\u{a0}15 W [O1].",
+            "L'autonomie estimée de la batterie est de 2 heures [O1].",
+            "La batterie indique 200 cycles [O1].",
+            "La tension de la batterie est de 12 V [O1].",
+            "Battery voltage: 12 000 mV [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_ok(), "{text}");
+        }
+        for text in [
+            "La batterie a une capacité de 90 Wh [O1].",
+            "Battery full charge capacity: 50 Wh [O1].",
+            "La batterie a une capacité d'origine de 40 Wh [O1].",
+            "La batterie a une capacité restante de 40 Wh [O1].",
+            "L'usure estimée de la batterie est de 80 % [O1].",
+            "La rétention de la batterie est de 20 % [O1].",
+            "La batterie consomme 42 W [O1].",
+            "Le débit net de la batterie est de 15 W [O1].",
+            "La batterie a une capacité de 50 W [O1].",
+            "L'autonomie estimée de la batterie est de 2 Wh [O1].",
+            "La batterie indique 500 cycles [O1].",
+            "La tension de la batterie est de 24 V [O1].",
+            "Battery voltage: 12 mV [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_err(), "{text}");
+        }
+        let mut positive = received.clone();
+        positive[0]["observations"][2]["value"] = json!(15_000);
+        let ctx = Context {
+            received: &positive,
+            references: &references,
+            plans: &[],
+        };
+        assert!(review(&submit("La batterie : − 15 W [O1]."), &ctx).is_err());
+        assert!(review(&submit("La batterie : -\u{a0}15 W [O1]."), &ctx).is_err());
+        assert!(review(&submit("- 15 W pour la batterie [O1]."), &ctx).is_ok());
+    }
+
+    #[test]
+    fn battery_claims_cannot_borrow_another_battery_or_gpu_even_with_unicode_refs() {
+        let rows = [
+            (
+                "battery-a",
+                "battery_full_charge_capacity_mwh",
+                40_000,
+                "milliwatt_hours",
+            ),
+            (
+                "battery-b",
+                "battery_full_charge_capacity_mwh",
+                60_000,
+                "milliwatt_hours",
+            ),
+            ("battery-a", "battery_power_rate_mw", -15_000, "milliwatts"),
+            ("battery-b", "battery_power_rate_mw", -25_000, "milliwatts"),
+            ("system", "gpu_power_milliwatts", 42_000, "milliwatts"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (entity, metric, value, unit))| {
+            json!({
+                "observation_id":format!("measurement-{i}"), "entity_ref":entity,
+                "metric":metric, "value":value, "unit":unit, "status":"ok", "source":"fixture",
+            })
+        })
+        .collect::<Vec<_>>();
+        let received = vec![json!({"observation_id":"O1", "observations":rows})];
+        let references = refs();
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "Battery battery-a full charge capacity: 40 Wh [O1].",
+            "Battery battery‑a full charge capacity: 40 Wh [O1].",
+            "Le débit net de la batterie battery‑a est de − 15 W [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_ok(), "{text}");
+        }
+        for text in [
+            "Battery battery-a full charge capacity: 60 Wh [O1].",
+            "Battery battery‑a full charge capacity: 60 Wh [O1].",
+            "Le débit net de la batterie battery‑a est de − 25 W [O1].",
+            "La batería consume 42 W [O1].",
+            "Der Akku verbraucht 42 W [O1].",
+            "De batterij gebruikt 42 W [O1].",
+            "Батарея потребляет 42 W [O1].",
+            "电池 42 W [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_err(), "{text}");
+        }
+        // The hexadecimal part of an opaque ID is not a quantity with a byte unit.
+        assert!(claims("Process proc‑18b90893 was observed [O1].").is_empty());
+        assert!(claims("Process proc‑18bytes90893 was observed [O1].").is_empty());
+    }
+
+    #[test]
+    fn c4_provenance_windows_and_inputs_cannot_supply_battery_runtime() {
+        let mut received = vec![json!({"observation_id":"O1",
+        "window":{"duration_ms":1}, "observations":[{
+            "observation_id":"capacity", "entity_ref":"battery-a",
+            "metric":"battery_remaining_capacity_mwh", "value":50_000,
+            "unit":"milliwatt_hours", "status":"ok", "source":"fixture",
+            "window":{"duration_ms":1},
+            "inputs":[{"metric":"battery_estimated_runtime_windows_seconds",
+                "unit":"seconds", "value":7_200, "status":"ok",
+                "observation_id":"operand", "entity_ref":"battery-a"}]
+        }]})];
+        let references = refs();
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        assert!(review(
+            &submit("L'autonomie de la batterie est de 1 ms [O1]."),
+            &ctx
+        )
+        .is_err());
+        assert!(review(
+            &submit("L'autonomie de la batterie est de 2 heures [O1]."),
+            &ctx
+        )
+        .is_err());
+        assert!(review(
+            &submit("La capacité restante de la batterie est de 50 Wh [O1]."),
+            &ctx
+        )
+        .is_ok());
+        received[0]["observations"][0]["metric"] =
+            json!("battery_estimated_runtime_windows_seconds");
+        received[0]["observations"][0]["value"] = json!(7_200);
+        received[0]["observations"][0]["unit"] = json!("seconds");
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        assert!(review(
+            &submit("L'autonomie de la batterie est de 2 heures [O1]."),
+            &ctx
+        )
+        .is_ok());
+    }
 
     fn received() -> Vec<Value> {
         vec![

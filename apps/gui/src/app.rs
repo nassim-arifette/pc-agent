@@ -2,17 +2,28 @@
 //! untrusted input: every argument is validated here, paths and item references are resolved on
 //! this side, and the Nebius key never reaches the page.
 use crate::{
+    actions, elevation,
+    model_routing::{ModelRouting, RoutingReview, RoutingView},
     preview::{self, PreparedTurn, Reviewed},
     protocol,
+    selection::{PreparedSelection, ReviewedSelection, SelectionPreview, SelectionRegistry},
     session::{ObservedModel, ObservedTools, Step},
     settings::{self, PrivacyMode, PrivacySettings},
     view,
 };
 use pcagent_agent::{
-    converse_with_privacy,
+    converse_with_privacy, converse_with_selection,
     credentials::{self, Credentials},
     local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius, PastTurn,
     PrivacyContext, Sharing, StorageContext, Workstation, MAX_QUESTION_BYTES,
+};
+use pcagent_agent::{
+    routing::{RoutedModel, RoutingMode, RoutingSettings},
+    selection::{
+        FrozenSelection, RecordingSource, SelectionIntent, SelectionRef, SelectionSource,
+        SelectionTarget, StorageSource, GET_SELECTED_EVIDENCE,
+    },
+    SnapshotTools,
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{unix_ms, Snapshot};
@@ -43,6 +54,7 @@ const PAGE: usize = 50;
 /// Requests for the thread that owns the live collector (its native handles stay on it).
 enum Measure {
     Dashboard(mpsc::Sender<view::Dashboard>),
+    Activity(mpsc::Sender<view::ActivityView>),
     Preview(mpsc::Sender<Snapshot>),
 }
 
@@ -74,7 +86,14 @@ struct AppState {
     sampler: Option<Sampler>,
     preview: Mutex<Option<PreparedTurn>>,
     preview_revision: AtomicU64,
+    /// Changes of consent/model policy, independent of ordinary dashboard/preview refreshes.
+    selection_context_revision: AtomicU64,
     privacy: Mutex<PrivacySettings>,
+    selections: Arc<Mutex<SelectionRegistry>>,
+    model_routing: Mutex<ModelRouting>,
+    /// The last finished turn's action proposals; they run only after a click in this window.
+    actions: Arc<actions::Slot>,
+    elevation: Arc<elevation::Slot>,
 }
 
 /// The history file next to the settings file, with conversations older than the retention
@@ -109,15 +128,20 @@ async fn metric_history(
         .sampler
         .clone()
         .ok_or("Local history is unavailable.")?;
+    let selections = state.selections.clone();
+    let revision = lock(&selections).history_revision();
     tauri::async_runtime::spawn_blocking(move || {
-        sampler
+        let series = sampler
             .history(&HistoryQuery {
                 metric,
                 from_unix_ms,
                 to_unix_ms,
                 entity_ref: entity_ref.unwrap_or_else(|| "system".into()),
             })
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        let _ =
+            lock(&selections).publish_history(SelectionSource::History(series.clone()), revision);
+        Ok(series)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -132,13 +156,38 @@ async fn record_activity_start(
         .sampler
         .clone()
         .ok_or("Local history is unavailable.")?;
+    let selections = state.selections.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        sampler
+        let recording = sampler
             .start_recording(duration_seconds)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        retain_recording(&selections, &sampler, &recording.id);
+        Ok(recording)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Read the battery points of an existing local problem recording without collecting again.
+#[tauri::command]
+async fn battery_recording(
+    state: State<'_, AppState>,
+    recording_id: String,
+) -> Result<Option<pcagent_store::BatteryRecording>, String> {
+    let sampler = state
+        .sampler
+        .as_ref()
+        .ok_or("Local history is unavailable.")?
+        .clone();
+    let selections = state.selections.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let battery = sampler.battery_recording(&recording_id)?;
+        retain_recording(&selections, &sampler, &recording_id);
+        Ok::<_, pcagent_store::StoreError>(battery)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -157,9 +206,15 @@ async fn history_clear(state: State<'_, AppState>) -> Result<usize, String> {
         .sampler
         .clone()
         .ok_or("Local history is unavailable.")?;
-    tauri::async_runtime::spawn_blocking(move || sampler.clear().map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| e.to_string())?
+    let selections = state.selections.clone();
+    lock(&selections).begin_history_clear();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = sampler.clear().map_err(|e| e.to_string());
+        lock(&selections).finish_history_clear();
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -221,34 +276,256 @@ fn conversation_get(state: State<'_, AppState>, id: String) -> Result<Option<Val
 
 #[tauri::command]
 fn conversation_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    match lock(&state.history).as_ref() {
-        Some(store) => store.delete(&id).map_err(|e| e.to_string()),
-        None => Ok(false),
-    }
+    // Use the same history -> ticket order as preview publication and consumption. Delete
+    // only while both ticket stores are held, so a completed deletion cannot resend its past.
+    let history = lock(&state.history);
+    let mut preview = lock(&state.preview);
+    let mut selections = lock(&state.selections);
+    let deleted = match history.as_ref() {
+        Some(store) => store.delete(&id).map_err(|e| e.to_string())?,
+        None => false,
+    };
+    preview::invalidate_conversation(&mut preview, &id);
+    selections.invalidate_conversation(&id);
+    Ok(deleted)
 }
 
 #[tauri::command]
 fn conversations_clear(state: State<'_, AppState>) -> Result<usize, String> {
-    match lock(&state.history).as_ref() {
-        Some(store) => store.clear().map_err(|e| e.to_string()),
-        None => Ok(0),
-    }
+    let history = lock(&state.history);
+    let mut preview = lock(&state.preview);
+    let mut selections = lock(&state.selections);
+    let deleted = match history.as_ref() {
+        Some(store) => store.clear().map_err(|e| e.to_string())?,
+        None => 0,
+    };
+    state.preview_revision.fetch_add(1, Ordering::SeqCst);
+    *preview = None;
+    selections.invalidate_tickets();
+    Ok(deleted)
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn configured_model_id() -> Option<String> {
+    Credentials::load()
+        .get("NEBIUS_MODEL_ID")
+        .filter(|id| pcagent_agent::validate_model_id(id).is_ok())
+}
+
+fn retain_capture(registry: &Mutex<SelectionRegistry>, source: SelectionSource) -> Option<String> {
+    let mut registry = lock(registry);
+    if let Some(session) = source.process_session() {
+        registry.invalidate_process_session(session);
+    }
+    registry.publish(source).ok()
+}
+
+fn retain_recording(registry: &Mutex<SelectionRegistry>, sampler: &Sampler, id: &str) {
+    let revision = lock(registry).history_revision();
+    let Ok(Some(recording)) = sampler.recording(id) else {
+        return;
+    };
+    let to = recording.ended_at_unix_ms.unwrap_or_else(unix_ms);
+    if to <= recording.started_at_unix_ms {
+        return;
+    }
+    let histories = [
+        pcagent_shared::Metric::CpuBusyBasisPoints,
+        pcagent_shared::Metric::PhysicalAvailableBytes,
+        pcagent_shared::Metric::DiskReadLatencyMicroseconds,
+        pcagent_shared::Metric::DiskWriteLatencyMicroseconds,
+    ]
+    .into_iter()
+    .filter_map(|metric| {
+        let mut series = sampler
+            .history(&HistoryQuery {
+                metric,
+                entity_ref: "system".into(),
+                from_unix_ms: recording.started_at_unix_ms,
+                to_unix_ms: to,
+            })
+            .ok()?;
+        series.limit_points(120);
+        Some(series)
+    })
+    .collect();
+    let source = RecordingSource {
+        cpu_peaks: sampler
+            .process_peaks(recording.started_at_unix_ms, to, 10)
+            .ok(),
+        resource_peaks: sampler
+            .process_resource_peaks(recording.started_at_unix_ms, to, 10)
+            .ok(),
+        battery: sampler.battery_recording(id).ok().flatten(),
+        recording,
+        histories,
+    };
+    let _ = lock(registry).publish_history(SelectionSource::Recording(source), revision);
+}
+
+fn retain_storage_page(
+    registry: &Mutex<SelectionRegistry>,
+    storage: &StorageService,
+    scan: &Mutex<ScanSlot>,
+    page: pcagent_storage::LargestItemsPage,
+) -> Option<String> {
+    let current = lock(scan);
+    if current.scope_id.as_deref() != Some(page.scope_id.as_str()) {
+        return None;
+    }
+    let index = storage.index(&page.scope_id).ok()?;
+    if index.scan_id() != page.scan_id {
+        return None;
+    }
+    let mut context = StorageContext::default();
+    let _ = context.authorize_useful_names_with_privacy(&index, &PrivacyContext::local());
+    let source = StorageSource {
+        page,
+        window: index.measurement_window().clone(),
+        origin: pcagent_shared::Origin::Live,
+        context,
+    };
+    lock(registry)
+        .publish(SelectionSource::Storage(source))
+        .ok()
+}
+
+#[tauri::command]
+fn model_routing_get(state: State<'_, AppState>) -> RoutingView {
+    lock(&state.model_routing).view()
+}
+
+#[tauri::command]
+fn model_routing_set(
+    state: State<'_, AppState>,
+    settings: RoutingSettings,
+) -> Result<RoutingView, String> {
+    let view = lock(&state.model_routing).set(settings)?;
+    state.preview_revision.fetch_add(1, Ordering::SeqCst);
+    state
+        .selection_context_revision
+        .fetch_add(1, Ordering::SeqCst);
+    *lock(&state.preview) = None;
+    lock(&state.selections).invalidate_tickets();
+    Ok(view)
+}
+
+#[tauri::command]
+fn selection_sources(state: State<'_, AppState>) -> Vec<crate::selection::SelectionDescriptor> {
+    lock(&state.selections).sources()
+}
+
+#[tauri::command]
+fn selection_preview(
+    state: State<'_, AppState>,
+    reference: SelectionRef,
+    intent: SelectionIntent,
+    question: Option<String>,
+    conversation_id: Option<String>,
+    names: bool,
+    file_names: Option<bool>,
+) -> Result<Value, String> {
+    let question = question
+        .map(|question| checked_question(&question))
+        .transpose()?;
+    let history = lock(&state.history);
+    let past = read_past_from(&history, conversation_id.as_deref())?;
+    let mut privacy = PrivacyContext::local();
+    if let Some(secret) = Credentials::load().get("NEBIUS_API_KEY") {
+        privacy.protect_secret(&secret);
+    }
+    let revision = state.selection_context_revision.load(Ordering::SeqCst);
+    let routing = lock(&state.model_routing).review(configured_model_id());
+    let model_routing = lock(&state.model_routing).view();
+    let mut registry = lock(&state.selections);
+    let preview: SelectionPreview = registry.prepare(
+        reference,
+        intent,
+        question,
+        conversation_id,
+        past,
+        sharing_of(names),
+        file_names.unwrap_or(false),
+        privacy,
+        revision,
+    )?;
+    if revision != state.selection_context_revision.load(Ordering::SeqCst)
+        || !lock(&state.model_routing).matches(&routing, configured_model_id().as_deref())
+    {
+        registry.invalidate_tickets();
+        return Err("Settings changed. Open the selected preview again.".into());
+    }
+    registry.bind_routing(&preview.preview_id, routing.clone())?;
+    let mut value =
+        serde_json::to_value(preview).map_err(|_| "The selected preview could not be encoded.")?;
+    value["model_routing"] = serde_json::json!(model_routing);
+    value["configured_model_id"] = serde_json::json!(routing.configured_model_id);
+    Ok(value)
+}
+
+struct SelectionStart {
+    reference: SelectionRef,
+    intent: SelectionIntent,
+    preview_id: String,
+}
+
+#[tauri::command]
+fn selection_send(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    reference: SelectionRef,
+    intent: SelectionIntent,
+    question: Option<String>,
+    conversation_id: Option<String>,
+    preview_id: String,
+) -> Result<Started, String> {
+    let privacy = lock(&state.privacy).clone();
+    let cloud = privacy.mode.sharing().is_some()
+        && Config::from_lookup(|name| Credentials::load().get(name)).is_ok();
+    if cloud && !privacy.confirmed {
+        return Err("Confirm the sharing choice before sending.".into());
+    }
+    let (sharing, file_names, _) = lock(&state.selections)
+        .choices(&preview_id)
+        .ok_or("Open the selected-evidence sharing preview before sending.")?;
+    let use_storage = matches!(reference.target, SelectionTarget::Storage { .. });
+    let question = question.unwrap_or_else(|| reference.target.default_question(intent));
+    launch_investigation(
+        app,
+        &state,
+        StartRequest {
+            question,
+            cloud,
+            use_storage,
+            names: sharing == Sharing::Complete,
+            conversation_id,
+            preview_id: Some(preview_id.clone()),
+            file_names,
+        },
+        Some(SelectionStart {
+            reference,
+            intent,
+            preview_id,
+        }),
+    )
+}
+
 /// Free space changes slowly; the inventory is read again at most this often.
 const VOLUMES_MAX_AGE: Duration = Duration::from_secs(30);
 
-fn measure_thread(requests: mpsc::Receiver<Measure>) {
+fn measure_thread(requests: mpsc::Receiver<Measure>, selections: Arc<Mutex<SelectionRegistry>>) {
     let mut collector = Collector::new();
     let mut volumes: Option<(Instant, Vec<view::VolumeView>)> = None;
     for request in requests {
         match request {
             Measure::Dashboard(reply) => {
-                let mut dashboard = view::dashboard(&collector.snapshot(true, 8));
+                let snapshot = collector.snapshot(true, 8);
+                let mut dashboard = view::dashboard(&snapshot);
+                dashboard.selection_source_id =
+                    retain_capture(&selections, SelectionSource::Snapshot(snapshot));
                 if volumes
                     .as_ref()
                     .is_none_or(|(at, _)| at.elapsed() > VOLUMES_MAX_AGE)
@@ -263,8 +540,17 @@ fn measure_thread(requests: mpsc::Receiver<Measure>) {
                 }
                 let _ = reply.send(dashboard);
             }
+            Measure::Activity(reply) => {
+                // Two seconds between samples: long enough for rates, short enough to feel live.
+                let activity = collector.process_activity(2, 50);
+                let mut shown = view::activity(&activity);
+                shown.selection_source_id =
+                    retain_capture(&selections, SelectionSource::ProcessActivity(activity));
+                let _ = reply.send(shown);
+            }
             Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);
+                let _ = retain_capture(&selections, SelectionSource::Snapshot(snapshot.clone()));
                 let _ = reply.send(snapshot);
             }
         }
@@ -297,6 +583,56 @@ async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, String
     ask_measure(&state, Measure::Dashboard).await
 }
 
+/// The proposals of a finished turn, as the person reviews them before deciding.
+#[tauri::command]
+fn action_plans(state: State<'_, AppState>, turn_id: String) -> Vec<view::PlanView> {
+    actions::plans(&state.actions, &turn_id)
+}
+
+/// Prepare local journal-based recovery; the existing action_run command still requires a click.
+#[tauri::command]
+async fn startup_restore_prepare(
+    state: State<'_, AppState>,
+    source_plan_id: String,
+    item_index: usize,
+) -> Result<actions::StartupRestoration, String> {
+    let slot = state.actions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        actions::prepare_startup_restore(&slot, &source_plan_id, item_index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn action_decline(
+    state: State<'_, AppState>,
+    turn_id: String,
+    plan_id: String,
+) -> Result<(), String> {
+    actions::decline(&state.actions, &turn_id, &plan_id)
+}
+
+/// Runs one reviewed proposal. Only this window calls it, after the person's click on that plan;
+/// the broker revalidates the target and refuses anything protected or changed.
+#[tauri::command]
+async fn action_run(
+    state: State<'_, AppState>,
+    turn_id: String,
+    plan_id: String,
+) -> Result<view::ActionOutcome, String> {
+    let slot = state.actions.clone();
+    tauri::async_runtime::spawn_blocking(move || actions::run(&slot, &turn_id, &plan_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Application groups, their members and services over a short fresh window (local only).
+#[tauri::command]
+async fn process_activity(state: State<'_, AppState>) -> Result<view::ActivityView, String> {
+    ask_measure(&state, Measure::Activity).await
+}
+
 #[derive(Serialize)]
 struct Preview {
     id: String,
@@ -309,6 +645,8 @@ struct Preview {
     storage_folder: Option<String>,
     /// Exact finite names/relative paths authorized for subsequent storage tool calls.
     file_name_sharing: Value,
+    model_routing: RoutingView,
+    configured_model_id: Option<String>,
 }
 
 /// The person's choice in the interface: program names or opaque references (contract C5).
@@ -357,6 +695,8 @@ async fn cloud_preview(
         sharing,
         storage_scope,
     );
+    let routing = lock(&state.model_routing).review(configured_model_id());
+    prepared.routing = Some(routing.clone());
     if let Some(secret) = Credentials::load().get("NEBIUS_API_KEY") {
         prepared.protect_secret(&secret);
     }
@@ -385,9 +725,18 @@ async fn cloud_preview(
                 .sum()
         });
     let id = prepared.id.clone();
+    // The collector wait above cannot retain a mutex guard. Re-read under the history
+    // lock and keep it through publication, rejecting a deleted or changed conversation.
+    let history = lock(&state.history);
+    if read_past_from(&history, prepared.conversation_id.as_deref())? != prepared.past {
+        return Err("Conversation history changed. Open the sharing preview again.".into());
+    }
     let mut slot = lock(&state.preview);
     if revision != state.preview_revision.load(Ordering::SeqCst) {
         return Err("A newer sharing preview was requested.".into());
+    }
+    if !lock(&state.model_routing).matches(&routing, configured_model_id().as_deref()) {
+        return Err("Model settings changed. Open the preview again.".into());
     }
     *slot = Some(prepared);
     Ok(Preview {
@@ -399,12 +748,18 @@ async fn cloud_preview(
         storage_folder,
         file_name_sharing,
         message,
+        model_routing: lock(&state.model_routing).view(),
+        configured_model_id: routing.configured_model_id,
     })
 }
 
 fn read_past(state: &AppState, id: Option<&str>) -> Result<Vec<PastTurn>, String> {
-    let Some(id) = id else { return Ok(Vec::new()) };
     let history = lock(&state.history);
+    read_past_from(&history, id)
+}
+
+fn read_past_from(history: &Option<Store>, id: Option<&str>) -> Result<Vec<PastTurn>, String> {
+    let Some(id) = id else { return Ok(Vec::new()) };
     let conversation = history
         .as_ref()
         .ok_or("Conversation history is unavailable.")?
@@ -442,7 +797,11 @@ fn privacy_set(
     *lock(&state.privacy) = settings.clone();
     if invalidates_preview {
         state.preview_revision.fetch_add(1, Ordering::SeqCst);
+        state
+            .selection_context_revision
+            .fetch_add(1, Ordering::SeqCst);
         *lock(&state.preview) = None;
+        lock(&state.selections).invalidate_tickets();
     }
     Ok(settings)
 }
@@ -468,7 +827,11 @@ fn send_message(
         }
     }
     let privacy = lock(&state.privacy).clone();
-    let sharing = privacy.mode.sharing();
+    // A cloud mode without a usable key and model runs locally, as the window says it will.
+    let sharing = privacy.mode.sharing().filter(|_| {
+        let creds = Credentials::load();
+        Config::from_lookup(|name| creds.get(name)).is_ok()
+    });
     if sharing.is_some() && !privacy.confirmed {
         return Err("Review the sharing preview and confirm the privacy choice first.".into());
     }
@@ -528,6 +891,61 @@ struct Ask<'a> {
     privacy: Option<&'a PrivacyContext>,
     storage_context: Option<&'a StorageContext>,
     scope_ids: Vec<String>,
+    selected: Option<&'a FrozenSelection>,
+    routing: Option<&'a RoutingReview>,
+    elevated_evidence: Vec<pcagent_agent::elevated_tools::ApprovedInspection>,
+}
+
+enum ApprovedCapture {
+    Snapshot(Box<PreparedTurn>),
+    Selected(Box<PreparedSelection>),
+}
+impl ApprovedCapture {
+    fn snapshot(&self) -> &Snapshot {
+        match self {
+            Self::Snapshot(prepared) => &prepared.snapshot,
+            Self::Selected(prepared) => prepared.selection.snapshot(),
+        }
+    }
+    fn privacy(&self) -> &PrivacyContext {
+        match self {
+            Self::Snapshot(prepared) => &prepared.privacy,
+            Self::Selected(prepared) => &prepared.privacy,
+        }
+    }
+    fn past(&self) -> &[PastTurn] {
+        match self {
+            Self::Snapshot(prepared) => &prepared.past,
+            Self::Selected(prepared) => &prepared.past,
+        }
+    }
+    fn context(&self) -> &StorageContext {
+        match self {
+            Self::Snapshot(prepared) => &prepared.storage_context,
+            Self::Selected(prepared) => prepared.selection.storage_context(),
+        }
+    }
+    fn scope(&self) -> Option<&str> {
+        match self {
+            Self::Snapshot(prepared) => prepared.storage_scope.as_deref(),
+            Self::Selected(prepared) => match &prepared.reference.target {
+                SelectionTarget::Storage { scope_id, .. } => Some(scope_id),
+                _ => None,
+            },
+        }
+    }
+    fn selected(&self) -> Option<&FrozenSelection> {
+        match self {
+            Self::Snapshot(_) => None,
+            Self::Selected(prepared) => Some(&prepared.selection),
+        }
+    }
+    fn routing(&self) -> Option<&RoutingReview> {
+        match self {
+            Self::Snapshot(prepared) => prepared.routing.as_ref(),
+            Self::Selected(prepared) => prepared.routing.as_ref(),
+        }
+    }
 }
 #[derive(Clone, Serialize)]
 struct FailedEvent {
@@ -555,6 +973,15 @@ fn start_investigation(
     state: State<'_, AppState>,
     request: StartRequest,
 ) -> Result<Started, String> {
+    launch_investigation(app, &state, request, None)
+}
+
+fn launch_investigation(
+    app: AppHandle,
+    state: &AppState,
+    request: StartRequest,
+    selected_start: Option<SelectionStart>,
+) -> Result<Started, String> {
     let StartRequest {
         question,
         cloud,
@@ -565,7 +992,7 @@ fn start_investigation(
         file_names,
     } = request;
     let question = checked_question(&question)?;
-    if file_names && (!cloud || !use_storage || !names) {
+    if file_names && ((!cloud && selected_start.is_none()) || !use_storage || !names) {
         return Err(
             "File names require cloud sharing, complete mode and the approved folder.".into(),
         );
@@ -577,8 +1004,53 @@ fn start_investigation(
     {
         return Err("An investigation is already running.".into());
     }
-    let prior = read_past(&state, conversation_id.as_deref())?;
-    let prepared = if cloud {
+    let history_guard = lock(&state.history);
+    let prior = read_past_from(&history_guard, conversation_id.as_deref())?;
+    let prepared = if let Some(selected) = selected_start {
+        // Scan replacement holds this same lock through source invalidation. Keep it until
+        // the reviewed ticket is consumed so the retired scope cannot win that race.
+        let selected_scan = matches!(&selected.reference.target, SelectionTarget::Storage { .. })
+            .then(|| lock(&state.scan));
+        if let SelectionTarget::Storage { scope_id, .. } = &selected.reference.target {
+            let scan = selected_scan
+                .as_ref()
+                .expect("storage selection owns the scan lock");
+            if scan.running
+                || scan.scope_id.as_ref() != Some(scope_id)
+                || state.storage.index(scope_id).is_err()
+            {
+                return Err("The selected storage scan is no longer available.".into());
+            }
+        }
+        let mut selections = lock(&state.selections);
+        let (sharing, approved_file_names, routing) = selections
+            .choices(&selected.preview_id)
+            .ok_or("The selected preview expired.")?;
+        // Match the preview's registry -> routing lock order. A policy update must not
+        // slip between validation and consumption of its reviewed ticket.
+        let model_routing = lock(&state.model_routing);
+        if approved_file_names != file_names
+            || sharing != sharing_of(names)
+            || !model_routing.matches(&routing, configured_model_id().as_deref())
+        {
+            return Err(
+                "Sharing or model settings changed. Open the selected preview again.".into(),
+            );
+        }
+        Some(ApprovedCapture::Selected(Box::new(selections.take(
+            ReviewedSelection {
+                preview_id: &selected.preview_id,
+                reference: &selected.reference,
+                intent: selected.intent,
+                question: Some(&question),
+                conversation_id: conversation_id.as_deref(),
+                past: &prior,
+                sharing,
+                file_names,
+                context_revision: state.selection_context_revision.load(Ordering::SeqCst),
+            },
+        )?)))
+    } else if cloud {
         let scan = lock(&state.scan);
         let scope = if use_storage {
             Some(
@@ -590,8 +1062,19 @@ fn start_investigation(
         } else {
             None
         };
-        Some(preview::take(
-            &mut lock(&state.preview),
+        let mut preview = lock(&state.preview);
+        let routing = preview
+            .as_ref()
+            .and_then(|prepared| prepared.routing.clone())
+            .ok_or("Open the sharing preview before sending.")?;
+        // The preview owns its ticket before the routing guard, as in cloud_preview.
+        // Keep both until take so a concurrent policy change cannot approve stale settings.
+        let model_routing = lock(&state.model_routing);
+        if !model_routing.matches(&routing, configured_model_id().as_deref()) {
+            return Err("Model settings changed. Open the sharing preview again.".into());
+        }
+        Some(ApprovedCapture::Snapshot(Box::new(preview::take(
+            &mut preview,
             Reviewed {
                 id: preview_id
                     .as_deref()
@@ -603,10 +1086,11 @@ fn start_investigation(
                 storage_scope: scope,
                 file_names,
             },
-        )?)
+        )?)))
     } else {
         None
     };
+    drop(history_guard);
     // A follow-up reads its conversation again; a first question starts one.
     let remembered = PrivacySettings {
         mode: if !cloud {
@@ -619,24 +1103,39 @@ fn start_investigation(
         confirmed: true,
     };
     settings::save(&remembered)?;
+    if lock(&state.privacy).mode != remembered.mode {
+        state.preview_revision.fetch_add(1, Ordering::SeqCst);
+        state
+            .selection_context_revision
+            .fetch_add(1, Ordering::SeqCst);
+        *lock(&state.preview) = None;
+        lock(&state.selections).invalidate_tickets();
+    }
     *lock(&state.privacy) = remembered;
     let (conversation_id, past) = {
         let history = lock(&state.history);
         match history.as_ref() {
             None => (None, Vec::new()),
             Some(store) => {
-                let existing = match conversation_id {
-                    Some(id) => store.get(&id).map_err(|e| e.to_string())?,
-                    None => None,
-                };
-                match existing {
-                    Some(c) => (Some(c.summary.id.clone()), past_turns(&c)),
+                match conversation_id {
+                    Some(id) => {
+                        // A deletion after ticket consumption cannot retract the approved
+                        // capture, but must not recreate a thread containing its deleted past.
+                        let past = store
+                            .get(&id)
+                            .map_err(|e| e.to_string())?
+                            .map(|conversation| past_turns(&conversation))
+                            .unwrap_or_default();
+                        (Some(id), past)
+                    }
                     None => (store.create(&question, unix_ms()).ok(), Vec::new()),
                 }
             }
         }
     };
-    let past = prepared.as_ref().map_or(past, |p| p.past.clone());
+    let past = prepared
+        .as_ref()
+        .map_or(past, |prepared| prepared.past().to_vec());
     let id = state.next_id.fetch_add(1, Ordering::SeqCst);
     let turn_id = pcagent_shared::new_id("turn");
     let running = Running {
@@ -659,6 +1158,8 @@ fn start_investigation(
     };
     let history = state.history.clone();
     let sampler = state.sampler.clone();
+    let proposals = state.actions.clone();
+    let elevated_evidence = state.elevation.completed_evidence();
     let saved_in = conversation_id.clone();
     let worker_turn_id = turn_id.clone();
     thread::Builder::new()
@@ -671,12 +1172,15 @@ fn start_investigation(
                 question: &question,
                 past: &past,
                 cloud: cloud.then(|| sharing_of(names)),
-                initial: prepared.as_ref().map(|p| &p.snapshot),
-                privacy: prepared.as_ref().map(|p| &p.privacy),
-                storage_context: prepared.as_ref().map(|p| &p.storage_context),
-                scope_ids: if use_storage { prepared.as_ref().and_then(|p| p.storage_scope.clone()).into_iter().collect() } else { Vec::new() },
+                initial: prepared.as_ref().map(ApprovedCapture::snapshot),
+                privacy: prepared.as_ref().map(ApprovedCapture::privacy),
+                storage_context: prepared.as_ref().map(ApprovedCapture::context),
+                scope_ids: if use_storage { prepared.as_ref().and_then(ApprovedCapture::scope).map(str::to_owned).into_iter().collect() } else { Vec::new() },
+                selected: prepared.as_ref().and_then(ApprovedCapture::selected),
+                routing: prepared.as_ref().and_then(ApprovedCapture::routing),
+                elevated_evidence,
             };
-            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, sampler.as_ref());
+            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, sampler.as_ref(), &proposals);
             let stored_report = match &outcome {
                 Ok(report) => report.clone(),
                 Err((code, message)) => {
@@ -745,6 +1249,7 @@ fn investigation(
     stop: &Arc<AtomicBool>,
     answer: &Arc<Mutex<Option<mpsc::Sender<bool>>>>,
     sampler: Option<&Sampler>,
+    proposals: &actions::Slot,
 ) -> Result<view::Report, (String, String)> {
     let emit = |step: Step| {
         let at_unix_ms = unix_ms();
@@ -765,25 +1270,44 @@ fn investigation(
             },
         );
     };
-    let mut collector = Collector::new();
-    emit(Step::SnapshotStarted);
+    let explain = ask
+        .selected
+        .is_some_and(|selected| selected.intent() == SelectionIntent::Explain);
+    let mut collector = (!explain).then(Collector::new);
+    if let Some(selected) = ask.selected {
+        emit(Step::SelectedEvidenceLoaded {
+            intent: selected.intent(),
+            measured_at_unix_ms: selected.output().cloud["measured_at_unix_ms"].as_u64(),
+        });
+    } else {
+        emit(Step::SnapshotStarted);
+    }
     let started = Instant::now();
-    let initial = ask
-        .initial
-        .cloned()
-        .unwrap_or_else(|| collector.snapshot(true, 10));
-    emit(Step::SnapshotFinished {
-        duration_ms: started.elapsed().as_millis() as u64,
-        measured: initial
-            .evidence
-            .iter()
-            .filter(|e| e.usable_value().is_some())
-            .count(),
+    let initial = ask.initial.cloned().unwrap_or_else(|| {
+        collector
+            .as_mut()
+            .expect("ordinary turn owns a collector")
+            .snapshot(true, 10)
     });
+    if ask.selected.is_none() {
+        emit(Step::SnapshotFinished {
+            duration_ms: started.elapsed().as_millis() as u64,
+            measured: initial
+                .evidence
+                .iter()
+                .filter(|e| e.usable_value().is_some())
+                .count(),
+        });
+    }
     let question = ask.question;
     let report: Investigation = if let Some(sharing) = ask.cloud {
-        let creds = Credentials::load();
-        let model = match Config::from_lookup(|name| creds.get(name)).and_then(Nebius::new) {
+        let routing = ask.routing.ok_or_else(|| {
+            (
+                "preview_required".into(),
+                "Open the model sharing preview before sending.".into(),
+            )
+        })?;
+        let model = match build_routed_model(routing) {
             Ok(model) => model,
             Err(e) => {
                 let message = match &e {
@@ -798,42 +1322,114 @@ fn investigation(
             }
         };
         let mut model = ObservedModel::new(model, stop.clone(), emit);
-        let (policy, prefs) = (Policy::from_env(), Preferences::default());
-        let mut workstation = Workstation::new(&mut collector, storage, &policy, &prefs);
-        workstation.set_sharing(sharing);
-        workstation.set_allowed_scopes(ask.scope_ids.clone());
-        if let Some(sampler) = sampler {
-            workstation.set_history(sampler.clone(), stop.clone());
-        }
         let privacy = ask.privacy.ok_or_else(|| {
             (
                 "preview_required".into(),
                 "Open the sharing preview before sending.".into(),
             )
         })?;
+        if explain {
+            let selected = ask.selected.expect("Explain owns selected evidence");
+            let mut no_collectors =
+                SnapshotTools::new(|_, _| Snapshot::empty("unavailable-collector"));
+            let selected_tools =
+                pcagent_agent::selection::SelectedTools::new(&mut no_collectors, selected);
+            let mut tools = ObservedTools::new(selected_tools, |tool: &str| {
+                emit(Step::ToolStarted { tool: tool.into() })
+            });
+            let report = converse_with_selection(
+                &mut model,
+                ask.past,
+                question,
+                selected,
+                &mut tools,
+                privacy,
+                |event| {
+                    emit(Step::ToolFinished {
+                        tool: event.tool.clone(),
+                        status: event.status,
+                        duration_ms: event.duration_ms,
+                    })
+                },
+                |partial, request| {
+                    ask_extension(app, id, ask.turn_id, partial, request, stop, answer)
+                },
+            );
+            return Ok(view::report(&report, question));
+        }
+        let (policy, prefs) = (Policy::from_env(), Preferences::default());
+        let mut workstation = Workstation::new(
+            collector.as_mut().expect("Investigate owns a collector"),
+            storage,
+            &policy,
+            &prefs,
+        );
+        workstation.set_sharing(sharing);
+        workstation.set_allowed_scopes(ask.scope_ids.clone());
+        workstation.set_elevated_evidence(ask.elevated_evidence.clone());
+        if let Some(sampler) = sampler {
+            workstation.set_history(sampler.clone(), stop.clone());
+        }
         if let Some(context) = ask.storage_context {
             workstation.set_storage_context(context.clone());
         }
-        let mut tools = ObservedTools::new(workstation, |tool: &str| {
-            emit(Step::ToolStarted { tool: tool.into() })
-        });
-        let report = converse_with_privacy(
-            &mut model,
-            ask.past,
-            question,
-            &initial,
-            &mut tools,
-            privacy,
-            |event| {
-                emit(Step::ToolFinished {
-                    tool: event.tool.clone(),
-                    status: event.status,
-                    duration_ms: event.duration_ms,
-                })
-            },
-            |partial, request| ask_extension(app, id, ask.turn_id, partial, request, stop, answer),
-        );
-        let mut workstation = tools.into_inner();
+        // The model may propose actions; they wait for a click in this window to run.
+        if let Some(desk) = actions::desk() {
+            workstation.enable_action_proposals(desk);
+        }
+        let (report, mut workstation) = if let Some(selected) = ask.selected {
+            let selected_tools =
+                pcagent_agent::selection::SelectedTools::new(&mut workstation, selected);
+            let mut tools = ObservedTools::new(selected_tools, |tool: &str| {
+                emit(Step::ToolStarted { tool: tool.into() })
+            });
+            let report = converse_with_selection(
+                &mut model,
+                ask.past,
+                question,
+                selected,
+                &mut tools,
+                privacy,
+                |event| {
+                    emit(Step::ToolFinished {
+                        tool: event.tool.clone(),
+                        status: event.status,
+                        duration_ms: event.duration_ms,
+                    })
+                },
+                |partial, request| {
+                    ask_extension(app, id, ask.turn_id, partial, request, stop, answer)
+                },
+            );
+            drop(tools);
+            (report, workstation)
+        } else {
+            let mut tools = ObservedTools::new(workstation, |tool: &str| {
+                emit(Step::ToolStarted { tool: tool.into() })
+            });
+            let report = converse_with_privacy(
+                &mut model,
+                ask.past,
+                question,
+                &initial,
+                &mut tools,
+                privacy,
+                |event| {
+                    emit(Step::ToolFinished {
+                        tool: event.tool.clone(),
+                        status: event.status,
+                        duration_ms: event.duration_ms,
+                    })
+                },
+                |partial, request| {
+                    ask_extension(app, id, ask.turn_id, partial, request, stop, answer)
+                },
+            );
+            (report, tools.into_inner())
+        };
+        if let Some((_, pending)) = workstation.take_actions() {
+            actions::keep(proposals, ask.turn_id, pending);
+        }
         let jobs = workstation.take_jobs();
         for job in &jobs {
             job.cancel();
@@ -843,9 +1439,47 @@ fn investigation(
         }
         report
     } else {
-        local_report(&initial)
+        let mut report = local_report(&initial);
+        if let Some(selected) = ask.selected {
+            report.mode = "local_evidence".into();
+            report.record_local_observation(&GET_SELECTED_EVIDENCE, selected.output().clone());
+            report
+                .limitations
+                .push("Local evidence only: no model explanation was requested.".into());
+        }
+        report
     };
     Ok(view::report(&report, question))
+}
+
+fn build_routed_model(review: &RoutingReview) -> Result<RoutedModel<Nebius>, AgentError> {
+    let credentials = Credentials::load();
+    let config = Config::from_lookup(|name| credentials.get(name))?;
+    if review.configured_model_id.as_deref() != Some(config.model_id()) {
+        return Err(AgentError::InvalidModel);
+    }
+    let primary =
+        Nebius::new(config.for_model(review.settings.initial_model(config.model_id())?)?)?;
+    let ultra = if review.settings.mode == RoutingMode::Automatic {
+        Some(Nebius::new(
+            config.for_model(
+                review
+                    .settings
+                    .ultra_model_id
+                    .as_deref()
+                    .ok_or(AgentError::MissingModel)?,
+            )?,
+        )?)
+    } else {
+        None
+    };
+    RoutedModel::new(
+        primary,
+        ultra,
+        &review.settings,
+        review.calibration.as_ref(),
+    )
+    .map_err(|_| AgentError::InvalidModel)
 }
 
 /// Blocks the investigation until the person answers in the window, stops, or closes it.
@@ -1028,11 +1662,16 @@ fn start_scan(
     // Only the latest folder stays authorized and indexed; its memory is freed otherwise.
     if let Some(old) = slot.scope_id.replace(info.scope_id.clone()) {
         state.storage.revoke(&old);
+        lock(&state.selections).invalidate_storage(&old);
     }
     slot.root = Some(info.root.clone());
     slot.running = true;
     drop(slot);
-    let (storage, scan) = (state.storage.clone(), state.scan.clone());
+    let (storage, scan, selections) = (
+        state.storage.clone(),
+        state.scan.clone(),
+        state.selections.clone(),
+    );
     let started = ScanStarted {
         scope_id: info.scope_id.clone(),
         root: info.root.clone(),
@@ -1053,9 +1692,14 @@ fn start_scan(
                     let overview = storage.get_storage_overview(&scope)?;
                     let dirs = storage.get_largest_items(&scope, ItemKind::Dirs, 0, PAGE)?;
                     let files = storage.get_largest_items(&scope, ItemKind::Files, 0, PAGE)?;
-                    Ok(view::storage(
-                        &info.root, &summary, &overview, &dirs, &files,
-                    ))
+                    let dir_source =
+                        retain_storage_page(&selections, &storage, &scan, dirs.clone());
+                    let file_source =
+                        retain_storage_page(&selections, &storage, &scan, files.clone());
+                    let mut shown = view::storage(&info.root, &summary, &overview, &dirs, &files);
+                    shown.dirs.selection_source_id = dir_source;
+                    shown.files.selection_source_id = file_source;
+                    Ok(shown)
                 });
             lock(&scan).running = false;
             let _ = match result {
@@ -1094,7 +1738,13 @@ fn scan_page(
     state
         .storage
         .get_largest_items(&scope_id, kind, offset, PAGE.min(MAX_PAGE))
-        .map(|p| view::page(&p, &root))
+        .map(|p| {
+            let selection_source_id =
+                retain_storage_page(&state.selections, &state.storage, &state.scan, p.clone());
+            let mut shown = view::page(&p, &root);
+            shown.selection_source_id = selection_source_id;
+            shown
+        })
         .map_err(|e| storage_error(e, &root))
 }
 
@@ -1134,13 +1784,67 @@ fn save_cloud_settings(
     credentials::save(&file, &updates)?;
     // The preview's protected credentials are frozen; changing them requires a fresh ticket.
     state.preview_revision.fetch_add(1, Ordering::SeqCst);
+    state
+        .selection_context_revision
+        .fetch_add(1, Ordering::SeqCst);
     *lock(&state.preview) = None;
+    lock(&state.selections).invalidate_tickets();
     Ok(view::cloud(&Credentials::load()))
 }
 
 #[derive(Serialize)]
 struct CloudCheck {
     price: Option<view::PriceView>,
+}
+
+/// Lists the saved account's catalog; the page receives metadata, never the local key.
+#[tauri::command]
+async fn cloud_models() -> Result<pcagent_agent::ModelCatalog, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let credentials = Credentials::load();
+        Nebius::account_catalog(|name| credentials.get(name), Duration::from_secs(10))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Prepare a fixed task for local review without opening the Windows consent dialog.
+#[tauri::command]
+async fn elevation_prepare(
+    state: State<'_, AppState>,
+    task: pcagent_inspect::elevation::ElevatedTask,
+    budget_ms: u64,
+) -> Result<elevation::PreparedView, String> {
+    let slot = state.elevation.clone();
+    // Native creation and failed-creation cleanup belong off the GUI thread. Slot reserves
+    // admission before that work and keeps status/cancellation responsive while it is pending.
+    tauri::async_runtime::spawn_blocking(move || {
+        slot.prepare(task, Duration::from_millis(budget_ms))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn elevation_status(state: State<'_, AppState>) -> Result<Option<elevation::PreparedView>, String> {
+    state.elevation.status()
+}
+
+/// The local approval click consumes one prepared request. No model tool invokes this command.
+#[tauri::command]
+async fn elevation_run(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<elevation::InspectionResult, String> {
+    let run = state.elevation.begin(&request_id)?;
+    let result = tauri::async_runtime::spawn_blocking(move || run.execute()).await;
+    result.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn elevation_cancel(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+    state.elevation.cancel(&request_id)
 }
 
 /// Explicit catalog check with the saved key; sends no telemetry.
@@ -1163,6 +1867,10 @@ async fn test_cloud() -> Result<CloudCheck, String> {
 }
 
 pub fn run() {
+    if pcagent_inspect::elevation::ensure_unelevated_host().is_err() {
+        eprintln!("Start PC Agent from a standard, unelevated session.");
+        std::process::exit(2);
+    }
     let background = std::env::args_os().any(|arg| arg == "--background");
     let mut context = tauri::generate_context!();
     if background {
@@ -1171,9 +1879,11 @@ pub fn run() {
         }
     }
     let (tx, rx) = mpsc::channel();
+    let selections = Arc::new(Mutex::new(SelectionRegistry::default()));
+    let measured_selections = selections.clone();
     thread::Builder::new()
         .name("measurements".into())
-        .spawn(move || measure_thread(rx))
+        .spawn(move || measure_thread(rx, measured_selections))
         .expect("the measurement thread starts");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1186,13 +1896,28 @@ pub fn run() {
             history: Arc::new(Mutex::new(open_history())),
             sampler: open_sampler(),
             privacy: Mutex::new(settings::load()),
+            actions: Arc::new(Mutex::new(None)),
+            elevation: Arc::new(elevation::Slot::default()),
             preview: Mutex::new(None),
             preview_revision: AtomicU64::new(0),
+            selection_context_revision: AtomicU64::new(0),
+            selections,
+            model_routing: Mutex::new(ModelRouting::load()),
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
             dashboard,
+            process_activity,
+            action_plans,
+            startup_restore_prepare,
+            action_decline,
+            action_run,
             cloud_preview,
+            selection_sources,
+            selection_preview,
+            selection_send,
+            model_routing_get,
+            model_routing_set,
             start_investigation,
             answer_extension,
             stop_investigation,
@@ -1204,6 +1929,11 @@ pub fn run() {
             reveal,
             save_cloud_settings,
             test_cloud,
+            cloud_models,
+            elevation_prepare,
+            elevation_status,
+            elevation_run,
+            elevation_cancel,
             conversations_list,
             conversation_get,
             conversation_delete,
@@ -1211,6 +1941,7 @@ pub fn run() {
             history_status,
             metric_history,
             record_activity_start,
+            battery_recording,
             record_activity_cancel,
             history_clear,
             startup_get,
@@ -1240,7 +1971,6 @@ pub fn run() {
                     }
                     "quit" => {
                         shutdown(app);
-                        app.exit(0);
                     }
                     _ => {}
                 })
@@ -1267,6 +1997,8 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                 } else {
+                    // Tauri exits the process without Rust destructors. Wait for the helper first.
+                    api.prevent_close();
                     shutdown(window.app_handle());
                 }
             }
@@ -1277,6 +2009,9 @@ pub fn run() {
 
 fn shutdown(app: &AppHandle) {
     let state = app.state::<AppState>();
+    let Some(shutdown) = state.elevation.begin_shutdown() else {
+        return;
+    };
     if let Some(running) = lock(&state.investigation).as_ref() {
         running.stop.store(true, Ordering::SeqCst);
         if let Some(answer) = lock(&running.answer).take() {
@@ -1286,4 +2021,12 @@ fn shutdown(app: &AppHandle) {
     if let Some(sampler) = &state.sampler {
         sampler.stop();
     }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if shutdown.wait(Duration::from_secs(5)) {
+            app.exit(0);
+        } else {
+            eprintln!("PC Agent is waiting for its elevated inspection to stop; try Quit again.");
+        }
+    });
 }

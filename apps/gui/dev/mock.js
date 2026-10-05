@@ -2,8 +2,11 @@
 // (python -m http.server in apps/gui, then /ui/index.html). Every value is synthetic. The app
 // never loads this file: it is outside the embedded ui folder.
 //
-// URL switches: ?cloud=none|ready|problem, ?gpu=none. Questions containing "extend" ask for a
-// budget extension; "fail" makes the model's answer unusable; "slow" stretches the steps.
+// URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
+// (a confirmed choice; without it the first cloud question asks for one). Questions containing
+// "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
+// stretches the steps. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// Live captures publish selection sources; Explain and Investigate use selection_preview/send.
 
 const params = new URLSearchParams(window.location.search);
 const listeners = new Map();
@@ -44,6 +47,22 @@ function volume(root, totalGiB, freeGiB) {
   return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
 }
 
+// ---------- Selection sources ----------
+// Each live capture publishes a host-issued source reference, as SelectionRegistry does. Sources
+// expire after five minutes; previews are single-use tickets bound to their selection.
+const SELECTION_TTL = 5 * 60 * 1000;
+const selectionSources = new Map();
+const selectionTickets = new Map();
+let selectionSequence = 0;
+function publishSource(targets, measuredAt) {
+  const id = `selection-source-${++selectionSequence}`;
+  selectionSources.set(id, { targets, measuredAt, expires: Date.now() + SELECTION_TTL });
+  return id;
+}
+function sameTarget(a, b) {
+  return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id;
+}
+
 let tick = 0;
 function dashboard() {
   tick += 1;
@@ -78,7 +97,9 @@ function dashboard() {
             slowdown_reasons: [],
           },
         ];
+  const resources = ["memory", "cpu", "disk", ...(gpus.length ? ["gpu"] : [])].map((resource) => ({ kind: "resource", resource }));
   return {
+    selection_source_id: publishSource(resources, Date.now()),
     collected_at_unix_ms: Date.now(),
     memory: {
       total: m(total, fmt(total)),
@@ -222,6 +243,87 @@ function report(question, cloudRun, error = null) {
   };
 }
 
+
+// ---------- Persistent history (Sampler) ----------
+// Synthetic five-second samples over the last week with a night-time gap, three anomalies and an
+// optional recording. Shapes follow pcagent_store: points, gaps, events and process names.
+const historyStart = Date.now() - 7 * 24 * 3600 * 1000;
+const historyEvents = [
+  { id: "ev-1", kind: "cpu_busy", hoursAgo: 30, minutes: 3, peak: 8700, metric: "cpu_busy_basis_points", unit: "basis_points_of_total_cpu", contributor: "proc-11aa22bb", name: "firefox.exe" },
+  { id: "ev-2", kind: "disk_latency", hoursAgo: 52, minutes: 12, peak: 64000, metric: "disk_latency_microseconds", unit: "microseconds", contributor: "proc-33cc44dd", name: "TiWorker.exe" },
+  { id: "ev-3", kind: "memory_pressure", hoursAgo: 3, minutes: 6, peak: 9700, metric: "physical_used_basis_points", unit: "basis_points", contributor: "proc-11aa22bb", name: "firefox.exe" },
+];
+let historyCleared = false;
+let recording = null;
+let startupEnabled = false;
+function historyValue(metric, at) {
+  const hours = (Date.now() - at) / 3600000;
+  const wave = Math.sin(at / 900000) * 0.5 + Math.sin(at / 170000) * 0.3;
+  const near = (e) => Math.abs(hours - e.hoursAgo) < e.minutes / 60;
+  const ev = (kind) => historyEvents.find((e) => e.kind === kind && near(e));
+  switch (metric) {
+    case "cpu_busy_basis_points":
+      return ev("cpu_busy") ? 8500 : Math.round(1800 + wave * 900);
+    case "physical_total_bytes":
+      return Math.round(15.73 * GiB);
+    case "physical_available_bytes":
+      return ev("memory_pressure") ? Math.round(0.45 * GiB) : Math.round((3.2 + wave * 0.9) * GiB);
+    case "disk_idle_basis_points":
+      return ev("disk_latency") ? 2500 : Math.round(9300 + wave * 300);
+    case "gpu_busiest_engine_basis_points":
+      return Math.round(700 + wave * 500);
+    default:
+      return Math.round(1000 + wave * 500);
+  }
+}
+function historySeries(metric, from, to) {
+  // At most 120 points, like the agent's projection; one night without measurements.
+  const count = 120;
+  const step = Math.max(5000, Math.floor((to - from) / count));
+  const gapFrom = Date.now() - 20 * 3600 * 1000;
+  const gapTo = gapFrom + 7 * 3600 * 1000;
+  const points = [];
+  for (let at = from; at <= to; at += step) {
+    const inGap = (at >= gapFrom && at < gapTo) || at < historyStart || historyCleared;
+    points.push({ unix_ms: at, value: inGap ? null : historyValue(metric, at), min: null, max: null, status: inGap ? "unsupported" : "ok", measured_samples: inGap ? 0 : 1, expected_samples: 1, resolution_ms: step, observed_duration_ms: inGap ? 0 : step, origin: "synthetic_fixture" });
+  }
+  const gaps = historyCleared ? [{ from_unix_ms: from, to_unix_ms: to, reason: "not_sampled" }] : gapTo > from && gapFrom < to ? [{ from_unix_ms: Math.max(from, gapFrom), to_unix_ms: Math.min(to, gapTo), reason: "not_sampled" }] : [];
+  const events = historyCleared
+    ? []
+    : historyEvents
+        .map((e) => {
+          const end = Date.now() - e.hoursAgo * 3600000;
+          return { id: e.id, kind: e.kind, entity_ref: "system", started_at_unix_ms: end - e.minutes * 60000, ended_at_unix_ms: end, peak: e.peak, metric: e.metric, unit: e.unit, active: false, contributor_ref: e.contributor, contributor_value: null, contributor_metric: null, contributor_unit: null, origin: "synthetic_fixture" };
+        })
+        .filter((e) => e.ended_at_unix_ms >= from && e.started_at_unix_ms <= to);
+  const names = Object.fromEntries(historyEvents.map((e) => [e.contributor, e.name]));
+  return { metric, entity_ref: "system", unit: "", status: gaps.length ? "partial" : "ok", origin: "synthetic_fixture", from_unix_ms: from, to_unix_ms: to, points, gaps, events, process_names: names, sources: ["synthetic"], limitations: [] };
+}
+function samplerStatus() {
+  if (recording && recording.ended_at_unix_ms == null) {
+    const elapsed = Date.now() - recording.started_at_unix_ms;
+    recording.samples = Math.floor(elapsed / 1000);
+    if (elapsed >= recording.duration_seconds * 1000) {
+      recording.ended_at_unix_ms = recording.started_at_unix_ms + recording.duration_seconds * 1000;
+      recording.status = "completed";
+    }
+  }
+  const active = recording && recording.ended_at_unix_ms == null ? recording : null;
+  return { running: true, samples: historyCleared ? 12 : 98213, last_sample_unix_ms: Date.now() - 2000, recording: active, error: null, thread_cpu_basis_points: 160, total_cpu_basis_points: 20, logical_processors: 8, resource_window_ms: 60000, host_working_set_bytes: 96 * MiB, cpu_target_basis_points: 50, memory_target_bytes: 50 * MiB };
+}
+
+
+// ---------- Action proposals ----------
+// A question about freeing space proposes two plans; running one reports space freed.
+const turnPlans = new Map();
+function proposePlans(turnId, question) {
+  if (!/supprim|delete|clean|nettoy|place|space|free/i.test(question)) return;
+  turnPlans.set(turnId, [
+    { plan_id: `plan-${turnId}-1`, kind: "run_cleanup_adapter", targets: [{ kind: "cleanup", label: "C:\\Users\\Alex\\AppData\\Local\\Temp", files: 1840, bytes: 18.7 * GiB }], recovery: "none_synthetic_regenerable_data", checks: ["identity_revalidated", "not_protected"], decision: null },
+    { plan_id: `plan-${turnId}-2`, kind: "recycle_selected_files", targets: [{ kind: "file", label: "C:\\Users\\Alex\\Downloads\\ubuntu-24.04.iso", files: 1, bytes: null }, { kind: "file", label: "C:\\Users\\Alex\\Downloads\\setup-old.exe", files: 1, bytes: null }], recovery: "recycle_bin_if_operation_supported", checks: ["identity_revalidated", "recycle_bin_available"], decision: null },
+  ]);
+}
+
 let nextId = 1;
 // Saved conversations, as the Rust side keeps them in SQLite.
 const conversations = [];
@@ -234,16 +336,48 @@ function saveTurn(conversationId, question, report) {
   return c.id;
 }
 function done(id, report) {
-  const conversationId = running && running.id === id ? saveTurn(running.conversationId, running.question, report) : null;
+  const own = running && running.id === id;
+  const conversationId = own ? saveTurn(running.conversationId, running.question, report) : null;
+  if (own) {
+    const turn = { id: running.turnId, question: running.question, asked_at_unix_ms: running.askedAt, answer: report.answer, report };
+    if (report.error) emit("turn:failed", { turn_id: running.turnId, conversation_id: conversationId, code: report.error.code, message: report.error.message, turn });
+    else emit("turn:done", { turn_id: running.turnId, conversation_id: conversationId, turn });
+  }
   return emit("inv:done", { id, report, conversation_id: conversationId });
 }
 let running = null;
+let nextTurn = 1;
+const privacyParam = params.get("privacy");
+let privacy = ["complete", "anonymized", "local"].includes(privacyParam) ? { mode: privacyParam, confirmed: true } : { mode: "complete", confirmed: false };
+/** What PrivacyContext removes from free text: the profile path, the user and machine names. */
+function sanitize(text) {
+  return text
+    .replace(/C:\\Users\\Alex/gi, "%USERPROFILE%")
+    .replace(/\bAlex\b/g, "[user]")
+    .replace(/DESKTOP-ALEX/gi, "[computer]");
+}
+function fileNameSharing(root) {
+  if (!root) return { names: [], scope: null };
+  return {
+    scope: "%SCOPE%",
+    names: [
+      { item_ref: "scan-1:1", name: "Games", relative_path: "%SCOPE%\\Games" },
+      { item_ref: "scan-1:2", name: "Videos", relative_path: "%SCOPE%\\Videos" },
+      { item_ref: "scan-1:3", name: "windows-11-24h2.iso", relative_path: "%SCOPE%\\Installers\\windows-11-24h2.iso" },
+    ],
+  };
+}
 let pendingPreview = null;
 let previewSequence = 0;
 
 async function investigate(id, question, cloudRun) {
   const slow = /slow|lent/i.test(question) ? 1.6 : 1;
-  const step = (s) => emit("inv:step", { id, at_unix_ms: Date.now(), step: s });
+  const step = (s) => {
+    const at = Date.now();
+    emit("turn:step", { turn_id: running.turnId, at_unix_ms: at, step: s });
+    if (s.kind === "answer_draft") emit("turn:delta", { turn_id: running.turnId, request: s.request, text: s.text, replace: true, unverified: true });
+    emit("inv:step", { id, at_unix_ms: at, step: s });
+  };
   step({ kind: "snapshot_started" });
   await wait(900 * slow);
   step({ kind: "snapshot_finished", duration_ms: 1012, measured: 38 });
@@ -276,11 +410,12 @@ async function investigate(id, question, cloudRun) {
     const answer = new Promise((resolve) => {
       running.answer = resolve;
     });
-    emit("inv:extension", {
-      id,
+    const extension = {
       request: { reason: "rounds", available: true, additional_rounds: 6, additional_tool_calls: 12, additional_seconds: 90 },
       usage: { requests: 6, tool_calls: 6, extensions: 0, prompt_tokens: 30210, completion_tokens: 812, reasoning_tokens: 600, cost: { usd: "0.0098", exact_usd: "0.0097938", price: null } },
-    });
+    };
+    emit("turn:extension", { turn_id: running.turnId, ...extension });
+    emit("inv:extension", { id, ...extension });
     const accepted = await answer;
     if (!accepted) return done(id, { ...report(question, true, "budget"), execution: "budget_exhausted" });
   }
@@ -355,6 +490,38 @@ async function scan(scopeId, root) {
   });
 }
 
+// ---------- Elevated quick drive analysis ----------
+let elevation = null;
+function mftResult(volume) {
+  const now = Date.now();
+  const o = (metric, value, unit = "count") => ({ observation_id: `obs-${metric}`, measured_at_unix_ms: now, window: { started_at_unix_ms: now - 9000, finished_at_unix_ms: now, duration_ms: 9000 }, entity_ref: "ntfs-volume-1", metric, value, unit, status: "partial", source: "synthetic_fixture", origin: "synthetic_fixture" });
+  const item = (path, files, size, unknown = 0) => ({ path, files, logical_bytes_known: Math.round(size * 0.97), data_cluster_bytes_known: size, unknown_logical_files: unknown, unknown_allocation_files: unknown, hard_linked_files: 0 });
+  return {
+    status: "partial", measured_at_unix_ms: now, window: { started_at_unix_ms: now - 9000, finished_at_unix_ms: now, duration_ms: 9000 }, origin: "synthetic_fixture",
+    observations: [
+      o("ntfs_files_examined", 1284311), o("ntfs_supported_data_allocation_bytes_known", 187.4 * GiB, "bytes"), o("ntfs_supported_logical_bytes_known", 179.2 * GiB, "bytes"),
+      o("ntfs_record_slots_walked", 1000000), o("ntfs_record_slots_not_walked", 312480),
+    ],
+    coverage: [
+      { scope: "ntfs_inventory", status: "partial", source: "FSCTL_GET_NTFS_VOLUME_DATA, $MFT", detail: "Record limit reached: 312,480 record slots were not walked. Live volume, not an atomic snapshot." },
+      { scope: "ntfs_tree", status: "partial", source: "FILE_NAME metadata", detail: "Largest 16 attributed folders and files; parents and children overlap." },
+    ],
+    local_mft_tree: {
+      directories: [
+        item("Users", 412004, 96.3 * GiB, 12), item("Users\\Alex", 398110, 91.8 * GiB, 12), item("Users\\Alex\\AppData", 301442, 54.1 * GiB, 9),
+        item("Windows", 512881, 31.6 * GiB, 40), item("Program Files", 98102, 22.4 * GiB), item("Users\\Alex\\Downloads", 1204, 18.7 * GiB),
+      ],
+      files: [
+        item("Users\\Alex\\Downloads\\windows-11-24h2.iso", 1, 6.1 * GiB), item("hiberfil.sys", 1, 4.7 * GiB), item("pagefile.sys", 1, 4.0 * GiB),
+        item("Users\\Alex\\Videos\\vacances.mp4", 1, 2.2 * GiB),
+      ],
+      indexed_nodes: 250000, indexed_name_links: 262114, retained_bytes: 31 * MiB, attributed_files: 1190220, unattributed_files: 94091,
+      attributed_logical_bytes_known: 170.1 * GiB, unattributed_logical_bytes_known: 9.1 * GiB, attributed_data_cluster_bytes_known: 177.9 * GiB, unattributed_data_cluster_bytes_known: 9.5 * GiB,
+      limitations: ["index_node_limit", "top_directories_truncated", "top_files_truncated"],
+    },
+  };
+}
+
 export function createMock() {
   const commands = {
     app_info: () => ({ version: "0.1.0", cloud: cloud(), models: [
@@ -367,17 +534,160 @@ export function createMock() {
       await wait(tick === 0 ? 700 : 120);
       return dashboard();
     },
-    cloud_preview: async ({ question, names, conversationId = null }) => {
+    process_activity: async () => {
+      await wait(600);
+      const now = Date.now();
+      const window = { started_at_unix_ms: now - 2000, finished_at_unix_ms: now, duration_ms: 2000 };
+      const app = (ref, name, count, cpu, ws, members, services = []) => ({
+        entity_ref: ref, name, process_count: count, members_truncated: false,
+        cpu: m(cpu, `${(cpu / 100).toFixed(1)}%`), working_set: m(ws * GiB, fmt(ws * GiB)), private_commit: m(ws * 0.8 * GiB, fmt(ws * 0.8 * GiB)),
+        working_set_increase: ref === "app-1" ? m(0.2 * GiB, fmt(0.2 * GiB)) : m(0, "0"), io_read: m(120000, "117 KiB/s"), io_write: m(40000, "39 KiB/s"),
+        gpu: ref === "app-1" ? m(310, "3.1%") : missing("unsupported", "No GPU counter instance for these processes."),
+        services,
+        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
+      });
+      const applications = [
+          app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),
+          app("app-2", "Code.exe", 9, Math.round(jitter(210, 80)), 1.2, [[5100, 120, 0.51], [5133, 40, 0.28]]),
+          app("app-3", "Teams.exe", 6, Math.round(jitter(140, 60)), 0.84, [[6200, 90, 0.42]]),
+          app("app-4", "svchost.exe", 31, Math.round(jitter(180, 60)), 0.62, [[1108, 80, 0.06]], [
+            { name: "wuauserv", display_name: "Windows Update", state: "running" },
+            { name: "Spooler", display_name: "Print Spooler", state: "running" },
+          ]),
+          app("app-5", "MsMpEng.exe", 1, Math.round(jitter(90, 40)), 0.21, [[3200, 90, 0.21]], [{ name: "WinDefend", display_name: "Microsoft Defender Antivirus Service", state: "running" }]),
+          app("app-6", "explorer.exe", 2, 30, 0.31, [[2900, 30, 0.31]]),
+      ];
+      const processes = applications.flatMap((a) => a.members.map((member) => ({ kind: "process", entity_ref: member.entity_ref })));
+      return {
+        selection_source_id: publishSource(processes, now),
+        collected_at_unix_ms: now, window_ms: 2000, status: "partial",
+        applications,
+        applications_total: 74,
+        coverage: { status: "partial", enumerated: 231, readable: 214, permission_denied: 17, unavailable: 0, returned: 50, enumeration_truncated: false },
+        services_status: "ok", gpu_status: "partial", limitations: [], window,
+      };
+    },
+    action_plans: ({ turnId }) => (turnPlans.get(turnId) || []).map((p) => ({ ...p })),
+    action_decline: ({ turnId, planId }) => {
+      const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
+      if (!plan) throw new Error("These proposals are no longer current.");
+      plan.decision = plan.decision || "declined";
+    },
+    action_run: async ({ turnId, planId }) => {
+      const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
+      if (!plan || plan.decision) throw new Error("This proposal was already decided.");
+      await wait(1200);
+      plan.decision = "completed";
+      const gained = plan.kind === "run_cleanup_adapter" ? 18.6 * GiB : null;
+      return { plan_id: planId, overall: "completed", items: [], verification: { volume: gained ? { gained_bytes: gained, status: "ok" } : null, comparisons: [] } };
+    },
+    history_status: () => samplerStatus(),
+    metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
+      await wait(150);
+      const series = historySeries(metric, fromUnixMs, toUnixMs);
+      // Reading history publishes its events (and a finished recording) as selection sources.
+      const targets = series.events.map((e) => ({ kind: "event", event_id: e.id }));
+      if (recording && recording.ended_at_unix_ms != null) targets.push({ kind: "recording", recording_id: recording.id });
+      if (targets.length) publishSource(targets, toUnixMs);
+      return series;
+    },
+    record_activity_start: ({ durationSeconds }) => {
+      if (recording && recording.ended_at_unix_ms == null) throw new Error("A recording is already running.");
+      // ?recording=short makes the test recordings last 3 seconds.
+      const seconds = params.get("recording") === "short" ? 3 : durationSeconds;
+      recording = { id: `rec-${Date.now()}`, started_at_unix_ms: Date.now(), ended_at_unix_ms: null, duration_seconds: seconds, status: "recording", samples: 0, markers: [{ at_unix_ms: Date.now(), kind: "start" }] };
+      return { ...recording };
+    },
+    record_activity_cancel: ({ recordingId }) => {
+      if (!recording || recording.id !== recordingId || recording.ended_at_unix_ms != null) throw new Error("This recording is over.");
+      recording.ended_at_unix_ms = Date.now();
+      recording.status = "cancelled";
+    },
+    history_clear: () => {
+      historyCleared = true;
+      return 98213;
+    },
+    startup_get: () => startupEnabled,
+    startup_set: ({ enabled }) => {
+      startupEnabled = Boolean(enabled);
+      return startupEnabled;
+    },
+    privacy_get: () => ({ ...privacy }),
+    privacy_set: ({ settings }) => {
+      if (settings.mode !== privacy.mode || !settings.confirmed) pendingPreview = null;
+      privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed) };
+      return { ...privacy };
+    },
+    cloud_preview: async ({ question, names, conversationId = null, fileNames = false }) => {
       const sequence = ++previewSequence;
       await wait(300);
-      const message = { question, initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
+      if (fileNames && !names) throw new Error("File names require complete sharing.");
+      if (fileNames && !lastScanRoot) throw new Error("Scan and authorize a folder before previewing its names.");
+      const message = { question: sanitize(question), initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
       if (names) message.process_names = { "proc-1a2b3c4d": "chrome.exe" };
       const conversation = conversations.find((c) => c.id === conversationId);
       if (conversation?.turns.length) message.previous_turns = conversation.turns.map((turn) => ({ question: turn.question, answer: "Earlier synthetic observation.", observations: [] }));
       if (sequence !== previewSequence) throw new Error("A newer sharing preview was requested.");
       const id = `preview-${sequence}`;
-      pendingPreview = { id, question, names, conversationId };
-      return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot };
+      pendingPreview = { id, question, names, conversationId, fileNames };
+      return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot, file_name_sharing: fileNames ? fileNameSharing(lastScanRoot) : { names: [], scope: null } };
+    },
+    selection_sources: () => {
+      const now = Date.now();
+      return [...selectionSources.entries()]
+        .filter(([, source]) => source.expires > now)
+        .reverse()
+        .flatMap(([id, source]) => source.targets.map((target) => ({ reference: { source_id: id, target }, measured_at_unix_ms: source.measuredAt, historical: false })));
+    },
+    selection_preview: async ({ reference, intent, question = null, conversationId = null, names, fileNames = false }) => {
+      await wait(250);
+      if (!["explain", "investigate"].includes(intent)) throw new Error("Invalid local selection reference.");
+      const source = selectionSources.get(reference?.source_id);
+      if (!source || source.expires <= Date.now()) throw new Error("The selected capture expired or was invalidated. Select the measured item again.");
+      if (!source.targets.some((target) => sameTarget(target, reference.target))) throw new Error("The target does not belong to this source type.");
+      const verb = intent === "explain" ? "Explain" : "Investigate";
+      const noun = reference.target.kind === "resource" ? `the selected ${reference.target.resource} measurements` : `the selected ${reference.target.kind}`;
+      const asked = question || `${verb} ${noun}, stating what is measured and what remains uncertain.`;
+      const age = Date.now() - source.measuredAt;
+      const evidence = {
+        status: "ok",
+        selection: { target: reference.target, intent, fresh_collection: false },
+        measured_at_unix_ms: source.measuredAt,
+        age_ms: age,
+        freshness: "already_measured",
+        observations: reference.target.kind === "resource" && reference.target.resource === "memory"
+          ? [{ observation_id: "O0", metric: "physical_available_bytes", value: 3326083072, unit: "bytes", status: "ok" }, { observation_id: "O0", metric: "physical_total_bytes", value: 16888365056, unit: "bytes", status: "ok" }]
+          : [{ observation_id: "O0", metric: "cpu_busy_basis_points", value: 1850, unit: "basis_points", status: "ok" }],
+        limitations: ["Measurements were taken before this turn; they cannot verify the current state."],
+      };
+      if (names && reference.target.kind === "process") evidence.process_names = { [reference.target.entity_ref]: "chrome.exe" };
+      const message = { question: sanitize(asked), initial_observation: { selected_evidence: evidence } };
+      const id = `selection-preview-${++previewSequence}`;
+      selectionTickets.set(id, { reference, intent, question, conversationId, names, fileNames, asked });
+      return { preview_id: id, message, selected_evidence: evidence, intent, measured_at_unix_ms: source.measuredAt, age_ms: age, context_revision: 0, file_name_preview: { names: [], scope: null }, model_routing: { mode: "configured" }, configured_model_id: cloud().model_id };
+    },
+    selection_send: async ({ reference, intent, question = null, conversationId = null, previewId }) => {
+      const cloudRun = privacy.mode !== "local" && cloud().ready;
+      if (cloudRun && !privacy.confirmed) throw new Error("Confirm the sharing choice before sending.");
+      const ticket = selectionTickets.get(previewId);
+      if (!ticket) throw new Error("Open the selected-evidence sharing preview before sending.");
+      if (JSON.stringify(ticket.reference) !== JSON.stringify(reference) || ticket.intent !== intent || ticket.question !== question || ticket.conversationId !== conversationId) {
+        throw new Error("The selection, question, conversation, sharing or model settings changed. Open the preview again.");
+      }
+      selectionTickets.delete(previewId);
+      pendingPreview = { id: previewId, question: ticket.asked, names: privacy.mode === "complete", conversationId };
+      return commands.start_investigation({ request: { question: ticket.asked, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
+    },
+    send_message: async ({ conversationId = null, text, scopeIds = [], previewId = null }) => {
+      const cloudRun = privacy.mode !== "local";
+      if (cloudRun && !privacy.confirmed) throw new Error("Review the sharing preview and confirm the privacy choice first.");
+      if (scopeIds.length > 1) throw new Error("Attach one scanned folder to a message.");
+      return commands.start_investigation({ request: { question: text, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
+    },
+    stop_turn: ({ turnId }) => {
+      if (!running || running.turnId !== turnId || running.done) throw new Error("This turn is over.");
+      running.stop = true;
+      running.answer?.(false);
     },
     start_investigation: async ({ request: { question, cloud: cloudRun, names, conversationId = null, previewId } }) => {
       if (running && !running.done) throw new Error("An investigation is already running.");
@@ -392,17 +702,18 @@ export function createMock() {
         conversation = { id: `conv-${nextConversation++}`, title: question.split("\n")[0].slice(0, 80), created_at_unix_ms: now, updated_at_unix_ms: now, turns: [] };
         conversations.unshift(conversation);
       }
-      running = { id, stop: false, answer: null, done: false, conversationId: conversation.id, question };
+      running = { id, turnId: `turn-${nextTurn++}`, askedAt: Date.now(), stop: false, answer: null, done: false, conversationId: conversation.id, question };
+      if (cloudRun) proposePlans(running.turnId, question);
       investigate(id, question, cloudRun).finally(() => {
         running.done = true;
       });
-      return { id, conversation_id: conversation.id };
+      return { id, conversation_id: conversation.id, turn_id: running.turnId };
     },
     conversations_list: async () =>
       conversations
         .slice()
         .sort((a, b) => b.updated_at_unix_ms - a.updated_at_unix_ms)
-        .map(({ turns, ...c }) => ({ ...c, turn_count: turns.length })),
+        .map(({ turns, ...c }) => ({ ...c, turn_count: turns.length, last_turn_status: turns.length && turns[turns.length - 1].report?.error ? "failed" : "completed" })),
     conversation_get: async ({ id }) => {
       const c = conversations.find((x) => x.id === id);
       return c ? { ...c, turn_count: c.turns.length, turns: c.turns.slice() } : null;
@@ -452,6 +763,42 @@ export function createMock() {
     },
     scan_page: ({ kind, offset }) => page(kind, lastScanRoot, offset),
     reveal: () => null,
+    // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail.
+    elevation_status: () => (elevation ? { request_id: elevation.id, task: elevation.task, budget_ms: elevation.budget, state: elevation.state } : null),
+    elevation_prepare: async ({ task, budgetMs }) => {
+      if (elevation) throw new Error("Another administrator task is already prepared or running.");
+      if (task?.kind !== "mft_inventory" || !/^[A-Z]$/.test(task.volume)) throw new Error("Unsupported task.");
+      await wait(300);
+      elevation = { id: `elevation-${Date.now()}`, task, budget: budgetMs, state: "awaiting_local_approval", cancelled: false };
+      return { request_id: elevation.id, task, budget_ms: budgetMs, state: elevation.state };
+    },
+    elevation_run: async ({ requestId }) => {
+      if (!elevation || elevation.id !== requestId || elevation.state !== "awaiting_local_approval") throw new Error("This request cannot run.");
+      const job = elevation;
+      job.state = "running";
+      await wait(2500);
+      const finish = () => {
+        if (elevation === job) elevation = null;
+      };
+      if (job.cancelled) {
+        finish();
+        throw new Error("The administrator task was cancelled.");
+      }
+      if (params.get("elevation") === "fail") {
+        finish();
+        throw new Error("Windows consent was declined.");
+      }
+      finish();
+      return mftResult(job.task.volume);
+    },
+    elevation_cancel: ({ requestId }) => {
+      if (!elevation || elevation.id !== requestId) throw new Error("No matching administrator task.");
+      if (elevation.state === "awaiting_local_approval") elevation = null;
+      else {
+        elevation.cancelled = true;
+        elevation.state = "cancelling";
+      }
+    },
     save_cloud_settings: ({ modelId }) => {
       cloudMode = modelId.startsWith("nvidia/") ? "ready" : "problem";
       return cloud();

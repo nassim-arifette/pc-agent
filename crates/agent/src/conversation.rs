@@ -171,8 +171,9 @@ pub(crate) fn prepare(
     sharing: Sharing,
     privacy: &PrivacyContext,
 ) -> (Value, Vec<PastObservation>) {
-    let now = first["initial_observation"]["measured_at_unix_ms"]
+    let now = first["initial_observation"]["previewed_at_unix_ms"]
         .as_u64()
+        .or_else(|| first["initial_observation"]["measured_at_unix_ms"].as_u64())
         .unwrap_or(0);
     let mut turns = Vec::new();
     let mut retained = Vec::new();

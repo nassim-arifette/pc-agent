@@ -181,6 +181,17 @@ pub struct StorageContext {
     copy_paths: BTreeMap<String, String>,
 }
 impl StorageContext {
+    /// Conservative payload footprint for bounded immutable selection registries.
+    pub fn retained_bytes(&self) -> usize {
+        [
+            serde_json::to_vec(&self.names),
+            serde_json::to_vec(&self.comparisons),
+            serde_json::to_vec(&self.copy_paths),
+        ]
+        .into_iter()
+        .map(|value| value.map_or(usize::MAX, |bytes| bytes.len().saturating_mul(2)))
+        .fold(std::mem::size_of::<Self>(), usize::saturating_add)
+    }
     pub fn add_comparison(&mut self, comparison: ContentComparison, index: &StorageIndex) {
         for group in &comparison.groups {
             for reference in &group.item_refs {

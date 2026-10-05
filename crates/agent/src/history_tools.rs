@@ -70,7 +70,7 @@ pub const TOOLS: &[ToolSpec] = &[
     ToolSpec { name:"get_activity_events",class:ToolClass::Inspection,
         description:"Measured CPU, memory and disk latency peaks in local history, limited to 30 recent events with explicit omissions. Contributor means observed resource use, not proven cause; normal recovery is not an incident.",params:&[WINDOW,END] },
     ToolSpec { name:"record_activity",class:ToolClass::Inspection,
-        description:"Measure the problem now at one-second cadence for 30–120 seconds. Returns start/end markers, at most 120 system history points, gaps and the 10 highest observed process CPU peaks even below anomaly thresholds. Can be cancelled by stopping the turn. Reads only; changes no system setting.",
+        description:"Measure the problem now at one-second cadence for 30–120 seconds. Returns markers, at most 120 system history points, gaps, 10 process CPU peaks, up to 10 separate peaks each for process GPU/read/write activity, and at most 128 battery points across 16 opaque batteries. Activity is limited to sampled processes and indicates correlation, not per-app energy. Battery evolution uses only continuous coherent discharge intervals. Can be cancelled by stopping the turn. Reads only; changes no system setting.",
         params:&[Param{name:"duration_seconds",description:"Recording duration, default 30 seconds.",kind:ParamKind::Integer{min:30,max:120},required:false}] },
 ];
 #[derive(Clone)]
@@ -108,7 +108,7 @@ fn process_ref(reference: &str) -> bool {
     })
 }
 
-fn event_observation(observation: &EventObservation, reference: &str) -> Value {
+pub(crate) fn event_observation(observation: &EventObservation, reference: &str) -> Value {
     if observation.entity_ref != "system" && !process_ref(&observation.entity_ref) {
         return Value::Null;
     }
@@ -128,7 +128,7 @@ fn event_observation(observation: &EventObservation, reference: &str) -> Value {
     value
 }
 
-fn project(
+pub(crate) fn project(
     mut series: HistorySeries,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -319,7 +319,7 @@ fn project(
     }
 }
 
-fn measured_at(cloud: &Value) -> Option<u64> {
+pub(crate) fn measured_at(cloud: &Value) -> Option<u64> {
     let points = cloud["points"]
         .as_array()
         .into_iter()
@@ -350,29 +350,82 @@ fn measured_at(cloud: &Value) -> Option<u64> {
         .into_iter()
         .flatten()
         .filter_map(measured_at);
-    let observations = cloud["observations"]
+    let observations = [
+        &cloud["observations"],
+        &cloud["resource_activity"]["observations"],
+    ]
+    .into_iter()
+    .filter_map(Value::as_array)
+    .flatten()
+    .filter(|observation| observation["value"].as_f64().is_some_and(f64::is_finite))
+    .filter_map(|observation| observation["measured_at_unix_ms"].as_u64());
+    let battery = cloud["battery"]["batteries"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|observation| observation["value"].as_u64().is_some())
+        .flat_map(|battery| battery["points"].as_array().into_iter().flatten())
+        .flat_map(|point| point["observations"].as_array().into_iter().flatten())
+        .filter(|observation| !observation["value"].is_null())
         .filter_map(|observation| observation["measured_at_unix_ms"].as_u64());
     points
         .chain(events)
         .chain(histories)
         .chain(observations)
+        .chain(battery)
         .max()
 }
 
-fn project_process_peaks(
-    mut peaks: ProcessPeaks,
+pub(crate) fn project_process_peaks(
+    peaks: ProcessPeaks,
     sharing: Sharing,
     privacy: &PrivacyContext,
 ) -> ToolOutput {
+    project_peaks(
+        peaks,
+        sharing,
+        privacy,
+        &[Metric::ProcessCpuBasisPoints],
+        "recorded-process",
+    )
+}
+
+pub(crate) fn project_resource_peaks(
+    peaks: ProcessPeaks,
+    sharing: Sharing,
+    privacy: &PrivacyContext,
+) -> ToolOutput {
+    project_peaks(
+        peaks,
+        sharing,
+        privacy,
+        &[
+            Metric::ProcessGpuBasisPoints,
+            Metric::ProcessIoReadBytesPerSecond,
+            Metric::ProcessIoWriteBytesPerSecond,
+        ],
+        "recorded-resource",
+    )
+}
+
+fn project_peaks(
+    mut peaks: ProcessPeaks,
+    sharing: Sharing,
+    privacy: &PrivacyContext,
+    metrics: &[Metric],
+    prefix: &str,
+) -> ToolOutput {
     let original_count = peaks.observations.len();
+    let mut per_metric = vec![0; metrics.len()];
     peaks.observations.retain(|evidence| {
-        process_ref(&evidence.entity_ref) && evidence.metric == Metric::ProcessCpuBasisPoints
+        let Some(index) = metrics.iter().position(|metric| *metric == evidence.metric) else {
+            return false;
+        };
+        if !process_ref(&evidence.entity_ref) || per_metric[index] == MAX_PROCESS_PEAKS {
+            return false;
+        }
+        per_metric[index] += 1;
+        true
     });
-    peaks.observations.truncate(MAX_PROCESS_PEAKS);
     if original_count != peaks.observations.len() {
         peaks.status = Status::Partial;
         peaks.limitations.push(
@@ -385,7 +438,7 @@ fn project_process_peaks(
         .iter()
         .enumerate()
         .map(|(index, evidence)| {
-            json!({"observation_id":format!("recorded-process-{}", index + 1),
+            json!({"observation_id":format!("{prefix}-{}", index + 1),
                 "entity_ref":evidence.entity_ref,"metric":evidence.metric,
                 "value":evidence.value,"unit":evidence.unit,"status":evidence.status,
                 "source":evidence.source,"origin":evidence.origin,
@@ -566,18 +619,62 @@ pub fn run(
                     out.limitations.push(limitation.clone());
                 }
             }
+            let resources = match context.sampler.process_resource_peaks(
+                recording.started_at_unix_ms,
+                to,
+                MAX_PROCESS_PEAKS,
+            ) {
+                Ok(resources) => project_resource_peaks(resources, sharing, &privacy),
+                Err(_) => empty(
+                    Status::Error,
+                    "Recorded process GPU and I/O peaks could not be read.",
+                ),
+            };
+            if resources.status == Status::Error {
+                complete = false;
+            }
+            out.evidence.extend(resources.evidence);
+            for limitation in &resources.limitations {
+                if !out.limitations.contains(limitation) {
+                    out.limitations.push(limitation.clone());
+                }
+            }
+            let battery = match context.sampler.battery_recording(&recording.id) {
+                Ok(Some(battery)) => {
+                    if battery.status != Status::Ok && battery.status != Status::Unsupported {
+                        complete = false;
+                    }
+                    out.limitations.extend(battery.limitations.iter().cloned());
+                    serde_json::to_value(battery).expect("bounded battery recording serializes")
+                }
+                Ok(None) | Err(_) => {
+                    complete = false;
+                    out.limitations
+                        .push("Battery measurements could not be read for this recording.".into());
+                    json!({"status":Status::Error,"batteries":[],"gaps":[],
+                        "coverage":{"battery":"The recorded battery measurements are unavailable."}})
+                }
+            };
             out.status = if complete {
                 Status::Ok
             } else {
                 Status::Partial
             };
-            out.inspection_complete = !out.evidence.is_empty();
+            out.inspection_complete = !out.evidence.is_empty()
+                || battery["batteries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|battery| battery["points"].as_array().into_iter().flatten())
+                    .flat_map(|point| point["observations"].as_array().into_iter().flatten())
+                    .any(|observation| !observation["value"].is_null());
             out.cloud = json!({"status":out.status,"recording":{
                 "started_at_unix_ms":recording.started_at_unix_ms,
                 "ended_at_unix_ms":recording.ended_at_unix_ms,
                 "status":recording.status,
                 "samples":recording.samples,"markers":recording.markers},
-                "histories":histories,"source":"local persistent sampler",
+                "histories":histories,"battery":battery,"source":"local persistent sampler",
+                "resource_activity":resources.cloud,
                 "observations":peaks.cloud.get("observations").cloned().unwrap_or_else(||json!([])),
                 "shared_names":peaks.cloud.get("shared_names").cloned().unwrap_or_else(||json!({})),
                 "process_activity":{"status":peaks.status,
@@ -868,6 +965,22 @@ mod tests {
     }
 
     #[test]
+    fn recording_battery_date_uses_known_typed_points_including_signed_rates() {
+        let mut cloud = json!({"queried_at_unix_ms":99000,
+        "recording":{"ended_at_unix_ms":98000},
+        "battery":{"batteries":[{"points":[{"recorded_at_unix_ms":5000,
+            "observations":[
+                {"metric":"battery_power_rate_mw","value":-15000,
+                    "unit":"milliwatts","measured_at_unix_ms":4500},
+                {"metric":"battery_remaining_capacity_mwh","value":null,
+                    "unit":"milliwatt_hours","measured_at_unix_ms":4900}
+            ]}]}]}});
+        assert_eq!(measured_at(&cloud), Some(4500));
+        cloud["battery"]["batteries"][0]["points"][0]["observations"][0]["value"] = Value::Null;
+        assert_eq!(measured_at(&cloud), None);
+    }
+
+    #[test]
     fn event_projection_keeps_precise_c4_metadata_and_marks_legacy_unknowns() {
         let mut series = fixture(1);
         let contributor = named_reference(&series, "browser.exe");
@@ -1030,6 +1143,118 @@ mod tests {
             .is_empty());
         assert!(!anonymous.cloud.to_string().contains(".exe"));
         assert_eq!(anonymous.cloud["observations"], out.cloud["observations"]);
+    }
+
+    #[test]
+    fn recorded_resource_peaks_are_bounded_dated_and_sharing_filtered() {
+        let mut store = Store::open_in_memory().unwrap();
+        for at in [1000, 2000] {
+            let mut snapshot = Snapshot::empty("private-resource-session");
+            snapshot.origin = Origin::SyntheticFixture;
+            let window = Window {
+                started_at_unix_ms: at - 750,
+                finished_at_unix_ms: at,
+                duration_ms: 750,
+            };
+            for index in 0..12 {
+                let reference = format!("proc-{index:08x}");
+                for (metric, value) in [
+                    (
+                        Metric::ProcessCpuBasisPoints,
+                        if at == 1000 {
+                            8000 - index
+                        } else {
+                            1000 - index
+                        },
+                    ),
+                    (
+                        Metric::ProcessGpuBasisPoints,
+                        if at == 2000 {
+                            8000 - index
+                        } else {
+                            1000 - index
+                        },
+                    ),
+                    (Metric::ProcessIoReadBytesPerSecond, index * 5000),
+                    (Metric::ProcessIoWriteBytesPerSecond, (12 - index) * 1000),
+                ] {
+                    snapshot.evidence.push(Evidence::measured(
+                        metric,
+                        &reference,
+                        value,
+                        "fixture resource counter",
+                        window.clone(),
+                    ));
+                }
+            }
+            let mut sample = StoredSample::from_snapshot(&snapshot, at, 1000);
+            for index in 0..12 {
+                sample.process_names.insert(
+                    format!("proc-{index:08x}"),
+                    format!(r"C:\Users\Alice\Programs\resource-{index}.exe"),
+                );
+            }
+            store.append_sample(&sample).unwrap();
+        }
+        let privacy = PrivacyContext::from_identifiers(r"C:\Users\Alice", "Alice", "PC", &[]);
+        let complete = project_resource_peaks(
+            store.process_resource_peaks(1, 3000, 10).unwrap(),
+            Sharing::Complete,
+            &privacy,
+        );
+        assert_eq!(complete.evidence.len(), 30);
+        assert_eq!(complete.cloud["observations"].as_array().unwrap().len(), 30);
+        let ids: std::collections::BTreeSet<_> = complete.cloud["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|observation| observation["observation_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 30);
+        for metric in [
+            Metric::ProcessGpuBasisPoints,
+            Metric::ProcessIoReadBytesPerSecond,
+            Metric::ProcessIoWriteBytesPerSecond,
+        ] {
+            assert_eq!(
+                complete
+                    .evidence
+                    .iter()
+                    .filter(|evidence| evidence.metric == metric)
+                    .count(),
+                10
+            );
+        }
+        assert!(complete
+            .evidence
+            .iter()
+            .all(|evidence| evidence.window.duration_ms == 750));
+        let anonymous = project_resource_peaks(
+            store.process_resource_peaks(1, 3000, 10).unwrap(),
+            Sharing::Anonymized,
+            &privacy,
+        );
+        assert_eq!(
+            anonymous.cloud["observations"],
+            complete.cloud["observations"]
+        );
+        assert!(anonymous.cloud["shared_names"]
+            .as_object()
+            .unwrap()
+            .is_empty());
+        assert!(!anonymous.cloud.to_string().contains(".exe"));
+        for private in ["Alice", "C:", "private-resource-session"] {
+            assert!(!complete.cloud.to_string().contains(private));
+        }
+        let cpu = project_process_peaks(
+            store.process_peaks(1, 3000, 10).unwrap(),
+            Sharing::Anonymized,
+            &privacy,
+        );
+        assert_eq!(measured_at(&cpu.cloud), Some(1000));
+        let recording =
+            json!({"observations":cpu.cloud["observations"],"resource_activity":anonymous.cloud});
+        assert_eq!(measured_at(&recording), Some(2000));
     }
 
     #[test]

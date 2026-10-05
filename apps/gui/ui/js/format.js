@@ -39,7 +39,7 @@ export function duration(ms) {
   if (seconds < 60) return `${number(seconds, seconds < 10 ? 1 : 0)} s`;
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
-  return `${minutes} min ${rest} s`;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
 export function ago(unixMs) {
@@ -71,11 +71,11 @@ export function usd(value) {
 }
 
 /** "14:02" today, otherwise the date and time. */
-export function clock(unixMs) {
+export function clock(unixMs, { seconds = false } = {}) {
   if (unixMs == null) return "";
   const at = new Date(unixMs);
   if (at.toDateString() !== new Date().toDateString()) return date(unixMs, true);
-  return new Intl.DateTimeFormat(locale(), { hour: "2-digit", minute: "2-digit" }).format(at);
+  return new Intl.DateTimeFormat(locale(), { hour: "2-digit", minute: "2-digit", second: seconds ? "2-digit" : undefined }).format(at);
 }
 
 /** "Label: value" in English, "Label : value" in French. */

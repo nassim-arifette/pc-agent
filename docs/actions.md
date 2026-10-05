@@ -1,6 +1,7 @@
-# `pcagent-actions` (Lot D)
+# `pcagent-actions`
 
-Controlled local actions: spec 11.1–11.3, 15.2, 17.1 (`ActionPlan`, `ActionResult`), 17.4, tests of 20.3.
+Controlled local actions for workstream 11 of [the current product plan](plan.md). The broker owns
+approval, target revalidation, durable item journals and measurement hooks.
 
 ## Flow
 
@@ -22,15 +23,47 @@ text such as "fais tout" are rejected and can never produce approval.
 `Workstation::enable_action_proposals(ActionDesk)` adds the `prepare_action_plan` tool
 (`crates/agent/src/proposals.rs`); the CLI enables it with `diagnose --allow-cloud --propose-actions`.
 
-- Allowed kinds: `open_in_explorer` (storage `scope_id` + `item_ref`, identity observed by
-  `NativeGuard`), `open_settings_page` (allowlisted page) and `run_cleanup_adapter` (a directory the
-  policy classifies as `pcagent.synthetic_demo_cache` with a verified marker, reopened with
-  `SyntheticDemoCache::open`; refused when `permissions.reversible_only`). `recycle_selected_files`
-  and `request_normal_close` cannot be proposed. Recycle is executable in the actions crate but
-  is not a model-proposable kind; wiring it is left to the coordinator.
+- `open_settings_page` takes one of `storagesense`, `appsfeatures`, `startupapps`,
+  `windowsupdate`, `windowsupdate-optionalupdates`, `powersleep` or `batterysaver-usagedetails`. Opening a page does not
+  change its settings. `open_in_explorer` uses a local storage `scope_id` + `item_ref`.
+  The battery usage page displays Windows' application energy usage on devices with a battery
+  ([Microsoft Settings URI reference](https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings)).
+  PC Agent opens that fixed page only after local approval; this action neither reads SRUM data
+  nor attributes application energy usage from CPU measurements.
+- `disable_user_startup` takes a `startup_ref` issued by `get_startup_programs` in
+  `proposable_actions`. Only an inspected HKCU `user_64` `Run` entry with a local name and a
+  successful `StartupTarget::disable` guard can issue that reference. Machine entries,
+  RunOnce, startup folders and scheduled tasks remain inspection only. No registry command
+  is read or accepted from the model. When preserved-application preferences exist, entry
+  names alone cannot establish the executable; disable proposals remain unavailable.
+- `run_cleanup_adapter` takes a closed `adapter_id` (`user.temp`, `nvidia.dxcache`,
+  `windows.d3dscache`) issued by `get_cleanup_opportunities` after that category was inspected
+  and a bounded local `RecycleCleanupTarget` manifest was captured. Overflow, unreadable
+  objects, links, an empty batch or policy exclusions leave the adapter unavailable. It
+  accepts no file paths or model-selected manifest. This recycle path permits the default
+  `permissions.reversible_only`; it reports zero immediate reclaim.
+- The synthetic demo remains available using `scope_id` + a validated directory `item_ref`
+  from `get_cleanup_candidates`, its verified marker and `SyntheticDemoCache::open`.
+  Its permanent deletion still requires `permissions.reversible_only = false`. A real
+  `adapter_id` cannot be combined with these demo arguments.
+- `request_normal_close` takes a `process_ref` issued by `get_processes`; it requires the
+  same guarded PID, creation time and boot identity, a known executable name and no
+  preserved-application match. `recycle_selected_files` takes one inspected file
+  `scope_id` + `item_ref` listed as proposable by `get_largest_items` or
+  `get_cleanup_candidates`. Its guarded volume/file identity, size and modification time
+  must match the scan. A missing scan identity is not proposable; even a same-size,
+  same-date replacement cannot inherit the scanned reference.
+  Unknown, replaced, protected or excluded files and directories receive no recycle target.
+  A replaced scan invalidates its old references. Both actions still require local review.
 - Targets are resolved locally into a `FixedTargets` resolver and checked by `PolicyProtection`
   (baseline + policy protected paths + user exclusions). The model gets `PlanModelView` only; at most
   `MAX_PENDING_PLANS` (3) per investigation.
+- `action_targets.rs` keeps startup, process and scanned-file maps bounded to 64 entries each
+  and cleanup to the three finite adapters. These maps are never serialized. New startup,
+  process and cleanup inspections replace their earlier target sets; the model sees only
+  targets in the actual tool projection. Each pending plan owns its immutable local target
+  copy; the broker checks it again before preparing and before each approved effect.
+  Evidence context is bounded to the last 64 usable local observation references.
 - After the report, the CLI prints each plan with its local target, recovery and preconditions and
   asks for a typed `yes` on an interactive terminal (stdin and stderr). Only then does it call
   `approve_locally` and `Broker::execute`. With `--json` or without a terminal nothing runs
@@ -92,10 +125,88 @@ Effects take a `Permit` only the broker can build. `Capability` gates `prepare_p
 | Action | Windows backend | Executable |
 |---|---|---|
 | `open_in_explorer` | `%WINDIR%\explorer.exe /select,"<path>"` via `Command::raw_arg`, no shell; paths with `" < > | ? * /`, controls or extra `:` refused | yes |
-| `open_settings_page` | fixed allowlist `storagesense`, `appsfeatures`, `startupapps` → `ms-settings:` via explorer.exe | yes |
+| `open_settings_page` | fixed allowlist `storagesense`, `appsfeatures`, `startupapps`, `windowsupdate`, `windowsupdate-optionalupdates`, `powersleep`, `batterysaver-usagedetails` → `ms-settings:` via explorer.exe | yes |
 | `request_normal_close` | process handle held (`QUERY_LIMITED_INFORMATION | SYNCHRONIZE`), identity rechecked, `WM_CLOSE` to visible unowned top-level windows, bounded wait; never `TerminateProcess` | yes |
 | `recycle_selected_files` | exclusive pin + `IFileOperation::DeleteItem` (`FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_EARLYFAILURE`, no UI) after `SHQueryRecycleBinW`, fail-closed post-check (below); no permanent-delete fallback | yes |
 | `run_cleanup_adapter` | `SyntheticDemoCache`: exact approved manifest, verified handles, only regular files directly inside the marked root | Windows, configured cache and explicit permission |
+| `run_cleanup_adapter` | `UserCleanupAdapter`: bounded selected TEMP / NVIDIA DXCache / Direct3D shader files through the existing verified recycle operation, independently journaled | Windows, local resolver and approval |
+| `disable_user_startup` / `restore_user_startup` | finite HKCU `Run` / `StartupApproved\Run` keys, registry transaction, exact prior approval saved in the journal | Windows, local resolver and approval |
+
+The Settings URI list follows [Microsoft's Settings URI reference](https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings).
+Opening optional updates neither installs a driver nor approves a Windows Update operation.
+
+### Current-user cleanup adapters
+
+`UserCleanupKind::from_ref` recognizes only `user.temp`, `nvidia.dxcache` and
+`windows.d3dscache`. `UserCleanupAdapter::current_user(kind)` resolves roots locally from TEMP/TMP
+or LOCALAPPDATA, with no model-provided paths. An invalid, protected, redirected, volume-root or
+profile-root TEMP is refused.
+
+- `capture(&NativeGuard)` inventories at most 1024 entries, eight nested directory levels and
+  64 regular files. Links, unreadable metadata and enumeration overflow refuse the manifest,
+  without returning a truncated deletion list. An empty selection is not an action.
+- TEMP keeps files modified within seven days; missing or future timestamps cannot prove age.
+  Shader files are regenerable, but recycling them may cause compilation on later launches.
+- `capture_selected(&local_paths, &NativeGuard)` supports an explicit local batch in a larger
+  root, with the same age, ancestry and identity checks. Paths must come from the trusted
+  resolver or local selection; they are never action-intent fields supplied by the model.
+- The immutable `RecycleCleanupTarget` binds the root, relevant directories and selected files.
+  The broker expands it into one plan item per selected file. Every item has its own fsync'd
+  started/finished journal records; interruption identifies the exact unconfirmed file.
+- Policy protection and file identities are rechecked before each file. Root/ancestor identity
+  uses volume/file identity, since directory timestamps change as approved files are recycled.
+  New files are left alone. A replaced root, directory or file requires a new plan.
+- Execution uses the existing `Effects::recycle_file` backend. No real-cache permanent-delete
+  path exists. The plan estimates **zero immediate reclaim**; result `bytes_removed` is also zero
+  for files in the bin. Volume free-space measurements may report the actual before/after,
+  without promising space that is still occupied by the recycle bin.
+
+The policy crate's general cache classification is intentionally unchanged: a folder match alone
+does not grant execution or preselect its content. The actions resolver must capture a concrete
+local manifest for one of the finite adapters.
+
+### Current-user startup approval and restoration
+
+`StartupTarget::disable(name, &NativeGuard)` captures an existing value name in HKCU
+`SOFTWARE\Microsoft\Windows\CurrentVersion\Run` and its `StartupApproved\Run` state.
+It never reads Run command values. Key last-write time detects a source entry change conservatively;
+changing another Run entry also invalidates the target.
+
+`StartupApproved` is not a documented stable blob contract. Only exactly 12-byte observed states
+2/3 and 6/7 are accepted; other encodings report unsupported. An absent approval is represented
+as unknown, preserved as absent for restoration. Already disabled entries cannot be proposed
+for disable again.
+
+Both native effects reopen the finite HKCU keys in a transaction, compare the source timestamp
+and current approval with the approved target, then write or delete only that approval value.
+A transaction failure has no nontransactional fallback. A concurrent registry change rolls back
+the transaction. The broker verifies the resulting approval after commit. See Microsoft's
+[transacted registry API](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regcreatekeytransactedw)
+and [transaction lifetime](https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-createtransaction).
+
+The started journal record carries `PreState::UserStartup { target }`, including the exact
+previous approval and desired state. `target.prepare_restore(&NativeGuard)` creates a new
+`RestoreUserStartup` target only while the original source and applied approval still match.
+Restoration needs its own local approval and journal. Recovery after a crash only reports
+`needs_inspection`; it never replays a registry write or an undo automatically.
+
+`StartupTarget::restore_from_journal` accepts only a matching, supported-version started/finished
+pair whose outcome was durably completed; malformed, interrupted or mismatched records fail closed.
+`ActionDesk::prepare_startup_restore(source_plan_id, item_index, protection)` prepares a fresh plan
+and reobserves the target. The CLI exposes `pcagent restore-startup <source-plan-id> --item-index 0`;
+JSON or noninteractive use prepares/reports it without approval, while an interactive run requires
+the existing typed local confirmation. No provider is contacted.
+
+The GUI Rust command `startup_restore_prepare({sourcePlanId, itemIndex})` returns `{turn_id, plan}`.
+Here `turn_id` identifies a local action group, not a persisted conversation turn. Display the
+returned plan before calling existing `action_run({turnId, planId})` after a local click, or decline
+it with `action_decline`. This replaces older pending proposals, refuses while an approved action
+is running, and remains available after app restart from the completed source plan's journal ID.
+The restoration command is not offered to the LLM. Frontend wiring remains to be added.
+
+Scope is HKCU Run only. HKLM, RunOnce, startup shortcuts and scheduled tasks remain inspection
+or Settings recommendations. A disabled startup entry takes effect on the next sign-in; the
+backend does not claim an immediate CPU or memory improvement.
 
 ### Recycle binding (spec 11.3)
 
@@ -175,3 +286,23 @@ others refused while pinned), refusal of swapped, hard-linked, in-use, missing a
 and an end-to-end recycle of a temp file (skipped if the runner has no recycle bin). Not exercised
 natively as a full acceptance scenario: Explorer and Settings launching, `WM_CLOSE` behaviour, Ctrl+C during a real action, and
 behaviour on non-NTFS, network, or redirected-folder volumes.
+
+Workstream 11 adds synthetic broker tests for no execution before approval, exact startup
+restoration, replacement/user-change refusal, per-file cleanup journaling, cancellation,
+protection and zero immediate reclaim. Windows-only read-only inventories use disposable old/new
+TEMP and shader files, including overflow and explicit selection. No test writes the user's Run
+or StartupApproved keys. Native registry transactions, actual startup behavior after sign-in,
+and a new end-to-end real-adapter recycle are still acceptance checks requiring controlled targets
+and local approval. Cargo validation is coordinated with the other backend workstreams.
+
+Agent wiring also has portable synthetic tests for the closed per-action argument schema,
+all Settings pages, HKCU/Run-only startup references, bounded maps, preserved applications,
+missing/changed process identities, scan-metadata binding, exclusions, unavailable manifests,
+projection privacy and pending startup/normal-close plans without execution. These tests do
+not invoke native effects or write startup settings.
+
+The scan-identity regression covers a same-size, same-date replacement before the first
+proposable display and after a target-map refresh, a changed volume serial, and an absent
+scan identity. Refresh removes the old target before validating its replacement; it cannot
+rebind the scanned reference to a different file identity. These new assertions belong to
+the coordinated central integration validation.

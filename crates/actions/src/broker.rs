@@ -5,8 +5,8 @@ use crate::{
     journal::{Journal, JournalPhase, JournalRecord, PreState},
     plan::PlanParts,
     ActionError, ActionIntent, ActionKind, ActionPlan, ApprovalToken, FileIdentity, FileTarget,
-    PlanItem, PlanState, Precondition, ProcessIdentity, ProcessTarget, Recovery, ResolvedTarget,
-    SettingsPage,
+    PlanItem, PlanState, Precondition, ProcessIdentity, ProcessTarget, Recovery,
+    RecycleCleanupTarget, ResolvedTarget, SettingsPage, StartupIdentity, StartupTarget,
 };
 use pcagent_shared::{unix_ms, Status, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,9 @@ pub trait TargetResolver {
 pub trait Guard {
     fn observe_file(&self, path: &Path) -> Result<Option<FileIdentity>, Status>;
     fn observe_process(&self, pid: u32) -> Result<Option<ProcessIdentity>, Status>;
+    fn observe_user_startup(&self, _value_name: &str) -> Result<Option<StartupIdentity>, Status> {
+        Err(Status::Unsupported)
+    }
 }
 /// Protected locations and user exclusions (policy crate). `true` refuses the target.
 pub trait ProtectionCheck {
@@ -88,6 +91,16 @@ pub trait Effects {
         permit: &Permit,
         file: &FileTarget,
     ) -> Result<EffectOutcome, EffectError>;
+    fn set_user_startup(
+        &self,
+        _permit: &Permit,
+        _startup: &StartupTarget,
+    ) -> Result<EffectOutcome, EffectError> {
+        Err(EffectError::new(
+            Status::Unsupported,
+            "user startup changes are unsupported",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +111,7 @@ pub enum Refusal {
     TargetMissing,
     TargetReplaced,
     ProcessReplaced,
+    StartupEntryChanged,
     ReparsePoint,
     /// Another open of the file forbids the exclusive pin required before recycling.
     InUse,
@@ -199,7 +213,6 @@ impl Broker<'_> {
             ActionKind::RunCleanupAdapter if cfg!(windows) && self.synthetic_cache.is_some() => {
                 Capability::Executable
             }
-            ActionKind::RunCleanupAdapter => Capability::Unsupported,
             _ => self.effects.capability(kind),
         }
     }
@@ -225,6 +238,19 @@ impl Broker<'_> {
         let mut seen_files = HashSet::new();
         for target_ref in &intent.target_refs {
             let target = self.resolve(kind, target_ref)?;
+            if let ResolvedTarget::RecycleCleanup(cleanup) = target {
+                for (index, file) in cleanup.split().enumerate() {
+                    let identity = &file.files()[0].identity;
+                    if !seen_files.insert((identity.volume_serial, identity.file_id)) {
+                        return Err(ActionError::DuplicateTarget(target_ref.clone()));
+                    }
+                    items.push(PlanItem {
+                        target_ref: format!("{}:file-{index:03}", file.kind().adapter_id()),
+                        target: ResolvedTarget::RecycleCleanup(file),
+                    });
+                }
+                continue;
+            }
             if let ResolvedTarget::File(f) = &target {
                 if !seen_files.insert((f.identity.volume_serial, f.identity.file_id)) {
                     return Err(ActionError::DuplicateTarget(target_ref.clone()));
@@ -260,6 +286,23 @@ impl Broker<'_> {
                     RecycleBinAvailable,
                 ],
             ),
+            ActionKind::RunCleanupAdapter
+                if items
+                    .iter()
+                    .all(|item| matches!(item.target, ResolvedTarget::RecycleCleanup(_))) =>
+            {
+                (
+                    Some(0),
+                    Recovery::RecycleBinIfOperationSupported,
+                    vec![
+                        CleanupManifestUnchanged,
+                        IdentityRevalidated,
+                        NotProtected,
+                        NotReparsePoint,
+                        RecycleBinAvailable,
+                    ],
+                )
+            }
             ActionKind::RunCleanupAdapter => (
                 items.first().and_then(|i| match &i.target {
                     ResolvedTarget::CleanupAdapter(c) => c.bytes,
@@ -267,6 +310,11 @@ impl Broker<'_> {
                 }),
                 Recovery::NoneSyntheticRegenerableData,
                 vec![SyntheticCacheMarkerPresent],
+            ),
+            ActionKind::DisableUserStartup | ActionKind::RestoreUserStartup => (
+                None,
+                Recovery::RestorePreviousStartupApproval,
+                vec![UserStartupEntryUnchanged, KnownStartupApprovalFormat],
             ),
         };
         ActionPlan::build(PlanParts {
@@ -288,10 +336,9 @@ impl Broker<'_> {
                     .map(|page| ResolvedTarget::SettingsPage { page })
                     .ok_or_else(|| ActionError::SettingsPageNotAllowed(target_ref.into()));
             }
-            ActionKind::RunCleanupAdapter => {
+            ActionKind::RunCleanupAdapter if target_ref == SYNTHETIC_DEMO_CACHE_ID => {
                 let cache = self
                     .synthetic_cache
-                    .filter(|_| target_ref == SYNTHETIC_DEMO_CACHE_ID)
                     .ok_or_else(|| ActionError::UnknownAdapter(target_ref.into()))?;
                 let manifest = cache
                     .manifest()
@@ -299,6 +346,11 @@ impl Broker<'_> {
                 return Ok(ResolvedTarget::CleanupAdapter(manifest));
             }
             _ => {}
+        }
+        if kind == ActionKind::RunCleanupAdapter
+            && crate::UserCleanupKind::from_ref(target_ref).is_none()
+        {
+            return Err(ActionError::UnknownAdapter(target_ref.into()));
         }
         let target = self
             .resolver
@@ -317,6 +369,19 @@ impl Broker<'_> {
             }
             (ResolvedTarget::Process(p), ActionKind::RequestNormalClose) => {
                 self.check_process(p).err()
+            }
+            (
+                ResolvedTarget::UserStartup(startup),
+                ActionKind::DisableUserStartup | ActionKind::RestoreUserStartup,
+            ) => {
+                startup.validate(kind)?;
+                self.check_startup(startup).err()
+            }
+            (ResolvedTarget::RecycleCleanup(cleanup), ActionKind::RunCleanupAdapter) => {
+                if target_ref != cleanup.kind().adapter_id() {
+                    return Err(mismatch());
+                }
+                self.check_cleanup(cleanup).err()
             }
             _ => return Err(mismatch()),
         };
@@ -366,6 +431,22 @@ impl Broker<'_> {
             Err(status) => Err(Refusal::Unverifiable { status }),
         }
     }
+    fn check_startup(&self, startup: &StartupTarget) -> Result<StartupIdentity, Refusal> {
+        match self.guard.observe_user_startup(startup.value_name()) {
+            Ok(Some(observed)) if observed == *startup.identity() => Ok(observed),
+            Ok(Some(_)) => Err(Refusal::StartupEntryChanged),
+            Ok(None) => Err(Refusal::TargetMissing),
+            Err(Status::PermissionDenied) => Err(Refusal::PermissionDenied),
+            Err(status) => Err(Refusal::Unverifiable { status }),
+        }
+    }
+    fn check_cleanup(&self, cleanup: &RecycleCleanupTarget) -> Result<(), Refusal> {
+        cleanup.validate_directories(self.guard, self.protection)?;
+        for file in cleanup.files() {
+            self.check_file(file)?;
+        }
+        Ok(())
+    }
     fn revalidate(&self, target: &ResolvedTarget) -> Result<PreState, Refusal> {
         match target {
             ResolvedTarget::File(f) => self.check_file(f).map(|identity| PreState::File {
@@ -376,6 +457,18 @@ impl Broker<'_> {
                 .check_process(p)
                 .map(|identity| PreState::Process { identity }),
             ResolvedTarget::SettingsPage { page } => Ok(PreState::SettingsPage { page: *page }),
+            ResolvedTarget::UserStartup(startup) => {
+                self.check_startup(startup)?;
+                Ok(PreState::UserStartup {
+                    target: startup.clone(),
+                })
+            }
+            ResolvedTarget::RecycleCleanup(cleanup) => {
+                self.check_cleanup(cleanup)?;
+                Ok(PreState::RecycleCleanup {
+                    target: cleanup.clone(),
+                })
+            }
             ResolvedTarget::CleanupAdapter(c) => match self.synthetic_cache {
                 Some(cache) if cache.root() == c.root => match cache.validate(c) {
                     Ok(()) => Ok(PreState::CleanupAdapter {
@@ -406,22 +499,40 @@ impl Broker<'_> {
             (ActionKind::RequestNormalClose, ResolvedTarget::Process(p)) => {
                 self.effects.request_normal_close(permit, p)
             }
-            (ActionKind::RecycleSelectedFiles, ResolvedTarget::File(f)) => {
-                match self.effects.recycle_file(permit, f) {
+            (
+                ActionKind::DisableUserStartup | ActionKind::RestoreUserStartup,
+                ResolvedTarget::UserStartup(startup),
+            ) => {
+                if startup.validate(kind).is_err() {
+                    return ItemOutcome::Refused {
+                        reason: Refusal::StartupEntryChanged,
+                    };
+                }
+                match self.effects.set_user_startup(permit, startup) {
                     Ok(EffectOutcome::Done(detail)) => {
-                        return match self.guard.observe_file(&f.path) {
-                            Ok(Some(id)) if id == f.identity => ItemOutcome::Failed {
-                                status: Status::Error,
-                                detail: "target still present after the recycle operation".into(),
-                            },
-                            _ => ItemOutcome::Completed {
-                                detail,
-                                bytes_removed: Some(0),
-                            },
+                        return match self.guard.observe_user_startup(startup.value_name()) {
+                            Ok(Some(observed)) if observed.run_key_last_write_filetime == startup.identity().run_key_last_write_filetime
+                                && &observed.approval == startup.desired_approval() => ItemOutcome::Completed { detail, bytes_removed: None },
+                            _ => ItemOutcome::Failed { status: Status::Error, detail: "startup approval could not be verified after the operation; inspect its journal before restoring".into() },
                         };
                     }
                     other => other,
                 }
+            }
+            (ActionKind::RunCleanupAdapter, ResolvedTarget::RecycleCleanup(cleanup)) => {
+                let Some(file) = cleanup
+                    .files()
+                    .first()
+                    .filter(|_| cleanup.files().len() == 1)
+                else {
+                    return ItemOutcome::Refused {
+                        reason: Refusal::AdapterPreconditionFailed,
+                    };
+                };
+                return self.recycle(permit, file);
+            }
+            (ActionKind::RecycleSelectedFiles, ResolvedTarget::File(f)) => {
+                return self.recycle(permit, f);
             }
             (ActionKind::RunCleanupAdapter, ResolvedTarget::CleanupAdapter(c)) => {
                 return match self.synthetic_cache {
@@ -442,6 +553,33 @@ impl Broker<'_> {
             Err(e) => ItemOutcome::Failed {
                 status: e.status,
                 detail: e.detail,
+            },
+        }
+    }
+    fn recycle(&self, permit: &Permit, file: &FileTarget) -> ItemOutcome {
+        match self.effects.recycle_file(permit, file) {
+            Ok(EffectOutcome::Done(detail)) => match self.guard.observe_file(&file.path) {
+                Ok(None) => ItemOutcome::Completed {
+                    detail,
+                    bytes_removed: Some(0),
+                },
+                Ok(Some(identity)) if !crate::same_object(&identity, &file.identity) => {
+                    ItemOutcome::Completed {
+                        detail,
+                        bytes_removed: Some(0),
+                    }
+                }
+                _ => ItemOutcome::Failed {
+                    status: Status::Error,
+                    detail:
+                        "target disappearance could not be verified after the recycle operation"
+                            .into(),
+                },
+            },
+            Ok(EffectOutcome::Refused(reason)) => ItemOutcome::Refused { reason },
+            Err(error) => ItemOutcome::Failed {
+                status: error.status,
+                detail: error.detail,
             },
         }
     }

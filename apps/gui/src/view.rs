@@ -126,6 +126,7 @@ pub struct Engine {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ProcessRow {
+    pub entity_ref: String,
     pub name: String,
     pub pid: u32,
     pub working_set: Measure,
@@ -134,6 +135,7 @@ pub struct ProcessRow {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Dashboard {
+    pub selection_source_id: Option<String>,
     pub collected_at_unix_ms: u64,
     pub memory: Memory,
     pub cpu: Cpu,
@@ -174,6 +176,241 @@ pub fn volumes(inventory: &HardwareInventory) -> Vec<VolumeView> {
             })
         })
         .collect()
+}
+
+/// One target of a proposed action, as the person reviews it. Local paths may appear: this is
+/// the local window, and the person must see exactly what would be touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TargetView {
+    pub kind: String,
+    pub label: String,
+    pub files: Option<u64>,
+    pub bytes: Option<u64>,
+}
+/// A proposal awaiting a decision in the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlanView {
+    pub plan_id: String,
+    pub kind: String,
+    pub targets: Vec<TargetView>,
+    pub recovery: String,
+    pub checks: Vec<String>,
+    /// `None` until the person declines or runs it; then `declined`, `running`, the outcome or
+    /// `refused`.
+    pub decision: Option<String>,
+}
+/// What an approved action did, with the measured before/after comparison.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionOutcome {
+    pub plan_id: String,
+    pub overall: String,
+    pub items: Value,
+    pub verification: Value,
+}
+
+fn snake(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+pub fn plan(plan: &pcagent_actions::ActionPlan, decision: Option<&str>) -> PlanView {
+    use pcagent_actions::ResolvedTarget;
+    let targets = plan
+        .items()
+        .iter()
+        .map(|item| match &item.target {
+            ResolvedTarget::File(f) => TargetView {
+                kind: "file".into(),
+                label: f.path.display().to_string(),
+                files: Some(1),
+                bytes: None,
+            },
+            ResolvedTarget::SettingsPage { page } => TargetView {
+                kind: "settings_page".into(),
+                label: page.uri().into(),
+                files: None,
+                bytes: None,
+            },
+            ResolvedTarget::CleanupAdapter(c) => TargetView {
+                kind: "cleanup".into(),
+                label: c.root.display().to_string(),
+                files: Some(c.files),
+                bytes: c.bytes,
+            },
+            ResolvedTarget::Process(t) => TargetView {
+                kind: "process".into(),
+                label: format!(
+                    "{} (PID {})",
+                    t.executable_name.as_deref().unwrap_or("process"),
+                    t.identity.pid
+                ),
+                files: None,
+                bytes: None,
+            },
+            ResolvedTarget::UserStartup(t) => TargetView {
+                kind: "startup".into(),
+                label: t.value_name().into(),
+                files: None,
+                bytes: None,
+            },
+            ResolvedTarget::RecycleCleanup(c) => TargetView {
+                kind: "cleanup".into(),
+                label: c.root().path.display().to_string(),
+                files: Some(c.files().len() as u64),
+                bytes: c.bytes(),
+            },
+        })
+        .collect();
+    PlanView {
+        plan_id: plan.plan_id().to_owned(),
+        kind: snake(&plan.action_kind()),
+        targets,
+        recovery: snake(&plan.recovery()),
+        checks: plan.preconditions().iter().map(snake).collect(),
+        decision: decision.map(str::to_owned),
+    }
+}
+
+pub fn outcome(
+    result: &pcagent_actions::ActionResult,
+    verification: &pcagent_agent::ActionVerification,
+) -> ActionOutcome {
+    ActionOutcome {
+        plan_id: result.plan_id.clone(),
+        overall: snake(&result.overall),
+        items: serde_json::to_value(&result.items).unwrap_or_default(),
+        verification: serde_json::to_value(verification).unwrap_or_default(),
+    }
+}
+
+/// A Windows service hosted by one of an application's processes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ServiceView {
+    pub name: String,
+    pub display_name: String,
+    pub state: String,
+}
+/// One process of an application group, so a group is never mistaken for a single process.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemberView {
+    pub entity_ref: String,
+    pub name: String,
+    pub pid: u32,
+    pub cpu: Measure,
+    pub working_set: Measure,
+    pub services: Vec<ServiceView>,
+}
+/// An application group: its measurements are sums over its members during the window.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplicationView {
+    pub entity_ref: String,
+    pub name: String,
+    pub process_count: usize,
+    pub members_truncated: bool,
+    pub cpu: Measure,
+    pub working_set: Measure,
+    pub private_commit: Measure,
+    pub working_set_increase: Measure,
+    pub io_read: Measure,
+    pub io_write: Measure,
+    pub gpu: Measure,
+    pub services: Vec<ServiceView>,
+    /// Members among the returned processes; others were ranked lower and are counted only.
+    pub members: Vec<MemberView>,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivityView {
+    pub selection_source_id: Option<String>,
+    pub collected_at_unix_ms: u64,
+    pub window_ms: u64,
+    pub status: Status,
+    pub applications: Vec<ApplicationView>,
+    pub applications_total: usize,
+    pub coverage: ProcessCoverage,
+    pub services_status: Status,
+    pub gpu_status: Status,
+    pub limitations: Vec<String>,
+}
+
+fn evidence_measure(evidence: &[Evidence], entity: &str, metric: Metric) -> Measure {
+    Measure::of(
+        evidence
+            .iter()
+            .find(|e| e.entity_ref == entity && e.metric == metric),
+    )
+}
+
+fn services(list: &[pcagent_telemetry::ServiceProcess]) -> Vec<ServiceView> {
+    list.iter()
+        .map(|s| ServiceView {
+            name: s.service_name.clone(),
+            display_name: s.display_name.clone(),
+            state: s.state.clone(),
+        })
+        .collect()
+}
+
+/// Application groups with their members and services, for the local Live PC view.
+pub fn activity(a: &pcagent_telemetry::ProcessActivity) -> ActivityView {
+    let m = |entity: &str, metric| evidence_measure(&a.evidence, entity, metric);
+    let applications = a
+        .applications
+        .iter()
+        .map(|app| {
+            let members: Vec<MemberView> = a
+                .processes
+                .iter()
+                .filter(|p| p.application_ref == app.entity_ref)
+                .map(|p| MemberView {
+                    entity_ref: p.instance.entity_ref.clone(),
+                    name: process_name(&p.instance),
+                    pid: p.instance.pid,
+                    cpu: m(&p.instance.entity_ref, Metric::ProcessCpuBasisPoints),
+                    working_set: m(&p.instance.entity_ref, Metric::ProcessWorkingSetBytes),
+                    services: services(&p.services),
+                })
+                .collect();
+            let mut all_services: Vec<ServiceView> =
+                members.iter().flat_map(|p| p.services.clone()).collect();
+            all_services.sort_by(|x, y| x.name.cmp(&y.name));
+            all_services.dedup_by(|x, y| x.name == y.name);
+            ApplicationView {
+                entity_ref: app.entity_ref.clone(),
+                name: app
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("Unnamed application")
+                    .to_owned(),
+                process_count: app.process_count,
+                members_truncated: app.members_truncated,
+                cpu: m(&app.entity_ref, Metric::ProcessCpuBasisPoints),
+                working_set: m(&app.entity_ref, Metric::ProcessWorkingSetBytes),
+                private_commit: m(&app.entity_ref, Metric::ProcessPrivateCommitBytes),
+                working_set_increase: m(&app.entity_ref, Metric::ProcessWorkingSetIncreaseBytes),
+                io_read: m(&app.entity_ref, Metric::ProcessIoReadBytesPerSecond),
+                io_write: m(&app.entity_ref, Metric::ProcessIoWriteBytesPerSecond),
+                gpu: m(&app.entity_ref, Metric::ProcessGpuBasisPoints),
+                services: all_services,
+                members,
+            }
+        })
+        .collect();
+    ActivityView {
+        selection_source_id: None,
+        collected_at_unix_ms: a.window.finished_at_unix_ms,
+        window_ms: a.window.duration_ms,
+        status: a.status,
+        applications,
+        applications_total: a.coverage.applications_total,
+        coverage: a.coverage.processes.clone(),
+        services_status: a.coverage.services_status,
+        gpu_status: a.coverage.gpu_status,
+        limitations: a.limitations.clone(),
+    }
 }
 
 pub fn process_name(p: &ProcessInstance) -> String {
@@ -251,6 +488,7 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
         .map(|p| {
             let m = |metric| measure(s, &p.entity_ref, metric);
             ProcessRow {
+                entity_ref: p.entity_ref.clone(),
                 name: process_name(p),
                 pid: p.pid,
                 working_set: m(Metric::ProcessWorkingSetBytes),
@@ -260,6 +498,7 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
         })
         .collect();
     Dashboard {
+        selection_source_id: None,
         collected_at_unix_ms: unix_ms(),
         memory: Memory {
             used_ratio: ratio(used, total.value),
@@ -337,6 +576,9 @@ pub struct Usage {
     pub completion_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub cost: Option<CostView>,
+    pub model_requests: Vec<pcagent_agent::ModelRequestUsage>,
+    pub total_cost_usd: Option<String>,
+    pub routing: Option<pcagent_agent::routing::RoutingState>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorView {
@@ -458,6 +700,9 @@ pub fn usage(s: &Stats) -> Usage {
         completion_tokens: s.completion_tokens,
         reasoning_tokens: s.reasoning_tokens,
         cost: s.cost.as_ref().map(cost),
+        model_requests: s.model_requests.clone(),
+        total_cost_usd: s.total_cost_usd.clone(),
+        routing: s.routing.clone(),
     }
 }
 fn answer(r: &Investigation, a: &Answer) -> AnswerView {
@@ -601,6 +846,7 @@ pub struct Item {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Page {
+    pub selection_source_id: Option<String>,
     pub kind: ItemKind,
     pub items: Vec<Item>,
     pub total: usize,
@@ -658,6 +904,7 @@ fn item(i: &ItemView, root: &str) -> Item {
 }
 pub fn page(p: &LargestItemsPage, root: &str) -> Page {
     Page {
+        selection_source_id: None,
         kind: p.kind,
         items: p.items.iter().map(|i| item(i, root)).collect(),
         total: p.total,
@@ -842,6 +1089,46 @@ mod tests {
         assert_eq!(d.gpu_engines[0].kind, "3d");
         assert_eq!(d.processes[0].name, "editor.exe");
         assert_eq!(d.processes[0].working_set.value, Some(3 << 30));
+    }
+
+    #[test]
+    fn applications_keep_their_own_sums_members_and_services() {
+        let window = serde_json::json!({"started_at_unix_ms":1000,"finished_at_unix_ms":3000,"duration_ms":2000});
+        let ev = |metric: &str, entity: &str, value: Option<u64>| {
+            serde_json::json!({"id":format!("{entity}-{metric}"),
+            "metric":metric,"entity_ref":entity,"value":value,"unit":"","source":"fixture","window":window,
+            "status": if value.is_some() {"ok"} else {"partial"},"origin":"synthetic_fixture","limitations":["not measured"]})
+        };
+        let process = |r: &str, pid: u32, app: &str, services: serde_json::Value| {
+            serde_json::json!({
+            "instance":{"entity_ref":r,"pid":pid,"creation_time_filetime":1,"boot_id":null,"executable_name":"browser.exe"},
+            "parent_ref":null,"application_ref":app,"role":"application","handles":1,"threads":1,"session":1,"services":services})
+        };
+        let raw: pcagent_telemetry::ProcessActivity = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"id":"a","session_id":"s","origin":"synthetic_fixture","status":"ok","window":window,
+            "processes":[process("proc-1",10,"app-1",serde_json::json!([])),
+                process("proc-2",11,"app-1",serde_json::json!([{"pid":11,"service_name":"Spooler","display_name":"Print Spooler","state":"running"}]))],
+            "applications":[{"entity_ref":"app-1","name":"browser.exe","process_refs":["proc-1","proc-2"],"process_count":12,"members_truncated":false}],
+            "evidence":[ev("process_cpu_basis_points","app-1",Some(940)),ev("process_working_set_bytes","app-1",Some(3 << 30)),
+                ev("process_cpu_basis_points","proc-1",Some(700)),ev("process_gpu_basis_points","app-1",None)],
+            "coverage":{"processes":{"status":"ok","enumerated":2,"readable":2,"permission_denied":0,"unavailable":0,"returned":2,"enumeration_truncated":false},
+                "stable_instances":2,"new_instances":0,"exited_instances":0,"pseudo_processes":[],"services_status":"ok",
+                "services_attributed":1,"services_unattributed":0,"gpu_status":"unsupported","gpu_processes":0,
+                "gpu_instances_rejected":0,"gpu_instances_unattributed":0,"applications_total":5,"applications_returned":1},
+            "limitations":[]
+        })).unwrap();
+        let view = activity(&raw);
+        let app = &view.applications[0];
+        assert_eq!((app.name.as_str(), app.process_count), ("browser.exe", 12));
+        // The group's own sum, not its first member's value.
+        assert_eq!(app.cpu.value, Some(940));
+        assert_eq!(app.members.len(), 2);
+        assert_eq!(app.members[0].cpu.value, Some(700));
+        assert_eq!(app.services[0].display_name, "Print Spooler");
+        // Unknown GPU stays unknown, with its reason.
+        assert_eq!(app.gpu.value, None);
+        assert_eq!(app.gpu.note.as_deref(), Some("not measured"));
+        assert_eq!(view.applications_total, 5);
     }
 
     #[test]

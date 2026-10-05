@@ -132,6 +132,10 @@ impl Pdh {
     pub(crate) fn baseline_age(&self, now: Duration) -> Option<Duration> {
         self.baseline.and_then(|b| now.checked_sub(b.at))
     }
+    /// Monotonic anchor of the pending collection, used to bind local process identities.
+    pub(crate) fn baseline_at(&self) -> Option<Duration> {
+        self.baseline.map(|b| b.at)
+    }
     /// Starts a new window at `now`.
     pub(crate) fn start(&mut self, now: Duration) {
         self.baseline = self.collect().ok().map(|()| Baseline {

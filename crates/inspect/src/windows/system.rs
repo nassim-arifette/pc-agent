@@ -80,6 +80,7 @@ pub(super) fn state(out: &mut Inspection) {
         "Win32.GetTickCount64 (includes sleep/hibernation)",
     );
     version(out);
+    super::compatibility::collect(out);
     const SOURCE: &str = "Registry reboot markers";
     let mut unknown = false;
     let mut pending = false;
@@ -391,4 +392,6 @@ pub(super) fn power(out: &mut Inspection) {
         }
     }
     out.coverage("gpu_sensors",if found{C::Ok}else{C::Unsupported},"NVML / Windows GPU counters","NVIDIA sensor availability depends on driver support; unsupported sensors remain unknown. ACPI zones are not necessarily CPU package temperatures.");
+    super::sensors::collect(out);
+    super::battery::collect(out);
 }
