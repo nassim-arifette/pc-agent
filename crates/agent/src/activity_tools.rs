@@ -53,7 +53,11 @@ fn observation(index: usize, e: &Evidence) -> Value {
     })
 }
 
-fn project(activity: ProcessActivity, sharing: Sharing, privacy: &PrivacyContext) -> ToolOutput {
+pub(crate) fn project(
+    activity: ProcessActivity,
+    sharing: Sharing,
+    privacy: &PrivacyContext,
+) -> ToolOutput {
     let mut process_names = Map::new();
     let mut shared_names = Map::new();
     let mut known_names = BTreeMap::new();

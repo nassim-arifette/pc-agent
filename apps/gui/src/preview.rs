@@ -20,7 +20,8 @@ pub struct PreparedTurn {
     pub privacy: PrivacyContext,
     pub storage_context: StorageContext,
     pub file_names: bool,
-    created: Instant,
+    pub routing: Option<crate::model_routing::RoutingReview>,
+    expires_at: Instant,
 }
 
 impl PreparedTurn {
@@ -59,7 +60,8 @@ impl PreparedTurn {
             privacy,
             storage_context: StorageContext::default(),
             file_names: false,
-            created: Instant::now(),
+            routing: None,
+            expires_at: Instant::now() + MAX_AGE,
         }
     }
 }
@@ -82,7 +84,7 @@ pub fn take(
     let Some(pending) = slot.as_ref() else {
         return Err("Open the sharing preview before sending.".into());
     };
-    if pending.created.elapsed() > MAX_AGE {
+    if pending.expires_at <= Instant::now() {
         return Err("The preview expired. Open it again for a fresh measurement.".into());
     }
     if pending.id != reviewed.id
@@ -100,6 +102,16 @@ pub fn take(
         );
     }
     Ok(slot.take().expect("matching ticket exists"))
+}
+
+/// Revoke a deleted conversation's frozen context before its deletion command returns.
+pub fn invalidate_conversation(slot: &mut Option<PreparedTurn>, conversation_id: &str) {
+    if slot
+        .as_ref()
+        .is_some_and(|pending| pending.conversation_id.as_deref() == Some(conversation_id))
+    {
+        *slot = None;
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +204,7 @@ mod tests {
         for changed in 0..8 {
             let mut p = pending();
             if changed == 6 {
-                p.created = Instant::now() - MAX_AGE - Duration::from_secs(1);
+                p.expires_at = Instant::now();
             }
             let (id, past) = (p.id.clone(), p.past.clone());
             let mut input = reviewed(&id, &past);
@@ -208,6 +220,18 @@ mod tests {
             }
             assert!(take(&mut Some(p), input).is_err(), "case {changed}");
         }
+    }
+
+    #[test]
+    fn deleting_a_conversation_revokes_its_preview_even_after_the_past_was_read() {
+        let p = pending();
+        let (id, previously_read_past) = (p.id.clone(), p.past.clone());
+        let mut slot = Some(p);
+        invalidate_conversation(&mut slot, "unrelated-conversation");
+        assert!(slot.is_some());
+        invalidate_conversation(&mut slot, "conversation");
+        assert!(take(&mut slot, reviewed(&id, &previously_read_past)).is_err());
+        assert!(slot.is_none());
     }
 
     #[test]

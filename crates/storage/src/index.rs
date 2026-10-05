@@ -326,6 +326,10 @@ pub struct StorageIndex {
 }
 
 impl StorageIndex {
+    /// Original scan window; reading a stored page must not redate its measurements.
+    pub fn measurement_window(&self) -> &Window {
+        &self.window
+    }
     pub(crate) fn new(scope: &ScanScope, backend: &'static str, started_ms: u64) -> Self {
         Self {
             scan_id: pcagent_shared::new_id("scan"),
@@ -478,6 +482,11 @@ impl StorageIndex {
     /// Local-only full path of a referenced item.
     pub fn local_path(&self, item_ref: &str) -> Option<PathBuf> {
         self.resolve(item_ref).map(|i| self.path(i))
+    }
+    /// Scan-time object identity for local revalidation. Never included in serialized views.
+    pub fn local_identity(&self, item_ref: &str) -> Option<(u64, u128)> {
+        self.resolve(item_ref)
+            .and_then(|i| self.entries[i].identity)
     }
     pub fn item(&self, item_ref: &str) -> Result<ItemView, StorageError> {
         self.resolve(item_ref)

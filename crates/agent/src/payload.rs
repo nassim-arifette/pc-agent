@@ -12,6 +12,9 @@ use std::collections::{BTreeMap, HashMap};
 pub struct Measurements {
     /// Entity → metric → value, for evidence with a usable value (status `ok`).
     pub values: BTreeMap<String, BTreeMap<String, u64>>,
+    /// The same usable values in human units; raw integers remain the verifier's evidence.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub readable_values: BTreeMap<String, BTreeMap<String, String>>,
     /// Metric → unit, for every metric named in `values` or `not_measured`.
     pub units: BTreeMap<String, String>,
     /// Metric → longest observation window in milliseconds, for values measured over a window.
@@ -54,6 +57,10 @@ pub fn measurements<'a>(evidence: impl IntoIterator<Item = &'a Evidence>) -> Mea
                     .entry(e.entity_ref.clone())
                     .or_default()
                     .insert(name.clone(), value);
+                m.readable_values
+                    .entry(e.entity_ref.clone())
+                    .or_default()
+                    .insert(name.clone(), e.metric.format_value(value));
                 if e.window.duration_ms > 0 {
                     let w = m.windows_ms.entry(name).or_default();
                     *w = (*w).max(e.window.duration_ms);

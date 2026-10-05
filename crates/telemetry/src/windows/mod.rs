@@ -10,7 +10,7 @@ pub(super) use inventory::hardware_inventory;
 pub(super) use tree::process_tree;
 
 use super::{cpu_busy_basis_points, process_cpu_basis_points, Collector, TickSample};
-use crate::counters::{counter_evidence, CounterReadings, MIN_RATE_WINDOW};
+use crate::counters::{counter_evidence, CounterReadings, Instances, Sampled, MIN_RATE_WINDOW};
 use crate::identity::{CounterSample, Key};
 use pcagent_shared::{
     unix_ms, Evidence, GpuDevice, InstanceState, Metric, ProcessCoverage, Snapshot, Status, Window,
@@ -127,8 +127,12 @@ pub(super) fn boot_id() -> Option<String> {
     let now_ms = (now / 10_000).checked_sub(FILETIME_UNIX_EPOCH_MS)?;
     super::boot_estimate_id(now_ms, uptime)
 }
-/// Returns (creation time, kernel + user time), both in 100 ns FILETIME units.
-fn times(handle: &OwnedHandle) -> Result<(u64, Option<u64>), Status> {
+struct ProcessTimes {
+    created: u64,
+    exited: u64,
+    cpu_100ns: Option<u64>,
+}
+fn handle_times(handle: &OwnedHandle) -> Result<ProcessTimes, Status> {
     // SAFETY: the handle is valid for the call; FILETIME outputs are plain data.
     unsafe {
         let (mut created, mut exit, mut kernel, mut user): (
@@ -142,9 +146,27 @@ fn times(handle: &OwnedHandle) -> Result<(u64, Option<u64>), Status> {
         }
         match filetime(created) {
             0 => Err(Status::Partial),
-            c => Ok((c, filetime(kernel).checked_add(filetime(user)))),
+            created => Ok(ProcessTimes {
+                created,
+                exited: filetime(exit),
+                cpu_100ns: filetime(kernel).checked_add(filetime(user)),
+            }),
         }
     }
+}
+/// Returns (creation time, kernel + user time), both in 100 ns FILETIME units.
+fn times(handle: &OwnedHandle) -> Result<(u64, Option<u64>), Status> {
+    handle_times(handle).map(|times| (times.created, times.cpu_100ns))
+}
+fn handle_state(handle: &OwnedHandle, expected_created: u64) -> InstanceState {
+    let mut code = 0_u32;
+    // SAFETY: the query-only handle is valid and `code` is a valid DWORD output.
+    let exit_code = (unsafe { GetExitCodeProcess(handle.0, &mut code) } != 0).then_some(code);
+    // Read exit FILETIME after the exit code: an exited process can return code 259 too.
+    let times = handle_times(handle)
+        .ok()
+        .map(|times| (times.created, times.exited));
+    crate::activity::handle_instance_state(expected_created, times, exit_code, STILL_ACTIVE as u32)
 }
 pub(super) fn revalidate(pid: u32, created: u64) -> InstanceState {
     // The system list answers for every process, including those that refuse to be opened.
@@ -160,21 +182,7 @@ pub(super) fn revalidate(pid: u32, created: u64) -> InstanceState {
         Err(_) if last_error() == ERROR_INVALID_PARAMETER => return InstanceState::Exited,
         Err(_) => return InstanceState::Unverified,
     };
-    match times(&handle) {
-        Ok((c, _)) if c != created => InstanceState::PidReused,
-        Ok(_) => {
-            let mut code = 0_u32;
-            // SAFETY: the handle is valid; code is a valid DWORD output.
-            if unsafe { GetExitCodeProcess(handle.0, &mut code) } == 0 {
-                InstanceState::Unverified
-            } else if code == STILL_ACTIVE as u32 {
-                InstanceState::Running
-            } else {
-                InstanceState::Exited
-            }
-        }
-        Err(_) => InstanceState::Unverified,
-    }
+    handle_state(&handle, created)
 }
 fn cpu_ticks() -> Result<[u64; 3], Status> {
     // SAFETY: FILETIME is plain data; all output pointers are valid for the call.
@@ -714,6 +722,7 @@ pub(super) fn collect(
     reuse_cpu: bool,
     sort: crate::ProcessSort,
 ) -> Snapshot {
+    collector.recording_gpu_baseline = None;
     let mut result = Snapshot::empty(&collector.session_id);
     let fresh = start_counters(collector, reuse_cpu);
     // First process readings now: the counters' one-second window then gives their rates.
@@ -722,12 +731,78 @@ pub(super) fn collect(
         .flatten();
     collect_cpu(&mut result, collector, reuse_cpu);
     collect_memory(&mut result);
-    collect_counters(&mut result, collector, fresh && !reuse_cpu);
+    let _ = collect_counters(&mut result, collector, fresh && !reuse_cpu, false);
     collect_nvidia(&mut result, collector);
     if include_processes {
         collect_processes(&mut result, collector, limit, sort, baseline.as_ref());
     }
     result.limitations.push("Short sample: no sustained contention, memory leak or causal diagnosis can be established.".into());
+    result
+}
+
+pub(super) struct RecordingGpuBaseline {
+    at: Duration,
+    identities: HashSet<Key>,
+}
+struct RecordingGpuCapture {
+    instances: Sampled<Instances>,
+    window: Window,
+    bounds: Option<(Duration, Duration)>,
+}
+
+/// The retained process list precedes the next PDH baseline. Query-only handle checks after
+/// the current PDH read bracket its PID-only counters without another full enumeration.
+pub(super) fn collect_recording(
+    collector: &mut Collector,
+    limit: usize,
+    sort: crate::ProcessSort,
+) -> Snapshot {
+    let mut result = Snapshot::empty(&collector.session_id);
+    let _ = start_counters(collector, true);
+    collect_cpu(&mut result, collector, true);
+    collect_memory(&mut result);
+    collect_processes(&mut result, collector, limit, sort, None);
+    let before: HashSet<_> = result
+        .processes
+        .iter()
+        .map(|process| (process.pid, process.creation_time_filetime))
+        .collect();
+    let prior = collector.recording_gpu_baseline.take();
+    if let Some(capture) = collect_counters(&mut result, collector, false, true) {
+        let previous = prior
+            .filter(|baseline| {
+                capture
+                    .bounds
+                    .is_some_and(|(start, _)| baseline.at == start)
+            })
+            .map(|baseline| baseline.identities)
+            .unwrap_or_default();
+        let verified: HashSet<_> = result
+            .processes
+            .iter()
+            .filter(|process| previous.contains(&(process.pid, process.creation_time_filetime)))
+            .filter_map(|process| {
+                let handle = OwnedHandle::open(process.pid).ok()?;
+                (handle_state(&handle, process.creation_time_filetime) == InstanceState::Running)
+                    .then_some((process.pid, process.creation_time_filetime))
+            })
+            .collect();
+        result
+            .evidence
+            .extend(crate::activity::recording_gpu_evidence(
+                &result.processes,
+                &previous,
+                &verified,
+                &capture.instances,
+                &capture.window,
+            ));
+        collector.recording_gpu_baseline = capture.bounds.map(|(_, end)| RecordingGpuBaseline {
+            at: end,
+            identities: before,
+        });
+    }
+    collect_nvidia(&mut result, collector);
+    result.limitations.push("Recorded process GPU uses the existing PDH window for the retained process list. First windows, missing engines and identities that cannot be revalidated remain unknown; occupancy is not per-application energy.".into());
     result
 }
 /// Opens the PDH query once per collector. A fresh window starts now unless a reusable
@@ -778,9 +853,14 @@ fn collect_nvidia(result: &mut Snapshot, collector: &mut Collector) {
             .push(format!("NVIDIA GPU details unavailable: {why}.")),
     }
 }
-fn collect_counters(result: &mut Snapshot, collector: &mut Collector, fresh: bool) {
+fn collect_counters(
+    result: &mut Snapshot,
+    collector: &mut Collector,
+    fresh: bool,
+    retain_gpu: bool,
+) -> Option<RecordingGpuCapture> {
     let started = collector.started;
-    let (readings, window) = match collector.pdh.as_mut() {
+    let (readings, window, bounds) = match collector.pdh.as_mut() {
         Some(Ok(query)) => {
             if fresh {
                 if let Some(rest) = query
@@ -790,13 +870,19 @@ fn collect_counters(result: &mut Snapshot, collector: &mut Collector, fresh: boo
                     std::thread::sleep(rest);
                 }
             }
+            let baseline = query.baseline_at();
             match query.read(started.elapsed()) {
-                Ok(r) => r,
-                Err(u) => (CounterReadings::unavailable(&u), Window::instant()),
+                Ok((readings, window)) => (readings, window, baseline.zip(query.baseline_at())),
+                Err(u) => (CounterReadings::unavailable(&u), Window::instant(), None),
             }
         }
-        Some(Err(u)) => (CounterReadings::unavailable(u), Window::instant()),
-        None => return,
+        Some(Err(u)) => (CounterReadings::unavailable(u), Window::instant(), None),
+        None => return None,
     };
     result.evidence.extend(counter_evidence(&readings, &window));
+    retain_gpu.then_some(RecordingGpuCapture {
+        instances: readings.gpu_engine_percent,
+        window,
+        bounds,
+    })
 }

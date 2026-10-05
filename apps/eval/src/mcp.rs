@@ -99,9 +99,12 @@ impl<T: Toolbox> Session<'_, T> {
                 if params.get("cursor").is_some() {
                     return Some(error(id, -32602, "This tool list has no cursor"));
                 }
-                let mut tools: Vec<Value> = self.tools.specs().iter().map(|s| {
-                    let definition = s.definition();
-                    json!({"name": s.name, "description": s.description,
+                let definitions = self.tools.definitions();
+                let Some(definitions) = definitions.as_array() else {
+                    return Some(error(id, -32603, "Tool definitions unavailable"));
+                };
+                let mut tools: Vec<Value> = definitions.iter().map(|definition| {
+                    json!({"name": definition["function"]["name"], "description": definition["function"]["description"],
                         "inputSchema": definition["function"]["parameters"],
                         "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}})
                 }).collect();

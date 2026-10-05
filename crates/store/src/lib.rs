@@ -2,9 +2,14 @@
 //! profile keeps each conversation with its turns, as the interface showed them. Nothing here is
 //! ever sent anywhere; the person can delete a conversation or everything, and old ones expire.
 #![forbid(unsafe_code)]
+mod battery;
 mod process_peaks;
 pub mod sampler;
 mod samples;
+pub use battery::{
+    BatteryGap, BatteryHistory, BatteryPoint, BatteryRecording, BatteryRecordingCoverage,
+    MAX_BATTERY_POINTS, MAX_RECORDING_BATTERIES,
+};
 pub use process_peaks::ProcessPeaks;
 use rusqlite::{params, Connection, OptionalExtension};
 pub use samples::{
@@ -17,7 +22,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -156,6 +161,9 @@ impl Store {
                 PRAGMA user_version = 4;
                 COMMIT;",
             )?;
+        }
+        if version < 5 {
+            conn.execute_batch(battery::MIGRATION)?;
         }
         Ok(Self { conn })
     }

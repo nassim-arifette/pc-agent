@@ -147,6 +147,18 @@ pub(crate) fn verify_recycled(
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeGuard;
 impl Guard for NativeGuard {
+    fn observe_user_startup(
+        &self,
+        value_name: &str,
+    ) -> Result<Option<crate::StartupIdentity>, Status> {
+        #[cfg(windows)]
+        return crate::windows::startup::observe(value_name);
+        #[cfg(not(windows))]
+        {
+            let _ = value_name;
+            Err(Status::Unsupported)
+        }
+    }
     fn observe_file(&self, path: &Path) -> Result<Option<FileIdentity>, Status> {
         #[cfg(windows)]
         return crate::windows::observe_file(path);
@@ -196,8 +208,10 @@ impl Effects for NativeEffects {
             ActionKind::OpenInExplorer
             | ActionKind::OpenSettingsPage
             | ActionKind::RequestNormalClose
-            | ActionKind::RecycleSelectedFiles => Capability::Executable,
-            ActionKind::RunCleanupAdapter => Capability::Unsupported,
+            | ActionKind::RecycleSelectedFiles
+            | ActionKind::RunCleanupAdapter
+            | ActionKind::DisableUserStartup
+            | ActionKind::RestoreUserStartup => Capability::Executable,
         }
     }
     fn open_in_explorer(
@@ -248,6 +262,19 @@ impl Effects for NativeEffects {
         #[cfg(not(windows))]
         {
             let _ = file;
+            unsupported()
+        }
+    }
+    fn set_user_startup(
+        &self,
+        _: &Permit,
+        startup: &crate::StartupTarget,
+    ) -> Result<EffectOutcome, EffectError> {
+        #[cfg(windows)]
+        return crate::windows::startup::apply(startup);
+        #[cfg(not(windows))]
+        {
+            let _ = startup;
             unsupported()
         }
     }

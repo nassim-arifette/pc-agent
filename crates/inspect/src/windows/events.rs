@@ -1,5 +1,9 @@
 use super::{error, wide};
-use crate::{CoverageStatus as C, Inspection};
+use crate::{
+    parse::event_fields::{self, Details},
+    CoverageStatus as C, Inspection,
+};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::{
     Foundation::{GetLastError, ERROR_NO_MORE_ITEMS},
@@ -24,6 +28,7 @@ struct NativeEvent {
     id: u16,
     timestamp: u64,
     service_name: Option<String>,
+    details: Option<Details>,
 }
 const GROUPS: &[Group] = &[
     Group {
@@ -125,7 +130,7 @@ fn xpath(group: &Group, days: u32) -> String {
 }
 
 pub(super) fn collect(out: &mut Inspection, days: u32, limit: usize, channel: Option<&str>) {
-    const SOURCE: &str = "Win32.EvtQuery/EvtRender (allowlisted system fields)";
+    const SOURCE: &str = "Win32.EvtQuery/EvtRender (allowlisted system and named EventData fields)";
     let start = Instant::now();
     let mut scanned = 0;
     let mut occurrences = 0;
@@ -149,25 +154,41 @@ pub(super) fn collect(out: &mut Inspection, days: u32, limit: usize, channel: Op
         }
         match read(group, days, (5000 - scanned).min(1000), start, &mut scanned) {
             Ok((events, partial)) => {
-                let mut grouped = std::collections::BTreeMap::<u16, Vec<u64>>::new();
+                let mut grouped = BTreeMap::<u16, Vec<NativeEvent>>::new();
                 for event in events {
-                    grouped.entry(event.id).or_default().push(event.timestamp);
+                    grouped.entry(event.id).or_default().push(event);
                 }
                 if grouped.is_empty() {
                     let entity = out.entity("events", None);
                     out.value(&entity, "event_source", group.provider, "provider", SOURCE);
-                    out.value(&entity, "event_count", 0_u64, "count", SOURCE);
+                    out.value(
+                        &entity,
+                        "event_count",
+                        if partial {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::from(0_u64)
+                        },
+                        "count",
+                        SOURCE,
+                    );
                 }
-                for (id, times) in grouped {
+                for (id, events) in grouped {
                     let entity = out.entity("events", None);
                     out.value(&entity, "event_source", group.provider, "provider", SOURCE);
                     out.value(&entity, "event_id", id as u64, "event_id", SOURCE);
-                    out.value(&entity, "event_count", times.len() as u64, "count", SOURCE);
+                    out.value(&entity, "event_count", events.len() as u64, "count", SOURCE);
+                    if partial {
+                        out.observations
+                            .last_mut()
+                            .expect("count just inserted")
+                            .status = C::Partial;
+                    }
                     let remaining = limit.saturating_sub(occurrences);
-                    let kept = times
+                    let kept = events
                         .iter()
                         .take(remaining.min(5))
-                        .copied()
+                        .map(|event| event.timestamp)
                         .collect::<Vec<_>>();
                     occurrences += kept.len();
                     out.value(
@@ -177,6 +198,27 @@ pub(super) fn collect(out: &mut Inspection, days: u32, limit: usize, channel: Op
                         "unix_ms",
                         SOURCE,
                     );
+                    for event in events.iter().take(kept.len()) {
+                        if let Some(details) = &event.details {
+                            let occurrence = out.entity("event", None);
+                            out.value(
+                                &occurrence,
+                                "event_source",
+                                group.provider,
+                                "provider",
+                                SOURCE,
+                            );
+                            out.value(&occurrence, "event_id", id as u64, "event_id", SOURCE);
+                            out.value(
+                                &occurrence,
+                                "event_occurred_at_unix_ms",
+                                event.timestamp,
+                                "unix_ms",
+                                SOURCE,
+                            );
+                            emit_details(out, &occurrence, details, SOURCE);
+                        }
+                    }
                 }
                 out.coverage(&scope,if partial{C::Partial}else{C::Ok},SOURCE,if partial{"Counts are lower bounds because the scan was capped or some event fields could not be read."}else{"Counts cover matching events retained by Windows in the requested period; cleared/rotated logs cannot be reconstructed. Latest occurrences are capped."});
             }
@@ -261,6 +303,117 @@ pub(super) fn service_failures(out: &mut Inspection) {
     out.window = previous;
 }
 
+fn emit_details(out: &mut Inspection, entity: &str, details: &Details, source: &str) {
+    let value = |value: &Option<String>| {
+        value
+            .clone()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let incomplete = match details {
+        Details::Crash {
+            application,
+            application_version,
+            module,
+            module_version,
+            exception,
+        } => {
+            out.name_value(entity, "event_application_ref", application.clone(), source);
+            out.name_value(entity, "event_module_ref", module.clone(), source);
+            out.value(
+                entity,
+                "event_application_version",
+                value(application_version),
+                "version",
+                source,
+            );
+            out.value(
+                entity,
+                "event_module_version",
+                value(module_version),
+                "version",
+                source,
+            );
+            out.value(
+                entity,
+                "event_exception_code",
+                value(exception),
+                "hex_code",
+                source,
+            );
+            application.is_none()
+                || application_version.is_none()
+                || module.is_none()
+                || module_version.is_none()
+                || exception.is_none()
+        }
+        Details::Hang {
+            application,
+            application_version,
+        } => {
+            out.name_value(entity, "event_application_ref", application.clone(), source);
+            out.value(
+                entity,
+                "event_application_version",
+                value(application_version),
+                "version",
+                source,
+            );
+            application.is_none() || application_version.is_none()
+        }
+        Details::Bugcheck { code, parameters } => {
+            out.value(
+                entity,
+                "event_bugcheck_code",
+                value(code),
+                "hex_code",
+                source,
+            );
+            out.value(
+                entity,
+                "event_bugcheck_parameters",
+                parameters
+                    .as_ref()
+                    .map(|v| serde_json::json!(v))
+                    .unwrap_or(serde_json::Value::Null),
+                "hex_code",
+                source,
+            );
+            code.is_none() || parameters.is_none()
+        }
+        Details::Update { error, kbs } => {
+            out.value(
+                entity,
+                "event_windows_update_error_code",
+                value(error),
+                "hex_code",
+                source,
+            );
+            out.value(
+                entity,
+                "event_windows_update_kbs",
+                if kbs.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(kbs)
+                },
+                "kb",
+                source,
+            );
+            error.is_none() || kbs.is_empty()
+        }
+    };
+    // One source-level entry avoids coverage growing with every occurrence.
+    if incomplete
+        && !out
+            .coverage
+            .iter()
+            .any(|c| c.scope == "event_structured_fields")
+    {
+        out.coverage("event_structured_fields", C::Partial, source, "Some selected fields are absent or use an unknown format. Update ID 25 and older ID 31 templates can omit updateTitle, leaving KB unknown. Formatted messages, paths, dumps and report IDs are never read.");
+    }
+}
+
 fn read(
     group: &Group,
     days: u32,
@@ -287,11 +440,13 @@ fn read(
         wide("Event/System/TimeCreated/@SystemTime"),
     ];
     let scm = group.provider == "Service Control Manager";
-    if scm {
-        paths.push(wide("Event/EventData/Data[@Name='param1']"));
+    let selected = event_fields::field_names(group.provider);
+    for field in selected {
+        paths.push(wide(&format!("Event/EventData/Data[@Name='{field}']")));
     }
     let pointers = paths.iter().map(|p| p.as_ptr()).collect::<Vec<_>>();
-    // SAFETY: terminated XPath strings outlive construction; selected SCM data is a service name.
+    // SAFETY: terminated fixed XPath strings outlive construction. No path, dump, report,
+    // machine ID or arbitrary EventData field is selected.
     let context = unsafe {
         EvtCreateRenderContext(
             pointers.len() as u32,
@@ -375,13 +530,16 @@ fn read(
                 None
             }
         };
-        let service_name = if scm && values[2].Type == EvtVarTypeString as u32 {
-            // SAFETY: matching string discriminant; bounded_string validates buffer membership.
-            bounded_string(
-                unsafe { values[2].Anonymous.StringVal },
-                &buffer,
-                used as usize,
-            )
+        let fields = selected
+            .iter()
+            .zip(values.iter().skip(2))
+            .filter_map(|(field, value)| {
+                rendered_field(value, &buffer, used as usize)
+                    .map(|value| (field.to_string(), value))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let service_name = if scm {
+            fields.get("param1").cloned()
         } else {
             None
         };
@@ -390,6 +548,7 @@ fn read(
                 id,
                 timestamp,
                 service_name,
+                details: event_fields::parse(group.provider, id, &fields),
             }),
             None => partial = true,
         }
@@ -406,6 +565,42 @@ fn bounded_string(pointer: *const u16, buffer: &[u64], used: usize) -> Option<St
     let units = unsafe { std::slice::from_raw_parts(pointer, count) };
     let end = units.iter().position(|v| *v == 0)?;
     Some(String::from_utf16_lossy(&units[..end]))
+}
+
+fn rendered_field(value: &EVT_VARIANT, buffer: &[u64], used: usize) -> Option<String> {
+    // SAFETY: EvtRender supplied a checked scalar variant. Strings additionally require
+    // bounded membership in its live output buffer; arrays and unknown types are rejected.
+    unsafe {
+        match value.Type {
+            kind if kind == EvtVarTypeString as u32 => {
+                bounded_string(value.Anonymous.StringVal, buffer, used)
+            }
+            kind if kind == EvtVarTypeAnsiString as u32 => {
+                bounded_ansi(value.Anonymous.AnsiStringVal, buffer, used)
+            }
+            kind if kind == EvtVarTypeUInt32 as u32 || kind == EvtVarTypeHexInt32 as u32 => {
+                Some(format!("0x{:08X}", value.Anonymous.UInt32Val))
+            }
+            kind if kind == EvtVarTypeUInt64 as u32 || kind == EvtVarTypeHexInt64 as u32 => {
+                Some(format!("0x{:016X}", value.Anonymous.UInt64Val))
+            }
+            kind if kind == EvtVarTypeInt32 as u32 => {
+                Some(format!("0x{:08X}", value.Anonymous.Int32Val as u32))
+            }
+            _ => None,
+        }
+    }
+}
+fn bounded_ansi(pointer: *const u8, buffer: &[u64], used: usize) -> Option<String> {
+    let offset = (pointer as usize).checked_sub(buffer.as_ptr() as usize)?;
+    if used > std::mem::size_of_val(buffer) || offset >= used {
+        return None;
+    }
+    let count = (used - offset).min(512);
+    // SAFETY: range lies inside the written native output buffer; no external pointer is read.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, count) };
+    let end = bytes.iter().position(|b| *b == 0)?;
+    std::str::from_utf8(&bytes[..end]).ok().map(str::to_owned)
 }
 
 #[cfg(test)]

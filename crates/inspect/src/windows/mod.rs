@@ -6,11 +6,15 @@ use std::sync::{
 use std::time::Duration;
 
 pub(crate) mod autostart;
+mod battery;
 mod cleanup;
+mod compatibility;
+mod drivers;
 mod events;
 mod hardware;
 mod power_counters;
 mod registry;
+mod sensors;
 mod startup;
 mod system;
 mod updates;
@@ -61,8 +65,16 @@ pub(super) fn inspect(query: Query<'_>) -> Inspection {
         Query::Events { days, limit } => Query::Events { days, limit },
         Query::SystemState => Query::SystemState,
         Query::Power => Query::Power,
+        Query::Battery => Query::Battery,
         Query::Apps { limit } => Query::Apps { limit },
         Query::Hardware => Query::Hardware,
+        Query::Drivers {
+            limit,
+            windows_update,
+        } => Query::Drivers {
+            limit,
+            windows_update,
+        },
         Query::Cleanup => Query::Cleanup,
     };
     if BUSY.swap(true, Ordering::AcqRel) {
@@ -90,6 +102,7 @@ pub(super) fn inspect(query: Query<'_>) -> Inspection {
             // every collector result/error has been consumed, not merely until a query returns.
             let _apartment = wmi::ComApartment::new().ok();
             let mut out = Inspection::new();
+            let mut cleanup = None;
             match query {
                 Query::Startup => startup::collect(&mut out),
                 Query::Services { limit } => system::services(&mut out, limit.clamp(1, 500)),
@@ -98,8 +111,13 @@ pub(super) fn inspect(query: Query<'_>) -> Inspection {
                 }
                 Query::SystemState => system::state(&mut out),
                 Query::Power => system::power(&mut out),
+                Query::Battery => battery::collect(&mut out),
                 Query::Apps { limit } => registry::apps(&mut out, limit.clamp(1, 500)),
                 Query::Hardware => hardware::collect(&mut out),
+                Query::Drivers {
+                    limit,
+                    windows_update,
+                } => cleanup = drivers::collect(&mut out, limit.clamp(1, 100), windows_update),
                 Query::Cleanup => cleanup::collect(&mut out),
                 Query::Allowlisted { name, limit } => match name {
                     "system_events" => {
@@ -113,9 +131,12 @@ pub(super) fn inspect(query: Query<'_>) -> Inspection {
                 },
             }
             let out = out.finish();
+            let _ = tx.send(out);
+            if let Some(cleanup) = cleanup {
+                cleanup.finish();
+            }
             drop(_apartment);
             drop(_release);
-            let _ = tx.send(out);
         });
     if spawned.is_err() {
         BUSY.store(false, Ordering::Release);

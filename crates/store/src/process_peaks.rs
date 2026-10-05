@@ -1,4 +1,4 @@
-//! Observed process CPU peaks in a recording, including spikes below system anomaly thresholds.
+//! Observed process resource peaks, including spikes below system anomaly thresholds.
 use crate::{stored, Store, StoreError, StoredSample, SAMPLE_RETENTION_MS};
 use pcagent_shared::{Evidence, Metric, Origin, Status, Window};
 use rusqlite::params;
@@ -28,6 +28,41 @@ impl Store {
         to_unix_ms: u64,
         limit: usize,
     ) -> Result<ProcessPeaks, StoreError> {
+        self.process_peaks_for(
+            from_unix_ms,
+            to_unix_ms,
+            limit,
+            &[Metric::ProcessCpuBasisPoints],
+        )
+    }
+
+    /// Separate GPU and I/O peaks among the retained processes. Different metrics are never
+    /// ranked against each other or converted into application energy consumption.
+    pub fn process_resource_peaks(
+        &self,
+        from_unix_ms: u64,
+        to_unix_ms: u64,
+        limit_per_metric: usize,
+    ) -> Result<ProcessPeaks, StoreError> {
+        self.process_peaks_for(
+            from_unix_ms,
+            to_unix_ms,
+            limit_per_metric,
+            &[
+                Metric::ProcessGpuBasisPoints,
+                Metric::ProcessIoReadBytesPerSecond,
+                Metric::ProcessIoWriteBytesPerSecond,
+            ],
+        )
+    }
+
+    fn process_peaks_for(
+        &self,
+        from_unix_ms: u64,
+        to_unix_ms: u64,
+        limit: usize,
+        metrics: &[Metric],
+    ) -> Result<ProcessPeaks, StoreError> {
         if from_unix_ms >= to_unix_ms
             || to_unix_ms - from_unix_ms > SAMPLE_RETENTION_MS
             || to_unix_ms > i64::MAX as u64
@@ -44,7 +79,7 @@ impl Store {
             ],
             |row| row.get::<_, String>(0),
         )?;
-        let mut peaks: BTreeMap<(String, u8), Evidence> = BTreeMap::new();
+        let mut peaks: BTreeMap<(usize, String, u8), Evidence> = BTreeMap::new();
         let mut names = BTreeMap::new();
         let mut limitations = vec![
             "Observed peaks among the sampled processes, not proof of causality or a complete process ranking; absent processes and intervals are unknown.".into(),
@@ -70,8 +105,11 @@ impl Store {
                 continue;
             }
             for value in &sample.values {
-                if value.metric != Metric::ProcessCpuBasisPoints
-                    || !value.entity_ref.starts_with("proc-")
+                let Some(metric_index) = metrics.iter().position(|metric| *metric == value.metric)
+                else {
+                    continue;
+                };
+                if !value.entity_ref.starts_with("proc-")
                     || value.measured == 0
                     || !matches!(value.status, Status::Ok | Status::Partial)
                 {
@@ -79,6 +117,7 @@ impl Store {
                 }
                 let Some(peak) = value.max else { continue };
                 let key = (
+                    metric_index,
                     value.entity_ref.clone(),
                     u8::from(sample.origin != Origin::Live),
                 );
@@ -99,7 +138,7 @@ impl Store {
                     continue;
                 };
                 let mut evidence = Evidence::measured(
-                    Metric::ProcessCpuBasisPoints,
+                    value.metric,
                     &value.entity_ref,
                     peak,
                     &value.source,
@@ -111,7 +150,7 @@ impl Store {
                 );
                 evidence.status = value.status;
                 evidence.origin = sample.origin;
-                evidence.limitations.push("Highest retained CPU measurement in the requested window; not average CPU across that window.".into());
+                evidence.limitations.push("Highest retained measurement of this resource in the requested window; not its average across that window or measured application energy.".into());
                 if sample.resolution_ms >= 60_000 {
                     evidence.status = Status::Partial;
                     evidence.limitations.push("Peak retained in a minute aggregate; its exact subinterval is unavailable. The observation window encloses that aggregate and may overlap the query boundary.".into());
@@ -127,16 +166,38 @@ impl Store {
                 "The query reached its process identity limit; some processes were omitted.".into(),
             );
         }
-        let mut observations: Vec<_> = peaks.into_values().collect();
-        observations.sort_by(|a, b| {
-            b.value
-                .cmp(&a.value)
+        let mut ordered: Vec<_> = peaks
+            .into_iter()
+            .map(|((metric_index, _, _), evidence)| (metric_index, evidence))
+            .collect();
+        ordered.sort_by(|(a_index, a), (b_index, b)| {
+            a_index
+                .cmp(b_index)
+                .then_with(|| b.value.cmp(&a.value))
                 .then_with(|| a.entity_ref.cmp(&b.entity_ref))
         });
-        let omitted = observations.len().saturating_sub(limit);
-        observations.truncate(limit);
+        let count = ordered.len();
+        let mut per_metric = vec![0; metrics.len()];
+        let observations: Vec<_> = ordered
+            .into_iter()
+            .filter_map(|(index, evidence)| {
+                if per_metric[index] == limit {
+                    return None;
+                }
+                per_metric[index] += 1;
+                Some(evidence)
+            })
+            .collect();
+        let omitted = count - observations.len();
         if omitted != 0 {
-            limitations.push(format!("The response keeps the highest {limit} observed process peaks; {omitted} lower peaks were omitted."));
+            limitations.push(format!("The response keeps the highest {limit} observed process peaks per metric; {omitted} lower peaks were omitted."));
+        }
+        for (index, metric) in metrics.iter().enumerate() {
+            if per_metric[index] == 0 {
+                limitations.push(format!(
+                    "No usable retained measurement for {metric:?}; this resource use is unknown."
+                ));
+            }
         }
         names.retain(|reference, _| observations.iter().any(|e| &e.entity_ref == reference));
         Ok(ProcessPeaks {
@@ -255,5 +316,81 @@ mod tests {
             .limitations
             .iter()
             .any(|text| text.contains("1 lower peaks")));
+    }
+
+    #[test]
+    fn resource_peaks_keep_separate_rankings_windows_and_unknown_gpu() {
+        let mut store = Store::open_in_memory().unwrap();
+        for at in [1000, 2000] {
+            let mut snapshot = Snapshot::empty("resource-session");
+            snapshot.origin = Origin::SyntheticFixture;
+            let window = Window {
+                started_at_unix_ms: at - 500,
+                finished_at_unix_ms: at,
+                duration_ms: 500,
+            };
+            for (reference, gpu, read, write) in [
+                ("proc-aabbccdd", 7000, 100, 8000),
+                ("proc-eeff0011", 1000, 9000, 50),
+            ] {
+                for (metric, value) in [
+                    (Metric::ProcessCpuBasisPoints, 400),
+                    (Metric::ProcessGpuBasisPoints, gpu),
+                    (Metric::ProcessIoReadBytesPerSecond, read),
+                    (Metric::ProcessIoWriteBytesPerSecond, write),
+                ] {
+                    let evidence = if at == 2000 && metric == Metric::ProcessGpuBasisPoints {
+                        Evidence::missing(
+                            metric,
+                            reference,
+                            "fixture",
+                            Status::PermissionDenied,
+                            "identity not verified",
+                        )
+                    } else {
+                        Evidence::measured(metric, reference, value, "fixture", window.clone())
+                    };
+                    snapshot.evidence.push(evidence);
+                }
+            }
+            store
+                .append_sample(&StoredSample::from_snapshot(&snapshot, at, 1000))
+                .unwrap();
+        }
+        let peaks = store.process_resource_peaks(1, 3000, 1).unwrap();
+        assert_eq!(peaks.observations.len(), 3);
+        let gpu = &peaks.observations[0];
+        let read = &peaks.observations[1];
+        let write = &peaks.observations[2];
+        assert_eq!(gpu.metric, Metric::ProcessGpuBasisPoints);
+        assert_eq!(gpu.value, Some(7000));
+        assert_eq!(gpu.window.finished_at_unix_ms, 1000);
+        assert_eq!(gpu.window.duration_ms, 500);
+        assert_eq!(read.metric, Metric::ProcessIoReadBytesPerSecond);
+        assert_eq!(read.value, Some(9000));
+        assert_eq!(write.metric, Metric::ProcessIoWriteBytesPerSecond);
+        assert_eq!(write.value, Some(8000));
+        assert_eq!(gpu.entity_ref, write.entity_ref);
+        assert_ne!(gpu.entity_ref, read.entity_ref);
+        assert!(store
+            .process_peaks(1, 3000, 1)
+            .unwrap()
+            .observations
+            .iter()
+            .all(|evidence| evidence.metric == Metric::ProcessCpuBasisPoints));
+        assert!(store.process_resource_peaks(1, 3000, 0).is_err());
+        assert!(store.process_resource_peaks(1, 3000, 21).is_err());
+    }
+
+    #[test]
+    fn unknown_resource_measurements_do_not_create_zero_peaks() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .append_sample(&sample("cpu-only", 1000, Some(1000)))
+            .unwrap();
+        let resources = store.process_resource_peaks(1, 2000, 10).unwrap();
+        assert_eq!(resources.status, Status::Unsupported);
+        assert!(resources.observations.is_empty());
+        assert!(resources.process_names.is_empty());
     }
 }

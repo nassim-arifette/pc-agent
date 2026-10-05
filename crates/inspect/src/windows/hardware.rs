@@ -1,5 +1,5 @@
 use super::{error, registry::Key, wide, wmi};
-use crate::{parse::memory_slots, CoverageStatus as C, Inspection};
+use crate::{parse::smbios, CoverageStatus as C, Inspection};
 use serde_json::Value;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::{
@@ -18,7 +18,7 @@ pub(super) fn collect(out: &mut Inspection) {
     graphics(out);
 }
 fn memory(out: &mut Inspection) {
-    const SOURCE: &str = "Win32.GetSystemFirmwareTable(RSMB), SMBIOS type 17";
+    const SOURCE: &str = "Win32.GetSystemFirmwareTable(RSMB), SMBIOS types 1/16/17";
     // SAFETY: zero-length query for the required raw firmware table size.
     let len = unsafe { GetSystemFirmwareTable(u32::from_be_bytes(*b"RSMB"), 0, null_mut(), 0) };
     if len == 0 || len > 16 * 1024 * 1024 {
@@ -49,17 +49,60 @@ fn memory(out: &mut Inspection) {
         );
         return;
     }
-    match memory_slots(&buffer[..read as usize]) {
+    match smbios::inventory(&buffer[..read as usize]) {
         Ok(parsed) => {
+            out.name_value("system", "pc_manufacturer_ref", parsed.manufacturer, SOURCE);
+            out.name_value("system", "pc_model_ref", parsed.model, SOURCE);
+            let maximum = if parsed.arrays_known && !parsed.arrays.is_empty() && !parsed.truncated {
+                parsed.arrays.iter().try_fold(0_u64, |total, array| {
+                    total.checked_add(array.maximum_capacity_bytes?)
+                })
+            } else {
+                None
+            };
+            let devices = if parsed.arrays_known && !parsed.arrays.is_empty() && !parsed.truncated {
+                parsed
+                    .arrays
+                    .iter()
+                    .try_fold(0_u64, |total, array| total.checked_add(array.device_count?))
+            } else {
+                None
+            };
+            out.value(
+                "system",
+                "memory_maximum_capacity_bytes",
+                maximum.map(Value::from).unwrap_or(Value::Null),
+                "bytes",
+                SOURCE,
+            );
+            // Firmware capacity is an advertised bound, not a validated purchasing limit.
+            if let Some(value) = out
+                .observations
+                .last_mut()
+                .filter(|value| !value.value.is_null())
+            {
+                value.status = C::Partial;
+            }
+            out.value(
+                "system",
+                "memory_array_device_count",
+                devices.map(Value::from).unwrap_or(Value::Null),
+                "count",
+                SOURCE,
+            );
             let slots = parsed.slots;
-            let free = slots.iter().filter(|s| !s.populated).count();
+            let free = slots.iter().filter(|s| s.populated == Some(false)).count();
+            let known = slots.iter().all(|s| s.populated.is_some());
+            let known_modules = slots
+                .iter()
+                .all(|slot| smbios::mounting_hint(slot.form_factor) == Some("module"));
             let count = slots.len();
             for slot in slots {
                 let entity = out.entity("memory-slot", None);
                 out.value(
                     &entity,
                     "memory_populated",
-                    slot.populated,
+                    slot.populated.map(Value::from).unwrap_or(Value::Null),
                     "boolean",
                     SOURCE,
                 );
@@ -72,11 +115,63 @@ fn memory(out: &mut Inspection) {
                 );
                 out.value(
                     &entity,
-                    "memory_speed_megahertz",
-                    slot.speed_mhz.map(Value::from).unwrap_or(Value::Null),
-                    "megahertz",
+                    "memory_speed_megatransfers_per_second",
+                    slot.speed_mt_s.map(Value::from).unwrap_or(Value::Null),
+                    "megatransfers_per_second",
                     SOURCE,
                 );
+                out.value(
+                    &entity,
+                    "memory_configured_speed_megatransfers_per_second",
+                    slot.configured_speed_mt_s
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                    "megatransfers_per_second",
+                    SOURCE,
+                );
+                out.value(
+                    &entity,
+                    "memory_type",
+                    slot.memory_type.map(Value::from).unwrap_or(Value::Null),
+                    "category",
+                    SOURCE,
+                );
+                out.value(
+                    &entity,
+                    "memory_form_factor",
+                    slot.form_factor.map(Value::from).unwrap_or(Value::Null),
+                    "category",
+                    SOURCE,
+                );
+                let hint = smbios::mounting_hint(slot.form_factor);
+                let soldered = if hint == Some("module") {
+                    Value::Bool(false)
+                } else {
+                    Value::Null
+                };
+                out.value(&entity, "memory_soldered", soldered, "boolean", SOURCE);
+                let mounting = hint.map(Value::from).unwrap_or(Value::Null);
+                out.value(
+                    &entity,
+                    "memory_mounting_hint",
+                    mounting,
+                    "category",
+                    SOURCE,
+                );
+                if let Some(value) = out
+                    .observations
+                    .last_mut()
+                    .filter(|v| v.value == "likely_soldered")
+                {
+                    value.status = C::Partial;
+                }
+                out.name_value(
+                    &entity,
+                    "memory_manufacturer_ref",
+                    slot.manufacturer,
+                    SOURCE,
+                );
+                out.name_value(&entity, "memory_part_number_ref", slot.part_number, SOURCE);
             }
             if count > 0 {
                 let counts_start = out.observations.len();
@@ -88,17 +183,23 @@ fn memory(out: &mut Inspection) {
                     "count",
                     SOURCE,
                 );
-                if parsed.truncated {
+                if parsed.truncated
+                    || !known
+                    || !known_modules
+                    || !parsed.arrays_known
+                    || devices.is_some_and(|devices| devices != count as u64)
+                {
                     for observation in &mut out.observations[counts_start..] {
                         observation.status = C::Partial;
                     }
                 }
             }
             if parsed.truncated {
-                out.coverage("memory_slots", C::Partial, SOURCE, "The 128-device SMBIOS limit was reached; slot and free-slot counts are lower bounds. No serials, asset tags or UUIDs are parsed.");
+                out.coverage("memory_slots", C::Partial, SOURCE, "The bounded SMBIOS scan omitted devices/arrays; counts are lower bounds and maximum capacity is unknown. No serials, asset tags, UUIDs or locators are decoded.");
             } else {
-                out.coverage("memory_slots",if count>0{C::Ok}else{C::Unsupported},SOURCE,"Firmware-reported memory devices; soldered memory and virtual machines may not expose usable slots. No serials, asset tags or UUIDs are parsed.");
+                out.coverage("memory_slots",if count==0{C::Unsupported}else if !known || !parsed.arrays_known || devices.is_some_and(|devices| devices != count as u64){C::Partial}else{C::Ok},SOURCE,"Firmware-reported system-memory devices. MT/s is a transfer rate. Missing fields stay unknown; chip form factors suggest soldered memory but cannot establish upgradeability. No serials, asset tags, UUIDs or locators are decoded.");
             }
+            out.coverage("memory_upgrade_limits", C::Partial, SOURCE, "Maximum capacity and device count are firmware claims, not verified chipset/OEM limits. Soldered memory is uncertain without a manufacturer specification; mixed soldered/socketed configurations are possible.");
         }
         Err(detail) => out.coverage("memory_slots", C::Partial, SOURCE, detail),
     }

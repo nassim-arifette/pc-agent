@@ -1,12 +1,14 @@
-// Storage: pick or drop a folder, watch the scan, then browse the largest folders and files.
+// Storage: pick or drop a folder, watch the scan, then browse the largest folders and files; or
+// analyse a whole drive quickly from its file system index (quickscan.js, administrator consent).
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call, onDrop } from "../api.js";
-import { ask, cloudReady } from "../ask.js";
+import { askWithAi, cloudReady } from "../ask.js";
 import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
+import { quickScanCard } from "../quickscan.js";
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];
@@ -108,7 +110,7 @@ export function mount(page) {
     const current = view[tab];
     const max = current.items.reduce((m, i) => Math.max(m, i.size), 0);
     const askButton = cloudReady()
-      ? button(t("storage.ask"), { iconName: "sparkle", variant: "primary", onClick: () => ask(t("storage.askQuestion", { folder: folderName(view.root) }), { cloud: true }) })
+      ? button(t("storage.ask"), { iconName: "sparkle", variant: "primary", onClick: () => askWithAi(t("storage.askQuestion", { folder: folderName(view.root) }), { followUp: false }) })
       : button(t("storage.ask"), { iconName: "sparkle", disabled: true, title: t("mode.cloud.setup") });
     return [
       h(
@@ -260,10 +262,13 @@ export function mount(page) {
     );
   };
 
+  // The elevated helper exists on Windows only; elsewhere the backend reports unsupported.
+  const quickCard = quickScanCard();
   fill(
     page,
     h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("storage.title")), h("p", { class: "page-sub" }, t("storage.sub")))),
     picker,
+    quickCard.el,
     body,
   );
   render();
@@ -292,5 +297,6 @@ export function mount(page) {
   return () => {
     unsubscribe();
     stopDrop?.();
+    quickCard.dispose();
   };
 }

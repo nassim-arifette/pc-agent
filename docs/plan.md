@@ -151,6 +151,54 @@ fournisseur le permet), `turn:extension`, `turn:done { turn }`, `turn:failed { c
 Ils remplacent `inv:*`. Les commandes du stockage et des réglages restent inchangées.
 Le réglage « recherche web » et la clé Tavily sont décrits en C6.
 
+#### Compléments backend du 4 octobre : sélection et routage
+
+Ces ajouts préparent les commandes Rust de la phase 2 ; ils ne modifient ni les commandes
+existantes, ni C1, ni les autorisations d'action. La configuration des clés et les comparaisons
+avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
+
+| Commande ajoutée | Rôle |
+| --- | --- |
+| `selection_sources()` | références locales opaques d'éléments déjà mesurés : ressource, processus, événement, enregistrement ou élément d'un scan autorisé |
+| `selection_preview(reference, intent, question?, conversation_id?, names)` | aperçu exact C5 ; sélection, intention et observations figées ; renvoie un ticket à usage unique |
+| `selection_send(reference, intent, question?, conversation_id?, preview_id)` | consomme l'aperçu correspondant puis démarre le tour avec les identifiants et événements C3 existants |
+| `model_routing_get()`, `model_routing_set(settings)` | mode configuré, toujours Super, toujours Ultra ou automatique ; paramètres locaux fermés, sans clé ni adresse de fournisseur |
+
+- `intent` vaut `explain` ou `investigate`. Expliquer expose au LLM seulement les mesures figées
+  via `get_selected_evidence` ; aucun collecteur, enregistrement ni proposition d'action n'y est
+  disponible. Enquêter ajoute ces mesures au contexte de l'enquête normale et garde sa politique
+  d'action. Le LLM rédige ; le vérificateur C1 contrôle les preuves effectivement reçues.
+- Les références se résolvent exclusivement dans l'état local du moteur, jamais dans des objets
+  ou des chemins fournis par la page. Un nouveau relevé crée une autre source, sans réécrire la
+  sélection précédente. Les sources figées et tickets expirent après cinq minutes monotones,
+  avec une capacité bornée. Une suppression d'historique, révocation de scan ou identité remplacée
+  invalide les sources concernées. Les dates, âges, lacunes et valeurs inconnues restent explicites.
+- La sélection, l'intention, la question, le contexte de conversation, les réglages de partage et
+  les données envoyées doivent correspondre exactement au ticket avant tout appel cloud. Les
+  noms de fichiers utilisent toujours le consentement fini déjà prévu par C5.
+- Le routage par défaut conserve le modèle configuré. L'escalade est au plus unique et n'ajoute
+  aucune autorité d'exécution. Elle réutilise les observations et citations, partage les budgets
+  de durée/requêtes/outils du tour et laisse l'arrêt utilisateur prioritaire.
+- Le mode automatique exige un étalonnage local valide issu de situations réelles annotées, avec
+  coût, qualité et échecs conservés. Sans cet étalonnage, aucune reprise automatique n'est activée.
+  Les traces portent dès leur création l'identité du registre global des outils, du contrat
+  analyste/vérificateur et du harness de rejeu. Le compilateur d'étalonnage et les chargeurs CLI/GUI
+  exigent cette même identité actuelle ; un champ absent ou une version différente invalide
+  l'étalonnage. On ne réétiquette jamais une ancienne exécution avec l'identité du moteur actuel.
+  Les comparaisons externes exclues de ce lot ne sont pas requises pour préparer le mécanisme.
+- Les rapports ajoutent des métadonnées de routage et un détail d'usage/coût par modèle ; un total
+  n'est disponible que si toutes les consommations et tous les prix sont connus. Les événements
+  signalent le changement de modèle. Aucun coût à deux modèles n'est attribué au seul tarif du
+  dernier modèle. Les champs et événements existants restent disponibles.
+- Le helper conserve ses tâches fermées et son protocole local versionné. MFT, fiabilité des
+  disques, identités de processus, traces ETW et énergie E3 ne reçoivent ni commandes arbitraires
+  ni chemins d'export fournis par le modèle. Les chemins complets et identités restent locaux ;
+  seules les mesures et références admises par C4/C5 peuvent partir. L'énergie E3 est une estimation
+  historique Windows, avec sa période et sa couverture, jamais une mesure physique exhaustive.
+
+La recherche externe reste conditionnée à un contrat distinct et à la preuve du besoin ; ces
+compléments n'adoptent pas le C6 proposé dans la PR #31.
+
 ### C4 — Sorties d'outils
 
 Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la période (instant ou
@@ -832,25 +880,25 @@ Règles de travail :
 | 3 — Choix de partage | A, C | logique terminée : trois modes persistants, aperçu figé, retrait des noms des suivis, noms de fichiers sur liste finie et filtre C5 ; premier choix, indicateur et consentement fichiers à brancher dans le frontend | #21, #23, wp1-phase1-logic |
 | 4 — Nouveaux outils | B | logique terminée : outils fermés, collecte native bornée, couverture et projections C4/C5 ; tests synthétiques et traces locales (voir docs/system-inspection.md) | wp1-phase1-logic |
 | 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
-| 6 — Interface de conversation | C | en cours : refonte visuelle, barre latérale avec recherche, panneau à la demande (sources, PC en direct, stockage) et état du PC livrés ; cartes d'action à faire | #23, #24 |
-| 7 — Évaluation | D | en cours : `pcagent-eval` livré (capture de tous les outils de phase 1, rejeu strict, traces locales, MCP pour Claude) ; première campagne réelle à faire | wp7-eval |
-| 8 — Admin à la demande | B | à faire | |
-| 9 — Capteurs matériels | B | à faire | |
-| 10 — Modèle | A | à faire | |
-| 11 — Agir depuis la conversation | A, C | à faire | |
+| 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) | #23, #24, #36 |
+| 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
+| 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser | #33, #36 |
+| 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
+| 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
+| 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
 | 12 — Soumission | D | à faire | |
-| 13 — Optimiser le harness | A | à faire | |
-| 14 — Escalade Super → Ultra | A | à faire | |
-| 4, lot 3 — Clés de recherche locales | B | à faire (ajouté le 3 octobre) | |
-| Contrat C6 — Sources externes | A, C | proposé le 3 octobre ; PR du plan à part | |
-| 15 — Sources externes | A, C | à faire, selon l'évaluation | |
+| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider | #33 |
+| 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
+| 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
+| Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
+| 15 — Sources externes | A, C | en cours : client Tavily et outils typés (wp15-external-sources) | |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
-sont consignés dans [gui.md](gui.md#validation-status). La comparaison avec Claude reste à faire :
-les tests du contrôleur et du GUI ne valident pas à eux seuls la qualité du modèle.
+sont consignés dans [gui.md](gui.md#validation-status). Les tests du contrôleur et du GUI ne
+valident pas à eux seuls la qualité du modèle ; celle-ci reste à annoter sur les situations réelles.
 
-Le lot logique de phase 1 est isolé sur `wp1-phase1-logic`, sans modification des fichiers du
-frontend. Les commandes, événements, limites et branchements restants sont détaillés dans
-[backend-phase1.md](backend-phase1.md), avec les résultats de validation locale. Aucun commit ni
-push de ce lot n'a été effectué.
+Les contrats de phase 1 sont détaillés dans [backend-phase1.md](backend-phase1.md). Le prolongement
+backend du 4 octobre est décrit dans [backend-completion.md](backend-completion.md), avec ses
+commandes, preuves de validation et acceptations restantes. Les fichiers frontend et la
+configuration des clés restent hors du périmètre de ce lot.
