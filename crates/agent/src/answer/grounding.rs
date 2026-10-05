@@ -2,7 +2,7 @@
 //! Conversation prose is useful context, but cannot certify a measurement.
 use super::{claims, is_reference, Context, Dim, Issue, IssueKind, Known};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issue>) {
     for passage in passages(text) {
@@ -16,25 +16,41 @@ pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issu
             continue;
         }
         let mentioned = subjects(ctx.received, passage);
+        // Several processes of one program named once ("une instance de Firefox"): the claim is
+        // about one of them. Different programs keep strict attribution.
+        let instances: Vec<BTreeSet<String>> = if same_program(ctx.received, &mentioned) {
+            mentioned
+                .iter()
+                .map(|s| BTreeSet::from([s.clone()]))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for claim in claims {
             let references = &groups
                 .iter()
                 .find(|(at, _)| *at >= claim.end)
                 .unwrap_or_else(|| groups.last().expect("non-empty groups"))
                 .1;
-            let mut query = Query {
-                passage,
-                subjects: &mentioned,
-                topic: topic(passage, claim.dim),
-                any_wording: false,
+            let supported = |any_wording: bool| {
+                std::iter::once(&mentioned)
+                    .chain(&instances)
+                    .any(|subjects| {
+                        let query = Query {
+                            passage,
+                            subjects,
+                            topic: topic(passage, claim.dim),
+                            any_wording,
+                        };
+                        known(ctx, references, &query).supports(&claim)
+                    })
             };
-            if known(ctx, references, &query).supports(&claim) {
+            if supported(false) {
                 continue;
             }
             // A value of an earlier measurement cited as if it were current: the number is right,
             // the sentence must say when it was measured.
-            query.any_wording = true;
-            let kind = if known(ctx, references, &query).supports(&claim) {
+            let kind = if supported(true) {
                 IssueKind::HistoricalWording
             } else {
                 IssueKind::UnsupportedNumber
@@ -42,6 +58,35 @@ pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issu
             issues.push(Issue::new(kind, claim.excerpt));
         }
     }
+}
+
+/// Whether every reference was named through the same executable name, like several firefox.exe.
+fn same_program(received: &[Value], references: &BTreeSet<String>) -> bool {
+    fn collect(value: &Value, names: &mut BTreeMap<String, String>) {
+        match value {
+            Value::Object(map) => {
+                for key in ["process_names", "shared_names"] {
+                    if let Some(found) = map.get(key).and_then(Value::as_object) {
+                        for (reference, name) in found {
+                            if let Some(name) = name.as_str() {
+                                names.insert(reference.clone(), name.to_lowercase());
+                            }
+                        }
+                    }
+                }
+                map.values().for_each(|child| collect(child, names));
+            }
+            Value::Array(items) => items.iter().for_each(|child| collect(child, names)),
+            _ => {}
+        }
+    }
+    if references.len() < 2 {
+        return false;
+    }
+    let mut names = BTreeMap::new();
+    received.iter().for_each(|value| collect(value, &mut names));
+    let programs: BTreeSet<_> = references.iter().map(|r| names.get(r)).collect();
+    programs.len() == 1 && programs.iter().all(Option::is_some)
 }
 
 /// The values the cited references hold for this claim's subjects and topic.

@@ -1899,6 +1899,37 @@ mod tests {
     }
 
     #[test]
+    fn one_instance_of_a_program_named_once_is_any_of_its_processes() {
+        let received = vec![json!({"observation_id":"O1",
+            "process_names":{"proc-a":"firefox.exe","proc-b":"firefox.exe","proc-c":"chrome.exe"},
+            "measurements":{"values":{
+                "proc-a":{"process_working_set_bytes":2_373_000_000_u64},
+                "proc-b":{"process_working_set_bytes":540_000_000_u64},
+                "proc-c":{"process_working_set_bytes":900_000_000_u64}},
+            "units":{"process_working_set_bytes":"bytes"}}})];
+        let references = refs();
+        let ctx = Context {
+            received: &received,
+            references: &references,
+            plans: &[],
+        };
+        for text in [
+            "Une instance de Firefox utilisait 2,21 GiB [O1].",
+            "Une instance de firefox.exe utilisait 540 MB [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_ok(), "{text}");
+        }
+        for text in [
+            // No instance holds this value.
+            "Une instance de Firefox utilisait 9 GiB [O1].",
+            // Different programs keep strict attribution: chrome.exe never borrows firefox.exe's.
+            "chrome.exe et firefox.exe utilisaient 2,21 GiB [O1].",
+        ] {
+            assert!(review(&submit(text), &ctx).is_err(), "{text}");
+        }
+    }
+
+    #[test]
     fn activity_rates_growth_and_gpu_use_the_matching_measured_dimension() {
         let received = vec![
             json!({"observation_id":"O1", "process_names":{"proc-a":"browser.exe"},
