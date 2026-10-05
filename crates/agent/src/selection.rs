@@ -1496,6 +1496,18 @@ mod tests {
         let actual: Value =
             serde_json::from_str(model.requests[0][1]["content"].as_str().unwrap()).unwrap();
         assert_eq!(actual, expected);
+        // The re-read lists O0 among the citable IDs, as the checker accepts it, and repeats no
+        // finding the turn already holds.
+        let tool_reply: Value = model.requests[1]
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .map(|message| serde_json::from_str(message["content"].as_str().unwrap()).unwrap())
+            .unwrap();
+        assert_eq!(tool_reply["citable_observation_ids"], json!(["O0", "O1"]));
+        let ids = tool_reply["current_finding_ids"].as_array().unwrap();
+        let unique: std::collections::BTreeSet<_> = ids.iter().filter_map(Value::as_str).collect();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
         assert_eq!(model.definitions[0].as_array().unwrap().len(), 2);
         assert_eq!(report.stats.tool_calls, 1);
         assert_eq!(report.initial_observation.measured_at_unix_ms, 2000);
