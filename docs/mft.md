@@ -47,6 +47,19 @@ can skip unused slots. The output buffer follows Microsoft's documented record-s
 the returned record length and reference sequence are checked before parsing. Gaps are reported
 as walked slots, not as additional files or as known file bytes.
 
+One control per record costs one system call per file. When the layout allows it, the adapter
+instead reads the `$MFT` stream in bulk (`mft_chunked.rs`): it takes the extents of the unnamed
+`$DATA` stream of record 0 (obtained with the same control and parsed by the same validator),
+then serves the same descending requests from 1 MiB cluster-aligned `ReadFile` windows on the
+already opened read-only volume handle, about a thousand records per read. It keeps the
+control's contract: the nearest in-use FILE record at or below the requested ordinal, unused and
+non-FILE slots skipped, damaged in-use records returned so they are counted as invalid. Records
+are passed in their protected on-disk form and go through the unchanged parser and
+update-sequence checks. A sparse, compressed or resident `$MFT` stream, extents that do not
+cover every record slot, records larger than a cluster, more than 512 extents or any failed read
+keep or return to one control per record for the rest of the collection. Raw volume reads can
+lag metadata still held in the cache; this stays within `live_volume_not_atomic`.
+
 Offline input must carry on-disk update-sequence protection. Every protected 512-byte tail is
 checked before its saved word is restored in an owned bounded copy. The kernel-only normalizer
 also accepts a uniformly restored transfer whose tails all equal their saved words; mixed or
