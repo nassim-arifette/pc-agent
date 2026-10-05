@@ -1,12 +1,14 @@
 // History: what the local sampler measured over time, gaps included, the anomalies it detected,
 // a recording taken during a problem, and what the collection itself costs. Nothing here is sent
-// anywhere; Explain and Investigate go through the selected-evidence preview (select.js).
+// anywhere; selecting an event or a finished recording shows the action bar under it, whose
+// Explain and Investigate go through the selected-evidence preview (select.js).
 import { h, s, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
 import { ask } from "../ask.js";
-import { INTENTS, findReference, runSelection } from "../select.js";
+import { findReference, runSelection } from "../select.js";
+import { actionBar, keepFocus, selectionKeys } from "../actionbar.js";
 import { subscribe } from "../store.js";
 import { button, segmented, toast, toggle, dialog } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
@@ -49,6 +51,37 @@ async function selectOrAsk(match, { label, subject }, intent, fallback) {
   const reference = await findReference(match);
   if (reference) return runSelection({ reference, label, subject }, intent);
   return ask(fallback);
+}
+
+/**
+ * What the action bar and the shortcuts do for a stored event. Always ready: the typed question is
+ * the fallback. The bar sits under the row's right end, away from the names on its left.
+ */
+function eventItem(e) {
+  const when = clock(e.started_at_unix_ms);
+  const run = (intent) =>
+    selectOrAsk(
+      (target) => target.kind === "event" && target.event_id === e.id,
+      { label: `${eventLabel(e)} · ${when}`, subject: t("history.event.subject", { what: eventLabel(e), when }) },
+      intent,
+      t("history.event.question", { what: eventLabel(e).toLowerCase(), when }),
+    );
+  return { key: `event:${e.id}`, label: `${eventLabel(e)} · ${when}`, ready: true, explain: () => run("explain"), investigate: () => run("investigate"), align: "end" };
+}
+
+/** The same for a finished recording. */
+function recordingItem(r) {
+  const from = clock(r.started_at_unix_ms, { seconds: true });
+  const to = r.ended_at_unix_ms ? clock(r.ended_at_unix_ms, { seconds: true }) : from;
+  const label = t("history.recording.label", { from, to });
+  const run = (intent) =>
+    selectOrAsk(
+      (target) => target.kind === "recording" && target.recording_id === r.id,
+      { label, subject: t("history.recording.subject", { from, to }) },
+      intent,
+      t("history.recording.question", { from, to }),
+    );
+  return { key: `recording:${r.id}`, label, ready: true, explain: () => run("explain"), investigate: () => run("investigate"), align: "end" };
 }
 
 // ---------- Battery during a recording ----------
@@ -182,7 +215,10 @@ export function mount(page) {
   let disposed = false;
   let status = null;
   let startup = null;
+  // The selected event or finished recording: { kind: "event" | "recording", id }.
   let selected = null;
+  // The events drawn last; null until the first load succeeds.
+  let shownEvents = null;
   let poll = null;
   // The sampler reports the active recording; once it ends the view keeps showing it so the
   // person can ask about it.
@@ -192,6 +228,11 @@ export function mount(page) {
   let battery = { id: null, data: null };
   const head = h("div", { class: "page-head" });
   const recordHost = h("div");
+  const select = (next) => {
+    selected = next;
+    if (shownEvents) renderEvents(shownEvents);
+    renderRecording();
+  };
   const chartsHost = h("section", { class: "card card-pad history-card" });
   const eventsHost = h("section", { class: "card card-pad" });
   const costHost = h("section", { class: "card card-pad" });
@@ -245,9 +286,11 @@ export function mount(page) {
     }
   };
 
-  const renderRecording = () => {
+  const renderRecording = () => keepFocus(recordHost, drawRecording);
+  const drawRecording = () => {
     const r = status?.recording ?? lastRecording;
     if (!r) {
+      if (selected?.kind === "recording") selected = null;
       fill(recordHost);
       return;
     }
@@ -267,51 +310,74 @@ export function mount(page) {
     // A recording lasts seconds to minutes: minute precision would read "from 20:01 to 20:01".
     const from = clock(r.started_at_unix_ms, { seconds: true });
     const to = r.ended_at_unix_ms ? clock(r.ended_at_unix_ms, { seconds: true }) : null;
+    const title = running ? t("history.recording", { left: duration(left) }) : t(`history.recording.${r.status}`, { from, to: to ?? "" });
+    if (running) {
+      if (selected?.kind === "recording") selected = null;
+      fill(
+        recordHost,
+        h(
+          "section",
+          { class: ["callout", "recording"], style: { "margin-bottom": "16px" } },
+          h("span", { class: "rec-dot", "aria-hidden": "true" }),
+          h(
+            "div",
+            null,
+            h("strong", null, title),
+            h("span", null, t("history.recording.samples", { count: r.samples })),
+            h("div", { class: "rec-bar" }, h("span", { style: { width: `${(elapsed / (r.duration_seconds * 1000)) * 100}%` } })),
+          ),
+          h("span", { class: "spacer" }),
+          button(t("history.recording.stop"), {
+            iconName: "stop",
+            onClick: async () => {
+              cancelledByUs = true;
+              try {
+                await call("record_activity_cancel", { recordingId: r.id });
+              } catch (error) {
+                toast(error.message, "bad");
+              }
+              refreshStatus();
+            },
+          }),
+        ),
+      );
+      return;
+    }
+    // A finished recording is selected like an event: the whole callout is the target.
+    const isSelected = selected?.kind === "recording" && selected.id === r.id;
+    const item = recordingItem(r);
     fill(
       recordHost,
       h(
-        "section",
-        { class: ["callout", running ? "recording" : "info"], style: { "margin-bottom": "16px" } },
-        running ? h("span", { class: "rec-dot", "aria-hidden": "true" }) : icon("check"),
+        "div",
+        { class: ["actbar-anchor", "rec-anchor"] },
         h(
-          "div",
-          null,
-          h("strong", null, running ? t("history.recording", { left: duration(left) }) : t(`history.recording.${r.status}`, { from, to: to ?? "" })),
-          h("span", null, t(running ? "history.recording.samples" : "history.recording.samplesDone", { count: r.samples })),
-          running ? h("div", { class: "rec-bar" }, h("span", { style: { width: `${(elapsed / (r.duration_seconds * 1000)) * 100}%` } })) : null,
-          running || battery.id !== r.id ? null : batteryFacts(battery.data),
-        ),
-        h("span", { class: "spacer" }),
-        running
-          ? button(t("history.recording.stop"), {
-              iconName: "stop",
-              onClick: async () => {
-                cancelledByUs = true;
-                try {
-                  await call("record_activity_cancel", { recordingId: r.id });
-                } catch (error) {
-                  toast(error.message, "bad");
-                }
-                refreshStatus();
+          "section",
+          { class: ["callout", "info", "rec-done", isSelected ? "selected" : ""] },
+          icon("check"),
+          h(
+            "div",
+            null,
+            h(
+              "button",
+              {
+                type: "button",
+                class: "rec-select",
+                title: isSelected ? null : t("history.recording.select"),
+                "aria-pressed": String(isSelected),
+                "aria-keyshortcuts": isSelected ? "E Enter" : null,
+                "data-key": `recording:${r.id}`,
+                "data-actbar-item": isSelected,
+                onclick: () => select(isSelected ? null : { kind: "recording", id: r.id }),
               },
-            })
-          : h(
-              "div",
-              { class: "row" },
-              INTENTS.map((intent) =>
-                button(t(`inspect.${intent}`), {
-                  variant: intent === "explain" ? "primary" : "",
-                  iconName: intent === "explain" ? "sparkle" : "search",
-                  onClick: () =>
-                    selectOrAsk(
-                      (target) => target.kind === "recording" && target.recording_id === r.id,
-                      { label: t("history.recording.label", { from, to: to ?? from }), subject: t("history.recording.subject", { from, to: to ?? from }) },
-                      intent,
-                      t("history.recording.question", { from, to: to ?? from }),
-                    ),
-                }),
-              ),
+              h("strong", null, title),
             ),
+            h("span", null, t("history.recording.samplesDone", { count: r.samples })),
+            battery.id !== r.id ? null : batteryFacts(battery.data),
+          ),
+          h("span", { class: "rec-chevron", "aria-hidden": "true" }, icon("chevron")),
+        ),
+        isSelected ? actionBar(item) : null,
       ),
     );
   };
@@ -333,6 +399,8 @@ export function mount(page) {
     } catch (error) {
       if (disposed) return;
       fill(chartsHost, h("div", { class: "callout warn" }, icon("alert"), h("div", null, h("strong", null, t("history.unavailable")), h("span", null, error.message))));
+      shownEvents = null;
+      if (selected?.kind === "event") selected = null;
       fill(eventsHost);
       return;
     }
@@ -374,7 +442,10 @@ export function mount(page) {
     renderEvents(events);
   };
 
-  const renderEvents = (events) => {
+  const renderEvents = (events) => keepFocus(eventsHost, () => drawEvents(events));
+  const drawEvents = (events) => {
+    shownEvents = events;
+    if (selected?.kind === "event" && !events.some((e) => e.id === selected.id)) selected = null;
     fill(
       eventsHost,
       h("div", { class: "card-head" }, h("h2", { class: "card-title" }, t("history.events")), h("span", { class: "hint" }, t("history.events.note"))),
@@ -383,21 +454,21 @@ export function mount(page) {
             "div",
             { class: "event-list" },
             events.map((e) => {
-              const isSelected = selected === e.id;
+              const isSelected = selected?.kind === "event" && selected.id === e.id;
               const when = clock(e.started_at_unix_ms);
               return h(
                 "div",
-                { class: ["event-row", isSelected ? "selected" : ""] },
+                { class: ["event-row", "actbar-anchor", isSelected ? "selected" : ""] },
                 h(
                   "button",
                   {
                     type: "button",
                     class: "event-main",
-                    "aria-expanded": String(isSelected),
-                    onclick: () => {
-                      selected = isSelected ? null : e.id;
-                      renderEvents(events);
-                    },
+                    "aria-pressed": String(isSelected),
+                    "aria-keyshortcuts": isSelected ? "E Enter" : null,
+                    "data-key": `event:${e.id}`,
+                    "data-actbar-item": isSelected,
+                    onclick: () => select(isSelected ? null : { kind: "event", id: e.id }),
                   },
                   h("span", { class: "event-icon" }, icon(EVENT_ICONS[e.kind] || "activity")),
                   h(
@@ -419,30 +490,9 @@ export function mount(page) {
                   ),
                   h("span", { class: "event-time" }, when),
                 ),
-                isSelected
-                  ? h(
-                      "div",
-                      { class: "event-actions" },
-                      h("p", { class: "note" }, t("history.event.note")),
-                      h(
-                        "div",
-                        { class: "row" },
-                        INTENTS.map((intent) =>
-                          button(t(`inspect.${intent}`), {
-                            variant: intent === "explain" ? "primary" : "",
-                            iconName: intent === "explain" ? "sparkle" : "search",
-                            onClick: () =>
-                              selectOrAsk(
-                                (target) => target.kind === "event" && target.event_id === e.id,
-                                { label: `${eventLabel(e)} · ${when}`, subject: t("history.event.subject", { what: eventLabel(e), when }) },
-                                intent,
-                                t("history.event.question", { what: eventLabel(e).toLowerCase(), when }),
-                              ),
-                          }),
-                        ),
-                      ),
-                    )
-                  : null,
+                // The program measured at the peak is not the proven cause: said before acting.
+                isSelected ? h("p", { class: "note event-note" }, t("history.event.note")) : null,
+                isSelected ? actionBar(eventItem(e)) : null,
               );
             }),
           )
@@ -541,6 +591,19 @@ export function mount(page) {
     poll = window.setTimeout(refreshStatus, running ? 1000 : 10000);
   };
 
+  // E explains and Enter investigates the selected event or recording; Escape clears it.
+  const stopKeys = selectionKeys({
+    current: () => {
+      if (selected?.kind === "event") {
+        const e = shownEvents?.find((x) => x.id === selected.id);
+        return e ? eventItem(e) : null;
+      }
+      const r = status?.recording ?? lastRecording;
+      return selected?.kind === "recording" && r?.id === selected.id && r.ended_at_unix_ms != null ? recordingItem(r) : null;
+    },
+    clear: () => select(null),
+  });
+
   renderHead();
   load();
   refreshStatus();
@@ -557,5 +620,6 @@ export function mount(page) {
     disposed = true;
     window.clearTimeout(poll);
     unsubscribe();
+    stopKeys();
   };
 }

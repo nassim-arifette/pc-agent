@@ -1,6 +1,7 @@
 // Screenshots of the main states (welcome, consent, running, answer, sources, live PC, history,
-// storage with the deeper checks, settings, the Live PC view with Explain) in light and dark
-// themes, against the mock (dev/mock.js).
+// storage with the deeper checks, settings, the Live PC view with Explain, web search, and the
+// action bar under a selected item in Live PC, History and Storage) in light and dark themes,
+// against the mock (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
 // TOUR_BASE and TOUR_DEBUG_PORT override the page URL and Chrome's debugging port, for a server
@@ -77,14 +78,20 @@ try {
     await page.goto(`${base}?cloud=ready#/settings`);
     await page.waitFor("document.querySelector('select')");
     await shot(`9-settings-${theme}`);
-    // Live PC: select memory, then Explain it with the exact preview of what leaves the PC.
+    // Live PC: select an application, then memory, whose action bar Explains it with the exact
+    // preview of what leaves the PC.
     await page.goto(`${base}?cloud=ready&privacy=complete#/live`);
     await page.waitFor("document.querySelectorAll('.livepage-card').length >= 3 && document.querySelector('.livepage-app')", 10000);
+    await page.click(".livepage-app", 1);
+    await page.waitFor("document.querySelector('.livepage-app-slot .actbar .actbar-primary:not([aria-disabled])')");
+    await page.sleep(300);
+    await shot(`10a-live-app-${theme}`);
     await page.click(".livepage-card", 0);
-    await page.waitFor("document.querySelector('.insp-actions .btn-primary:not([disabled])')");
+    await page.eval("document.querySelector('.main').scrollTo(0, 0)");
+    await page.waitFor("document.querySelector('.livepage-card-slot .actbar .actbar-primary:not([aria-disabled])')");
     await page.sleep(300);
     await shot(`10-live-${theme}`);
-    await page.click(".insp-actions .btn-primary");
+    await page.click(".actbar .actbar-primary");
     await page.waitFor("document.querySelector('.dialog .select-exact')", 10000);
     await page.sleep(400);
     await shot(`11-explain-preview-${theme}`);
@@ -118,6 +125,21 @@ try {
     // "Open in browser" asks the Rust side (open_web_source); the mock records it, never navigates.
     await page.click(".panel.open .web-source.focused .web-actions .btn");
     await page.waitFor("window.__pcagentMock.openedWebSources.length === 1");
+    // The action bar under a selected history event, then under a folder of a scan.
+    await page.goto(`${base}?cloud=ready&privacy=complete#/history`);
+    await page.waitFor("document.querySelector('.event-main')", 10000);
+    await page.click(".event-main", 0);
+    await page.waitFor("document.querySelector('.event-row.selected .actbar')");
+    await page.sleep(300);
+    await shot(`17-history-bar-${theme}`);
+    await page.goto(`${base}?cloud=ready&privacy=complete#/storage`);
+    await page.waitFor("document.querySelectorAll('.chip').length >= 6");
+    await page.click(".chip", 0);
+    await page.waitFor("document.querySelector('.item-select')", 10000);
+    await page.click(".item-select", 1);
+    await page.waitFor("document.querySelector('.item-row.selected .actbar .actbar-primary:not([aria-disabled])')");
+    await page.sleep(300);
+    await shot(`18-storage-bar-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {

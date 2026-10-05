@@ -27,14 +27,14 @@ export function badge(text, tone = "", iconName) {
   return h("span", { class: ["badge", tone] }, iconName && icon(iconName), text);
 }
 
-/** A horizontal bar for a 0..1 ratio. */
-export function bar(ratio, tone = "") {
+/** A horizontal bar for a 0..1 ratio; `animate: false` draws it at once (a redraw of the same data). */
+export function bar(ratio, tone = "", { animate = true } = {}) {
   const inner = h("span");
   const el = h("div", { class: ["bar", tone], role: "presentation" }, inner);
+  const width = () => inner.style.setProperty("width", `${Math.max(0, Math.min(1, ratio ?? 0)) * 100}%`);
   // Set after insertion so the width animates in.
-  requestAnimationFrame(() => {
-    inner.style.setProperty("width", `${Math.max(0, Math.min(1, ratio ?? 0)) * 100}%`);
-  });
+  if (animate) requestAnimationFrame(width);
+  else width();
   return el;
 }
 
