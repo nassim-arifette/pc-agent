@@ -1,5 +1,6 @@
 // Screenshots of the main states (welcome, consent, running, answer, sources, live PC, history,
-// storage, settings) in light and dark themes, against the mock (dev/mock.js).
+// storage, settings, the Live PC view with Explain) in light and dark themes, against the mock
+// (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
 import { launch } from "./cdp.mjs";
@@ -57,6 +58,21 @@ try {
     await page.goto(`${base}?cloud=ready#/settings`);
     await page.waitFor("document.querySelector('select')");
     await shot(`9-settings-${theme}`);
+    // Live PC: select memory, then Explain it with the exact preview of what leaves the PC.
+    await page.goto(`${base}?cloud=ready&privacy=complete#/live`);
+    await page.waitFor("document.querySelectorAll('.livepage-card').length >= 3 && document.querySelector('.livepage-app')", 10000);
+    await page.click(".livepage-card", 0);
+    await page.waitFor("document.querySelector('.insp-actions .btn-primary:not([disabled])')");
+    await page.sleep(300);
+    await shot(`10-live-${theme}`);
+    await page.click(".insp-actions .btn-primary");
+    await page.waitFor("document.querySelector('.dialog .select-exact')", 10000);
+    await page.sleep(400);
+    await shot(`11-explain-preview-${theme}`);
+    await page.click(".dialog .btn-primary");
+    await page.waitFor("document.querySelector('.answer-foot')", 20000);
+    await page.sleep(300);
+    await shot(`12-explain-answer-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {
