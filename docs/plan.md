@@ -172,7 +172,7 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
 
 | Commande ajoutée | Rôle |
 | --- | --- |
-| `selection_sources()` | références locales opaques d'éléments déjà mesurés : ressource, processus, événement, enregistrement ou élément d'un scan autorisé |
+| `selection_sources()` | références locales opaques d'éléments déjà mesurés : ressource (dont la batterie), processus, événement, enregistrement ou élément d'un scan autorisé |
 | `selection_preview(reference, intent, question?, conversation_id?, names)` | aperçu exact C5 ; sélection, intention et observations figées ; renvoie un ticket à usage unique |
 | `selection_send(reference, intent, question?, conversation_id?, preview_id)` | consomme l'aperçu correspondant puis démarre le tour avec les identifiants et événements C3 existants |
 | `model_routing_get()`, `model_routing_set(settings)` | mode configuré, toujours Super, toujours Ultra ou automatique ; paramètres locaux fermés, sans clé ni adresse de fournisseur |
@@ -188,6 +188,14 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
   sélection précédente. Les sources figées et tickets expirent après cinq minutes monotones,
   avec une capacité bornée. Une suppression d'historique, révocation de scan ou identité remplacée
   invalide les sources concernées. Les dates, âges, lacunes et valeurs inconnues restent explicites.
+- Ajout du 5 octobre, ressource `battery` : elle se résout dans le dernier relevé batterie local
+  publié par la vue PC en direct (observations C4 de la seule lecture batterie, sans WMI ni
+  admin, sur un petit worker borné distinct du worker partagé des inspections). Expliquer fige
+  ce relevé et ne relit pas la batterie. Ne partent que les mesures des batteries affichées et la
+  référence opaque `battery-<uuid>` (C5) : jamais nom, fabricant, numéro de série ni chemin de
+  périphérique, qui ne sont lus que localement ou pas du tout. `thermal_power` reste limité aux
+  mesures du GPU. Le registre des sources passe de 64 à 96 entrées : tableau de bord, activité
+  des processus et batterie publient environ 24 sources par minute.
 - La sélection, l'intention, la question, le contexte de conversation, les réglages de partage et
   les données envoyées doivent correspondre exactement au ticket avant tout appel cloud. Les
   noms de fichiers utilisent toujours le consentement fini déjà prévu par C5.
@@ -906,7 +914,8 @@ Règles de travail :
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
-| 15 — Sources externes | A, C | en cours : client Tavily et outils typés (wp15-external-sources) | |
+| 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
+| 6 — Batterie dans PC en direct | B, A, C | en cours : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte, inspecteur, panneau et pastille (wp6-live-battery) | |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés

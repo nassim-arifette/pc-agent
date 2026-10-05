@@ -18,9 +18,11 @@ A selection is a closed object, never a caller-supplied observation, name, PID, 
 
 The other target variants are `process {entity_ref}`, `event {event_id}`,
 `recording {recording_id}` and `storage {scope_id, item_ref}`. Resource names are the finite
-`memory`, `cpu`, `disk`, `gpu` and `thermal_power` set. References are resolved exclusively against
-host-owned, already measured snapshots, process activity, persisted history and the current
-completed authorized storage index. Unknown fields and invalid references are rejected.
+`memory`, `cpu`, `disk`, `gpu`, `thermal_power` and `battery` set. References are resolved
+exclusively against host-owned, already measured snapshots, the latest live battery read, process
+activity, persisted history and the current completed authorized storage index. A battery
+selection freezes one live battery read (the C4 observations of the batteries the window shows);
+Explain never reads the battery again, and `thermal_power` stays limited to GPU measurements. Unknown fields and invalid references are rejected.
 
 The source registry issues random source references when a local view publishes measurements.
 `selection_sources()` returns the current locally displayable targets, their source reference and
@@ -30,7 +32,8 @@ receive new references and never rewrite a frozen capture while the user reads c
 collector/session restart, deleting history, clearing recordings or replacing/revoking an
 authorized storage scan invalidates the corresponding sources and consent tickets. Sources and
 tickets have a five-minute monotonic lifetime; wall-clock rollback cannot extend consent. The
-registry retains at most 64 sources, 16 MiB of serialized source data, 2 MiB per source and 16
+registry retains at most 96 sources (the dashboard, process activity and battery publish about 24
+a minute), 16 MiB of serialized source data, 2 MiB per source and 16
 pending tickets. Eviction can expire a capture sooner than five minutes. Cloud projections are
 limited to 128 KiB; oversized selections are rejected before any provider request.
 
