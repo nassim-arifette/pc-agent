@@ -98,6 +98,7 @@ Chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en 
 - `action_refs` : uniquement des propositions créées pendant le tour par `prepare_action_plan`.
   Rien ne s'exécute sans clic.
 - `follow_ups` : affichées comme boutons sous la réponse.
+- Sources web (chantier 15) : citations `[W1]` et vérification décrites en C6.
 
 Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/answer.rs) :
 
@@ -112,10 +113,23 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
    du contrôle sont décrites dans [answer-verification.md](answer-verification.md).
 3. Chaque nom d'exécutable cité figure dans ce qui a été envoyé au modèle.
 4. Aucune commande, aucun lien, aucun HTML.
-5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les citations,
-   la liste des références valides. Au plus 3 réparations par enquête, partagées avec les appels
-   d'outils refusés, le texte sans appel d'outil et les réponses coupées par la limite de sortie.
-   Si un écart persiste, la réponse s'affiche avec les passages concernés marqués « non vérifié ».
+5. En cas d'écart, la réponse repart au modèle avec la correction à faire et, pour les chiffres
+   et les citations, la liste des références valides. Une valeur juste tirée d'une mesure
+   antérieure mais écrite au présent est signalée à part (`historical_wording`) : il suffit de la
+   dater. En Expliquer, où tout le tour décrit une capture affichée avec son heure, ce cas est
+   seulement marqué, sans réparation. La forme est lue avec souplesse et le contenu strictement :
+   seul le texte de la réponse est obligatoire, un champ en trop est ignoré, une liste envoyée en
+   un seul texte est découpée par ligne, une confiance ou une catégorie inconnue devient `medium`
+   ou `other`, et une référence d'action inconnue est retirée et marquée. Des appels d'outils
+   terminés (arguments JSON complets) sont gardés même si la réponse est ensuite coupée par la
+   limite de sortie. Au plus 3 réparations par enquête, partagées avec les appels d'outils refusés, le texte
+   sans appel d'outil et les réponses coupées par la limite de sortie. Une réponse coupée est
+   redemandée une fois, plus courte ; une deuxième coupure de suite termine le tour. Si le modèle
+   renvoie deux fois de suite exactement les mêmes écarts, les réparations s'arrêtent ;
+   l'escalade du chantier 14 reste liée aux 3 réparations épuisées. Une soumission mal formée est
+   décrite par une classe fermée et un champ déclaré, jamais par le texte du modèle. Si un écart
+   persiste, la meilleure tentative écrite depuis les dernières mesures (le moins de passages non
+   vérifiés) s'affiche, avec les passages concernés marqués « non vérifié ».
 
 ### C2 — Conversation et stockage
 
@@ -148,6 +162,7 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 Événements : `turn:step` (forme actuelle de `Step`), `turn:delta` (réponse en flux, si le
 fournisseur le permet), `turn:extension`, `turn:done { turn }`, `turn:failed { code, message }`.
 Ils remplacent `inv:*`. Les commandes du stockage et des réglages restent inchangées.
+Le réglage « recherche web » et la clé Tavily sont décrits en C6.
 
 #### Compléments backend du 4 octobre : sélection et routage
 
@@ -162,9 +177,11 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
 | `selection_send(reference, intent, question?, conversation_id?, preview_id)` | consomme l'aperçu correspondant puis démarre le tour avec les identifiants et événements C3 existants |
 | `model_routing_get()`, `model_routing_set(settings)` | mode configuré, toujours Super, toujours Ultra ou automatique ; paramètres locaux fermés, sans clé ni adresse de fournisseur |
 
-- `intent` vaut `explain` ou `investigate`. Expliquer expose au LLM seulement les mesures figées
-  via `get_selected_evidence` ; aucun collecteur, enregistrement ni proposition d'action n'y est
-  disponible. Enquêter ajoute ces mesures au contexte de l'enquête normale et garde sa politique
+- `intent` vaut `explain` ou `investigate`. Expliquer expose au LLM seulement les mesures figées :
+  elles arrivent dans le premier message (`initial_observation`, citée `O0`) et comptent comme
+  l'inspection du tour, si bien que le modèle peut répondre dès la première requête ;
+  `get_selected_evidence` les relit (réponse courte `same_result_as` `O0`). Aucun collecteur,
+  enregistrement ni proposition d'action n'y est disponible. Enquêter ajoute ces mesures au contexte de l'enquête normale et garde sa politique
   d'action. Le LLM rédige ; le vérificateur C1 contrôle les preuves effectivement reçues.
 - Les références se résolvent exclusivement dans l'état local du moteur, jamais dans des objets
   ou des chemins fournis par la page. Un nouveau relevé crée une autre source, sans réécrire la
@@ -203,7 +220,8 @@ Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la p
 fenêtre en secondes), l'entité, la métrique, la valeur, l'unité, un statut (`ok`, `partial`,
 `denied`, `unsupported`, `needs_admin`) et la source (API Windows utilisée). S'y ajoute une
 couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format actuel, on ne le
-remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5.
+remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
+observations d'origine web sont décrites en C6.
 
 ### C5 — Ce qui quitte le PC
 
@@ -218,6 +236,42 @@ commande, le contenu des fichiers, les clés et secrets, les identifiants de la 
 
 « Complet » est proposé par défaut au premier lancement, avec l'aperçu exact de ce qui part. Le
 choix est mémorisé, modifiable dans les réglages et rappelé dans la zone de saisie.
+
+Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
+
+### C6 — Sources externes (proposé le 3 octobre ; chantier 15)
+
+Ce contrat étend C1, C3, C4 et C5 aux outils qui consultent une source hors du PC. Il s'applique
+quand le chantier 15 démarre ; le lot 3 du chantier 4 n'en dépend pas.
+
+- **Citations (C1) :** `[W1]` renvoie à une source web obtenue pendant la conversation. Le texte
+  de la réponse ne contient toujours aucun lien : l'interface affiche la source (titre, domaine,
+  dates) et ouvre le lien dans le navigateur.
+- **Vérification (C1) :** chaque prix et chaque numéro de version cité avec `[W…]` doit figurer
+  dans l'extrait de cette source, le prix à la précision écrite près, la version à l'identique. Le
+  vérificateur reconnaît les devises (€, $, EUR, USD). Un chiffre du PC se cite avec `[O…]`, un
+  chiffre du web avec `[W…]` : l'un ne prouve jamais l'autre.
+- **Observations (C4) :** origine `web`, avec la requête exacte, l'URL, le domaine, le titre, la
+  date de publication (ou inconnue), la date de consultation et les extraits. Statuts : `ok`,
+  `partial`, `unsupported` (pas de clé ou recherche désactivée), `denied` (consentement refusé).
+- **Réglages (C3) :** `privacy_get`/`privacy_set` portent le réglage « recherche web ». La clé
+  Tavily suit le chemin de la clé Nebius : jamais par la page, jamais dans les journaux.
+- **Ce qui part (C5) :** Tavily est un destinataire distinct de Nebius, avec son propre
+  consentement, mémorisé et modifiable. La requête exacte s'affiche dans les étapes du tour.
+
+| Mode | Requêtes de recherche web |
+| --- | --- |
+| Complet | composées localement : matériel, versions, codes d'erreur, KB, identifiants de blocage de compatibilité, noms des programmes ou modules en cause, pays pour les prix |
+| Anonymisé | les mêmes, sans nom de programme ni de module |
+| Local | aucune |
+
+Jamais, quel que soit le mode : un texte libre écrit par le modèle, le nom d'utilisateur, un
+chemin, une ligne de commande, le contenu d'un fichier, un secret, un numéro de série ou un
+identifiant de la machine.
+
+La recherche en ligne de Windows Update et le téléchargement des pages release health partent
+vers Microsoft sans passer par le modèle, comme les mises à jour de Windows elles-mêmes. Les docs
+de confidentialité le disent.
 
 ## 4. Chantiers
 
@@ -328,6 +382,58 @@ illisible sans admin) :
   - son schéma fermé, son statut de couverture et ses tests d'analyse sur données synthétiques ;
   - une trace réelle sur le PC de dev ;
   - aucun besoin d'admin.
+
+#### Lot 3 — clés de recherche locales (ajouté le 3 octobre)
+
+Ces lectures servent même sans web : elles disent quelle barrette acheter, quel pilote est en
+cause, pourquoi une mise à jour échoue ou n'arrive pas. Ce sont aussi les termes de toute
+recherche du chantier 15.
+
+| Outil | Ajout | Source Windows |
+| --- | --- | --- |
+| `get_hardware_inventory` | SMBIOS type 17 : type de RAM (DDR4, DDR5, LPDDR…), format (DIMM, SO-DIMM, soudée), vitesse configurée, fabricant et référence de la barrette ; type 16 : capacité maximale et nombre d'emplacements ; type 1 : fabricant et modèle du PC | table SMBIOS déjà lue (`GetSystemFirmwareTable('RSMB')`) |
+| `get_recent_events` | plantage (1000) : application, version, module en cause (nom de fichier seul), version du module, code d'exception ; application figée (1002) : application et version ; écran bleu (1001) : code de bugcheck et paramètres ; échec de Windows Update (20, 25, 31) : code d'erreur et numéro de KB | champs nommés de `EventData`, jamais le message formaté |
+| `get_drivers` (nouveau) | pilotes installés (affichage, réseau, stockage, système, audio, Bluetooth) : fournisseur, version, date, modèle ; offres de Windows Update pour ces périphériques, marquées « plus récente » ou « plus ancienne » que l'installée | SetupAPI (features `Win32_Devices_DeviceAndDriverInstallation` et `Win32_Devices_Properties` de `windows-sys`) ; `IUpdateSearcher::Search("IsInstalled=0 and Type='Driver'")`, à côté de l'historique déjà lu dans `crates/inspect/src/windows/updates.rs` |
+| `get_system_state` | blocages de compatibilité de Microsoft (safeguard holds) : `GStatus`, `GatedBlockId`, `GatedBlockReason` | registre : `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\TargetVersionUpgradeExperienceIndicators\<version>` |
+
+- Jamais lus : numéro de série, UUID, étiquette d'inventaire, identifiant d'instance d'un
+  périphérique (il peut contenir un numéro de série), chemin d'un module ou d'un dump, identifiant
+  de rapport d'erreur. Les noms d'applications et de modules partent selon C5 ; les codes
+  d'erreur, de bugcheck et les KB ne sont pas personnels.
+- RAM soudée et capacité maximale : marquées incertaines quand le firmware ne permet pas de
+  conclure. La fiche constructeur (chantier 15) peut trancher.
+- Version NVIDIA convertie localement (32.0.15.6094 dans Windows = 560.94 chez NVIDIA) et
+  recoupée avec NVML (`nvmlSystemGetDriverVersion`).
+- Windows Update a souvent du retard sur NVIDIA, Intel ou AMD, et peut proposer une version plus
+  ancienne que celle installée depuis le site du constructeur.
+  - Recherche hors ligne par défaut (`Online = false` : cache du dernier passage de Windows
+    Update) ; en ligne seulement sur demande (paramètre `windows_update: online`), en tâche de
+    fond.
+  - L'API ne donne pas la version d'un pilote : elle est tirée du titre de la mise à jour, la date
+    vient de `DriverVerDate`.
+- Consignes ajoutées au prompt (piste A) :
+  - pilotes : proposer une mise à jour seulement pour un symptôme mesuré lié au pilote, une faille
+    publiée ou un jeu qui l'exige ; préférer la version de Windows Update ; jamais de retour à une
+    version plus ancienne ; sinon, « n'y touchez pas » est une réponse valable ;
+  - RAM : conseiller un achat seulement si les mesures montrent une pression mémoire, après avoir
+    vérifié le type, le format, les emplacements libres et le maximum ; avec une RAM soudée, aucun
+    ajout n'est possible.
+- Action : la page « Mises à jour facultatives » de Windows Update rejoint les pages Paramètres du
+  chantier 11.
+- **À vérifier :**
+  - la clé des blocages de compatibilité se lit sans admin, et le nom de sa sous-clé pour 25H2 et
+    la version suivante (la doc de Microsoft donne `GE24H2`) ;
+  - `IUpdateSearcher` fonctionne sans admin sur le PC de dev (la doc de l'API l'ouvre au groupe
+    Users) ;
+  - la recherche hors ligne de Windows Update donne des offres assez fraîches ;
+  - la recherche en ligne tient dans la limite de 15 s des inspections, sinon il faut une tâche à
+    part ;
+  - le titre d'une mise à jour de pilote contient toujours la version ; sinon, version inconnue ;
+  - le format et la capacité maximale SMBIOS sont fiables sur le PC de dev et le second PC.
+- **Fait quand :** comme les autres outils du chantier :
+  - schémas fermés, couverture et tests sur données synthétiques (tables SMBIOS, événements,
+    titres de mises à jour) ;
+  - une trace réelle sur le PC de dev, sans admin.
 
 ### Chantier 5 — Mesurer au bon moment (pistes B et C ; D01, D02)
 
@@ -448,7 +554,7 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
 | D | Claude Code | PowerShell : référence haute |
 | E | ChatGPT | capture d'écran du Gestionnaire des tâches : référence « grand public » |
 
-- Scénarios (12 à 15) :
+- Scénarios (17 à 20) :
   - PC lent et mémoire :
     - Chrome avec beaucoup d'onglets et peu de RAM ;
     - application dont la mémoire grossit pendant 10 min ;
@@ -469,6 +575,15 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
     - application qui plante (journaux) ;
     - redémarrage en attente depuis une semaine ;
     - PC sans problème.
+  - Pilotes, mises à jour et achats (ajoutés le 3 octobre) :
+    - « J'ai 8 Go : combien pour passer à 16 Go ? » ;
+    - « Dois-je installer le dernier pilote NVIDIA ? », avec et sans symptôme ;
+    - « Windows Update échoue avec 0x800f0922 » ;
+    - « Pourquoi je n'ai pas la dernière version de Windows ? » (blocage de compatibilité) ;
+    - « Mon jeu plante depuis la mise à jour du pilote ».
+
+    Ils décident du chantier 15 : il démarre si Claude ou ChatGPT, avec le web, font mieux que B
+    sur ces scénarios faute d'informations récentes (prix, notes de version, problèmes connus).
 - Grille de notation, de 0 à 2 par critère, plus le coût et la durée :
   - bonne cause ;
   - actions concrètes ;
@@ -562,7 +677,7 @@ sortie). Les quatre annoncent les outils et le raisonnement.
 - Cartes d'action pour les propositions existantes, avec validation locale puis un avant/après
   mesuré (comparateur existant) :
   - ouvrir une page des Paramètres (`ms-settings:storagesense`, `startupapps`, `windowsupdate`,
-    `powersleep`) ;
+    `windowsupdate-optionalupdates` pour les pilotes proposés, `powersleep`) ;
   - fermer normalement une application ;
   - envoyer des fichiers choisis à la Corbeille ;
   - lancer les adaptateurs de nettoyage.
@@ -619,14 +734,79 @@ vérifiés parce que le modèle recopie des valeurs brutes (octets, compteurs `_
 - **Fait quand :** sur la campagne d'évaluation, la qualité approche celle d'Ultra seul pour un
   coût moyen nettement inférieur.
 
+### Chantier 15 — Sources externes (pistes A et C ; E08, proposé le 3 octobre)
+
+Démarre seulement si l'évaluation le justifie (chantier 7, scénarios « pilotes, mises à jour et
+achats »). Contrat : C6. Nebius a annoncé le rachat de Tavily le 10 février 2026 : la soumission
+montrerait deux briques de Nebius, Token Factory pour raisonner et Tavily pour chercher. Tavily
+garde sa marque et sa propre clé API.
+
+- **Pas de recherche en texte libre.** Les outils sont typés et leur requête est composée
+  localement à partir des références émises par le lot 3 du chantier 4 :
+  - nouvelle classe `ToolClass::External`, pour appliquer à part le consentement, le budget et
+    l'affichage de la requête ;
+  - nouveau fichier `crates/agent/src/external_tools.rs`, branché comme `system_tools.rs`.
+
+| Outil | Contenu | Domaines |
+| --- | --- | --- |
+| `lookup_driver_notes(device_ref)` | dernière version du constructeur, problèmes ouverts et corrigés, bulletins de sécurité | nvidia.com, intel.com, amd.com, site du fabricant du PC |
+| `lookup_known_issue(ref)` | blocage de compatibilité : page release health officielle téléchargée, identifiant cherché localement, sans requête de recherche ; code d'erreur, KB ou module en cause : recherche | learn.microsoft.com, support.microsoft.com, sites des constructeurs |
+| `lookup_upgrade_price(component)` | `memory` d'abord : fourchette de prix datée pour une barrette compatible (type, format, vitesse, capacité), dans le pays de la région Windows | sites de vente et comparateurs du pays, liste à fixer |
+| `lookup_pc_specs()` | en dernier : fiche constructeur du modèle (RAM maximale, soudée ou non, emplacements M.2) | site du fabricant du PC |
+
+- Client `crates/agent/src/tavily.rs`, sur le modèle de `nebius.rs` (https seulement, délais,
+  aucune donnée personnelle dans les en-têtes) :
+  - `search_depth: basic`, `include_domains` en mode `restrict`, 5 résultats au plus ;
+  - dates de publication demandées, `include_usage` pour le coût ;
+  - jamais `include_answer` (réponse invérifiable d'un autre LLM), ni `include_raw_content`, ni
+    `extract` sur une URL fournie par le modèle.
+- Cache dans `crates/store` : 24 h pour les prix et les notes de pilotes, 7 jours pour les
+  problèmes connus. Plafond de recherches par tour, réglé d'après les traces. Le coût Tavily
+  s'ajoute à celui du tour
+  (tarifs relevés le 3 octobre : 1 crédit par recherche basic, 1 000 crédits gratuits par mois,
+  puis 0,008 $ le crédit).
+- Sans clé ou sans consentement : statut `unsupported` ou `denied`, et tout le reste fonctionne.
+  Pour le jury, la clé Tavily reste facultative.
+- Consignes du prompt (piste A) :
+  - les résultats web ne sont pas fiables, comme toute sortie d'outil ;
+  - une correspondance avec un problème connu est un indice, pas une preuve : confiance moyenne
+    et formulation prudente ;
+  - un prix est une fourchette datée et sourcée ;
+  - la dernière version d'un constructeur n'est proposée que si ses notes corrigent le symptôme
+    mesuré ou une faille.
+- Interface (piste C) :
+  - cartes de source pour `[W1]` : titre, domaine, dates ;
+  - lien ouvert dans le navigateur, avec une URL résolue côté Rust à partir de la citation, en
+    https seulement ;
+  - consentement « recherche web » et clé Tavily dans les réglages.
+- **À décider :** confirmer la première recherche de chaque conversation, comme une extension de
+  budget, ou se fier au consentement mémorisé.
+- **À vérifier :**
+  - les conditions de Tavily, avant d'écrire dans l'app la « zero data retention » annoncée par
+    sa FAQ ;
+  - la fiabilité de `published_date`, encore en bêta chez Tavily ; une date absente reste
+    inconnue ;
+  - les sites de vente et comparateurs par pays, et la qualité des extraits de prix ;
+  - les adresses des pages release health par version de Windows, et la présence des identifiants
+    de blocage dans leur texte ;
+  - la capacité Tauri minimale pour ouvrir un lien externe ;
+  - le coût et la latence réels d'une recherche, mesurés sur le PC de dev.
+- **Fait quand :**
+  - des tests sur réponses synthétiques, y compris des extraits piégés, ne montrent aucun
+    changement de permission, aucune action et aucune fuite ;
+  - une recherche réelle a été faite sans donnée sensible ;
+  - la requête affichée est identique octet pour octet à celle envoyée ;
+  - les captures du chantier 7 enregistrent les résultats web, et le rejeu ne relance aucune
+    recherche.
+
 ## 5. Calendrier
 
 | Semaine | Travail |
 | --- | --- |
 | **S1 · 28 sept.–4 oct.** | Contrats C1 à C5 (jours 1 et 2). Chantier 2. Capture, rejeu et ligne de base A et D sur 5 scénarios. Chantier 1 : prompt, `submit_answer`, vérificateur. Maquette de conversation sur données simulées. |
-| **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). |
-| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 6, phase 2 : rail, PC en direct, inspecteur avec Expliquer et Enquêter. Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 et 2 (caches système, MFT). Évaluation 2. |
-| **S4 · 19–25 oct.** | Chantier 6, phase 2 : Stockage en treemap, Historique minimal (session et « Enregistrer un problème »). Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. |
+| **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). Chantier 4, lot 3 : SMBIOS, événements, blocages de compatibilité. PR du plan pour le contrat C6. Scénarios « pilotes, mises à jour et achats ». |
+| **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 6, phase 2 : rail, PC en direct, inspecteur avec Expliquer et Enquêter. Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 et 2 (caches système, MFT). Évaluation 2. Chantier 4, lot 3 : `get_drivers` et Windows Update. Chantier 15 si l'évaluation le justifie : notes de pilotes et problèmes connus. |
+| **S4 · 19–25 oct.** | Chantier 6, phase 2 : Stockage en treemap, Historique minimal (session et « Enregistrer un problème »). Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. Chantier 15, suite : prix, puis fiche constructeur. |
 | **S5 · 26–30 oct.** | Gel le 27. Corrections. README, docs, licence. Vidéo. Release. Soumission avant le 30 octobre à 18 h. |
 
 Repoussé après la soumission :
@@ -644,7 +824,7 @@ Repoussé après la soumission :
 - coffre Windows pour la clé (U04) ;
 - fluidité en jeu mesurée (E06) ;
 - réseau (E07) ;
-- recherche documentaire (E08) ;
+- recherche documentaire libre (E08) ; le chantier 15 n'en avance que des outils typés ;
 - alertes (E09) ;
 - antivirus (E10) ;
 - corruption (E11) ;
@@ -658,9 +838,9 @@ Les pistes touchent des fichiers différents pour limiter les conflits.
 
 | Piste | Chantiers | Fichiers principaux |
 | --- | --- | --- |
-| A — moteur | 1, 3 (envois), 10, 11 (moteur) | `crates/agent`, `crates/store`, `apps/cli` |
+| A — moteur | 1, 3 (envois), 10, 11 (moteur), 15 | `crates/agent`, `crates/store`, `apps/cli` |
 | B — collecte et outils | 2, 4, 5 (collecte), 8, 9 | `crates/telemetry`, `crates/inspect`, `crates/agent/src/system_tools.rs`, `apps/elevated` |
-| C — interface | 6, 3 (écrans), 5 (bouton), 11 (cartes) | `apps/gui` |
+| C — interface | 6, 3 (écrans), 5 (bouton), 11 (cartes), 15 (sources et réglages) | `apps/gui` |
 | D — évaluation et soumission | 7, 12 | `apps/eval`, `eval/`, `scripts/`, `docs/eval.md`, README |
 
 Règles de travail :
@@ -693,6 +873,17 @@ Règles de travail :
 3. Spécialistes, LoRA et distillation seulement après la soumission, et seulement si l'évaluation les
    justifie.
 
+## 7 ter. Sources externes (3 octobre)
+
+1. Un pilote se juge sur trois versions : celle installée, celle que propose Windows Update
+   (l'option prudente, souvent en retard sur NVIDIA, Intel ou AMD) et la dernière du constructeur,
+   avec ses notes. « N'y touchez pas » reste une réponse valable.
+2. Les clés de recherche locales passent d'abord (chantier 4, lot 3) : elles servent même sans web.
+3. Pas de recherche web en texte libre avant la soumission : seulement des outils typés dont la
+   requête est composée localement (C6).
+4. Tavily est la source web retenue, avec une clé facultative. Le chantier 15 démarre seulement si
+   l'évaluation montre un manque d'informations récentes.
+
 ## 8. Suivi
 
 | Chantier | Piste | État | PR |
@@ -711,8 +902,11 @@ Règles de travail :
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
 | 12 — Soumission | D | à faire | |
-| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider | #33 |
+| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider ; en cours : fiabilité de la boucle (Expliquer en une requête, datation des mesures, réparations, coupures) | #33, wp13-agent-reliability |
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
+| 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
+| Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
+| 15 — Sources externes | A, C | en cours : client Tavily et outils typés (wp15-external-sources) | |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés

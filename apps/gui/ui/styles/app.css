@@ -2707,6 +2707,31 @@ details.more > div {
   border-color: transparent;
   background: var(--bad-soft);
 }
+/* The recording's Explain and Investigate stay side by side (.callout > div stacks its children). */
+.callout > .row {
+  flex-direction: row;
+  align-self: flex-start;
+}
+.rec-battery {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.rec-battery-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.rec-battery-facts dt {
+  color: var(--text-2);
+}
+.rec-battery-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
 .rec-dot {
   width: 10px;
   height: 10px;
@@ -3309,5 +3334,180 @@ details.more > div {
   .quick-row .bar,
   .quick-files {
     display: none;
+  }
+}
+
+/* ---------- Storage: deeper checks (closed read-only tasks of the elevated helper) ---------- */
+.admin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.admin-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.admin-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex: none;
+}
+.admin-text {
+  min-width: 0;
+}
+.admin-title {
+  font-size: 16px;
+  line-height: 22px;
+}
+.admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.admin-checks {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+}
+.admin-check {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+.admin-check + .admin-check {
+  border-top: 1px solid var(--stroke);
+}
+.admin-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.admin-check-text strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.admin-check-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.admin-check-actions .btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.admin-check-actions .btn .icon {
+  width: 16px;
+  height: 16px;
+}
+.admin-blocked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.admin-blocked .icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.admin-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+.admin-running {
+  padding: 12px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--raised);
+}
+.admin-result {
+  margin-bottom: 16px;
+}
+.admin-chat {
+  align-items: center;
+  margin-bottom: 14px;
+}
+.admin-chat > div {
+  flex: 1;
+  min-width: 0;
+}
+.admin-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.admin-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--raised);
+}
+.admin-group-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.admin-kv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.admin-kv dt {
+  min-width: 0;
+  color: var(--text-2);
+}
+.admin-kv dd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.admin-kv dd.admin-missing {
+  color: var(--text-3);
+}
+.admin-more {
+  margin-top: 12px;
+}
+.admin-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 640px) {
+  .admin-check {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+  .admin-check-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  .admin-chat {
+    flex-wrap: wrap;
   }
 }
