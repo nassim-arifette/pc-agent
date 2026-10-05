@@ -1,8 +1,10 @@
 //! Read-only NTFS controls, only used inside the separately approved elevated worker.
 use super::{
     mft::{
-        self, CollectError, Collection, CollectionBounds, Geometry, JournalWitness, RecordData,
-        Source, VolumeSnapshot,
+        self,
+        chunked::{self, ChunkedMft, VolumeReader},
+        CollectError, Collection, CollectionBounds, Geometry, JournalWitness, RecordData, Source,
+        VolumeSnapshot,
     },
     protocol::DriveLetter,
 };
@@ -16,8 +18,8 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{GetLastError, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
-        CreateFileW, GetDriveTypeW, GetFileType, GetVolumeInformationByHandleW, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, OPEN_EXISTING,
+        CreateFileW, GetDriveTypeW, GetFileType, GetVolumeInformationByHandleW, ReadFile,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, OPEN_EXISTING,
     },
     System::{
         Ioctl::{
@@ -26,7 +28,7 @@ use windows_sys::Win32::{
             NTFS_FILE_RECORD_OUTPUT_BUFFER, NTFS_VOLUME_DATA_BUFFER, USN_JOURNAL_DATA_V0,
         },
         WindowsProgramming::DRIVE_FIXED,
-        IO::DeviceIoControl,
+        IO::{DeviceIoControl, OVERLAPPED},
     },
 };
 
@@ -47,9 +49,45 @@ fn last_error() -> CollectError {
     }
 }
 
+/// Raw reads on the approved volume handle, for the bulk `$MFT` reader.
+struct VolumeHandle(HANDLE);
+impl VolumeReader for VolumeHandle {
+    fn read_at(&mut self, offset: u64, buffer: &mut [u8]) -> Result<(), CollectError> {
+        let length = u32::try_from(buffer.len()).map_err(|_| CollectError::InvalidBounds)?;
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.Anonymous.Anonymous.Offset = offset as u32;
+        overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
+        let mut read = 0;
+        // SAFETY: the handle is the live volume handle owned by NativeSource for this reader's
+        // whole lifetime; buffer is a writable slice of exactly `length` bytes; the OVERLAPPED
+        // only carries the offset of a synchronous read (the handle was not opened overlapped).
+        // ReadFile on a volume handle reads sectors and never modifies the volume.
+        let ok = unsafe {
+            ReadFile(
+                self.0,
+                buffer.as_mut_ptr(),
+                length,
+                &mut read,
+                &mut overlapped,
+            )
+        };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        if read != length {
+            return Err(CollectError::Unavailable);
+        }
+        Ok(())
+    }
+}
+
 struct NativeSource {
     volume: OwnedHandle,
     geometry: Option<Geometry>,
+    /// Bulk reader over the `$MFT` extents; `None` keeps one control per record.
+    chunked: Option<ChunkedMft<VolumeHandle>>,
+    /// Set once a bulk setup or read failed, so it is not retried during this collection.
+    chunked_failed: bool,
 }
 impl NativeSource {
     fn open(letter: DriveLetter) -> Result<Self, CollectError> {
@@ -120,7 +158,26 @@ impl NativeSource {
         Ok(Self {
             volume,
             geometry: None,
+            chunked: None,
+            chunked_failed: false,
         })
+    }
+
+    /// Sets up bulk reading from record 0's `$DATA` extents; any doubt keeps the controls.
+    fn start_chunked(&mut self, g: Geometry, record_slots: u64) {
+        if self.chunked.is_some() || self.chunked_failed {
+            return;
+        }
+        let ready = self
+            .fsctl_record(0)
+            .ok()
+            .filter(|zero| zero.number == 0)
+            .and_then(|zero| chunked::mft_extents(&zero.bytes, g).ok())
+            .and_then(|extents| {
+                ChunkedMft::new(VolumeHandle(self.handle()), g, extents, record_slots).ok()
+            });
+        self.chunked_failed = ready.is_none();
+        self.chunked = ready;
     }
 
     fn handle(&self) -> HANDLE {
@@ -206,14 +263,33 @@ impl Source for NativeSource {
             return Err(CollectError::InvalidSource);
         }
         self.geometry.get_or_insert(geometry);
+        let record_slots = data.basic.MftValidDataLength as u64 / geometry.record_bytes as u64;
+        self.start_chunked(geometry, record_slots);
         Ok(VolumeSnapshot {
             geometry,
-            record_slots: data.basic.MftValidDataLength as u64 / geometry.record_bytes as u64,
+            record_slots,
             journal: self.journal(),
         })
     }
 
     fn record_at_or_below(&mut self, ordinal: u64) -> Result<RecordData, CollectError> {
+        if let Some(chunked) = self.chunked.as_mut() {
+            match chunked.record_at_or_below(ordinal) {
+                Ok(record) => return Ok(record),
+                // A failed bulk read falls back to the per-record control for the rest.
+                Err(_) => {
+                    self.chunked = None;
+                    self.chunked_failed = true;
+                }
+            }
+        }
+        self.fsctl_record(ordinal)
+    }
+}
+
+impl NativeSource {
+    /// One FSCTL_GET_NTFS_FILE_RECORD: the nearest in-use record at or below `ordinal`.
+    fn fsctl_record(&mut self, ordinal: u64) -> Result<RecordData, CollectError> {
         let g = self.geometry.ok_or(CollectError::InvalidSource)?;
         if ordinal >= 1_u64 << 48 || g.record_bytes > mft::MAX_RECORD_BYTES {
             return Err(CollectError::InvalidSource);
