@@ -17,6 +17,10 @@ use std::{
 };
 
 const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
+/// NVIDIA's sampling for Nemotron 3 tool calling. Greedy decoding (temperature 0) let Super loop
+/// until the output limit, with almost no reasoning, on 2026-10-03 and 2026-10-05.
+const TEMPERATURE: f64 = 0.6;
+const TOP_P: f64 = 0.95;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
@@ -414,7 +418,8 @@ impl Model for Nebius {
         };
         // Streamed so the answer can be shown while it is written; usage comes in the last event.
         let body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
-            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,"temperature":0.0,
+            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,
+            "temperature":TEMPERATURE,"top_p":TOP_P,
             "stream":true,"stream_options":{"include_usage":true}});
         let response = self.send(
             self.client
