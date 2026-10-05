@@ -3,9 +3,11 @@
 // never loads this file: it is outside the embedded ui folder.
 //
 // URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
-// (a confirmed choice; without it the first cloud question asks for one). Questions containing
+// (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow,
+// ?recording=short (3-second recordings), ?battery=none (no battery). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
-// stretches the steps. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
+// off. Both event families are emitted, like the Rust side: turn:* and inv:*.
 // Live captures publish selection sources; Explain and Investigate use selection_preview/send.
 
 const params = new URLSearchParams(window.location.search);
@@ -320,10 +322,60 @@ function samplerStatus() {
 }
 
 
+// One opaque battery discharging steadily, one point per recorded second, with the derived loss
+// of its continuous discharge segment (pcagent_store::BatteryRecording).
+function batteryRecording(rec) {
+  const end = rec.ended_at_unix_ms ?? Date.now();
+  const ticks = Math.max(1, Math.min(128, Math.floor((end - rec.started_at_unix_ms) / 1000)));
+  const ref = "battery-00000000-0000-4000-8000-00000000b001";
+  const window = (at) => ({ started_at_unix_ms: at - 40, finished_at_unix_ms: at, duration_ms: 40 });
+  const source = "DeviceIoControl/IOCTL_BATTERY_QUERY_STATUS";
+  const o = (at, metric, value, unit) => ({ observation_id: `${ref}-measurement-${at}-${metric}`, measured_at_unix_ms: at, window: window(at), entity_ref: ref, metric, value, unit, status: "ok", source, origin: "synthetic_fixture" });
+  const startCapacity = 41250;
+  const rate = -8400;
+  const points = params.get("battery") === "none" ? [] : Array.from({ length: ticks }, (_, i) => {
+    const at = rec.started_at_unix_ms + (i + 1) * 1000;
+    const capacity = Math.round(startCapacity + (rate * (i + 1)) / 3600);
+    return {
+      recorded_at_unix_ms: at, recording_elapsed_ms: (i + 1) * 1000, clock_consistent: true, status: "ok",
+      observations: [
+        o(at, "battery_kind", "system", "category"), o(at, "battery_capacity_units", "milliwatt_hours", "category"), o(at, "battery_charge_state", "discharging", "category"), o(at, "battery_on_ac", false, "boolean"),
+        o(at, "battery_remaining_capacity_mwh", capacity, "milliwatt_hours"), o(at, "battery_charge_percent", Math.round((capacity / 52800) * 100), "percent"),
+        o(at, "battery_power_rate_mw", Math.round(rate + (Math.random() - 0.5) * 600), "milliwatts"), o(at, "battery_estimated_runtime_windows_seconds", 17400 - i, "seconds"),
+      ],
+    };
+  });
+  const first = points[0];
+  const last = points[points.length - 1];
+  const capacityOf = (p) => p.observations.find((x) => x.metric === "battery_remaining_capacity_mwh");
+  const lost = points.length > 1 ? capacityOf(first).value - capacityOf(last).value : null;
+  const elapsed = points.length > 1 ? last.recording_elapsed_ms - first.recording_elapsed_ms : 0;
+  const derived = (metric, value, unit) => ({ ...o(last.recorded_at_unix_ms, metric, value, unit), source: "derived/recording_battery_capacity_endpoints", derivation: "synthetic", inputs: [capacityOf(first), capacityOf(last)] });
+  const evolution = lost > 0 && elapsed > 0
+    ? [{ from_unix_ms: first.recorded_at_unix_ms, to_unix_ms: last.recorded_at_unix_ms, measured_points: points.length, observations: [
+        derived("battery_measured_capacity_decrease_mwh", lost, "milliwatt_hours"),
+        derived("battery_average_power_rate_mw", (-lost * 3600000) / elapsed, "milliwatts"),
+        derived("battery_estimated_runtime_from_recording_seconds", (capacityOf(last).value * elapsed) / lost / 1000, "seconds"),
+      ] }]
+    : [];
+  return {
+    status: points.length ? "ok" : "partial", started_at_unix_ms: rec.started_at_unix_ms, ended_at_unix_ms: rec.ended_at_unix_ms, interval_ms: 1000,
+    coverage: { expected_ticks: rec.duration_seconds, recorded_ticks: ticks, ticks_without_battery: points.length ? 0 : ticks, unavailable_observations: 0, rejected_observations: 0, points_returned: points.length, points_omitted_from_response: 0, batteries_omitted_from_response: 0, battery_tick_points_omitted_during_collection: 0 },
+    gaps: [], batteries: points.length ? [{ battery_ref: ref, status: "ok", points, gaps: [], evolution }] : [], limitations: [],
+  };
+}
+
 // ---------- Action proposals ----------
-// A question about freeing space proposes two plans; running one reports space freed.
+// A question about freeing space proposes two plans; running one reports space freed. A question
+// about start-up proposes turning one program off; once done, it can be restored from the journal.
 const turnPlans = new Map();
 function proposePlans(turnId, question) {
+  if (/startup|start-up|boot|démarr/i.test(question)) {
+    turnPlans.set(turnId, [
+      { plan_id: `plan-${turnId}-startup`, kind: "disable_user_startup", targets: [{ kind: "startup", label: "Spotify", files: null, bytes: null }], recovery: "restore_previous_startup_approval", checks: ["user_startup_entry_unchanged", "known_startup_approval_format"], decision: null },
+    ]);
+    return;
+  }
   if (!/supprim|delete|clean|nettoy|place|space|free/i.test(question)) return;
   turnPlans.set(turnId, [
     { plan_id: `plan-${turnId}-1`, kind: "run_cleanup_adapter", targets: [{ kind: "cleanup", label: "C:\\Users\\Alex\\AppData\\Local\\Temp", files: 1840, bytes: 18.7 * GiB }], recovery: "none_synthetic_regenerable_data", checks: ["identity_revalidated", "not_protected"], decision: null },
@@ -529,6 +581,86 @@ function mftResult(volume) {
   };
 }
 
+// ---------- Elevated deeper checks ----------
+// Same shapes as pcagent_inspect::elevation::to_inspection: opaque entity references
+// ("disk-reliability-<uuid>"), one observation per metric with its unit, null for a value the
+// source did not report, and coverage notes in the core's English.
+let entitySequence = 0;
+function entityRef(prefix) {
+  entitySequence += 1;
+  return `${prefix}-00000000-0000-4000-8000-${String(entitySequence).padStart(12, "0")}`;
+}
+function inspection(rows, coverage, durationMs) {
+  const now = Date.now();
+  const window = { started_at_unix_ms: now - durationMs, finished_at_unix_ms: now, duration_ms: durationMs };
+  const observations = rows.map(([entity_ref, metric, value, unit, status = "ok"], i) => ({
+    observation_id: `measurement-${now}-${i}`, measured_at_unix_ms: now, window, entity_ref, metric, value, unit,
+    status: value == null && status === "ok" ? "unsupported" : status, source: "synthetic_fixture", origin: "synthetic_fixture",
+  }));
+  const status = coverage.every((c) => c.status === "ok") && observations.every((o) => o.status === "ok") ? "ok" : "partial";
+  return { status, measured_at_unix_ms: now, window, origin: "synthetic_fixture", observations, coverage };
+}
+function systemCachesResult() {
+  const source = "pcagent-elevated / pcagent-storage ClassicBackend metadata";
+  const cache = (category, exists, logical, allocated, files, unknown, status = "ok") => {
+    const e = entityRef("system-cache");
+    return [[e, "system_cache_category", category, "category", status], [e, "system_cache_exists", exists, "boolean", status], [e, "system_cache_logical_bytes", logical, "bytes", status], [e, "system_cache_allocated_known_bytes", allocated, "bytes", status], [e, "system_cache_file_count", files, "count", status], [e, "system_cache_allocation_unknown_files", unknown, "count", status]];
+  };
+  return inspection(
+    [...cache("previous_windows", false, 0, 0, 0, 0), ...cache("windows_update_download", true, 2.31 * GiB, 2.33 * GiB, 1204, 0), ...cache("delivery_optimization", true, 4.12 * GiB, 4.15 * GiB, 389, 2, "partial")],
+    [
+      { scope: "previous_windows", status: "ok", source, detail: "Metadata snapshot only; observed allocation is not reclaimable space. Missing values remain unknown. Limits: [MetadataSnapshot]; coverage: None." },
+      { scope: "windows_update_download", status: "ok", source, detail: "Metadata snapshot only; observed allocation is not reclaimable space. Missing values remain unknown. Limits: [MetadataSnapshot]; coverage: Some(CacheCoverage { directories: 212, denied_directories: 0 })." },
+      { scope: "delivery_optimization", status: "partial", source, detail: "Metadata snapshot only; observed allocation is not reclaimable space. Missing values remain unknown. Limits: [MetadataSnapshot, AllocationLowerBound, DefaultCacheLocationOnly]; coverage: Some(CacheCoverage { directories: 41, denied_directories: 0 })." },
+    ],
+    4200,
+  );
+}
+function shadowStorageResult() {
+  const e = entityRef("shadow-storage");
+  return inspection(
+    [[e, "shadow_storage_used_bytes", 6.2 * GiB, "bytes"], [e, "shadow_storage_allocated_bytes", 6.5 * GiB, "bytes"], [e, "shadow_storage_maximum_bytes", 12.75 * GiB, "bytes"], [e, "shadow_storage_maximum_unlimited", false, "boolean"]],
+    [{ scope: "shadow_storage", status: "partial", source: "WMI Win32_ShadowStorage", detail: "Includes other shadow copies; unavailable per-restore-point attribution. Not reclaimable bytes. Limits: [RestorePointAttributionUnavailable]." }],
+    1800,
+  );
+}
+function diskReliabilityResult() {
+  const disk = (temperature, limit, wear, hours, errors, cycles, latencies, status = "ok") => {
+    const e = entityRef("disk-reliability");
+    return [
+      [e, "disk_reliability_temperature", temperature, "celsius", status], [e, "disk_reliability_temperature_limit", limit, "celsius", status], [e, "disk_reliability_wear", wear, "percent", status],
+      [e, "disk_reliability_power_on_hours", hours, "hours", status], [e, "disk_reliability_read_errors_total", errors[0], "count", status], [e, "disk_reliability_read_errors_uncorrected", errors[1], "count", status],
+      [e, "disk_reliability_write_errors_total", errors[2], "count", status], [e, "disk_reliability_write_errors_uncorrected", errors[3], "count", status], [e, "disk_reliability_start_stop_cycles", cycles, "count", status],
+      [e, "disk_reliability_maximum_read_latency", latencies[0], "ms", status], [e, "disk_reliability_maximum_write_latency", latencies[1], "ms", status], [e, "disk_reliability_maximum_flush_latency", latencies[2], "ms", status],
+    ];
+  };
+  return inspection(
+    [...disk(41, 84, 3, 4211, [0, 0, 0, 0], 1532, [48, 112, 9]), ...disk(35, null, null, 12890, [null, null, null, null], 4410, [null, null, null])],
+    [{ scope: "disk_reliability", status: "partial", source: "WMI root/Microsoft/Windows/Storage MSFT_StorageReliabilityCounter", detail: "Device-reported historical counters; absent fields are unknown. Limits: [ProviderValueMissing]." }],
+    2600,
+  );
+}
+function batteryEnergyResult() {
+  const history = entityRef("battery-energy-history");
+  const rows = [[history, "battery_energy_estimated_total", 48.2e6, "mJ"], [history, "battery_energy_committed_rows", 1284, "count"], [history, "battery_energy_distinct_apps", 7, "count"]];
+  const apps = [[16.4e6, 14.1e6, 12.2e6, 412, 9.8], [9.7e6, 8.9e6, 7.4e6, 233, 6.1], [6.1e6, 5.2e6, 0.4e6, 198, 7.9], [5.3e6, 4.8e6, 4.1e6, 140, 3.2], [4.2e6, 3.1e6, 0, 151, 7.2], [3.6e6, 3.3e6, 2.9e6, 88, 2.4], [2.9e6, 1.1e6, 0, 62, 5.5]];
+  apps.forEach(([energy, screen, foreground, records, hours], i) => {
+    const e = entityRef("battery-energy-app");
+    rows.push(
+      [e, "battery_app_energy_estimated", energy, "mJ"], [e, "battery_app_screen_on_energy_estimated", screen, "mJ"], [e, "battery_app_foreground_energy_estimated", foreground, "mJ"],
+      [e, "battery_app_committed_rows", records, "count"], [e, "battery_app_reported_row_durations", Math.round(hours * 3600000), "ms"],
+      [e, "battery_app_historical_first_civil_stamp", `2026-09-${21 + (i % 3)} 08:${10 + i}:00.000000000 (provider civil time; zone unknown)`, "provider_civil_time"],
+      [e, "battery_app_historical_last_civil_stamp", `2026-10-0${4 + (i % 2)} 2${i % 4}:4${i}:00.000000000 (provider civil time; zone unknown)`, "provider_civil_time"],
+    );
+  });
+  return inspection(
+    rows,
+    [{ scope: "battery_energy_history", status: "partial", source: "Windows E3 historical estimates / powercfg srumutil CSV", detail: "Historical E3 estimates for accepted committed on-battery rows of this user only. Civil timestamps have unknown timezone; summed row durations may overlap and are not a measurement window. Export time is the read time. Not physical power, exhaustive app attribution or battery discharge. Limits: [ExportPartial]." }],
+    7400,
+  );
+}
+const CHECK_RESULTS = { system_caches: systemCachesResult, shadow_storage: shadowStorageResult, disk_reliability: diskReliabilityResult, battery_energy: batteryEnergyResult };
+
 export function createMock() {
   const commands = {
     app_info: () => ({ version: "0.1.0", cloud: cloud(), models: [
@@ -575,6 +707,17 @@ export function createMock() {
       };
     },
     action_plans: ({ turnId }) => (turnPlans.get(turnId) || []).map((p) => ({ ...p })),
+    // Journal-based restoration of a start-up entry turned off by a completed plan: a fresh plan
+    // in its own local action group, still run only through action_run.
+    startup_restore_prepare: async ({ sourcePlanId, itemIndex }) => {
+      await wait(300);
+      const source = [...turnPlans.values()].flat().find((p) => p.plan_id === sourcePlanId);
+      if (!source || source.kind !== "disable_user_startup" || source.decision !== "completed" || itemIndex !== 0) throw new Error("startup disable is not durably completed");
+      const turnId = `local-restore-${sourcePlanId}`;
+      const plan = { plan_id: `plan-restore-${Date.now()}`, kind: "restore_user_startup", targets: source.targets.map((x) => ({ ...x })), recovery: "restore_previous_startup_approval", checks: ["user_startup_entry_unchanged", "known_startup_approval_format"], decision: null };
+      turnPlans.set(turnId, [plan]);
+      return { turn_id: turnId, plan: { ...plan } };
+    },
     action_decline: ({ turnId, planId }) => {
       const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
       if (!plan) throw new Error("These proposals are no longer current.");
@@ -604,6 +747,13 @@ export function createMock() {
       const seconds = params.get("recording") === "short" ? 3 : durationSeconds;
       recording = { id: `rec-${Date.now()}`, started_at_unix_ms: Date.now(), ended_at_unix_ms: null, duration_seconds: seconds, status: "recording", samples: 0, markers: [{ at_unix_ms: Date.now(), kind: "start" }] };
       return { ...recording };
+    },
+    // The battery points of a recording, as Store::battery_recording returns them; ?battery=none
+    // is a desktop PC without a battery.
+    battery_recording: async ({ recordingId }) => {
+      await wait(150);
+      if (!recording || recording.id !== recordingId) return null;
+      return batteryRecording(recording);
     },
     record_activity_cancel: ({ recordingId }) => {
       if (!recording || recording.id !== recordingId || recording.ended_at_unix_ms != null) throw new Error("This recording is over.");
@@ -777,11 +927,15 @@ export function createMock() {
       routingSettings = { mode: settings.mode, super_model_id: settings.super_model_id ?? null, ultra_model_id: settings.ultra_model_id ?? null };
       return routingView();
     },
-    // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail.
+    // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail; ?elevation=slow
+    // keeps a deeper check running for 20 s (to see the running state and Stop).
     elevation_status: () => (elevation ? { request_id: elevation.id, task: elevation.task, budget_ms: elevation.budget, state: elevation.state } : null),
     elevation_prepare: async ({ task, budgetMs }) => {
       if (elevation) throw new Error("Another administrator task is already prepared or running.");
-      if (task?.kind !== "mft_inventory" || !/^[A-Z]$/.test(task.volume)) throw new Error("Unsupported task.");
+      const mft = task?.kind === "mft_inventory" && /^[A-Z]$/.test(task.volume) && Object.keys(task).length === 2;
+      const check = Boolean(CHECK_RESULTS[task?.kind]) && Object.keys(task).length === 1;
+      if (!mft && !check) throw new Error("Unsupported task.");
+      if (!(budgetMs >= 1 && budgetMs <= 120000)) throw new Error("Invalid elevation request.");
       await wait(300);
       elevation = { id: `elevation-${Date.now()}`, task, budget: budgetMs, state: "awaiting_local_approval", cancelled: false };
       return { request_id: elevation.id, task, budget_ms: budgetMs, state: elevation.state };
@@ -790,7 +944,8 @@ export function createMock() {
       if (!elevation || elevation.id !== requestId || elevation.state !== "awaiting_local_approval") throw new Error("This request cannot run.");
       const job = elevation;
       job.state = "running";
-      await wait(2500);
+      const slow = params.get("elevation") === "slow" && job.task.kind !== "mft_inventory";
+      for (let waited = 0; waited < (slow ? 20000 : 2500) && !job.cancelled; waited += 100) await wait(100);
       const finish = () => {
         if (elevation === job) elevation = null;
       };
@@ -803,7 +958,7 @@ export function createMock() {
         throw new Error("Windows consent was declined.");
       }
       finish();
-      return mftResult(job.task.volume);
+      return job.task.kind === "mft_inventory" ? mftResult(job.task.volume) : CHECK_RESULTS[job.task.kind]();
     },
     elevation_cancel: ({ requestId }) => {
       if (!elevation || elevation.id !== requestId) throw new Error("No matching administrator task.");
