@@ -38,18 +38,40 @@ function head(text) {
   return h("div", { class: "assistant-head" }, mark(20), h("span", null, text));
 }
 
-function stepLabel(step) {
+/**
+ * What a step did, in plain words. A finished model request is described by what followed it in
+ * the recorded steps: the checks it asked for, the answer it wrote, or a correction requested
+ * from it. Nothing is claimed about what the model "thought".
+ */
+function stepLabel(step, steps = [], index = -1) {
   if (step.type === "snapshot") return t("step.snapshot");
   if (step.type === "model") {
-    if (step.state === "failed") return t("step.model.failed");
+    if (step.state === "failed") {
+      const key = `step.model.failed.${step.outcome}`;
+      const label = t(key);
+      return label === key ? t("step.model.failed") : label;
+    }
     if (step.state === "running") return t(step.writing ? "step.model.writing" : "step.model.running");
-    return step.final ? t("step.model.final") : t("step.model");
+    if (step.final) return t("step.model.final");
+    let tools = 0;
+    let next = null;
+    for (let i = index + 1; i < steps.length; i++) {
+      if (steps[i].type === "model") {
+        next = steps[i];
+        break;
+      }
+      if (steps[i].type === "tool") tools += 1;
+    }
+    if (tools) return t(tools === 1 ? "step.model.asked.one" : "step.model.asked.many", { count: tools });
+    // A usable reply without a tool call that was followed by another request: the controller
+    // asked for a corrected answer (missing citation, unchecked figure, missing tool call).
+    return next ? t("step.model.redo") : t("step.model");
   }
   if (step.type === "local") return t("step.local");
   return toolLabel(step.tool);
 }
 
-function stepRow(step) {
+function stepRow(step, index = -1, steps = []) {
   const mark = {
     running: h("span", { class: "spinner", "aria-hidden": "true" }),
     done: h("span", { class: "step-ok" }, icon("check")),
@@ -62,14 +84,14 @@ function stepRow(step) {
     "div",
     { class: ["step", step.state] },
     mark,
-    h("span", { class: "step-label" }, stepLabel(step)),
+    h("span", { class: "step-label" }, stepLabel(step, steps, index)),
     h("span", { class: "step-detail" }, detail),
     h("span", { class: "step-time" }, step.duration != null ? duration(step.duration) : ""),
   );
 }
 
 function stepList(steps) {
-  return h("div", { class: "steps" }, steps.map(stepRow));
+  return h("div", { class: "steps" }, steps.map((step, index) => stepRow(step, index, steps)));
 }
 
 // ---------- Answers ----------
