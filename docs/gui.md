@@ -25,15 +25,19 @@ the rail of the phase 2 desktop mockups:
 - **Context panel**, closed by default. It opens on the right tab from what the person is looking
   at: a citation chip (*Sources*, with that measurement highlighted), the *PC status* pill (*Live
   PC*), *Analyze a folder* or *Storage* (*Storage*). *Sources* also keeps each answer's limits and
-  its requests, tokens and price. *Live PC* refreshes every 5 s while the window is visible
-  (pause button) and draws short sparklines. Below them, programs are grouped by application
+  its requests, tokens and price. *Live PC* shows memory, processor, drives, graphics cards and
+  each system battery, refreshes every 5 s while the window is visible (pause button) and draws
+  short sparklines. Below them, programs are grouped by application
   (`process_activity`, a 2-second window measured every 10 s only while the tab is visible), with
   their own sums, sortable by memory or processor; opening a group shows its services and its
   processes with their own values, so a group is never mistaken for one process. Below 1100 px the panel floats over the conversation.
 
-The *PC status* pill in the top bar names the most important thing in a few words: a drive under
-5 % or 5 GiB free, memory at 90 % or more, a processor at 90 % or more, or a slowed graphics card.
-These thresholds are hints for the status line, not findings.
+The *PC status* pill in the top bar names the most important thing in a few words: a system
+battery Windows flags as critical while unplugged (Windows' own flag, no percentage threshold), a
+drive under 5 % or 5 GiB free, memory at 90 % or more, a processor at 90 % or more, or a slowed
+graphics card. These thresholds are hints for the status line, not findings. A battery alert does
+not hide the welcome screen's suggestion about an almost-full drive, and a battery read older than
+about 30 s never raises it.
 
 The full *Storage* and *Settings* screens open in the conversation area. Storage picks or drops a
 folder, follows the scan and lists the largest folders and files, each of which can be selected
@@ -42,7 +46,7 @@ to explain it or investigate (see the action bar below); nothing is deleted ther
 ## Live PC, selection, Explain and Investigate
 
 The *Live PC* view (`#/live`) shows the resources as selectable cards (memory, processor, each
-fixed drive, each graphics card) and the applications as selectable rows. Selecting one shows the
+fixed drive, each graphics card, each system battery) and the applications as selectable rows. Selecting one shows the
 **action bar** right under it and fills the inspector on the right with its details:
 
 - **Explain** uses only the measurements already taken for that item: nothing new is collected and
@@ -63,8 +67,28 @@ why. The inspector keeps what the actions use and an *Investigate to go further*
 chosen among an application's members keeps the bar under that application's row, and the bar then
 acts on the process the inspector names.
 
+Each system battery has its own card (*Battery*, or *Battery 1* and *Battery 2*; batteries are
+never summed): its charge, its state with the power (*Discharging at 8.4 W*), and while
+discharging the time left, labelled *per Windows* for the driver's estimate or *at this rate* for
+the one calculated from the energy left and the power. The sparkline is the charge over the reads
+this window made. The inspector shows the signed power (positive while charging), both estimates
+under their own labels, the energy left, the full-charge capacity against the design capacity
+with the estimated wear (an estimate, not a diagnosis), the charge cycles and the power over the
+span the window's reads actually cover. A battery in relative units shows its percentage, state,
+Windows' estimate and cycles only. Every value Windows did not report reads *Not reported*, never
+zero. Values older than about 30 s are never shown as current (the card would show their age). A
+desktop PC shows no battery card; a battery Windows lists but cannot read, or whose reads stopped
+finishing, shows one *Not reported* card that says so and cannot be selected. Explain and
+Investigate use the battery read's own source (`battery_source_id`, resource `battery`), which
+freezes that read without reading the battery again. It holds only the batteries shown and the
+metrics the window displays for them (a partial value shown as not reported included), under their opaque `battery-<uuid>` references, with the
+read's window and coverage ([battery.md](battery.md#live-display)). One target covers every
+battery shown, so with two batteries the consent dialog says that the readings of every battery
+shown are sent. Applications' battery use is never shown here.
+
 The page never sends measurements or names itself. It passes a host-issued reference
-(`selection_source_id` of the dashboard or of `process_activity`, plus a closed target) to
+(`selection_source_id` of the dashboard or of `process_activity`, or `battery_source_id`, plus a
+closed target) to
 `selection_preview`, which freezes that capture and returns the exact first message and a
 single-use ticket; `selection_send` must match it exactly ([selection.md](selection.md)). In a
 cloud mode the preview dialog shows the item, its measurement age, the model, what is sent and
@@ -247,7 +271,10 @@ ui/ (HTML, CSS, JS modules, no build step) ──invoke──▶ src/app.rs (Tau
   ends, and so Stop refuses the next model request (`AgentError::Cancelled`). A request already sent
   cannot be recalled. Portable and unit-tested.
 - `src/app.rs` (Windows only) holds the Tauri commands. One thread owns the live collector for the
-  live measurements (and, every 30 s, the drives' free space); each investigation and each scan runs on its own thread and reports through events.
+  live measurements (and, every 30 s, the drives' free space); a second thread reads the battery
+  (`pcagent_inspect::live_battery`, about every 10 s while measurements are polled), which the
+  measurement thread never waits on. Each investigation and each scan runs on its own thread and
+  reports through events.
   The Storage screen and investigations share one `StorageService`, so a completed scan can be
   reused by the model without rescanning.
 - The page is untrusted input: commands validate every argument, paths and item references are
@@ -287,7 +314,9 @@ cd apps\gui
 python -m http.server 5173 --bind 127.0.0.1
 # open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok,
 # ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
-# ?recording=short, ?battery=none, ?sources=short for selection sources that expire after 5 s)
+# ?recording=short, ?battery=none|ac|charging|low|relative|two|unavailable for the live battery
+# (none is a desktop PC, also without a battery in recordings), ?sources=short for selection
+# sources that expire after 5 s)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
@@ -295,8 +324,9 @@ answer and a long run; `space` or `clean` proposes cleanup actions and `startup`
 to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with the action bar under an
-application (`10a`) and under memory, Explain and its preview, and the action bar under a History
-event (`17`) and a Storage folder (`18`)) in light and dark themes
+application (`10a`) and under memory, Explain and its preview, the action bar under a History
+event (`17`) and a Storage folder (`18`), the battery card with its inspector discharging (`19`)
+and plugged in (`20`), and the pill of a critically low battery (`21`)) in light and dark themes
 (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and
 `TOUR_DEBUG_PORT` point it at a server on another port). The mock publishes selection sources for
 live captures, history events, recordings and each page of scan results (revoked by a new scan).
@@ -340,6 +370,17 @@ It lives outside `ui/`, so the app never embeds it.
   bar at a time; `E`, `Enter`, the arrow keys and Escape (focus back on the item, kept across the
   periodic refreshes); the disabled state without a reference. No JavaScript errors. Not yet
   checked in the release Windows app.
+- Battery in Live PC on 2026-10-06, with the mock: the tour in French and English, light and dark,
+  plus checks of every battery switch (two numbered cards, the consent dialog naming every battery
+  shown, relative units, the plugged-in readings with *Not reported* values, a battery that cannot
+  be read, none on a desktop), a held read showing its age without raising the pill, the drive
+  suggestion kept beside a critical battery, `E` and Escape on the card, focus kept across the
+  refreshes, and no horizontal scroll at 1280 × 800 and 860 × 640. No JavaScript errors. Then in
+  the release Windows app on a laptop (6 %, charging on AC): the card after the GPU card, the
+  action bar, the inspector with the driver's unreported power and cycle count shown as *Not
+  reported*, and an Explain preview holding the 17 displayed battery metrics under one opaque
+  reference, with no device path, tag or battery name. Not checked natively: a discharging
+  battery, a recording with the Live view open, and the read's exact duration.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 

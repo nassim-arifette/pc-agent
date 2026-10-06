@@ -4,9 +4,10 @@
 //
 // URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
 // (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow,
-// ?recording=short (3-second recordings), ?battery=none (no battery), ?sources=short (selection
-// sources expire after 5 s instead of five minutes, to exercise a scan page read again on Explain
-// or Investigate). Questions containing
+// ?recording=short (3-second recordings), ?battery=none|ac|charging|low|relative|two|unavailable
+// (the Live PC battery read: by default one discharging laptop battery; none is a desktop PC, also
+// without a battery in recordings), ?sources=short (selection sources expire after 5 s instead of
+// five minutes, to exercise a scan page read again on Explain or Investigate). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
 // stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
 // off. Both event families are emitted, like the Rust side: turn:* and inv:*.
@@ -158,8 +159,81 @@ function dashboard() {
       volume("C:\\", 255, params.get("disk") === "ok" ? 61 : 0.3),
       volume("D:\\", 476, 135),
     ],
+    ...liveBatteries(),
     limitations: ["Working sets can share pages; they do not add up to physical memory in use."],
   };
+}
+
+// ---------- Live battery ----------
+// The Live PC battery read (view::BatteryView), chosen by ?battery=. Like the Rust side it is
+// read again about every 10 s (every second dashboard), off the dashboard itself, and each read
+// publishes its own selection source for the resource `battery`. Setting
+// window.__pcagentMock.holdBattery keeps the last read, like a stalled driver, so its age shows.
+const BATTERY_MODE = params.get("battery") || "discharging";
+const BATTERY_REF = "battery-00000000-0000-4000-8000-00000000b001";
+const BATTERY_REF_2 = "battery-00000000-0000-4000-8000-00000000b002";
+let batteryRead = null;
+
+/** Every BatteryView field, unknown (null) unless given. */
+function batteryView(ref, at, values) {
+  return {
+    battery_ref: ref, kind: "system", capacity_units: "milliwatt_hours", measured_at_unix_ms: at,
+    charge_percent: null, charge_state: null, on_ac: null, critical: null, power_rate_mw: null,
+    estimated_runtime_windows_seconds: null, estimated_runtime_at_current_rate_seconds: null,
+    remaining_capacity_mwh: null, full_charge_capacity_mwh: null, design_capacity_mwh: null,
+    capacity_retention_percent: null, estimated_wear_percent: null, cycle_count: null, inconsistent: false,
+    ...values,
+  };
+}
+
+/** An absolute-unit battery: remaining energy, retention and wear follow from its capacities. */
+function absoluteBattery(ref, at, { charge, design, full, ...values }) {
+  const remaining = Math.round((charge / 100) * full);
+  return batteryView(ref, at, {
+    charge_percent: charge, remaining_capacity_mwh: remaining, full_charge_capacity_mwh: full, design_capacity_mwh: design,
+    capacity_retention_percent: (full / design) * 100, estimated_wear_percent: 100 - (full / design) * 100,
+    ...values,
+  });
+}
+
+/** One discharging laptop battery, the default; its charge drops 0.02 % per dashboard. */
+function dischargingBattery(ref, at) {
+  const power = -Math.round(jitter(8400, 600));
+  const battery = absoluteBattery(ref, at, { charge: 78.1 - 0.02 * tick, design: 57000, full: 52800, charge_state: "discharging", on_ac: false, critical: false, power_rate_mw: power, estimated_runtime_windows_seconds: 17400 - 5 * tick, cycle_count: 212 });
+  battery.estimated_runtime_at_current_rate_seconds = (battery.remaining_capacity_mwh * 3600) / -power;
+  return battery;
+}
+
+const BATTERY_FIXTURES = {
+  discharging: (at) => [dischargingBattery(BATTERY_REF, at)],
+  // The development PC's readings (docs/battery.md): no power, cycles or time left reported.
+  ac: (at) => [absoluteBattery(BATTERY_REF, at, { charge: 100, design: 47310, full: 39900, charge_state: "idle", on_ac: true, critical: false, capacity_retention_percent: 84.3373, estimated_wear_percent: 15.6627 })],
+  charging: (at) => [absoluteBattery(BATTERY_REF, at, { charge: 46, design: 57000, full: 52800, charge_state: "charging", on_ac: true, critical: false, power_rate_mw: Math.round(jitter(23500, 800)), cycle_count: 212 })],
+  low: (at) => {
+    const power = -Math.round(jitter(11200, 600));
+    const battery = absoluteBattery(BATTERY_REF, at, { charge: 6, design: 57000, full: 52800, charge_state: "discharging", on_ac: false, critical: true, power_rate_mw: power, estimated_runtime_windows_seconds: 1260, cycle_count: 212 });
+    battery.estimated_runtime_at_current_rate_seconds = (battery.remaining_capacity_mwh * 3600) / -power;
+    return [battery];
+  },
+  // A percentage only: no energy, power, calculated time left or wear (docs/battery.md).
+  relative: (at) => [batteryView(BATTERY_REF, at, { capacity_units: "relative", charge_percent: 64, charge_state: "discharging", on_ac: false, critical: false, estimated_runtime_windows_seconds: 9000 })],
+  two: (at) => [
+    dischargingBattery(BATTERY_REF, at),
+    absoluteBattery(BATTERY_REF_2, at, { charge: 91.4, design: 24000, full: 23200, charge_state: "idle", on_ac: false, critical: false, power_rate_mw: 0, cycle_count: 87 }),
+  ],
+  unavailable: () => [],
+  none: () => [],
+};
+
+/** The dashboard's battery fields: the last read, and a new read on every second dashboard. */
+function liveBatteries() {
+  const fixture = BATTERY_FIXTURES[BATTERY_MODE] || BATTERY_FIXTURES.discharging;
+  if (!batteryRead || (tick % 2 === 1 && !window.__pcagentMock?.holdBattery)) {
+    const at = Date.now() - 40;
+    const batteries = fixture(at);
+    batteryRead = { batteries, sourceId: batteries.length ? publishSource([{ kind: "resource", resource: "battery" }], at, { battery: batteries }) : null };
+  }
+  return { batteries: batteryRead.batteries, battery_source_id: batteryRead.sourceId, battery_unavailable: BATTERY_MODE === "unavailable" };
 }
 
 function finding(classification, label, support, summary, extra = {}) {
@@ -460,7 +534,7 @@ let privacy = ["complete", "anonymized", "local"].includes(privacyParam) ? { mod
 const webActive = () => privacy.mode !== "local" && privacy.web_search && Boolean(searchKey);
 // Web pages "opened" through open_web_source: recorded for review scripts, never navigated to.
 const openedWebSources = [];
-window.__pcagentMock = { openedWebSources };
+window.__pcagentMock = { openedWebSources, holdBattery: false };
 /** What PrivacyContext removes from free text: the profile path, the user and machine names. */
 function sanitize(text) {
   return text
@@ -897,6 +971,18 @@ export function createMock() {
         freshness: "already_measured",
         observations: stored
           ? [{ observation_id: "O0", entity_ref: stored.alias, metric: "allocated_bytes", value: stored.allocated_bytes, unit: "bytes", status: "ok" }]
+          : reference.target.kind === "resource" && reference.target.resource === "battery"
+            ? (source.battery || []).flatMap((b) =>
+                [["battery_charge_percent", b.charge_percent, "percent"], ["battery_power_rate_mw", b.power_rate_mw, "milliwatts"], ["battery_charge_state", b.charge_state, "category"]].map(([metric, value, unit]) => ({
+                  observation_id: `${b.battery_ref}-measurement-${b.measured_at_unix_ms}-${metric}`,
+                  measured_at_unix_ms: b.measured_at_unix_ms,
+                  entity_ref: b.battery_ref,
+                  metric,
+                  value,
+                  unit,
+                  status: value == null ? "unsupported" : "ok",
+                })),
+              )
           : reference.target.kind === "resource" && reference.target.resource === "memory"
             ? [{ observation_id: "O0", metric: "physical_available_bytes", value: 3326083072, unit: "bytes", status: "ok" }, { observation_id: "O0", metric: "physical_total_bytes", value: 16888365056, unit: "bytes", status: "ok" }]
             : [{ observation_id: "O0", metric: "cpu_busy_basis_points", value: 1850, unit: "basis_points", status: "ok" }],

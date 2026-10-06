@@ -2,7 +2,8 @@
 
 `pcagent_inspect::inspect(Query::Battery)` reads battery information independently of
 thermal providers, WMI and GPU sensors. `get_power_and_thermal` also includes these
-observations. Reads require no administrator session and never set battery state.
+observations. `pcagent_inspect::live_battery()` runs the same read for the Live PC window on
+its own battery-only worker. Reads require no administrator session and never set battery state.
 Each battery has separate observations; multiple batteries are never implicitly summed.
 
 ## Native sources and bounds
@@ -21,9 +22,14 @@ documents optional unsupported results.
 There are at most eight device interfaces, an 8 KiB interface buffer and a four-second
 scan budget. Returned numeric records must have exactly the expected length (36-byte
 information, 16-byte status or four-byte scalar). A tag is rechecked after all reads;
-changed or unreadable tags omit the whole device snapshot. The existing single native
-worker returns to its caller after 15 seconds. Synchronous driver I/O can exceed the scan
-budget; the caller timeout does not cancel it or create another worker.
+changed or unreadable tags omit the whole device snapshot. Through `inspect`, the shared
+native worker returns to its caller after 15 seconds. The live read uses its own
+one-at-a-time worker bounded to six seconds, outside the shared worker; it does not cancel
+native I/O either, and while a previous live read is still blocked a new one returns at once
+with partial `collector` coverage and no values. Synchronous driver I/O can exceed the scan
+budget; neither caller timeout cancels it or creates another worker. The `battery_devices`
+coverage text therefore names no particular worker or bound: it is the same for both callers
+and reaches the model verbatim.
 [Immediate status reads](https://learn.microsoft.com/en-us/windows/win32/power/battery-wait-status-str)
 and [tag lifetime](https://learn.microsoft.com/en-us/windows/win32/power/ioctl-battery-query-tag)
 define these semantics.
@@ -31,8 +37,10 @@ define these semantics.
 The process keeps at most 64 local interface/tag associations. References have the form
 `battery-<random UUID>` and remain stable across samples of that interface and tag.
 A tag change, observed absence or cache reset creates a new reference, breaking continuity.
-Process restart starts a new reference session. Paths and tags remain local, unlogged and
-unserialized; no physical identity is inferred across restarts. All display-name maps stay
+Process restart starts a new reference session. Device paths and tags are read only locally
+and are never logged, serialized or sent; no physical identity is inferred across restarts.
+The shared and live workers use the same reference cache, so both name a battery with the
+same reference. All display-name maps stay
 empty. Inspection failures use fixed coverage text without device identifiers.
 
 ## Observation contract
@@ -113,7 +121,10 @@ documents the current-drain request and optional unknown result.
 ## Recording and attribution limits
 
 The sampler uses this lightweight query only during a requested 30–120 second recording, once
-per sampling tick. Normal five-second background sampling adds no battery query. SQLite schema 5
+per sampling tick. Normal five-second background sampling adds no battery query. The Live PC
+window reads the battery about every 10 s, only while it polls measurements (visible, not
+paused), and about every five minutes when a complete read shows no system battery (see
+[Live display](#live-display)); it stores nothing. SQLite schema 5
 stores battery ticks under their recording, with foreign-key cascade on deletion/retention and
 the existing seven-day limit. Each point preserves its native timestamp, window, unit, source,
 status, signed reading and opaque battery reference. Capture order remains explicit even if the
@@ -160,11 +171,45 @@ Application energy attribution
 would require an additional trustworthy energy provider and explicit coverage of its limits.
 
 The fixed `open_settings_page` target `batterysaver-usagedetails` offers Windows' battery usage
-page after local approval. The backend does not scrape that page or read SRUM. A future frontend
-can display health fields from `get_power_and_thermal`, fetch `battery_recording` while/after a
-problem recording, and align its dates with existing CPU/GPU/I/O evidence. No frontend files
-were changed for this backend lot. Wear is capacity-based estimation, and runtime assumes that
-the recorded workload remains comparable.
+page after local approval. The backend does not scrape that page or read SRUM. The window shows
+the live battery in Live PC ([gui.md](gui.md)) and offers it to Explain as the selection resource
+`battery` ([selection.md](selection.md)); History shows a recording's `battery_recording`. Wear is
+capacity-based estimation, and runtime assumes that the recorded workload remains comparable.
+
+## Live display
+
+The window's measurement thread never reads the battery itself. When a dashboard is due, it asks
+a separate `battery` thread, which calls `live_battery()` and records the result; the next
+dashboards copy it. A read is requested about every 10 s (the request time is stamped, so the
+cadence does not drift with the read's duration), about every five minutes after a complete read
+that shows no system battery (a desktop, or only a UPS), and again after 5 s when the read was
+busy. The view model (`apps/gui/src/view.rs`, `battery_read` and `LiveBattery`) then applies
+these rules:
+
+- Only system batteries are shown, or batteries whose kind Windows did not report. UPS
+  (`short_term`) and `non_system` batteries are left out, and so is a battery without any charge,
+  state or AC value.
+- Each battery keeps its own charge and values; batteries are never summed. The charge is this
+  battery's remaining/full capacity, so it can differ by about one point from the tray's
+  composite percentage (`GetSystemPowerStatus`).
+- A value is shown only with `ok` status and the expected type. Unknown values are `null`, shown
+  as "Not reported", never zero. A partial (contradicting) value is not shown; the battery is
+  marked `inconsistent` instead. A relative-unit battery shows charge and state only, without
+  energy, power, calculated runtime, retention or wear.
+- The driver's runtime estimate and the calculated at-rate runtime stay two separately labelled
+  values. Battery power is whole-battery flow: no per-application attribution.
+- A busy read (`collector` coverage) keeps the previous values while they are recent. Values
+  older than 30 s are no longer shown as current and their selection source is no longer
+  offered. When reads stop finishing while a battery was known, or Windows lists a battery that
+  the read could not show, the dashboard sets `battery_unavailable` so the window says the
+  battery is not reported instead of hiding it. A desktop and other systems show nothing.
+- Each read that shows a battery publishes one selection source. It keeps only the shown
+  batteries and the metrics the window displays (charge, state, AC, critical flag, signed power,
+  both runtimes, the three capacities, retention, wear, cycles, kind, units and the two
+  consistency flags), with the read's window and coverage. A partial or contradicting value the
+  window shows as not reported is kept with its status, and coverage entries of the read are kept
+  as fixed text. Voltage, critical bias, technology and the derived charge/discharge magnitudes
+  are dropped. Explain freezes that read and never reads the battery again.
 
 ## Synthetic validation
 
@@ -174,6 +219,12 @@ full above design, remaining above full, relative/UPS units and independent batt
 Windows-only tests verify SDK layout sizes, read-access IOCTL masks, zero waits, reference
 continuity and bounded cache resets. Projection fixtures verify native C4 dates, units,
 signed values, nulls and the absence of local paths/tags/names in serialized observations.
+Portable worker tests verify that an overlapping or timed-out live read returns no values, that
+the worker stays busy until its work ends, and that the device coverage names no other worker's
+bound. View-model tests cover the dev-laptop readings, discharge, contradicting values, UPS and
+non-system batteries, relative units, desktops, busy reads, the read cadence and staleness. The
+selection tests verify that a battery source offers only the `battery` resource, freezes without
+collecting and serializes no device path, interface GUID or name.
 These tests do not open any real battery device.
 
 ## Native validation — 2026-10-04

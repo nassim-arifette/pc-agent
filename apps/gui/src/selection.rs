@@ -16,7 +16,9 @@ use std::{
 };
 
 pub const MAX_SELECTION_AGE: Duration = Duration::from_secs(300);
-const MAX_SOURCES: usize = 64;
+/// Dashboard 12/min + process activity 6/min + battery 6/min = 24 sources/min: a reviewed
+/// preview keeps its source about 4 min.
+const MAX_SOURCES: usize = 96;
 const MAX_RETAINED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TICKETS: usize = 16;
 const MAX_PAST_BYTES: usize = 512 * 1024;
@@ -805,5 +807,136 @@ mod tests {
             )
             .is_err());
         assert!(registry.tickets.is_empty());
+    }
+
+    /// A synthetic live battery read (no device is opened).
+    fn battery(charge: Value) -> SelectionSource {
+        use pcagent_inspect::{Coverage, CoverageStatus, Inspection, Observation};
+        let observation = |metric: &str, value: Value, unit: &str| Observation {
+            observation_id: format!("measurement-{metric}"),
+            measured_at_unix_ms: 4010,
+            window: Window {
+                started_at_unix_ms: 4000,
+                finished_at_unix_ms: 4010,
+                duration_ms: 10,
+            },
+            entity_ref: "battery-00000000-0000-4000-8000-00000000b001".into(),
+            metric: metric.into(),
+            status: if value.is_null() {
+                CoverageStatus::Unsupported
+            } else {
+                CoverageStatus::Ok
+            },
+            value,
+            unit: unit.into(),
+            source: "fixture".into(),
+            origin: Origin::SyntheticFixture,
+        };
+        SelectionSource::Battery(Inspection {
+            status: pcagent_shared::Status::Ok,
+            measured_at_unix_ms: 4020,
+            window: Window {
+                started_at_unix_ms: 3990,
+                finished_at_unix_ms: 4020,
+                duration_ms: 30,
+            },
+            origin: Origin::SyntheticFixture,
+            observations: vec![
+                observation("battery_charge_percent", charge, "percent"),
+                observation("battery_charge_state", json!("discharging"), "category"),
+            ],
+            coverage: vec![Coverage {
+                scope: "battery_devices".into(),
+                status: CoverageStatus::Ok,
+                source: "fixture".into(),
+                detail: "Synthetic.".into(),
+            }],
+            names: Default::default(),
+        })
+    }
+
+    #[test]
+    fn battery_read_source_resolves_the_battery_resource_and_previews_only_battery_observations() {
+        let mut registry = SelectionRegistry::default();
+        let snapshot_id = registry.publish(source(2500)).unwrap();
+        let source_id = registry.publish(battery(json!(78.1))).unwrap();
+        let target = SelectionTarget::Resource {
+            resource: Resource::Battery,
+        };
+        let listed = registry.sources();
+        let battery_sources: Vec<_> = listed
+            .iter()
+            .filter(|descriptor| descriptor.reference.source_id == source_id)
+            .collect();
+        assert_eq!(battery_sources.len(), 1);
+        assert_eq!(battery_sources[0].reference.target, target);
+        assert_eq!(battery_sources[0].measured_at_unix_ms, Some(4010));
+        assert!(!battery_sources[0].historical);
+        assert!(listed.iter().all(|descriptor| {
+            descriptor.reference.source_id == source_id || descriptor.reference.target != target
+        }));
+        let reference = SelectionRef { source_id, target };
+        let preview = registry
+            .prepare(
+                reference.clone(),
+                SelectionIntent::Explain,
+                None,
+                None,
+                vec![],
+                Sharing::Anonymized,
+                false,
+                PrivacyContext::local(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(preview.measured_at_unix_ms, Some(4010));
+        let observations = preview.message["initial_observation"]["observations"]
+            .as_array()
+            .unwrap();
+        assert!(observations
+            .iter()
+            .any(|o| o["metric"] == "battery_charge_percent" && o["value"] == 78.1));
+        assert!(observations
+            .iter()
+            .all(|o| o["metric"].as_str().unwrap().starts_with("battery_")));
+        assert!(!preview
+            .message
+            .to_string()
+            .contains("cpu_busy_basis_points"));
+        assert_eq!(
+            preview.selected_evidence["selection"]["target"],
+            json!({"kind":"resource","resource":"battery"})
+        );
+        assert_eq!(
+            preview.selected_evidence["selection"]["fresh_collection"],
+            false
+        );
+        // The snapshot published alongside is a different source, untouched.
+        assert!(registry
+            .sources()
+            .iter()
+            .any(|descriptor| descriptor.reference.source_id == snapshot_id));
+        // A read without any battery value offers nothing to select.
+        let mut empty = battery(Value::Null);
+        if let SelectionSource::Battery(read) = &mut empty {
+            read.observations
+                .retain(|o| o.metric == "battery_charge_percent");
+        }
+        assert!(registry.publish(empty).is_err());
+    }
+
+    #[test]
+    fn registry_keeps_96_sources_before_evicting_the_oldest() {
+        assert_eq!(MAX_SOURCES, 96);
+        let mut registry = SelectionRegistry::default();
+        let first = registry.publish(battery(json!(50.0))).unwrap();
+        for value in 1..MAX_SOURCES as u64 {
+            registry.publish(source(value)).unwrap();
+        }
+        assert_eq!(registry.sources.len(), 96);
+        assert!(registry.sources.iter().any(|source| source.id == first));
+        registry.publish(source(9999)).unwrap();
+        assert_eq!(registry.sources.len(), 96);
+        assert!(registry.sources.iter().all(|source| source.id != first));
     }
 }

@@ -915,7 +915,7 @@ Règles de travail :
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
-| 6 — Batterie dans PC en direct | B, A, C | en cours : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte, inspecteur, panneau et pastille (wp6-live-battery) | |
+| 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
