@@ -64,6 +64,23 @@ struct Running {
     stop: Arc<AtomicBool>,
     answer: Arc<Mutex<Option<mpsc::Sender<bool>>>>,
     finished: Arc<AtomicBool>,
+    /// What a reloaded window needs to reattach this turn (`current_turn`).
+    question: String,
+    conversation_id: Option<String>,
+    started_at_unix_ms: u64,
+    /// The extension request waiting for an answer, as `turn:extension` sent it.
+    extension: Arc<Mutex<Option<Value>>>,
+}
+
+/// The running turn, so a reloaded window can show it, stop it and answer its extension request.
+#[derive(Serialize)]
+struct CurrentTurn {
+    turn_id: String,
+    conversation_id: Option<String>,
+    question: String,
+    started_at_unix_ms: u64,
+    stopping: bool,
+    extension: Option<Value>,
 }
 
 #[derive(Default)]
@@ -1188,11 +1205,16 @@ fn launch_investigation(
         stop: Arc::new(AtomicBool::new(false)),
         answer: Arc::new(Mutex::new(None)),
         finished: Arc::new(AtomicBool::new(false)),
+        question: question.clone(),
+        conversation_id: conversation_id.clone(),
+        started_at_unix_ms: unix_ms(),
+        extension: Arc::new(Mutex::new(None)),
     };
-    let (stop, answer, finished) = (
+    let (stop, answer, finished, extension) = (
         running.stop.clone(),
         running.answer.clone(),
         running.finished.clone(),
+        running.extension.clone(),
     );
     // Without permission, the model gets an empty storage service: no folder is visible.
     let storage = if use_storage {
@@ -1226,7 +1248,7 @@ fn launch_investigation(
                 elevated_evidence,
                 web_search,
             };
-            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, sampler.as_ref(), &proposals);
+            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, &extension, sampler.as_ref(), &proposals);
             let stored_report = match &outcome {
                 Ok(report) => report.clone(),
                 Err((code, message)) => {
@@ -1294,6 +1316,7 @@ fn investigation(
     storage: Arc<StorageService>,
     stop: &Arc<AtomicBool>,
     answer: &Arc<Mutex<Option<mpsc::Sender<bool>>>>,
+    extension: &Mutex<Option<Value>>,
     sampler: Option<&Sampler>,
     proposals: &actions::Slot,
 ) -> Result<view::Report, (String, String)> {
@@ -1399,7 +1422,16 @@ fn investigation(
                     })
                 },
                 |partial, request| {
-                    ask_extension(app, id, ask.turn_id, partial, request, stop, answer)
+                    ask_extension(
+                        app,
+                        id,
+                        ask.turn_id,
+                        partial,
+                        request,
+                        stop,
+                        answer,
+                        extension,
+                    )
                 },
             );
             return Ok(view::report(&report, question));
@@ -1455,7 +1487,16 @@ fn investigation(
                     })
                 },
                 |partial, request| {
-                    ask_extension(app, id, ask.turn_id, partial, request, stop, answer)
+                    ask_extension(
+                        app,
+                        id,
+                        ask.turn_id,
+                        partial,
+                        request,
+                        stop,
+                        answer,
+                        extension,
+                    )
                 },
             );
             drop(tools);
@@ -1480,7 +1521,16 @@ fn investigation(
                     })
                 },
                 |partial, request| {
-                    ask_extension(app, id, ask.turn_id, partial, request, stop, answer)
+                    ask_extension(
+                        app,
+                        id,
+                        ask.turn_id,
+                        partial,
+                        request,
+                        stop,
+                        answer,
+                        extension,
+                    )
                 },
             );
             (report, tools.into_inner())
@@ -1550,13 +1600,17 @@ fn ask_extension(
     request: &ExtensionRequest,
     stop: &AtomicBool,
     answer: &Mutex<Option<mpsc::Sender<bool>>>,
+    pending: &Mutex<Option<Value>>,
 ) -> bool {
     if stop.load(Ordering::SeqCst) {
         return false;
     }
     let (tx, rx) = mpsc::channel();
     *lock(answer) = Some(tx);
-    let _ = app.emit("turn:extension", serde_json::json!({"turn_id":turn_id,"request":request,"usage":view::usage(&partial.stats)}));
+    let event = serde_json::json!({"turn_id":turn_id,"request":request,"usage":view::usage(&partial.stats)});
+    // Kept until answered, so a reloaded window can ask again (current_turn).
+    *lock(pending) = Some(event.clone());
+    let _ = app.emit("turn:extension", event);
     let _ = app.emit(
         "inv:extension",
         ExtensionEvent {
@@ -1576,7 +1630,25 @@ fn ask_extension(
         }
     };
     *lock(answer) = None;
+    *lock(pending) = None;
     accepted
+}
+
+/// The running turn, or nothing: a window that reloaded reattaches it instead of leaving it
+/// running unseen (and blocking every new question).
+#[tauri::command]
+fn current_turn(state: State<'_, AppState>) -> Option<CurrentTurn> {
+    lock(&state.investigation)
+        .as_ref()
+        .filter(|r| !r.finished.load(Ordering::SeqCst))
+        .map(|r| CurrentTurn {
+            turn_id: r.turn_id.clone(),
+            conversation_id: r.conversation_id.clone(),
+            question: r.question.clone(),
+            started_at_unix_ms: r.started_at_unix_ms,
+            stopping: r.stop.load(Ordering::SeqCst),
+            extension: lock(&r.extension).clone(),
+        })
 }
 
 #[tauri::command]
@@ -2028,6 +2100,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            current_turn,
             dashboard,
             process_activity,
             action_plans,

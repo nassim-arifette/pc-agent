@@ -11,6 +11,7 @@ import {
   subscribe,
   refreshInfo,
   refreshPrivacy,
+  resumeTurn,
   wireEvents,
   answerExtension,
   refreshConversations,
@@ -405,7 +406,8 @@ async function boot() {
   route(true);
   startLive();
   refreshConversations();
-  refreshPrivacy();
+  // A turn still running after a reload is shown again, with Stop and any pending question.
+  refreshPrivacy().finally(() => resumeTurn());
   try {
     await refreshInfo();
   } catch {
