@@ -157,6 +157,7 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 | `conversation_delete(id)`, `conversations_clear()` | suppression locale |
 | `send_message(conversation_id?, text, scope_ids)` | démarre un tour ; renvoie `{conversation_id, turn_id}` |
 | `stop_turn(turn_id)`, `answer_extension(turn_id, accept)` | reprennent `stop_investigation` et `answer_extension` |
+| `current_turn()` | le tour en cours, ou rien : `{turn_id, conversation_id, question, started_at_unix_ms, stopping, extension}` ; la fenêtre le rattache après un rechargement (arrêt et demande d'extension en attente compris) |
 | `privacy_get()`, `privacy_set(settings)` | mode d'envoi et confirmation (C5) |
 
 Événements : `turn:step` (forme actuelle de `Step`), `turn:delta` (réponse en flux, si le
