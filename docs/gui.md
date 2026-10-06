@@ -255,6 +255,13 @@ follows `turn:step`, `turn:delta` (the whole draft so far, replaced by the verif
 still emits the legacy `inv:*` events for older clients; this window does not listen to them, so
 nothing is drawn twice. Failed turns are kept in the history and marked in the sidebar.
 
+A window that reloads while a turn runs asks `current_turn` at start and reattaches it: the
+question, Stop and an extension request still waiting for an answer come back; earlier steps are
+not shown again. Without it the turn ran unseen, could wait forever for an answer and blocked
+every new question. A saved conversation whose only question never got an answer (the window
+closed mid-run) shows the question, *This question has no answer* and *Ask again*, never a blank
+page. Mock switches: `?turn=orphan` and `?conversation=empty`.
+
 ## Architecture
 
 ```text
@@ -379,8 +386,14 @@ It lives outside `ui/`, so the app never embeds it.
   the release Windows app on a laptop (6 %, charging on AC): the card after the GPU card, the
   action bar, the inspector with the driver's unreported power and cycle count shown as *Not
   reported*, and an Explain preview holding the 17 displayed battery metrics under one opaque
-  reference, with no device path, tag or battery name. Not checked natively: a discharging
-  battery, a recording with the Live view open, and the read's exact duration.
+  reference, with no device path, tag or battery name. Natively too: a 30 s recording with the
+  Live view open kept 28 battery points out of 30 ticks, with no gap over 2.5 s. Not checked
+  natively: a discharging battery and the read's exact duration.
+- Turn reattach on 2026-10-06, in the release Windows app: a paid driver question reloaded 20 s in
+  was shown again as running, then answered (31 s, web query with NVIDIA's public 581.83, five
+  nvidia.com sources, no repair), and `current_turn` was empty afterwards. With the mock:
+  `?turn=orphan` (Stop ends it) and `?conversation=empty`, French and English, no JavaScript
+  errors.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 
