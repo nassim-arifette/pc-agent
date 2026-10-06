@@ -42,6 +42,15 @@ a minute), 16 MiB of serialized source data, 2 MiB per source and 16
 pending tickets. Eviction can expire a capture sooner than five minutes. Cloud projections are
 limited to 128 KiB; oversized selections are rejected before any provider request.
 
+The 6 October complements of C3 ([plan section 3](plan.md)) add two publishers. Any folder or
+file of the latest completed scan (map, tree or list) is published by
+`scan_item_facts(scope_id, item_ref)`, which returns the `selection_source_id` of a source freezing
+the item at its rank among the same-kind items of its parent folder, with its item facts. The page
+uses exactly that source for Explain and Investigate, never another source with the same `storage`
+target (a `scan_page` source carries no facts), and calls `scan_item_facts` again when the source
+expired or a new scan revoked it. A finished recording is published by `battery_recording` or
+`recording_detail(recording_id)`; the page never asks for the detail of a running recording.
+
 ## Preview and execution
 
 The additive commands are:
@@ -97,6 +106,17 @@ without peak metadata remain coverage/context only. Recordings reuse their store
 gaps and battery evolution; Explain never starts or extends a recording. Bounded omission counts
 and response limits remain explicit. Storage selection is bound to the scan identity, not merely
 an item alias that another scan could reuse.
+
+A storage item source may carry `item_facts`: the cutoff (scan end minus 182 days), the logical
+and allocated bytes and the files not modified since then, the undated files, the closed
+extension-based file types with their files and bytes, the largest file under its alias, status
+and limitations, with `volume_total_bytes` in the same object so a share of the drive can be
+checked. Byte fields end in `_bytes` and counts in `_count`, which the C1 verifier reads. The
+frozen page states `rank_scope: "siblings_of_parent"` with `parent_ref` and the parent's alias, so
+its offset and total are a rank among siblings, not in the whole scan. File types leave as
+nameless totals, and the largest file leaves under its alias in every sharing mode, even with
+file-name consent; its name and path stay in the local inspector. The facts describe the end of
+the scan: a figure written in the present tense is reported as historical wording.
 
 Selected evidence enters the normal observation/citation path. The analyst writes the answer;
 the verifier checks numbers, names and citations against the actual frozen and subsequent tool

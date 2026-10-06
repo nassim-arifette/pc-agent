@@ -147,6 +147,7 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
   exacte épinglée) dans `%APPDATA%\pcagent\pcagent.sqlite`. Tables `conversations`, `turns` (JSON
   versionné) et `samples` (chantier 5). Tout reste local ; rétention par défaut de 90 jours,
   suppression par conversation et « tout effacer ».
+- Surveillances : leurs tables (migration 6) et leur rétention sont décrites en C7.
 
 ### C3 — Commandes et événements de l'app
 
@@ -162,8 +163,10 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 
 Événements : `turn:step` (forme actuelle de `Step`), `turn:delta` (réponse en flux, si le
 fournisseur le permet), `turn:extension`, `turn:done { turn }`, `turn:failed { code, message }`.
-Ils remplacent `inv:*`. Les commandes du stockage et des réglages restent inchangées.
-Le réglage « recherche web » et la clé Tavily sont décrits en C6.
+Ils remplacent `inv:*`. Les commandes existantes du stockage et des réglages restent inchangées ;
+les compléments du 6 octobre ci-dessous leur ajoutent des lectures pour les vues Stockage et
+Historique. Le réglage « recherche web » et la clé Tavily sont décrits en C6, les commandes et
+événements des surveillances en C7.
 
 #### Compléments backend du 4 octobre : sélection et routage
 
@@ -223,6 +226,118 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
 La recherche externe reste conditionnée à un contrat distinct et à la preuve du besoin ; ces
 compléments n'adoptent pas le C6 proposé dans la PR #31.
 
+#### Complément du 6 octobre : Stockage en carte, arbre et liste
+
+Ce complément sert la vue Stockage de la phase 2 (chantier 6, branche `wp6-storage-map`) : deux
+commandes de lecture locale et des faits figés pour un élément de scan. Il ne change ni
+`get_largest_items`, ni les autres outils du modèle, ni les autorisations d'action ; les
+commandes existantes ne gagnent que des champs d'affichage (heure de fin du scan, indice
+« système », type de fichier). Seul ajout au vérificateur C1 : il lit aussi les comptes (voir
+Preuves).
+
+| Commande ajoutée | Rôle |
+| --- | --- |
+| `scan_children(scope_id, item_ref?, kind, offset)` | enfants directs d'un dossier du dernier scan (sa racine si `item_ref` est absent), d'un seul type (`dirs` ou `files`), triés comme `get_largest_items`, 50 par page, avec le dossier parent (`parent`) ; lecture de l'index en mémoire, hors du thread de la fenêtre ; ne publie aucune source de sélection |
+| `scan_item_facts(scope_id, item_ref)` | faits locaux d'un dossier ou d'un fichier de ce scan (ci-dessous) et `selection_source_id`, l'identifiant de la source de sélection publiée, qui fige l'élément, son rang parmi ses voisins et ces faits |
+
+- Appel depuis la page : arguments en camelCase (`{scopeId, itemRef, kind, offset}`), comme pour
+  les autres commandes.
+- Hiérarchie : l'index garde pour chaque entrée son premier enfant et son voisin suivant, calculés
+  à la fin du scan depuis les liens de parenté. Un futur backend n'a qu'une exigence, déjà requise
+  pour les totaux : un parent précède ses enfants dans l'index. Les alias de liens physiques sont
+  exclus comme dans les classements. La racine du scan n'est pas sélectionnable.
+- Tailles : chaque élément garde la taille de la vue actuelle (allocation connue, sinon taille
+  logique) ; un dossier vaut la somme dédupliquée de son sous-arbre. La carte ajoute « Autres » :
+  la taille du parent moins celle des éléments affichés, ramenée à 0 au plus bas. Quand des
+  allocations sont inconnues, les enfants peuvent dépasser le parent, qui est alors marqué partiel.
+- Faits : plus gros fichier ; octets logiques et alloués et nombre de fichiers non modifiés depuis
+  182 jours avant la fin du scan (date de modification : la dernière utilisation reste inconnue
+  et l'interface le dit) ; fichiers sans date ; répartition par type de fichier, avec ses fichiers
+  et ses octets ; statut et limites. Une valeur inconnue n'est jamais zéro.
+- Types de fichiers : liste fermée tirée de l'extension du nom, jamais du contenu :
+  `disk_images`, `virtual_machines`, `videos`, `pictures`, `music`, `archives`,
+  `programs_installers`, `documents`, `ml_models`, `logs_dumps`, `other`, `no_extension`. C'est un
+  regroupement d'affichage, pas un verdict de nettoyage.
+- Calcul : `scan_item_facts` refuse un élément invalide (racine comprise) avant tout parcours ;
+  une nouvelle demande annule le parcours en cours ; les faits sont gardés par scan et par
+  élément, si bien qu'une source expirée se republie sans nouveau parcours.
+- Sélection (C3) : tout dossier ou fichier du dernier scan, dans la carte, l'arbre ou la liste, se
+  sélectionne par `scan_item_facts`. La cible reste `storage {scope_id, item_ref}`. Expliquer et
+  Enquêter utilisent la source dont la page a reçu l'identifiant, jamais une autre source de même
+  cible (une page de `scan_page` n'a pas de faits) ; si elle a expiré (cinq minutes) ou si un
+  nouveau scan l'a révoquée, la page rappelle `scan_item_facts`. La page figée est l'élément à son
+  rang parmi les éléments de même type de son dossier : elle porte `parent_ref`, l'alias du
+  dossier parent et `rank_scope: "siblings_of_parent"`, pour que `offset` et `total` ne se lisent
+  pas comme un rang dans tout le scan. Elle est résolue dans l'index local, jamais depuis un
+  chemin fourni par la page.
+- Preuves (C4) : Expliquer et Enquêter reçoivent `item_facts` avec l'élément, et
+  `volume_total_bytes` dans le même objet pour qu'une part du disque soit vérifiable. Les octets
+  portent des clés `…_bytes`, les comptes des clés `…_count` (`files_count`,
+  `undated_files_count`…). Le vérificateur C1 reconnaît désormais le suffixe `_count` dans toutes
+  les sorties d'outils (changement de la piste A compris dans ce complément), si bien que
+  « 2 341 fichiers » se vérifie. Les faits datent de la fin du scan : un chiffre écrit au présent
+  est signalé `historical_wording` (C1).
+- Envoi (C5) : les types partent comme des totaux sans nom. Le plus gros fichier part sous son
+  alias dans tous les modes, même avec le consentement aux noms de fichiers ; son nom et son
+  chemin restent dans l'inspecteur local. L'aperçu exact montre `item_facts` tel qu'envoyé.
+- Affichage local : la vue du scan ajoute son heure de fin (`scanned_at_unix_ms`) ; un indice
+  « système » (dossiers Windows connus à la racine d'un disque) ne sert qu'à l'affichage et ne
+  part jamais. Le nom de volume et le type SSD ou HDD ne sont pas lus : la vue montre la lettre,
+  le système de fichiers et la capacité. Une phrase permanente rappelle que la vue ne lit que des
+  tailles et des dates et ne supprime rien.
+- Analyses récentes : liste de la session seulement. Seul le dernier scan reste en mémoire ;
+  rouvrir une analyse plus ancienne la relance. L'index persistant reste après la soumission.
+- Disque entier : la carte d'un disque vient d'un parcours classique de sa racine, sans admin.
+  L'analyse rapide MFT reste à part (16 dossiers et 16 fichiers qui se chevauchent) ; une carte par
+  la MFT demanderait une extension versionnée du protocole du helper (chantier 8), hors de ce
+  complément.
+- Surveiller (C7) : sur un disque, ou sur un dossier ou un fichier d'un scan, la règle proposée
+  porte sur l'espace libre du disque concerné (« C: (contient Téléchargements) ») ; le bouton reste
+  grisé, avec la raison, si ce disque n'est pas un volume fixe.
+
+#### Complément du 6 octobre : vue Historique
+
+Ces deux commandes servent la barre secondaire et l'inspecteur de la vue Historique (chantier 6,
+phase 2, branche `wp6-history`). Elles ne modifient ni C1, ni ce qui quitte le PC (C5), ni le
+schéma de la base (la migration 6 appartient à C7). Les commandes existantes gardent leur forme ;
+seul le contenu de `metric_history` change (voir Noms).
+
+| Commande ajoutée | Rôle |
+| --- | --- |
+| `history_overview(day_start_unix_ms)` | nombre d'événements détectés sur la dernière heure, depuis le minuit local fourni par la page (au plus 25 h avant maintenant, sinon refusé) et sur les 7 derniers jours (`periods`) ; fin du dernier événement (`latest_event_ended_at_unix_ms`) ; les 20 derniers enregistrements, celui en cours compris, du plus récent au plus ancien, et s'il en existe d'autres (`more_recordings`). Comptes indexés du stockage local : aucune collecte, aucune source de sélection publiée |
+| `recording_detail(recording_id)` | un enregistrement avec, sur sa durée, les 10 plus hauts pics de processeur par processus, les pics GPU, lecture et écriture (10 par métrique), sa courbe de processeur (120 points au plus) et ses relevés de batterie. Un identifiant mal formé est refusé ; un identifiant inconnu ou effacé renvoie `null`. Une seule lecture sert la réponse et la source `recording` publiée, la même que celle de `battery_recording`, qui compte dans le registre de 96 sources |
+
+- Appel depuis la page : `{dayStartUnixMs}` et `{recordingId}`.
+- Un événement compte dans une période s'il la chevauche, comme dans `metric_history`. Les
+  décomptes ne sont pas plafonnés ; une lecture de `metric_history` reste limitée à 100
+  événements.
+- Rechargement : la page interroge `history_overview` toutes les 60 s au plus et ne relit les
+  courbes (`metric_history`) que si un décompte ou la fin du dernier événement change ; les
+  7 jours ne se relisent qu'à la demande. Aucun rechargement pendant une boîte de dialogue ou un
+  aperçu de partage ouverts, pour ne pas évincer du registre la source en cours de relecture.
+  Avant d'activer ce minuteur, le coût d'une lecture `metric_history` sur 24 h et sur 7 jours et
+  la taille des sources publiées sont mesurés dans l'app Windows.
+- Noms : `metric_history` inclut toujours le nom des programmes cités par les événements renvoyés
+  (`contributor_ref`), même au-delà des 200 noms qu'il garde ; le contenu change, pas la forme. Un
+  programme mesuré dont le nom manque s'affiche « programme mesuré, nom non conservé », jamais
+  « aucun ».
+- Durée des pics : `recording_detail` couvre la durée exacte de l'enregistrement tant que ses
+  relevés à la seconde existent (24 h). Au-delà, pics et courbe viennent des résumés à la minute,
+  à la minute près : le résultat est marqué partiel avec sa limite, et la courbe « résumés à la
+  minute ».
+- Un enregistrement en cours ne se sélectionne pas (comme aujourd'hui) : la page n'appelle
+  `recording_detail` qu'une fois l'enregistrement terminé.
+- Les noms de programmes de `recording_detail` viennent du stockage local et restent dans la
+  fenêtre. Expliquer et Enquêter envoient la source `recording` existante, filtrée par C5 comme
+  aujourd'hui.
+- Un enregistrement n'a pas de nom saisi par l'utilisateur : la liste le date et donne sa durée.
+- Ni la cadence (5 s, 1 s pendant un enregistrement), ni les seuils, ni les types d'événements ne
+  changent : il n'y a pas d'événement GPU, et un événement disque n'est attribué à aucun
+  programme.
+- Surveiller (C7) : un événement processeur, mémoire ou activité disque propose la règle de cette
+  ressource ; un enregistrement ou un événement de latence disque laisse le bouton grisé, avec la
+  raison.
+
 ### C4 — Sorties d'outils
 
 Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la période (instant ou
@@ -247,6 +362,7 @@ commande, le contenu des fichiers, les clés et secrets, les identifiants de la 
 choix est mémorisé, modifiable dans les réglages et rappelé dans la zone de saisie.
 
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
+Les surveillances (C7) n'envoient rien hors du PC.
 
 ### C6 — Sources externes (proposé le 3 octobre ; chantier 15)
 
@@ -281,6 +397,118 @@ identifiant de la machine.
 La recherche en ligne de Windows Update et le téléchargement des pages release health partent
 vers Microsoft sans passer par le modèle, comme les mises à jour de Windows elles-mêmes. Les docs
 de confidentialité le disent.
+
+### C7 — Surveillances (adopté le 6 octobre ; chantier 6, phase 2)
+
+Avancées avant la soumission à la demande du porteur du projet (branche `wp6-watches`). Les
+surveillances n'ajoutent aucun appel cloud, aucun outil du modèle et aucune autorité d'exécution :
+elles lisent les relevés de l'échantillonneur (chantier 5) et préviennent par une notification
+Windows. C7 fait foi pour les seuils, les durées et les limites ; le code et les textes le suivent.
+
+- **Règles.** Ensemble fermé (`kind`, champs inconnus refusés), 20 règles au plus, une seule par
+  cible et par mesure :
+
+| `kind` | Cible | Seuil | Durée soutenue |
+| --- | --- | --- | --- |
+| `volume_free_below` | `root` : lettre d'un volume fixe présent à la création (`C:\`), ni disque RAM, ni amovible, ni réseau | `threshold_bytes` : de 1 Gio à la taille du volume | aucune ; espace libre lu une fois par minute |
+| `resource_above` | `resource` : `cpu`, `memory` (part utilisée de la mémoire physique) ou `disk_busy` (100 % moins le temps d'inactivité des disques) | `threshold_basis_points` : de 1 000 à 10 000 | `sustained_seconds` : 0, 60, 300 ou 900 |
+| `gpu_temperature_above` | `nvml_index` : carte NVIDIA dont l'échantillonneur lit la température | `threshold_celsius` : de 50 à 105 | idem |
+| `app_cpu_above` | `executable` : nom de base vu dans les derniers relevés de l'échantillonneur, sans séparateur ni caractère de contrôle, 260 caractères au plus, comparé sans casse | `threshold_basis_points` du processeur total : de 100 à 10 000 | idem |
+| `app_memory_above` | idem | `threshold_bytes` de mémoire de travail : de 64 Mio à 1 Tio | idem |
+
+- **Déclenchement.** Une règle « au-dessus » est dépassée quand la valeur est supérieure ou égale
+  au seuil ; une règle de volume, quand l'espace libre passe sous le seuil. Une alerte s'ouvre
+  quand le seuil est dépassé sans interruption pendant la durée choisie (0 : dès le premier
+  relevé). Une lecture manquante, ou plus de trois intervalles sans relevé, recommence la durée.
+- **Retour.** L'alerte se clôt, sans notification, quand la valeur reste au niveau de retour
+  pendant 30 s (60 s pour une application, deux lectures pour un volume) : seuil moins
+  min(500, seuil / 2) points de base pour le processeur, la mémoire, l'activité du disque et le
+  processeur d'une application ; seuil moins 5 °C pour une carte graphique ; 90 % du seuil pour la
+  mémoire d'une application ; pour un volume, un espace libre d'au moins le seuil plus
+  max(1 Gio, 10 % du seuil). Une valeur absente n'est jamais zéro : la règle passe « pas de
+  mesure », avec la raison.
+- **Évaluation.** Dans le thread de l'échantillonneur de la fenêtre seulement ; la CLI et
+  `pcagent-eval` n'évaluent aucune règle. À chaque relevé (5 s, 1 s pendant un enregistrement) ;
+  les volumes à la maintenance d'une minute, et seulement si une règle de volume est activée. Les
+  valeurs du système reprennent les dérivations des événements de l'historique (mémoire utilisée,
+  activité du disque) : une alerte et un événement du même moment donnent le même chiffre. Les
+  durées se mesurent sur une horloge monotone : un changement de l'heure de Windows ne déclenche,
+  ne prolonge ni ne bloque aucune alerte ; les dates servent au stockage et à l'affichage.
+- **Applications.** La règle porte sur les processus de ce nom exact parmi les 20 que garde chaque
+  relevé, pas sur le groupe d'application de PC en direct : les programmes enfants d'un autre nom
+  ne comptent pas. Elle additionne ces processus sur les relevés triés par la même mesure (toutes
+  les 10 s ; chaque seconde pour le processeur pendant un enregistrement). Pendant un
+  enregistrement, tous les relevés sont triés par processeur : les règles de mémoire d'application
+  sont gelées, ni prolongées ni closes, et ce temps ne compte pas comme un trou. La valeur est une
+  borne basse : une alerte n'est jamais fausse, mais elle peut manquer. Sa fin se dit « plus vue
+  au-dessus du seuil ». La valeur actuelle et le seuil proposés à la création se calculent sur ces
+  mêmes processus.
+- **Une seule fenêtre évalue.** Un bail local dans SQLite, pris ou renouvelé par une seule
+  instruction conditionnelle (jamais une lecture puis une écriture), renouvelé toutes les 10 s et
+  expiré après 30 s ; un bail daté dans le futur compte comme expiré. Une autre fenêtre ouverte en
+  même temps reste en pause et le dit. La fenêtre qui évalue relit les règles à chaque
+  renouvellement : une règle créée, modifiée ou supprimée dans une autre fenêtre compte en 10 s au
+  plus, et tout de suite dans la fenêtre où elle a été changée. Une fenêtre en pause relit le
+  nombre d'alertes non vues à intervalle régulier.
+- **Notifications.** Une notification Windows par alerte, composée localement en anglais ou en
+  français, sans LLM : la cible (lettre du disque, nom de l'exécutable, carte), la valeur mesurée
+  et le seuil. Au plus une par règle toutes les 30 min et 6 par heure en tout, sans autre limite ;
+  les alertes au-delà sont enregistrées avec la raison. Le retour à la normale n'est pas notifié.
+  Un clic sur la notification, tant que PC Agent tourne, ouvre la vue Surveillances. Pour
+  attribuer ses notifications sans installateur, PC Agent écrit une seule clé par utilisateur,
+  `HKCU\Software\Classes\AppUserModelId\dev.pcagent.desktop` (`DisplayName` = « PC Agent »), au
+  premier envoi, et la retire dès qu'aucune règle n'existe, y compris après une notification de
+  test. Chaque notification est étiquetée par son alerte et sa règle : supprimer une règle retire
+  ses notifications du centre de notifications de Windows, et « Effacer l'historique » retire
+  toutes celles de PC Agent. La page ne reçoit aucune permission de notification ; tout passe par
+  les commandes Rust ci-dessous.
+- **Stockage (C2).** Migration 6 de `pcagent.sqlite` : `watches` (règle JSON versionnée, activée,
+  dates, dernière notification), `watch_alerts` (règle au moment de l'alerte, début, fin et
+  raison, observation de la valeur qui a déclenché sous la forme C4 des observations
+  d'événements, valeur extrême, état de la notification, vue ou non), `watch_settings` (langue des
+  notifications) et `watch_lease`. Les alertes suivent la rétention de l'historique (7 jours), 500
+  au plus. « Effacer l'historique » (`history_clear`) les efface et garde les règles ; sa
+  confirmation le dit. Supprimer une règle supprime ses alertes. Quitter PC Agent clôt les alertes
+  ouvertes comme interrompues, à l'heure du dernier contrôle ; après un arrêt brutal, une alerte
+  trouvée ouverte au démarrage est close de même, à l'heure du dernier battement du bail ou du
+  dernier relevé, jamais à celle du redémarrage, et sans notification.
+- **Commandes et événements (C3).** La page passe les arguments en camelCase (`fromUnixMs`,
+  `toUnixMs`, `upToUnixMs`), comme pour les autres commandes ; les champs de `rule` restent en
+  snake_case, comme dans le tableau des règles.
+
+| Commande | Rôle |
+| --- | --- |
+| `watches_list()` | règles et état en direct de chacune (normal, en attente, en alerte, pas de mesure avec la raison, désactivée, en pause), dernière valeur avec sa date et sa nature (exacte ou borne basse), état du moteur, dernier envoi de notification, nombre d'alertes non vues |
+| `watch_create(rule)` | valide la règle côté Rust (forme, plages, volume fixe présent, carte NVIDIA lue, nom d'exécutable vu par l'échantillonneur, doublon, plafond) puis l'enregistre ; renvoie la règle et son état |
+| `watch_set_enabled(id, enabled)` | active ou désactive ; désactiver clôt l'alerte ouverte |
+| `watch_delete(id)` | supprime la règle, ses alertes et ses notifications |
+| `watch_alerts(from_unix_ms, to_unix_ms, limit)` | alertes d'une fenêtre de 7 jours au plus, 200 au plus, de la plus récente à la plus ancienne |
+| `watch_alerts_seen(up_to_unix_ms)` | marque vues les alertes déclenchées jusqu'à cette date |
+| `watch_language_set(language)` | `en` ou `fr` : langue des notifications, mémorisée localement |
+| `watch_notification_test()` | envoie une notification de test ; renvoie `sent`, `disabled` (coupée dans Windows) ou `failed` |
+
+Événements : `watch:alert { alert, unseen_alerts }` à l'ouverture d'une alerte, dans la fenêtre
+qui évalue ; `watch:open` au clic sur une notification.
+
+- **Surveiller.** Le bouton de la barre d'action ouvre la création d'une règle, préremplie depuis
+  l'élément : processeur, mémoire ou disque de PC en direct, carte NVIDIA dont la température est
+  lue, application ou processus nommé, événement processeur, mémoire ou activité disque de
+  l'Historique, disque de Stockage, ou dossier et fichier d'un scan (espace libre de leur disque).
+  Il reste grisé, avec la raison, sur ce qui ne se mesure pas en continu ou ne peut pas être
+  surveillé : enregistrement, batterie, événement de latence disque, processus sans nom, disque
+  qui n'est pas un volume fixe.
+- **Fermeture.** Tant qu'au moins une règle est activée, dès sa création, fermer la fenêtre la
+  masque dans la zone de notification, comme avec le démarrage avec Windows ; « Quitter PC Agent »
+  arrête l'échantillonneur et les surveillances.
+- **Ce qui part (C5).** Rien : règles, valeurs, alertes et notifications restent sur le PC. Selon
+  les réglages de Windows, une notification peut s'afficher sur l'écran de verrouillage, avec la
+  lettre du disque ou le nom de l'exécutable. « Demander à l'IA » sur une alerte envoie une
+  question tapée par le chemin existant (`cloud_preview` puis `send_message`, aperçu exact), avec
+  le nom de l'exécutable seulement en partage complet. Aucune référence de sélection n'existe pour
+  une alerte dans ce lot.
+- **Hors contrat.** La vue PC en direct gagne deux champs additifs : `nvml_index` pour une carte
+  NVIDIA et `named` pour un processus ou une application, afin que la page n'ait jamais à
+  reconnaître un texte « Processus sans nom ».
 
 ## 4. Chantiers
 
@@ -506,8 +734,7 @@ Après la première campagne d'évaluation. Les données de ces vues existent d�
 chantiers 5 et 8.
 
 - Rail vertical à gauche, libellé sous chaque icône : Chat, Historique, PC en direct, Stockage,
-  Surveillances (place réservée, voir « Après la soumission »), Réglages en bas. Pas d'avatar ni
-  de compte : l'app est locale.
+  Surveillances (C7), Réglages en bas. Pas d'avatar ni de compte : l'app est locale.
 - Barre secondaire selon la vue : conversations (Chat), périodes et problèmes enregistrés
   (Historique), ressources et processus suivis (PC en direct), disques et dossiers analysés
   (Stockage).
@@ -522,7 +749,9 @@ chantiers 5 et 8.
     l'inspecteur, sans quitter la vue, avec un lien « Enquêter pour aller plus loin » ;
   - **Enquêter** ouvre dans le Chat une conversation ciblée sur l'élément, où le modèle lance ses
     outils, coût annoncé ;
-  - **Surveiller**, affiché grisé tant que les Surveillances n'existent pas (après la soumission).
+  - **Surveiller** ouvre la création d'une règle locale (C7), préremplie depuis l'élément ; il
+    reste grisé, avec la raison, sur ce qui ne se mesure pas en continu (enregistrement, batterie,
+    latence du disque).
   - La barre se place au-dessus ou en dessous de l'élément selon la place, ne masque jamais ce qu'il
     montre, et disparaît au clic ailleurs ou avec Échap. Mêmes actions au clavier (`E` pour
     Expliquer, `Entrée` pour Enquêter) et au clic droit, pour l'accessibilité.
@@ -531,11 +760,21 @@ chantiers 5 et 8.
 - Vues :
   - **PC en direct** pleine largeur : cartes par ressource, activité récente, tableau des processus
     regroupés par application (chantier 2), recherche et tri.
-  - **Stockage** : disques, carte en rectangles (treemap), arbre et liste ; un dossier choisi
-    d'abord, tout C: avec la MFT (chantier 8, tâche 2).
+  - **Stockage** : disques, carte en rectangles (treemap), arbre et liste avec inspecteur ; un
+    dossier choisi d'abord, tout un disque par un parcours classique sans admin (complément du
+    6 octobre en C3) ; la carte de C: par la MFT attend une extension du protocole du helper
+    (chantier 8).
   - **Historique des performances** : périodes, petits graphiques empilés sur le même axe de temps
     (pas quatre courbes de natures différentes sur un seul axe), événements marqués sur la frise,
-    bouton « Enregistrer un problème » (chantier 5).
+    bouton « Enregistrer un problème » (chantier 5). Construite en octobre à la demande du porteur
+    du projet : barre secondaire avec les périodes (dernière heure, aujourd'hui, 7 jours) et leur
+    nombre d'événements, problèmes enregistrés des 7 derniers jours, frise d'événements numérotés
+    reliée à la liste, inspecteur d'un événement ou d'un enregistrement (complément du 6 octobre
+    en C3). Expliquer ouvre encore le Chat ; la réponse dans l'inspecteur reste à faire pour
+    toutes les vues.
+  - **Surveillances** pleine largeur, sans barre secondaire ni inspecteur : état du moteur et des
+    notifications, règles avec leur état et leur dernière valeur, alertes des 7 derniers jours ;
+    rien n'est envoyé (C7).
 - Une couleur par ressource dans les graphiques est la seule exception à l'accent unique ; elles
   restent distinguables en clair et en sombre.
 - Maquettes de référence : page « Application de bureau » du canevas de design (privé), avec PC en
@@ -543,6 +782,67 @@ chantiers 5 et 8.
   Historique (un événement sélectionné) et le Chat avec le rail.
 - **Fait quand :** depuis chaque vue, un élément sélectionné mène à une explication ou à une enquête
   citée, au clic comme au clavier, et la QA visuelle passe comme pour la phase 1.
+
+#### Phase 2 — Stockage, Historique et Surveillances (6 octobre)
+
+Le porteur du projet a demandé ces trois vues maintenant. Contrats : compléments du 6 octobre en
+C3 (Stockage, Historique) et C7 (Surveillances). Trois branches parallèles, `wp6-storage-map`,
+`wp6-history` et `wp6-watches`, partent toutes d'un même socle.
+
+- **Socle commun `wp6-view-sidebar`, livré d'abord** (frontend seul, sans commande Rust ni
+  changement de contrat). Les trois branches partent de son commit et ne le modifient pas :
+  - une vue peut exporter `sidebar(host, { close })`, qui remplit la barre secondaire et peut
+    renvoyer une fonction de nettoyage, et `sidebarLabel`, la clé i18n du nom de cette barre. Le
+    shell l'affiche à la place des conversations, avec le pied d'état du modèle, et rend la liste
+    des conversations au retour sur le Chat. Les vues sans `sidebar` (PC en direct pour l'instant,
+    Surveillances, Réglages) gardent toute la largeur ;
+  - l'élément `aside` prend le nom de la vue (« Conversations » sur le Chat) ; hors du Chat, les
+    boutons qui masquent ou affichent la barre ont des libellés neutres (`sidebar.hideBar`,
+    `sidebar.showBar`) ;
+  - en fenêtre étroite, la barre flotte comme celle du Chat ; `close()` la referme après chaque
+    choix dans la barre, puis la vue met le focus sur l'élément choisi dans la colonne principale ;
+  - `actionBar({ …, monitor })` accepte `monitor` = `{ run }` (bouton actif) ou
+    `{ unavailable: raison }` (grisé avec la raison) ; sans `monitor`, le bouton reste grisé comme
+    aujourd'hui. Tout bouton désactivé est atténué, et tant qu'Expliquer n'est pas prêt, l'arrêt de
+    tabulation reste sur lui ;
+  - nouveau module `ui/js/monitor.js` : `monitorFor(target)`, qui ne renvoie rien dans le socle.
+    `wp6-watches` remplace ce module (dialogue de création compris) sans toucher aux vues
+    Stockage et Historique, qui passent dès leur branche les cibles `{ kind: "volume", root }`
+    (disque), `{ kind: "scan_item", root, name }` (dossier ou fichier d'un scan ; `root` est la
+    racine de son disque), `{ kind: "event", event }` et `{ kind: "recording" }`. Les cibles de PC
+    en direct sont ajoutées par `wp6-watches` ;
+  - un commentaire repère par fonctionnalité (Stockage, Historique, Surveillances) dans `i18n.js`
+    (chaque langue), `app.css`, `dev/mock.js` (données et commandes) et `dev/tour.mjs` (fin de la
+    boucle des thèmes) ; les en-têtes de `tour.mjs` et de `mock.js` deviennent génériques, les
+    étapes et commutateurs étant listés dans docs/gui.md.
+- **Fichiers partagés.** Chaque branche n'ajoute qu'après son repère et ne modifie ailleurs que
+  ses propres lignes :
+  - `i18n.js` : un bloc contigu par branche et par langue (`nav.watches` compris) ; clés
+    existantes modifiées : `storage.*` par Stockage, `history.*` par Historique sauf
+    `history.clear.body`, que réécrit Surveillances avec `actbar.monitor.soon` ;
+  - `app.css` : préfixes `storage-`, `histpage-` et `watch-` ; `view-side-` appartient au socle ;
+  - `dev/mock.js` : chaque commutateur d'URL (`?storage=…`, `?recordings=…`, `?watch=…`) est
+    commenté à côté de son code ;
+  - `dev/tour.mjs` : étapes 22 à 29 pour Stockage, 30 à 39 pour Historique, 40 à 49 pour
+    Surveillances ; chaque branche ne modifie que ses étapes existantes (8 à 8c et 18 pour
+    Stockage, 7 et 17 pour Historique) ;
+  - `docs/gui.md` : chaque branche réécrit ses sections (Storage selection et Quick drive
+    analysis ; History, recording and startup ; nouvelle section Watches juste avant Visual
+    system) et ajoute une entrée datée à Validation status et à Known gaps ; un conflit dans ces
+    listes se résout en gardant les deux entrées ;
+  - `apps/gui/src/app.rs` : commandes Stockage après `reveal`, Historique après
+    `battery_recording` ; Surveillances dans `watches.rs`, enregistrées à la fin de
+    `generate_handler!` ; `view.rs` : structures du stockage pour Stockage, de PC en direct pour
+    Surveillances ;
+  - `crates/store` : Historique ajoute `overview.rs`, deux enveloppes dans `sampler.rs` après
+    `battery_recording` et la règle des noms de `metric_history` dans `samples.rs` ; Surveillances
+    ajoute `watches.rs`, `watch_engine.rs`, la migration 6 et ses changements de la maintenance,
+    de l'effacement et de la boucle de l'échantillonneur ; lignes `mod` et `pub use` de `lib.rs` à
+    leur place alphabétique ;
+  - `docs/plan.md` : chaque branche ne change que sa ligne de la section 8.
+- **Fait quand :** chaque vue passe son parcours sur les données simulées (clair, sombre, français,
+  anglais, 1280 × 800 et 860 × 640, sans erreur de page) puis dans l'app Windows, et les trois
+  branches fusionnées ne laissent de conflit que dans les listes de docs/gui.md.
 
 ### Chantier 7 — Évaluation face à Claude et ChatGPT (piste D ; Q02)
 
@@ -813,16 +1113,15 @@ garde sa marque et sa propre clé API.
 | Semaine | Travail |
 | --- | --- |
 | **S1 · 28 sept.–4 oct.** | Contrats C1 à C5 (jours 1 et 2). Chantier 2. Capture, rejeu et ligne de base A et D sur 5 scénarios. Chantier 1 : prompt, `submit_answer`, vérificateur. Maquette de conversation sur données simulées. |
-| **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). Chantier 4, lot 3 : SMBIOS, événements, blocages de compatibilité. PR du plan pour le contrat C6. Scénarios « pilotes, mises à jour et achats ». |
+| **S2 · 5–11 oct.** | Priorité : `pcagent-eval` (capture, rejeu, traces réelles) et chantier 13. Chantier 1 : multi-tour et stockage SQLite. Chantier 4, lot 1 : activité, démarrage, services, événements, alimentation. Chantier 3. Fil et historique branchés. Évaluation 1 (A à D, 10 scénarios). Chantier 4, lot 3 : SMBIOS, événements, blocages de compatibilité. PR du plan pour le contrat C6. Scénarios « pilotes, mises à jour et achats ». Ajouté le 6 octobre à la demande du porteur du projet : chantier 6, phase 2, Stockage en carte, arbre et liste, Historique minimal et Surveillances (C7), sur un socle commun de barre secondaire. |
 | **S3 · 12–18 oct.** | Chantier 14 (escalade Super → Ultra). Chantier 6, phase 2 : rail, PC en direct, inspecteur avec Expliquer et Enquêter. Chantier 4, lot 2 : applications, nettoyage, inventaire, `query_system`. Chantier 5. Refonte visuelle et panneau de droite. Chantier 8, tâches 1 et 2 (caches système, MFT). Évaluation 2. Chantier 4, lot 3 : `get_drivers` et Windows Update. Chantier 15 si l'évaluation le justifie : notes de pilotes et problèmes connus. |
-| **S4 · 19–25 oct.** | Chantier 6, phase 2 : Stockage en treemap, Historique minimal (session et « Enregistrer un problème »). Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. Chantier 15, suite : prix, puis fiche constructeur. |
+| **S4 · 19–25 oct.** | Chantier 6, phase 2 : validation dans l'app Windows et finitions de Stockage, Historique et Surveillances (démarrés en S2). Chantier 11. Chantier 8, tâches 3 à 5 si le temps le permet. Chantier 9. Réponse en flux. Performance et coût. Second PC. Évaluation 3. Chantier 15, suite : prix, puis fiche constructeur. |
 | **S5 · 26–30 oct.** | Gel le 27. Corrections. README, docs, licence. Vidéo. Release. Soumission avant le 30 octobre à 18 h. |
 
 Repoussé après la soumission :
-- Surveillances (vue réservée dans le rail) : règles locales (« prévenir si C: passe sous 20 Go »,
-  « surveiller Firefox », « GPU au-dessus de 90 °C »), notifications Windows, historique des alertes.
-  Un bilan hebdomadaire reste local, ou n'appelle l'IA que sur un clic : aucune requête cloud
-  automatique ;
+- Surveillances, suite (C7 couvre les règles, les notifications et les alertes avant la
+  soumission) : bilan hebdomadaire local ou sur un clic (aucune requête cloud automatique),
+  Expliquer une alerte (référence de sélection, complément de C3) et outil `get_watch_alerts` ;
 - historique au-delà de 7 jours et enregistrement automatique quand un ralentissement est détecté ;
 - spécialistes (un ou deux agents dédiés, par exemple stockage ou jeu), seulement si l'évaluation
   montre des familles de tâches réellement séparables ;
@@ -834,7 +1133,7 @@ Repoussé après la soumission :
 - fluidité en jeu mesurée (E06) ;
 - réseau (E07) ;
 - recherche documentaire libre (E08) ; le chantier 15 n'en avance que des outils typés ;
-- alertes (E09) ;
+- alertes au-delà des règles C7 (E09) ;
 - antivirus (E10) ;
 - corruption (E11) ;
 - doublons étendus (S11) ;
@@ -917,6 +1216,9 @@ Règles de travail :
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
 | 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
+| 6 — Stockage en carte, arbre et liste | B, A, C | en cours : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
+| 6 — Vue Historique | C, A | en cours : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
+| 6 — Surveillances | B, A, C | en cours : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
