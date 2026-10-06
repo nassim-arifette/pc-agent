@@ -11,9 +11,11 @@ the rail of the phase 2 desktop mockups:
 
 - **Rail**: *Chat*, *History*, *Live PC*, *Storage* and, at the bottom, *Settings* with a dot for
   the AI status.
-- **Conversation list** (on the chat only): *New conversation*, a search box, saved conversations
-  grouped by day, then the model with the current sharing choice. It folds away (button or
-  narrow window); the other views use the full width.
+- **Sidebar**: on the chat, the conversation list: *New conversation*, a search box, saved
+  conversations grouped by day, then the model with the current sharing choice. A view that
+  declares a [view bar](#views-and-the-view-bar) shows it in the same place, above the same model
+  status; the other views use the full width. It folds away (button or narrow window, where it
+  floats over the view).
 - **Conversation**: a welcome screen with the composer and four suggested questions (one names a
   drive that is almost full), then the thread. While a run is going, its real steps appear with
   their durations and Stop replaces Send. Nebius replies are streamed: the answer appears as the
@@ -292,6 +294,31 @@ ui/ (HTML, CSS, JS modules, no build step) ──invoke──▶ src/app.rs (Tau
 The interface is plain HTML, CSS and JavaScript modules served from `ui/` (no Node toolchain, no
 npm dependencies), a deliberate departure from the React/TypeScript suggested in spec 15.1 to keep
 the build to `cargo` and the supply chain small. Text is always inserted as text, never as HTML.
+
+### Views and the view bar
+
+`ui/js/main.js` mounts one view of `ui/js/views/` at a time with `mount(page, shell)`; the view
+may return an unmount function. `shell` lends the view the sidebar slot that the chat uses for its
+conversation list, and does nothing once the view is unmounted:
+
+- `shell.setViewBar({ label, topics, render })` declares the view's bar. `label` is the i18n key
+  of the sidebar landmark's name. `render()` returns the bar's content and is called once `mount`
+  returns (at once when declared later), after each store topic listed in `topics`, and on
+  `refreshViewBar()`. The shell
+  adds the hide button above it and the model status below it.
+- `shell.refreshViewBar()` redraws the bar after the view's own state changes.
+- `shell.closeViewBar(focusTarget)` folds the bar after a pick on a narrow window, where it floats
+  over the page, and moves focus to `focusTarget` (or the main region) so it never falls on an
+  inert control.
+
+A redraw keeps keyboard focus on the control with the same `data-key` (else the same position).
+The bar is not a landmark of its own: the sidebar `aside` takes the view's label, so content inside
+should not repeat it. Shared classes, all prefixed `viewbar-`: `viewbar-group`, `viewbar-label`,
+`viewbar-item` (a button; `aria-current="true"` marks the shown choice) with `viewbar-item-icon`,
+`viewbar-item-text`, `viewbar-item-title` and `viewbar-item-sub`, then `viewbar-hint` and
+`viewbar-empty`. A view without a bar keeps the full width. The slot's width animates when the
+route changes, so a view that measures its own layout listens for resizes instead of measuring
+once at mount.
 
 ## Build and run
 
