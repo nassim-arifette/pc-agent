@@ -5,6 +5,11 @@ use pcagent_shared::{new_id, unix_ms, Origin, Status, Window};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::Duration;
 
 pub mod autostart;
 pub mod elevation;
@@ -244,6 +249,79 @@ pub fn inspect(query: Query<'_>) -> Inspection {
     }
 }
 
+/// Battery-only C4 read for the live window: the same observations as `Query::Battery`, run on
+/// its own bounded worker outside the shared inspection worker. A live refresh therefore never
+/// makes an agent tool or a recording tick report a busy worker, and a long tool never blanks the
+/// battery. A second call while a read is still running (for example a driver that stalled past
+/// the time bound) returns at once with `collector` partial coverage and no values.
+pub fn live_battery() -> Inspection {
+    #[cfg(windows)]
+    {
+        windows::live_battery()
+    }
+    #[cfg(not(windows))]
+    {
+        let mut result = Inspection::new();
+        result.coverage(
+            "windows",
+            CoverageStatus::Unsupported,
+            "Windows APIs",
+            "Native inspection is available on Windows only.",
+        );
+        result.finish()
+    }
+}
+
+/// Runs `work` on one named thread at a time per `guard` and waits at most `timeout`. The guard
+/// is released when the work returns, not at the timeout, so a blocked native call can never
+/// accumulate detached workers. A timeout does not claim that the native call was cancelled.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn bounded(
+    guard: &'static AtomicBool,
+    thread: &str,
+    timeout: Duration,
+    work: impl FnOnce() -> Inspection + Send + 'static,
+) -> Inspection {
+    fn refused(detail: &str) -> Inspection {
+        let mut out = Inspection::new();
+        out.coverage(
+            "collector",
+            CoverageStatus::Partial,
+            "Bounded battery worker",
+            detail,
+        );
+        out.finish()
+    }
+    struct Release(&'static AtomicBool);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    if guard.swap(true, Ordering::AcqRel) {
+        return refused("A previous battery read is still running; the last values are kept.");
+    }
+    let (tx, rx) = mpsc::sync_channel(1);
+    let spawned = std::thread::Builder::new()
+        .name(thread.into())
+        .spawn(move || {
+            let _release = Release(guard);
+            let _ = tx.send(work());
+        });
+    if spawned.is_err() {
+        guard.store(false, Ordering::Release);
+        return refused("The battery worker could not start; no values were read.");
+    }
+    rx.recv_timeout(timeout).unwrap_or_else(|error| match error {
+        mpsc::RecvTimeoutError::Timeout => refused(
+            "The battery read did not finish within its time bound; no incomplete values are represented as zero.",
+        ),
+        mpsc::RecvTimeoutError::Disconnected => {
+            refused("The battery read stopped without a result; no values are represented.")
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +388,134 @@ mod tests {
         let result = inspect(Query::Battery);
         assert_eq!(result.status, Status::Unsupported);
         assert!(result.observations.is_empty());
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn live_battery_on_other_hosts_is_unsupported_without_observations() {
+        let result = live_battery();
+        assert_eq!(result.status, Status::Unsupported);
+        assert!(result.observations.is_empty());
+        assert_eq!(result.coverage[0].scope, "windows");
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("15-second"));
+    }
+
+    fn reading(value: f64) -> Inspection {
+        let mut out = Inspection::new();
+        out.origin = Origin::SyntheticFixture;
+        out.value(
+            "battery-00000000-0000-4000-8000-00000000b001",
+            "battery_charge_percent",
+            value,
+            "percent",
+            "fixture",
+        );
+        out.coverage("battery_devices", CoverageStatus::Ok, "fixture", "One.");
+        out.finish()
+    }
+    /// A refused or timed-out read: partial, without any value, and naming no other worker's bound.
+    fn refused(result: &Inspection) -> bool {
+        result.status == Status::Partial
+            && result.observations.is_empty()
+            && result.coverage.len() == 1
+            && result.coverage[0].scope == "collector"
+            && !serde_json::to_string(result).unwrap().contains("15-second")
+    }
+    fn released(guard: &AtomicBool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while guard.load(Ordering::Acquire) {
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
+    #[test]
+    fn bounded_read_refuses_overlap_without_values() {
+        static GUARD: AtomicBool = AtomicBool::new(false);
+        let (started_tx, started) = mpsc::channel();
+        let (finish, finish_rx) = mpsc::channel::<()>();
+        let first = std::thread::spawn(move || {
+            bounded(
+                &GUARD,
+                "test-battery-a",
+                Duration::from_secs(10),
+                move || {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                    reading(50.0)
+                },
+            )
+        });
+        started.recv().unwrap();
+        let second = bounded(&GUARD, "test-battery-a", Duration::from_secs(10), || {
+            reading(99.0)
+        });
+        assert!(refused(&second), "{second:?}");
+        finish.send(()).unwrap();
+        let first = first.join().unwrap();
+        assert_eq!(first.observations.len(), 1);
+        assert_eq!(first.observations[0].value, 50.0);
+        assert!(released(&GUARD));
+    }
+
+    #[test]
+    fn bounded_read_timeout_returns_no_values_and_keeps_the_guard_until_the_work_ends() {
+        static GUARD: AtomicBool = AtomicBool::new(false);
+        let slow = bounded(&GUARD, "test-battery-b", Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_millis(300));
+            reading(10.0)
+        });
+        assert!(refused(&slow), "{slow:?}");
+        let retry = bounded(&GUARD, "test-battery-b", Duration::from_secs(5), || {
+            reading(20.0)
+        });
+        assert!(refused(&retry), "the blocked work still holds the guard");
+        assert!(released(&GUARD), "the guard is released when the work ends");
+        let next = bounded(&GUARD, "test-battery-b", Duration::from_secs(5), || {
+            reading(30.0)
+        });
+        assert_eq!(next.observations.len(), 1);
+        assert_eq!(next.observations[0].value, 30.0);
+    }
+
+    #[test]
+    fn separate_guards_do_not_block_each_other() {
+        static FIRST: AtomicBool = AtomicBool::new(false);
+        static SECOND: AtomicBool = AtomicBool::new(false);
+        let (started_tx, started) = mpsc::channel();
+        let (finish, finish_rx) = mpsc::channel::<()>();
+        let first = std::thread::spawn(move || {
+            bounded(
+                &FIRST,
+                "test-battery-c",
+                Duration::from_secs(10),
+                move || {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                    reading(40.0)
+                },
+            )
+        });
+        started.recv().unwrap();
+        let other = bounded(&SECOND, "test-battery-d", Duration::from_secs(10), || {
+            reading(60.0)
+        });
+        assert_eq!(other.observations[0].value, 60.0);
+        finish.send(()).unwrap();
+        assert_eq!(first.join().unwrap().observations[0].value, 40.0);
+    }
+
+    #[test]
+    fn a_failed_battery_worker_releases_its_guard_and_reports_no_values() {
+        static GUARD: AtomicBool = AtomicBool::new(false);
+        let failed = bounded(&GUARD, "test-battery-e", Duration::from_secs(5), || {
+            panic!("synthetic battery driver failure (expected by this test)")
+        });
+        assert!(refused(&failed), "{failed:?}");
+        assert!(released(&GUARD));
     }
 }

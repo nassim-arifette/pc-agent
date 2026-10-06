@@ -21,8 +21,13 @@ The other target variants are `process {entity_ref}`, `event {event_id}`,
 `memory`, `cpu`, `disk`, `gpu`, `thermal_power` and `battery` set. References are resolved
 exclusively against host-owned, already measured snapshots, the latest live battery read, process
 activity, persisted history and the current completed authorized storage index. A battery
-selection freezes one live battery read (the C4 observations of the batteries the window shows);
-Explain never reads the battery again, and `thermal_power` stays limited to GPU measurements. Unknown fields and invalid references are rejected.
+selection freezes one live battery read: the C4 observations of the metrics the window
+displays (a partial value it marks as not reported included), only for the system batteries it
+shows, under their opaque `battery-<uuid>` references,
+with the read's window and fixed coverage text and no names (the metric list is in
+[battery.md](battery.md#live-display)). Explain never reads the battery again, and
+`thermal_power` stays limited to GPU measurements. Unknown fields and invalid references are
+rejected.
 
 The source registry issues random source references when a local view publishes measurements.
 `selection_sources()` returns the current locally displayable targets, their source reference and

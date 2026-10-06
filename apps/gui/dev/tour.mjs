@@ -1,7 +1,8 @@
 // Screenshots of the main states (welcome, consent, running, answer, sources, live PC, history,
-// storage with the deeper checks, settings, the Live PC view with Explain, web search, and the
-// action bar under a selected item in Live PC, History and Storage) in light and dark themes,
-// against the mock (dev/mock.js).
+// storage with the deeper checks, settings, the Live PC view with Explain, web search, the action
+// bar under a selected item in Live PC, History and Storage, and the battery: its card and
+// inspector discharging and plugged in, then the status pill of a critically low battery) in light
+// and dark themes, against the mock (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
 // TOUR_BASE and TOUR_DEBUG_PORT override the page URL and Chrome's debugging port, for a server
@@ -19,6 +20,9 @@ const port = Number(process.env.TOUR_DEBUG_PORT) || undefined;
 const { proc, page } = await launch({ ...(chrome ? { chrome } : {}), ...(port ? { port } : {}) });
 const shot = (name) => page.shot(join(out, `${name}.png`));
 const prefs = JSON.stringify({ language, mode: "cloud" });
+// The pill's words for a critically low battery (health.battery in ui/js/i18n.js).
+const lowBatteryPill = language === "fr" ? "Batterie très faible" : "Battery critically low";
+const batteryCard = ".livepage-card[data-key^='resource:battery:']";
 try {
   await page.viewport(1280, 800);
   for (const dark of [false, true]) {
@@ -140,6 +144,22 @@ try {
     await page.waitFor("document.querySelector('.item-row.selected .actbar .actbar-primary:not([aria-disabled])')");
     await page.sleep(300);
     await shot(`18-storage-bar-${theme}`);
+    // The battery card with its action bar and inspector, then the plugged-in readings with their
+    // unreported values. A reload clears the selection, so the card is selected again each time.
+    for (const [mode, name] of [["", "19-live-battery"], ["&battery=ac", "20-live-battery-ac"]]) {
+      await page.goto(`${base}?cloud=ready&privacy=complete${mode}#/live`);
+      await page.waitFor(`document.querySelector(${JSON.stringify(batteryCard)})`, 10000);
+      await page.click(batteryCard);
+      await page.waitFor(`document.querySelector('.livepage-card-slot .actbar .actbar-primary:not([aria-disabled])') && document.querySelector('.insp .battery-facts')${mode ? "" : " && document.querySelector('.insp .battery-capacity')"}`, 10000);
+      await page.eval("document.querySelector('.main').scrollTo(0, 0)");
+      await page.sleep(300);
+      await shot(`${name}-${theme}`);
+    }
+    // With the drives fine, the pill can only be the battery's.
+    await page.goto(`${base}?cloud=ready&privacy=complete&disk=ok&battery=low#/chat`);
+    await page.waitFor(`document.querySelector('.status-text.warn')?.textContent === ${JSON.stringify(lowBatteryPill)}`, 10000);
+    await page.sleep(300);
+    await shot(`21-pill-battery-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {

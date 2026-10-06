@@ -12,6 +12,7 @@ import { actionBar, keepFocus, selectionKeys } from "../actionbar.js";
 import { subscribe } from "../store.js";
 import { button, segmented, toast, toggle, dialog } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
+import { hoursMinutes, watts } from "../battery.js";
 
 const PERIODS = [
   { id: "hour", ms: 3600 * 1000, label: "history.period.hour" },
@@ -96,18 +97,6 @@ function batteryValue(points, metric, { first = false } = {}) {
   return null;
 }
 
-function watts(milliwatts) {
-  return `${number(Math.abs(milliwatts) / 1000, 1)} W`;
-}
-
-/** Seconds to "3 h 10 min" (or the short form under an hour). */
-function longDuration(seconds) {
-  if (seconds < 3600) return duration(Math.round(seconds) * 1000);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.round((seconds % 3600) / 60);
-  return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
-}
-
 /**
  * What the battery did during a finished recording (battery_recording): charge at the start and
  * end, the last measured rate, and the loss measured between capacity readings when Windows gave
@@ -126,7 +115,11 @@ function batteryFacts(recording) {
     if (state === "discharging" || state === "charging") {
       const power = rate ?? batteryValue(battery.points, state === "charging" ? "battery_charge_power_mw" : "battery_discharge_power_mw");
       rows.push(["history.battery.rate", power != null ? t(`history.battery.${state}`, { power: watts(power) }) : t(`history.battery.${state}.only`)]);
-    } else if (state === "idle") rows.push(["history.battery.rate", t("history.battery.idle")]);
+    } else if (state === "idle") {
+      // Idle while unplugged is not "plugged in": same rule as the Live view.
+      const plugged = batteryValue(battery.points, "battery_on_ac") === true;
+      rows.push(["history.battery.rate", t(plugged ? "history.battery.idle" : "history.battery.idleOnBattery")]);
+    }
     // The longest continuous discharge segment carries the measured loss and its derived rate.
     const segment = [...(battery.evolution || [])].sort((a, b) => b.to_unix_ms - b.from_unix_ms - (a.to_unix_ms - a.from_unix_ms))[0];
     const derived = (metric) => segment?.observations.find((o) => o.metric === metric && o.status === "ok" && o.value != null)?.value ?? null;
@@ -138,9 +131,9 @@ function batteryFacts(recording) {
       rows.push(["history.battery.lost", average != null ? t("history.battery.lostRate", { energy, time, power: watts(average) }) : t("history.battery.lostValue", { energy, time })]);
     }
     const runtime = derived("battery_estimated_runtime_from_recording_seconds");
-    if (runtime != null) rows.push(["history.battery.left", t("history.battery.leftValue", { time: longDuration(runtime) })]);
+    if (runtime != null) rows.push(["history.battery.left", t("history.battery.leftValue", { time: hoursMinutes(runtime) })]);
     const windows = batteryValue(battery.points, "battery_estimated_runtime_windows_seconds");
-    if (windows != null) rows.push(["history.battery.windows", t("history.battery.windowsValue", { time: longDuration(windows) })]);
+    if (windows != null) rows.push(["history.battery.windows", t("history.battery.windowsValue", { time: hoursMinutes(windows) })]);
     return h(
       "div",
       { class: "rec-battery" },

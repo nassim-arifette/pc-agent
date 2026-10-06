@@ -2,12 +2,14 @@
 //! raw value next to the text the core formats; a missing measurement carries its status and
 //! reason and is never shown as zero. This is a local window, so local names (process names,
 //! full paths) may appear here; nothing in this module is sent to a provider.
+use pcagent_agent::selection::is_battery_ref;
 use pcagent_agent::{
     credentials::{Credentials, Source},
     AgentError, Answer, Category, CitationKind, Confidence, Config, Cost, ExecutionStatus,
     ExtensionRequest, Investigation, IssueKind, Pricing, SensorCoverage, Stats,
 };
 use pcagent_diagnostics::{Classification, Finding, Support};
+use pcagent_inspect::{CoverageStatus, Inspection, Observation};
 use pcagent_shared::{
     format_bytes, gpu_slowdown_reasons, unix_ms, Evidence, HardwareInventory, Metric,
     ProcessCoverage, ProcessInstance, Snapshot, Status, VolumeKind,
@@ -18,6 +20,10 @@ use pcagent_storage::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 /// Models the settings screen offers, with what the 2026-09-27 comparison measured
 /// (docs/archive/model-comparison.md); Ultra was added to the catalog later and is not evaluated
@@ -147,6 +153,17 @@ pub struct Dashboard {
     pub process_coverage: ProcessCoverage,
     /// Fixed volumes with their free space; filled from the hardware inventory by the caller.
     pub volumes: Vec<VolumeView>,
+    /// System batteries of the latest live battery read, each with its own values (never
+    /// summed); filled by the caller from `LiveBattery`. Empty on a desktop, on other systems,
+    /// before the first read, and once the latest values are older than 30 seconds.
+    pub batteries: Vec<BatteryView>,
+    /// Selection source of that read (resource `battery`), reused until the next read. `None`
+    /// whenever `batteries` is empty.
+    pub battery_source_id: Option<String>,
+    /// Windows lists a battery the window cannot currently show: it is enumerated but could not
+    /// be read, or reads stopped finishing (a stalled driver). Always false while `batteries` is
+    /// non-empty, on a desktop and on other systems.
+    pub battery_unavailable: bool,
     pub limitations: Vec<String>,
 }
 
@@ -176,6 +193,324 @@ pub fn volumes(inventory: &HardwareInventory) -> Vec<VolumeView> {
             })
         })
         .collect()
+}
+
+/// One system battery of a live battery read, as the window shows it. Every value is this
+/// battery's own reading; batteries are never summed. A value Windows did not report, or reported
+/// with contradicting flags, is `None`, never zero.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BatteryView {
+    /// Opaque key (`battery-<uuid>`) of this battery for this run of the app; never displayed.
+    pub battery_ref: String,
+    /// `system`, or `None` when Windows did not report the kind.
+    pub kind: Option<String>,
+    /// `milliwatt_hours`, or `relative` for a battery that reports a percentage only.
+    pub capacity_units: Option<String>,
+    /// Newest native measurement time among the values shown.
+    pub measured_at_unix_ms: u64,
+    /// Remaining / full-charge capacity × 100 (0 to 100).
+    pub charge_percent: Option<f64>,
+    /// `charging`, `discharging` or `idle`.
+    pub charge_state: Option<String>,
+    pub on_ac: Option<bool>,
+    /// Windows' own hardware critical flag; no threshold is invented.
+    pub critical: Option<bool>,
+    /// Signed milliwatts: positive while charging, negative while discharging.
+    pub power_rate_mw: Option<i64>,
+    /// The battery driver's own estimate, only while discharging.
+    pub estimated_runtime_windows_seconds: Option<u64>,
+    /// Remaining energy / discharge power × 3600, assuming the present drain continues.
+    pub estimated_runtime_at_current_rate_seconds: Option<f64>,
+    pub remaining_capacity_mwh: Option<u64>,
+    pub full_charge_capacity_mwh: Option<u64>,
+    pub design_capacity_mwh: Option<u64>,
+    /// Full-charge / design capacity × 100.
+    pub capacity_retention_percent: Option<f64>,
+    /// 100 − retention: an estimate from reported capacities, not a health score.
+    pub estimated_wear_percent: Option<f64>,
+    pub cycle_count: Option<u64>,
+    /// Windows reported contradicting values for this battery; those values are `None` above.
+    pub inconsistent: bool,
+}
+
+/// The battery metrics the window displays, with the two consistency flags behind its
+/// "contradicting values" note. The selection source keeps only these metrics (C5), including a
+/// partial or contradicting value the window marks as not reported; no voltage, critical bias,
+/// technology or derived magnitudes.
+const BATTERY_METRICS: [&str; 17] = [
+    "battery_kind",
+    "battery_capacity_units",
+    "battery_charge_percent",
+    "battery_charge_state",
+    "battery_on_ac",
+    "battery_critical",
+    "battery_power_rate_mw",
+    "battery_estimated_runtime_windows_seconds",
+    "battery_estimated_runtime_at_current_rate_seconds",
+    "battery_remaining_capacity_mwh",
+    "battery_full_charge_capacity_mwh",
+    "battery_design_capacity_mwh",
+    "battery_capacity_retention_percent",
+    "battery_estimated_wear_percent",
+    "battery_cycle_count",
+    "battery_state_consistent",
+    "battery_capacities_consistent",
+];
+
+/// One battery's observations, read field by field.
+struct BatteryValues<'a> {
+    observations: Vec<&'a Observation>,
+    measured_at: u64,
+    inconsistent: bool,
+}
+impl BatteryValues<'_> {
+    /// A usable value: status ok, not null and of the expected type. A partial (contradicting)
+    /// value is never shown; it marks the battery inconsistent instead.
+    fn take<T>(&mut self, metric: &str, convert: impl Fn(&Value) -> Option<T>) -> Option<T> {
+        let observation = self.observations.iter().find(|o| o.metric == metric)?;
+        if observation.value.is_null() {
+            return None;
+        }
+        if observation.status == CoverageStatus::Partial {
+            self.inconsistent = true;
+        }
+        if observation.status != CoverageStatus::Ok {
+            return None;
+        }
+        let value = convert(&observation.value)?;
+        self.measured_at = self.measured_at.max(observation.measured_at_unix_ms);
+        Some(value)
+    }
+    fn number(&mut self, metric: &str) -> Option<f64> {
+        self.take(metric, |v| v.as_f64().filter(|v| v.is_finite()))
+    }
+    fn count(&mut self, metric: &str) -> Option<u64> {
+        self.take(metric, Value::as_u64)
+    }
+    fn flag(&mut self, metric: &str) -> Option<bool> {
+        self.take(metric, Value::as_bool)
+    }
+    fn category(&mut self, metric: &str, known: &[&str]) -> Option<String> {
+        self.take(metric, |v| {
+            v.as_str()
+                .filter(|text| known.contains(text))
+                .map(str::to_owned)
+        })
+    }
+}
+
+/// Why a battery of the read is not shown.
+enum NotShown {
+    /// A UPS (`short_term`) or a non-system battery: not the PC's battery.
+    Other,
+    /// A system battery without any charge, state or AC value.
+    Unread,
+}
+
+fn battery(reference: &str, read: &Inspection) -> Result<BatteryView, NotShown> {
+    let mut values = BatteryValues {
+        observations: read
+            .observations
+            .iter()
+            .filter(|o| o.entity_ref == reference)
+            .collect(),
+        measured_at: 0,
+        inconsistent: false,
+    };
+    let kind = values.category("battery_kind", &["system", "short_term", "non_system"]);
+    if kind.as_deref().is_some_and(|kind| kind != "system") {
+        return Err(NotShown::Other);
+    }
+    let capacity_units =
+        values.category("battery_capacity_units", &["milliwatt_hours", "relative"]);
+    // Relative capacities have no physical unit (docs/battery.md): percent and state only, so
+    // energy, power and the values derived from them are never read for such a battery.
+    let absolute = capacity_units.as_deref() != Some("relative");
+    let charge_percent = values.number("battery_charge_percent");
+    let charge_state =
+        values.category("battery_charge_state", &["charging", "discharging", "idle"]);
+    let on_ac = values.flag("battery_on_ac");
+    let critical = values.flag("battery_critical");
+    let estimated_runtime_windows_seconds =
+        values.count("battery_estimated_runtime_windows_seconds");
+    let cycle_count = values.count("battery_cycle_count");
+    let contradicting = values.flag("battery_state_consistent") == Some(false)
+        || values.flag("battery_capacities_consistent") == Some(false);
+    if charge_percent.is_none() && charge_state.is_none() && on_ac.is_none() {
+        return Err(NotShown::Unread);
+    }
+    let mut energy = |metric: &str| absolute.then(|| values.count(metric)).flatten();
+    let remaining_capacity_mwh = energy("battery_remaining_capacity_mwh");
+    let full_charge_capacity_mwh = energy("battery_full_charge_capacity_mwh");
+    let design_capacity_mwh = energy("battery_design_capacity_mwh");
+    let mut derived = |metric: &str| absolute.then(|| values.number(metric)).flatten();
+    let estimated_runtime_at_current_rate_seconds =
+        derived("battery_estimated_runtime_at_current_rate_seconds");
+    let capacity_retention_percent = derived("battery_capacity_retention_percent");
+    let estimated_wear_percent = derived("battery_estimated_wear_percent");
+    let power_rate_mw = absolute
+        .then(|| values.take("battery_power_rate_mw", Value::as_i64))
+        .flatten();
+    Ok(BatteryView {
+        battery_ref: reference.to_owned(),
+        kind,
+        capacity_units,
+        measured_at_unix_ms: values.measured_at,
+        charge_percent,
+        charge_state,
+        on_ac,
+        critical,
+        power_rate_mw,
+        estimated_runtime_windows_seconds,
+        estimated_runtime_at_current_rate_seconds,
+        remaining_capacity_mwh,
+        full_charge_capacity_mwh,
+        design_capacity_mwh,
+        capacity_retention_percent,
+        estimated_wear_percent,
+        cycle_count,
+        inconsistent: values.inconsistent || contradicting,
+    })
+}
+
+/// One live battery read, prepared for the window and the selection registry.
+#[derive(Debug)]
+pub struct BatteryRead {
+    /// The read was refused or timed out (`collector` coverage): the caller keeps its previous
+    /// values.
+    pub busy: bool,
+    /// Windows lists a battery that this read could not show: enumeration or a device read was
+    /// incomplete, or a system battery reported no charge, state or AC value.
+    pub unavailable: bool,
+    /// System batteries (kind `system` or unreported) in the collector's order. UPS and
+    /// non-system batteries are left out.
+    pub batteries: Vec<BatteryView>,
+    /// Selection source for resource `battery`: only the shown batteries and the metrics the
+    /// window displays, with the read's own window and coverage. `None` when nothing is shown.
+    pub source: Option<Inspection>,
+}
+
+pub fn battery_read(mut read: Inspection) -> BatteryRead {
+    if read.coverage.iter().any(|c| c.scope == "collector") {
+        return BatteryRead {
+            busy: true,
+            unavailable: false,
+            batteries: Vec::new(),
+            source: None,
+        };
+    }
+    let mut references: Vec<&str> = Vec::new();
+    for observation in &read.observations {
+        let reference = observation.entity_ref.as_str();
+        if is_battery_ref(reference) && !references.contains(&reference) {
+            references.push(reference);
+        }
+    }
+    let mut batteries = Vec::new();
+    let mut unread = false;
+    for reference in references {
+        match battery(reference, &read) {
+            Ok(view) => batteries.push(view),
+            Err(NotShown::Other) => {}
+            Err(NotShown::Unread) => unread = true,
+        }
+    }
+    // Unsupported means Windows lists no battery (a desktop): that is not "unavailable".
+    let incomplete = read.coverage.iter().any(|c| {
+        c.scope == "battery_devices"
+            && !matches!(c.status, CoverageStatus::Ok | CoverageStatus::Unsupported)
+    });
+    let source = if batteries.is_empty() {
+        None
+    } else {
+        let shown: BTreeSet<&str> = batteries.iter().map(|b| b.battery_ref.as_str()).collect();
+        read.observations.retain(|o| {
+            shown.contains(o.entity_ref.as_str()) && BATTERY_METRICS.contains(&o.metric.as_str())
+        });
+        read.names.clear();
+        Some(read)
+    };
+    BatteryRead {
+        busy: false,
+        unavailable: batteries.is_empty() && (incomplete || unread),
+        batteries,
+        source,
+    }
+}
+
+/// A battery the window shows is read again about this often (every second 5-second tick).
+const BATTERY_MAX_AGE: Duration = Duration::from_secs(10);
+/// After a complete read that shows no system battery (a desktop, or only a UPS).
+const BATTERY_ABSENT_RECHECK: Duration = Duration::from_secs(300);
+/// After a busy read, while a previous read is still blocked in the driver.
+const BATTERY_BUSY_RETRY: Duration = Duration::from_secs(5);
+/// Values older than this are no longer shown as current, and their selection source (well
+/// inside its five-minute lifetime) is no longer offered.
+const BATTERY_STALE_AFTER: Duration = Duration::from_secs(30);
+
+/// The latest live battery read, shared by the measurement thread, which decides when a read is
+/// due and never waits for one, and the battery thread, which records each finished read.
+#[derive(Debug, Default)]
+pub struct LiveBattery {
+    next_due: Option<Instant>,
+    /// When the latest read that was not busy finished.
+    read_at: Option<Instant>,
+    batteries: Vec<BatteryView>,
+    source_id: Option<String>,
+    unavailable: bool,
+    /// The latest attempt was busy: a previous read is still blocked in the driver.
+    stalled: bool,
+}
+
+impl LiveBattery {
+    /// Whether the measurement thread should request a read now.
+    pub fn due(&self, now: Instant) -> bool {
+        self.next_due.is_none_or(|due| now >= due)
+    }
+
+    /// Stamped when the request is sent, so the cadence does not drift with the read's duration.
+    pub fn requested(&mut self, now: Instant) {
+        self.next_due = Some(now + BATTERY_MAX_AGE);
+    }
+
+    /// Record a finished read. The caller has already published `read.source` and passes the
+    /// resulting selection source ID.
+    pub fn record(&mut self, read: BatteryRead, source_id: Option<String>, now: Instant) {
+        if read.busy {
+            // Keep the previous values while they are recent; retry soon.
+            self.stalled = true;
+            self.next_due = Some(now + BATTERY_BUSY_RETRY);
+            return;
+        }
+        if read.batteries.is_empty() && !read.unavailable {
+            // A desktop (or only a UPS): look again rarely, in case a battery is connected.
+            self.next_due = Some(now + BATTERY_ABSENT_RECHECK);
+        }
+        self.stalled = false;
+        self.read_at = Some(now);
+        self.unavailable = read.unavailable;
+        self.batteries = read.batteries;
+        self.source_id = source_id;
+    }
+
+    /// Copy what is current into the dashboard; old values are never shown as current.
+    pub fn show(&self, dashboard: &mut Dashboard, now: Instant) {
+        let current = self
+            .read_at
+            .is_some_and(|at| now.saturating_duration_since(at) <= BATTERY_STALE_AFTER);
+        if current {
+            dashboard.batteries = self.batteries.clone();
+            dashboard.battery_source_id = self.source_id.clone();
+            dashboard.battery_unavailable = self.unavailable;
+        } else {
+            dashboard.batteries = Vec::new();
+            dashboard.battery_source_id = None;
+            // Reads stopped finishing while a battery was known: say so instead of hiding it.
+            // Values that are merely old (the window was hidden) are not a failure.
+            dashboard.battery_unavailable =
+                self.stalled && (self.unavailable || !self.batteries.is_empty());
+        }
+    }
 }
 
 /// One target of a proposed action, as the person reviews it. Local paths may appear: this is
@@ -528,6 +863,9 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
         processes,
         process_coverage: s.process_coverage.clone(),
         volumes: Vec::new(),
+        batteries: Vec::new(),
+        battery_source_id: None,
+        battery_unavailable: false,
         limitations: s.limitations.clone(),
     }
 }
@@ -1152,6 +1490,450 @@ mod tests {
         assert_eq!(d.gpu_engines[0].kind, "3d");
         assert_eq!(d.processes[0].name, "editor.exe");
         assert_eq!(d.processes[0].working_set.value, Some(3 << 30));
+        // The battery comes from its own read, filled by the caller: none until then.
+        assert!(d.batteries.is_empty());
+        assert!(d.battery_source_id.is_none());
+        assert!(!d.battery_unavailable);
+    }
+
+    const B1: &str = "battery-00000000-0000-4000-8000-00000000b001";
+    const B2: &str = "battery-00000000-0000-4000-8000-00000000b002";
+    const UPS: &str = "battery-00000000-0000-4000-8000-00000000c001";
+
+    /// Synthetic observations of one battery: `(metric, value)`, ok unless null; no device is
+    /// opened.
+    fn cells(reference: &str, values: &[(&str, Value)]) -> Vec<Observation> {
+        values
+            .iter()
+            .map(|(metric, value)| Observation {
+                observation_id: format!("measurement-{reference}-{metric}"),
+                measured_at_unix_ms: 5000,
+                window: Window {
+                    started_at_unix_ms: 4990,
+                    finished_at_unix_ms: 5000,
+                    duration_ms: 10,
+                },
+                entity_ref: reference.into(),
+                metric: (*metric).into(),
+                value: value.clone(),
+                unit: "fixture".into(),
+                status: if value.is_null() {
+                    CoverageStatus::Unsupported
+                } else {
+                    CoverageStatus::Ok
+                },
+                source: "fixture".into(),
+                origin: pcagent_shared::Origin::SyntheticFixture,
+            })
+            .collect()
+    }
+
+    fn inspection(
+        observations: Vec<Observation>,
+        scope: &str,
+        status: CoverageStatus,
+    ) -> Inspection {
+        Inspection {
+            status: Status::Partial,
+            measured_at_unix_ms: 5010,
+            window: Window {
+                started_at_unix_ms: 4980,
+                finished_at_unix_ms: 5010,
+                duration_ms: 30,
+            },
+            origin: pcagent_shared::Origin::SyntheticFixture,
+            observations,
+            coverage: vec![pcagent_inspect::Coverage {
+                scope: scope.into(),
+                status,
+                source: "fixture".into(),
+                detail: "Synthetic.".into(),
+            }],
+            names: Default::default(),
+        }
+    }
+
+    /// The dev laptop of docs/battery.md, plugged in and full.
+    fn plugged_in(reference: &str) -> Vec<Observation> {
+        use serde_json::json;
+        cells(
+            reference,
+            &[
+                ("battery_kind", json!("system")),
+                ("battery_capacity_units", json!("milliwatt_hours")),
+                ("battery_rechargeable", json!(true)),
+                ("battery_design_capacity_mwh", json!(47310)),
+                ("battery_full_charge_capacity_mwh", json!(39900)),
+                ("battery_critical_bias_mwh", json!(0)),
+                ("battery_cycle_count", Value::Null),
+                ("battery_capacities_consistent", json!(true)),
+                (
+                    "battery_capacity_retention_percent",
+                    json!(39900.0 / 47310.0 * 100.0),
+                ),
+                (
+                    "battery_estimated_wear_percent",
+                    json!(100.0 - 39900.0 / 47310.0 * 100.0),
+                ),
+                ("battery_remaining_capacity_mwh", json!(39900)),
+                ("battery_charge_percent", json!(100.0)),
+                ("battery_power_rate_mw", Value::Null),
+                ("battery_discharge_power_mw", Value::Null),
+                ("battery_charge_power_mw", Value::Null),
+                ("battery_voltage_mv", json!(12900)),
+                ("battery_charge_state", json!("idle")),
+                ("battery_on_ac", json!(true)),
+                ("battery_critical", json!(false)),
+                ("battery_state_consistent", json!(true)),
+                ("battery_estimated_runtime_windows_seconds", Value::Null),
+                (
+                    "battery_estimated_runtime_at_current_rate_seconds",
+                    Value::Null,
+                ),
+            ],
+        )
+    }
+
+    fn discharging(reference: &str, charge: f64) -> Vec<Observation> {
+        use serde_json::json;
+        cells(
+            reference,
+            &[
+                ("battery_kind", json!("system")),
+                ("battery_capacity_units", json!("milliwatt_hours")),
+                ("battery_design_capacity_mwh", json!(57000)),
+                ("battery_full_charge_capacity_mwh", json!(52800)),
+                ("battery_remaining_capacity_mwh", json!(41250)),
+                ("battery_charge_percent", json!(charge)),
+                ("battery_power_rate_mw", json!(-8400)),
+                ("battery_discharge_power_mw", json!(8400)),
+                ("battery_voltage_mv", json!(11400)),
+                ("battery_charge_state", json!("discharging")),
+                ("battery_on_ac", json!(false)),
+                ("battery_critical", json!(false)),
+                ("battery_state_consistent", json!(true)),
+                ("battery_capacities_consistent", json!(true)),
+                ("battery_cycle_count", json!(212)),
+                ("battery_estimated_runtime_windows_seconds", json!(17400)),
+                (
+                    "battery_estimated_runtime_at_current_rate_seconds",
+                    json!(17678.6),
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn battery_unknowns_stay_none_and_never_zero() {
+        let read = battery_read(inspection(
+            plugged_in(B1),
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        assert!(!read.busy && !read.unavailable);
+        let b = &read.batteries[0];
+        assert_eq!(b.battery_ref, B1);
+        assert_eq!(b.kind.as_deref(), Some("system"));
+        assert_eq!(b.charge_percent, Some(100.0));
+        assert_eq!(b.charge_state.as_deref(), Some("idle"));
+        assert_eq!(b.on_ac, Some(true));
+        assert_eq!(b.critical, Some(false));
+        assert_eq!(b.full_charge_capacity_mwh, Some(39900));
+        assert_eq!(b.design_capacity_mwh, Some(47310));
+        assert_eq!(b.remaining_capacity_mwh, Some(39900));
+        assert_eq!(b.power_rate_mw, None);
+        assert_eq!(b.cycle_count, None);
+        assert_eq!(b.estimated_runtime_windows_seconds, None);
+        assert_eq!(b.estimated_runtime_at_current_rate_seconds, None);
+        assert!((b.estimated_wear_percent.unwrap() - 15.6627).abs() < 1e-4);
+        assert!((b.capacity_retention_percent.unwrap() - 84.3373).abs() < 1e-4);
+        assert!(!b.inconsistent);
+        assert_eq!(b.measured_at_unix_ms, 5000);
+        let json = serde_json::to_string(b).unwrap();
+        assert!(json.contains(r#""cycle_count":null"#));
+        for field in [
+            "power_rate_mw",
+            "cycle_count",
+            "estimated_runtime_windows_seconds",
+            "estimated_runtime_at_current_rate_seconds",
+        ] {
+            assert!(json.contains(&format!(r#""{field}":null"#)), "{field}");
+            assert!(!json.contains(&format!(r#""{field}":0"#)), "{field}");
+        }
+    }
+
+    #[test]
+    fn discharging_battery_keeps_signed_power_and_both_runtimes_apart() {
+        let read = battery_read(inspection(
+            discharging(B1, 78.1),
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        let b = &read.batteries[0];
+        assert_eq!(b.power_rate_mw, Some(-8400));
+        assert_eq!(b.estimated_runtime_windows_seconds, Some(17400));
+        assert_eq!(b.estimated_runtime_at_current_rate_seconds, Some(17678.6));
+        assert_eq!(b.charge_state.as_deref(), Some("discharging"));
+        assert_eq!(b.on_ac, Some(false));
+        assert_eq!(b.cycle_count, Some(212));
+        assert_eq!(b.charge_percent, Some(78.1));
+    }
+
+    #[test]
+    fn partial_or_contradicting_values_are_not_shown_as_measurements() {
+        let mut observations = discharging(B1, 64.0);
+        for o in &mut observations {
+            match o.metric.as_str() {
+                "battery_power_rate_mw" => o.status = CoverageStatus::Partial,
+                "battery_state_consistent" => o.value = Value::Bool(false),
+                _ => {}
+            }
+        }
+        let read = battery_read(inspection(
+            observations,
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        let b = &read.batteries[0];
+        assert_eq!(b.power_rate_mw, None);
+        assert!(b.inconsistent);
+        assert_eq!(b.charge_percent, Some(64.0));
+        // The contradicting reading still reaches the preview with its partial status.
+        let source = read.source.unwrap();
+        let power = source
+            .observations
+            .iter()
+            .find(|o| o.metric == "battery_power_rate_mw")
+            .unwrap();
+        assert_eq!(power.status, CoverageStatus::Partial);
+    }
+
+    #[test]
+    fn desktop_other_systems_and_busy_reads_show_no_battery() {
+        // A desktop: Windows lists no battery.
+        let desktop = battery_read(inspection(
+            vec![],
+            "battery_devices",
+            CoverageStatus::Unsupported,
+        ));
+        assert!(desktop.batteries.is_empty() && desktop.source.is_none());
+        assert!(!desktop.busy && !desktop.unavailable);
+        // Other systems.
+        let other = battery_read(inspection(vec![], "windows", CoverageStatus::Unsupported));
+        assert!(other.batteries.is_empty() && !other.unavailable && !other.busy);
+        // A read refused or timed out keeps the caller's previous values.
+        let busy = battery_read(inspection(vec![], "collector", CoverageStatus::Partial));
+        assert!(busy.busy && busy.batteries.is_empty() && busy.source.is_none());
+        assert!(!busy.unavailable);
+        // Windows lists a battery that could not be read: say so instead of hiding it.
+        let unreadable = battery_read(inspection(
+            vec![],
+            "battery_devices",
+            CoverageStatus::Partial,
+        ));
+        assert!(unreadable.unavailable && unreadable.batteries.is_empty());
+        let mut silent = plugged_in(B1);
+        silent.retain(|o| o.metric == "battery_kind" || o.metric == "battery_voltage_mv");
+        let silent = battery_read(inspection(silent, "battery_devices", CoverageStatus::Ok));
+        assert!(silent.unavailable && silent.batteries.is_empty() && silent.source.is_none());
+    }
+
+    #[test]
+    fn ups_and_non_system_batteries_are_left_out_and_batteries_are_never_summed() {
+        use serde_json::json;
+        let mut observations = discharging(B1, 80.0);
+        observations.extend(cells(
+            UPS,
+            &[
+                ("battery_kind", json!("short_term")),
+                ("battery_charge_percent", json!(100.0)),
+                ("battery_on_ac", json!(true)),
+            ],
+        ));
+        observations.extend(cells(
+            "battery-00000000-0000-4000-8000-00000000c002",
+            &[
+                ("battery_kind", json!("non_system")),
+                ("battery_charge_percent", json!(55.0)),
+            ],
+        ));
+        observations.extend(discharging(B2, 40.0));
+        let read = battery_read(inspection(
+            observations,
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        assert!(!read.unavailable);
+        let shown: Vec<_> = read
+            .batteries
+            .iter()
+            .map(|b| (b.battery_ref.as_str(), b.charge_percent))
+            .collect();
+        assert_eq!(shown, [(B1, Some(80.0)), (B2, Some(40.0))]);
+        let source = read.source.unwrap();
+        assert!(source
+            .observations
+            .iter()
+            .all(|o| o.entity_ref == B1 || o.entity_ref == B2));
+        // Only what the window displays leaves in an Explain preview.
+        for hidden in [
+            "battery_voltage_mv",
+            "battery_discharge_power_mw",
+            "battery_charge_power_mw",
+            "battery_rechargeable",
+            "battery_critical_bias_mwh",
+        ] {
+            assert!(
+                source.observations.iter().all(|o| o.metric != hidden),
+                "{hidden}"
+            );
+        }
+        assert!(source
+            .observations
+            .iter()
+            .all(|o| BATTERY_METRICS.contains(&o.metric.as_str())));
+        assert_eq!(source.coverage[0].scope, "battery_devices");
+        assert_eq!(source.window.duration_ms, 30);
+        // The registry accepts it as the battery resource.
+        let source = pcagent_agent::selection::SelectionSource::Battery(source);
+        assert_eq!(source.targets().len(), 1);
+    }
+
+    #[test]
+    fn relative_units_never_show_energy_or_power() {
+        use serde_json::json;
+        let mut observations = discharging(B1, 64.0);
+        for o in &mut observations {
+            if o.metric == "battery_capacity_units" {
+                o.value = json!("relative");
+            }
+        }
+        let read = battery_read(inspection(
+            observations,
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        let b = &read.batteries[0];
+        assert_eq!(b.capacity_units.as_deref(), Some("relative"));
+        assert_eq!(b.charge_percent, Some(64.0));
+        assert_eq!(b.charge_state.as_deref(), Some("discharging"));
+        assert_eq!(b.estimated_runtime_windows_seconds, Some(17400));
+        for value in [
+            b.remaining_capacity_mwh,
+            b.full_charge_capacity_mwh,
+            b.design_capacity_mwh,
+        ] {
+            assert_eq!(value, None);
+        }
+        assert_eq!(b.power_rate_mw, None);
+        assert_eq!(b.estimated_runtime_at_current_rate_seconds, None);
+        assert_eq!(b.capacity_retention_percent, None);
+        assert_eq!(b.estimated_wear_percent, None);
+    }
+
+    fn shown(live: &LiveBattery, now: Instant) -> Dashboard {
+        let mut d = dashboard(&fixture());
+        live.show(&mut d, now);
+        d
+    }
+    fn one_battery() -> BatteryRead {
+        battery_read(inspection(
+            discharging(B1, 78.1),
+            "battery_devices",
+            CoverageStatus::Ok,
+        ))
+    }
+    fn nothing() -> BatteryRead {
+        battery_read(inspection(
+            vec![],
+            "battery_devices",
+            CoverageStatus::Unsupported,
+        ))
+    }
+    fn busy() -> BatteryRead {
+        battery_read(inspection(vec![], "collector", CoverageStatus::Partial))
+    }
+
+    #[test]
+    fn live_battery_cadence_follows_what_the_read_shows() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut live = LiveBattery::default();
+        assert!(live.due(start), "the first dashboard asks at once");
+        // A laptop: every second 5-second tick, stamped when asked.
+        live.requested(at(0));
+        live.record(one_battery(), Some("selection-source-1".into()), at(1));
+        assert!(!live.due(at(6)));
+        assert!(live.due(at(10)));
+        let d = shown(&live, at(6));
+        assert_eq!(d.batteries.len(), 1);
+        assert_eq!(d.battery_source_id.as_deref(), Some("selection-source-1"));
+        assert!(!d.battery_unavailable);
+        // A desktop: a complete read that shows nothing is repeated every five minutes only.
+        live.requested(at(12));
+        live.record(nothing(), None, at(12));
+        assert!(!live.due(at(30)));
+        assert!(!live.due(at(311)));
+        assert!(live.due(at(312)));
+        let d = shown(&live, at(13));
+        assert!(d.batteries.is_empty() && !d.battery_unavailable);
+        // A battery Windows lists but cannot read is retried at the normal pace and said so.
+        let mut unreadable = LiveBattery::default();
+        unreadable.requested(at(0));
+        unreadable.record(
+            battery_read(inspection(
+                vec![],
+                "battery_devices",
+                CoverageStatus::Partial,
+            )),
+            None,
+            at(0),
+        );
+        assert!(unreadable.due(at(10)));
+        assert!(shown(&unreadable, at(1)).battery_unavailable);
+        // A busy read retries soon and keeps the previous values while they are recent.
+        let mut stalled = LiveBattery::default();
+        stalled.requested(at(0));
+        stalled.record(one_battery(), Some("selection-source-2".into()), at(0));
+        stalled.requested(at(10));
+        stalled.record(busy(), None, at(10));
+        assert!(stalled.due(at(15)));
+        let d = shown(&stalled, at(15));
+        assert_eq!(d.batteries.len(), 1);
+        assert_eq!(d.battery_source_id.as_deref(), Some("selection-source-2"));
+    }
+
+    #[test]
+    fn stale_or_stalled_battery_values_are_not_shown_as_current() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut live = LiveBattery::default();
+        live.requested(at(0));
+        live.record(one_battery(), Some("selection-source-1".into()), at(0));
+        assert_eq!(shown(&live, at(30)).batteries.len(), 1);
+        // Old values (the window was hidden) are neither shown nor a failure.
+        let d = shown(&live, at(31));
+        assert!(d.batteries.is_empty() && d.battery_source_id.is_none());
+        assert!(!d.battery_unavailable);
+        // Reads that stop finishing while a battery was known: no stale charge, no expired
+        // source, and an explicit "not reported".
+        live.record(busy(), None, at(20));
+        let d = shown(&live, at(25));
+        assert_eq!(d.batteries.len(), 1, "recent values survive a busy read");
+        let d = shown(&live, at(31));
+        assert!(d.batteries.is_empty() && d.battery_source_id.is_none());
+        assert!(d.battery_unavailable);
+        // The next read that finishes shows the battery again.
+        live.record(one_battery(), Some("selection-source-3".into()), at(40));
+        let d = shown(&live, at(41));
+        assert_eq!(d.batteries.len(), 1);
+        assert_eq!(d.battery_source_id.as_deref(), Some("selection-source-3"));
+        assert!(!d.battery_unavailable);
+        // The dashboard JSON carries the three battery fields.
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json["batteries"].is_array());
+        assert_eq!(json["battery_source_id"], "selection-source-3");
+        assert_eq!(json["battery_unavailable"], false);
     }
 
     #[test]

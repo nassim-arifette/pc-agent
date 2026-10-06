@@ -647,11 +647,31 @@ pub(super) fn collect(out: &mut Inspection) {
             cache.forget_absent(&present);
         }
     }
-    out.coverage("battery_devices", if found == 0 && complete { C::Unsupported } else if partial || !complete { C::Partial } else { C::Ok }, SOURCE_ENUM,
-        if found == 0 && complete { "No present battery interface was reported by Windows." }
-        else { "At most eight interfaces and a four-second scan budget. Device paths/tags are used only locally; names, manufacturers, serials and unique IDs are never queried. A stalled driver is subject to the existing single-worker 15-second caller bound, which does not cancel native I/O." });
+    devices_coverage(out, found, complete, partial);
     out.window = Window::finish(started, clock);
     out.measured_at_unix_ms = out.window.finished_at_unix_ms;
+}
+
+/// The same read runs on the shared inspection worker and on the live window's battery-only
+/// worker, so this text names no particular worker or bound: the model receives it verbatim.
+const DEVICES_NONE: &str = "No present battery interface was reported by Windows.";
+const DEVICES_BOUNDS: &str = "At most eight interfaces and a four-second scan budget. Device paths/tags are used only locally; names, manufacturers, serials and unique IDs are never queried. A stalled driver is subject to its caller's time bound, which does not cancel native I/O.";
+
+fn devices_coverage(out: &mut Inspection, found: u32, complete: bool, partial: bool) {
+    let none = found == 0 && complete;
+    let status = if none {
+        C::Unsupported
+    } else if partial || !complete {
+        C::Partial
+    } else {
+        C::Ok
+    };
+    out.coverage(
+        "battery_devices",
+        status,
+        SOURCE_ENUM,
+        if none { DEVICES_NONE } else { DEVICES_BOUNDS },
+    );
 }
 
 #[cfg(test)]
@@ -780,5 +800,25 @@ mod tests {
         assert!(!serialized.contains("DevicePath"));
         assert!(!serialized.contains("BatteryTag"));
         assert!(!serialized.contains("serial"));
+    }
+    #[test]
+    fn device_coverage_names_no_particular_worker_bound() {
+        // Synthetic: the coverage a live read carries, serialized, without opening any device.
+        for (found, complete, partial, status) in [
+            (0, true, false, C::Unsupported),
+            (1, true, false, C::Ok),
+            (1, true, true, C::Partial),
+            (0, false, true, C::Partial),
+        ] {
+            let mut out = Inspection::new();
+            devices_coverage(&mut out, found, complete, partial);
+            let read = out.finish();
+            assert_eq!(read.coverage[0].status, status);
+            let serialized = serde_json::to_string(&read).unwrap();
+            for stale in ["15-second", "single-worker", "15 seconds"] {
+                assert!(!serialized.contains(stale), "{stale} in {serialized}");
+            }
+        }
+        assert!(DEVICES_BOUNDS.contains("caller's time bound"));
     }
 }
