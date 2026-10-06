@@ -1,5 +1,5 @@
-// Live PC as a full view: resource cards and applications on the left, the inspector of the
-// selected item on the right. Selecting an item shows the action bar under it (Explain,
+// Live PC as a full view: resource cards (each system battery included) and applications on the
+// left, the inspector of the selected item on the right. Selecting an item shows the action bar under it (Explain,
 // Investigate). A selection names a kind and a key; its measurements are always the latest ones,
 // and the Rust side freezes them when a preview is prepared, so what the inspector shows is what
 // the preview starts from.
@@ -7,7 +7,8 @@ import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { state, subscribe, setLivePaused, watchActivity, pokeActivity } from "../store.js";
-import { almostFull, driveName, gpuName, measureText, sparkline } from "../live.js";
+import { almostFull, batteryInspector, driveName, gpuName, measureText, notReported, sparkline } from "../live.js";
+import { batteryItems } from "../battery.js";
 import { ago, basisPoints, bytes, number, percent } from "../format.js";
 import { runSelection } from "../select.js";
 import { actionBar, selectionKeys } from "../actionbar.js";
@@ -17,9 +18,12 @@ import { currentRoute } from "../router.js";
 let selected = null;
 let sort = "memory";
 
-const RESOURCE_ICONS = { memory: "memory", cpu: "cpu", disk: "drive", gpu: "gpu" };
+const RESOURCE_ICONS = { memory: "memory", cpu: "cpu", disk: "drive", gpu: "gpu", battery: "battery" };
 
-/** The resource cards: memory, processor, each fixed drive and each graphics card. */
+/**
+ * The resource cards: memory, processor, each fixed drive, each graphics card and each system
+ * battery. A battery card carries its own reference (the battery read's source) and read time.
+ */
 function resources(dash, history) {
   const cards = [];
   const m = dash.memory;
@@ -73,6 +77,7 @@ function resources(dash, history) {
       gpu: g,
     });
   }
+  cards.push(...batteryItems(dash, history));
   return cards;
 }
 
@@ -95,14 +100,17 @@ function resolve(cards) {
   const dash = state.live.dash;
   const activity = state.live.activity;
   if (selected.kind === "resource") {
-    const card = cards.find((c) => c.key === selected.key);
+    const card = cards.find((c) => c.key === selected.key && c.selectable !== false);
     if (!card) return null;
     return {
       kind: "resource",
       card,
       label: card.label,
-      measuredAt: dash.collected_at_unix_ms,
-      reference: dash.selection_source_id ? { source_id: dash.selection_source_id, target: { kind: "resource", resource: card.resource } } : null,
+      measuredAt: card.measuredAt ?? dash.collected_at_unix_ms,
+      // A battery has its own source; without one it never falls back to the dashboard's.
+      reference: "reference" in card ? card.reference : dash.selection_source_id ? { source_id: dash.selection_source_id, target: { kind: "resource", resource: card.resource } } : null,
+      sent: card.sent,
+      subject: card.subject,
     };
   }
   const app = findApp(selected.app);
@@ -139,6 +147,7 @@ function topApp(by) {
 
 function resourceDetails(card) {
   const dash = state.live.dash;
+  if (card.resource === "battery") return batteryInspector(card);
   if (card.resource === "memory") {
     const m = dash.memory;
     return kv([
@@ -216,9 +225,12 @@ function appDetails(item) {
   ];
 }
 
-/** Explain or Investigate on the resolved item, through the exact preview (select.js). */
+/**
+ * Explain or Investigate on the resolved item, through the exact preview (select.js). `sent` and
+ * `subject` say when the item leaves with others (one battery target covers every shown battery).
+ */
 function act(item, intent) {
-  return runSelection({ reference: item.reference, label: item.label, name: item.name }, intent);
+  return runSelection({ reference: item.reference, label: item.label, name: item.name, sent: item.sent, subject: item.subject }, intent);
 }
 
 /** The action bar of the resolved item, drawn under the card or application row it belongs to. */
@@ -271,7 +283,23 @@ function inspector(item) {
   );
 }
 
+/** A resource that can't be selected (a battery Windows lists but did not read): it says why. */
+function staticCard(c) {
+  return h(
+    "div",
+    { class: "livepage-card-slot" },
+    h(
+      "div",
+      { class: ["livepage-card", "static"], "data-key": `resource:${c.key}` },
+      h("span", { class: "livepage-card-head" }, h("span", { class: "livepage-card-icon" }, icon(RESOURCE_ICONS[c.resource])), h("span", { class: "livepage-card-label" }, c.label)),
+      h("span", { class: "livepage-card-value" }, notReported()),
+      h("span", { class: "livepage-card-detail" }, c.detail),
+    ),
+  );
+}
+
 function card(c, item) {
+  if (c.selectable === false) return staticCard(c);
   const pressed = selected?.kind === "resource" && selected.key === c.key;
   const bar = pressed && item ? itemBar(item, `resource:${c.key}`) : null;
   return h(
@@ -289,7 +317,7 @@ function card(c, item) {
         onclick: () => select(pressed ? null : { kind: "resource", key: c.key }),
       },
       h("span", { class: "livepage-card-head" }, h("span", { class: "livepage-card-icon" }, icon(RESOURCE_ICONS[c.resource])), h("span", { class: "livepage-card-label" }, c.label)),
-      h("span", { class: "livepage-card-value" }, c.value ?? t("metric.notMeasured")),
+      h("span", { class: "livepage-card-value" }, c.value ?? (c.resource === "battery" ? notReported() : t("metric.notMeasured"))),
       h("span", { class: "livepage-card-detail" }, c.detail),
       sparkline(c.history, c.warn ? "warn" : ""),
     ),

@@ -26,10 +26,14 @@ An inaccessible source does not prevent usable measurements from other sources b
 | `get_cleanup_opportunities` | Recycle-bin totals and metadata-only scans for every planned category. Each category gets 500 ms and 5,000 filesystem entries; pending traversal is also bounded. Observed reparse points, their ancestors, remote/removable roots, and file contents are not traversed/read. |
 | `query_system` | Fixed names: operating_system, processor, physical_memory, pagefile, last_updates, thermal_zones, storage_devices, system_events, application_events, windows_version. WMI uses selected columns, three seconds of enumeration and at most 100 rows. |
 
-All native inspections run on one dedicated worker at a time. The caller waits at most 15 seconds.
-If a provider is still blocked, subsequent inspections report that the previous worker is busy;
-they cannot accumulate additional workers. A timeout does not claim that the native API was
-cancelled. A driver-offer timeout preserves the installed readings and returns partial coverage;
+All native inspections through `inspect(Query)` run on one shared, dedicated worker at a time.
+The caller waits at most 15 seconds. If a provider is still blocked, subsequent inspections report
+that the previous worker is busy; they cannot accumulate additional workers. A timeout does not
+claim that the native API was cancelled. The only other worker is battery-only:
+`live_battery()` runs the same battery read as `Query::Battery` for the Live PC window, one read
+at a time, with a six-second wait, so a live refresh never makes an agent tool or a recording tick
+report a busy worker. While its previous read is still blocked, a new call returns at once with
+partial `collector` coverage and no values ([battery.md](battery.md)). A driver-offer timeout preserves the installed readings and returns partial coverage;
 WUA abort/cleanup remains on the same worker, which stays busy until cleanup finishes. COM
 initialization outlives all collected interfaces **and error objects**, including
 IErrorInfo retained by failed WMI calls.
