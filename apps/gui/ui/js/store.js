@@ -220,6 +220,39 @@ export async function openConversation(id) {
   return true;
 }
 
+/**
+ * Reattaches the turn the engine is still running after the window reloaded: its question, Stop
+ * and an extension request waiting for an answer. Its earlier steps are not known again. Without
+ * this, the turn ran unseen, could wait forever for an answer and blocked every new question.
+ */
+export async function resumeTurn() {
+  if (running()) return;
+  let turn = null;
+  try {
+    turn = await call("current_turn");
+  } catch {
+    return;
+  }
+  if (!turn) return;
+  state.inv = {
+    turnId: turn.turn_id,
+    question: turn.question,
+    cloud: state.privacy?.mode !== "local",
+    conversationId: turn.conversation_id ?? null,
+    status: turn.stopping ? "stopping" : "running",
+    steps: [],
+    draft: null,
+    report: null,
+    failure: null,
+    extension: turn.extension ?? null,
+    startedAt: turn.started_at_unix_ms || Date.now(),
+    resumed: true,
+  };
+  if (turn.conversation_id) await openConversation(turn.conversation_id);
+  notify("inv");
+  if (turn.extension) notify("extension");
+}
+
 /** Leaves the open conversation; the next question starts a new one. */
 export function newConversation() {
   state.conversation = null;

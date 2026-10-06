@@ -20,6 +20,21 @@ import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "../web.js";
 
 // ---------- Small pieces ----------
 
+/** A question saved without an answer, with a way to ask it again in the same conversation. */
+function interruptedView(question) {
+  return h(
+    "section",
+    { class: "turn" },
+    bubble(question),
+    h(
+      "div",
+      { class: "assistant" },
+      h("div", { class: "callout warn" }, icon("alert"), h("div", null, h("strong", null, t("chat.interrupted.title")), h("span", null, t("chat.interrupted.text")))),
+      h("div", { class: "row" }, button(t("chat.interrupted.retry"), { iconName: "refresh", onClick: () => ask(question, { followUp: true }) })),
+    ),
+  );
+}
+
 function bubble(text) {
   return h("div", { class: "bubble-row" }, h("div", { class: "user-bubble" }, text));
 }
@@ -485,6 +500,12 @@ export function mount(page) {
     const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}|${plans}`;
     if (key === turnsKey) return;
     turnsKey = key;
+    // A saved conversation whose only question never got an answer (the window closed or
+    // reloaded while it ran): show the question and offer to ask again, never a blank page.
+    if (!turns.length && state.conversation?.id != null && !liveInv()) {
+      fill(turnsHost, interruptedView(state.conversation.title));
+      return;
+    }
     fill(
       turnsHost,
       turns.map((turn, index) => {
@@ -544,7 +565,7 @@ export function mount(page) {
         const text = t(`error.${code}`);
         const setup = ["missing_key", "missing_model", "invalid_model", "model_unavailable", "http"].includes(code);
         content = [
-          h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("inv.failed.title")), h("span", null, text === `error.${code}` ? inv.failure.message : text))),
+          h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t(code === "cancelled" ? "inv.stopped.title" : "inv.failed.title")), h("span", null, text === `error.${code}` ? inv.failure.message : text))),
           h(
             "div",
             { class: "row" },
@@ -558,7 +579,9 @@ export function mount(page) {
             "div",
             { class: "progress" },
             h("div", { class: "progress-head" }, h("strong", null, t(inv.status === "stopping" ? "inv.stopping" : "chat.progress")), h("span", { class: "faint" }, "·"), elapsed),
-            inv.steps.length ? stepList(inv.steps) : h("div", { class: "step running" }, h("span", { class: "spinner" }), h("span", { class: "step-label" }, t("step.snapshot.running"))),
+            inv.steps.length
+              ? stepList(inv.steps)
+              : h("div", { class: "step running" }, h("span", { class: "spinner" }), h("span", { class: "step-label" }, t(inv.resumed ? "chat.resumed" : "step.snapshot.running"))),
           ),
           draftHost,
         ];

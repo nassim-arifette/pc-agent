@@ -20,6 +20,8 @@ const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
 
+let orphanTurn = params.get("turn") === "orphan" ? { turnId: "turn-orphan", question: "Why is my PC slow?", startedAt: Date.now() - 42000 } : null;
+
 function emit(name, payload) {
   for (const cb of listeners.get(name) || []) cb(payload);
 }
@@ -509,6 +511,11 @@ let nextId = 1;
 // Saved conversations, as the Rust side keeps them in SQLite.
 const conversations = [];
 let nextConversation = 1;
+// ?conversation=empty: a saved question whose turn never finished (window closed mid-run).
+if (params.get("conversation") === "empty") {
+  const at = Date.now() - 3600000;
+  conversations.push({ id: `conv-${nextConversation++}`, title: "Why is my battery stuck at 6%?", created_at_unix_ms: at, updated_at_unix_ms: at, turns: [] });
+}
 function saveTurn(conversationId, turnId, question, report) {
   const c = conversations.find((x) => x.id === conversationId);
   if (!c) return null;
@@ -1013,7 +1020,15 @@ export function createMock() {
       if (scopeIds.length > 1) throw new Error("Attach one scanned folder to a message.");
       return commands.start_investigation({ request: { question: text, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
     },
+    // ?turn=orphan: a turn the engine still runs after the window reloaded (current_turn).
+    current_turn: () =>
+      orphanTurn ? { turn_id: orphanTurn.turnId, conversation_id: null, question: orphanTurn.question, started_at_unix_ms: orphanTurn.startedAt, stopping: false, extension: null } : null,
     stop_turn: ({ turnId }) => {
+      if (orphanTurn && orphanTurn.turnId === turnId) {
+        orphanTurn = null;
+        window.setTimeout(() => emit("turn:failed", { turn_id: turnId, conversation_id: null, code: "cancelled", message: "Stopped.", turn: null }), 300);
+        return;
+      }
       if (!running || running.turnId !== turnId || running.done) throw new Error("This turn is over.");
       running.stop = true;
       running.answer?.(false);
