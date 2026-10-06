@@ -4,6 +4,7 @@ import { h, s } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { ago, basisPoints, bytes, percent } from "./format.js";
+import { batteryFacts, batteryItems, lowBattery, trendCaption } from "./battery.js";
 
 const GiB = 1024 ** 3;
 
@@ -20,7 +21,11 @@ export function driveName(root) {
 export function health(dash) {
   if (!dash) return { tone: "neutral", text: t("health.measuring") };
   const full = (dash.volumes || []).filter(almostFull).sort((a, b) => a.free_ratio - b.free_ratio)[0];
-  if (full) return { tone: "warn", text: t("health.diskFull", { drive: driveName(full.root) }), drive: driveName(full.root) };
+  const drive = full ? driveName(full.root) : undefined;
+  // A battery Windows flags as critical while unplugged comes first; the almost-full drive stays
+  // in the result so the chat home keeps its suggestion about it.
+  if ((dash.batteries || []).some((b) => lowBattery(b, dash))) return { tone: "warn", text: t("health.battery"), drive };
+  if (full) return { tone: "warn", text: t("health.diskFull", { drive }), drive };
   if (dash.memory.used_ratio != null && dash.memory.used_ratio >= 0.9) return { tone: "warn", text: t("health.memory") };
   if (dash.cpu.busy.value != null && dash.cpu.busy.value >= 9000) return { tone: "warn", text: t("health.cpu") };
   if (dash.gpus.some((g) => g.slowdown.value != null && g.slowdown.value !== 0)) return { tone: "warn", text: t("health.gpu") };
@@ -39,6 +44,11 @@ export function sparkline(values, tone) {
 
 function unknown(measure) {
   return h("span", { class: "unknown", title: measure?.note || "" }, t("metric.notMeasured"));
+}
+
+/** A value the source did not give, in the same words as the deeper checks. */
+export function notReported(title) {
+  return h("span", { class: "unknown", title: title || null }, t("admin.notReported"));
 }
 
 function metric({ iconName, label, value, detail, tone, history }) {
@@ -60,7 +70,10 @@ export function gpuName(name) {
   return name.replace(/^NVIDIA\s+/i, "").replace(/\s+GPU$/i, "");
 }
 
-/** The "Live PC" tab: memory, processor, drives, graphics cards and the heaviest programs. */
+/**
+ * The "Live PC" tab: memory, processor, drives, graphics cards, each system battery and the
+ * heaviest programs.
+ */
 export function liveView(live, options) {
   const { onPause } = options;
   const dash = live.dash;
@@ -133,6 +146,9 @@ export function liveView(live, options) {
       }),
     );
   }
+  for (const item of batteryItems(dash, history)) {
+    rows.push(metric({ iconName: "battery", label: item.label, value: item.value ?? notReported(), detail: item.detail, tone: item.warn ? "warn" : "", history: item.history }));
+  }
 
   const hidden = dash.process_coverage.permission_denied;
   return h(
@@ -143,6 +159,25 @@ export function liveView(live, options) {
     applicationsView(live, options),
     hidden ? h("p", { class: "note" }, t("procs.hidden", { count: hidden })) : null,
   );
+}
+
+/**
+ * The inspector of a selected battery card: its facts (unknown ones as not reported), full versus
+ * design capacity, the power over the reads this window made, and what the numbers mean.
+ */
+export function batteryInspector(card) {
+  const b = card.battery;
+  if (!b) return null;
+  const { rows, capacity, notes } = batteryFacts(b);
+  const trend = card.trend || [];
+  // Zero at the bottom and the largest power at mid-height, so the line sits beside its caption.
+  const scale = 2 * Math.max(1, ...trend.map((p) => Math.abs(p.power)));
+  return [
+    h("dl", { class: "insp-kv battery-facts" }, rows.map(([label, value]) => [h("dt", null, label), h("dd", null, value ?? notReported())])),
+    capacity ? h("div", { class: "battery-capacity" }, h("span", null, capacity.text), h("span", { class: "meter" }, h("span", { style: { width: `${capacity.ratio * 100}%` } }))) : null,
+    trend.length >= 2 ? h("div", { class: "battery-trend" }, h("span", null, trendCaption(trend)), sparkline(trend.map((p) => Math.abs(p.power) / scale))) : null,
+    h("div", { class: "battery-notes" }, notes.map((note) => h("p", { class: "note" }, note))),
+  ];
 }
 
 /** Value used to rank and size a row: memory in bytes or CPU in basis points; unknown last. */

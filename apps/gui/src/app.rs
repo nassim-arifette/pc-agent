@@ -516,12 +516,45 @@ fn selection_send(
 /// Free space changes slowly; the inventory is read again at most this often.
 const VOLUMES_MAX_AGE: Duration = Duration::from_secs(30);
 
-fn measure_thread(requests: mpsc::Receiver<Measure>, selections: Arc<Mutex<SelectionRegistry>>) {
+/// Reads the battery on its own thread, off the measurement thread, each time it is asked.
+/// The read runs on `pcagent_inspect::live_battery`'s bounded worker, never on the shared
+/// inspection worker used by agent tools and recordings.
+fn battery_thread(
+    pokes: mpsc::Receiver<()>,
+    latest: Arc<Mutex<view::LiveBattery>>,
+    selections: Arc<Mutex<SelectionRegistry>>,
+) {
+    for () in pokes {
+        let mut read = view::battery_read(pcagent_inspect::live_battery());
+        // Published before `latest` is locked, so the two locks are never nested.
+        let source_id = read
+            .source
+            .take()
+            .and_then(|source| retain_capture(&selections, SelectionSource::Battery(source)));
+        lock(&latest).record(read, source_id, Instant::now());
+    }
+}
+
+fn measure_thread(
+    requests: mpsc::Receiver<Measure>,
+    selections: Arc<Mutex<SelectionRegistry>>,
+    battery: Arc<Mutex<view::LiveBattery>>,
+    poke: mpsc::SyncSender<()>,
+) {
     let mut collector = Collector::new();
     let mut volumes: Option<(Instant, Vec<view::VolumeView>)> = None;
     for request in requests {
         match request {
             Measure::Dashboard(reply) => {
+                // Asked before the snapshot's one-second window, so the read usually lands in
+                // this very dashboard. This thread never waits for the battery.
+                {
+                    let mut live = lock(&battery);
+                    let now = Instant::now();
+                    if live.due(now) && poke.try_send(()).is_ok() {
+                        live.requested(now);
+                    }
+                }
                 let snapshot = collector.snapshot(true, 8);
                 let mut dashboard = view::dashboard(&snapshot);
                 dashboard.selection_source_id =
@@ -538,6 +571,7 @@ fn measure_thread(requests: mpsc::Receiver<Measure>, selections: Arc<Mutex<Selec
                 if let Some((_, list)) = &volumes {
                     dashboard.volumes = list.clone();
                 }
+                lock(&battery).show(&mut dashboard, Instant::now());
                 let _ = reply.send(dashboard);
             }
             Measure::Activity(reply) => {
@@ -1961,9 +1995,17 @@ pub fn run() {
     let (tx, rx) = mpsc::channel();
     let selections = Arc::new(Mutex::new(SelectionRegistry::default()));
     let measured_selections = selections.clone();
+    // One pending request at most: a read still running absorbs further asks.
+    let (battery_poke, battery_pokes) = mpsc::sync_channel(1);
+    let battery = Arc::new(Mutex::new(view::LiveBattery::default()));
+    let (battery_latest, battery_selections) = (battery.clone(), selections.clone());
+    thread::Builder::new()
+        .name("battery".into())
+        .spawn(move || battery_thread(battery_pokes, battery_latest, battery_selections))
+        .expect("the battery thread starts");
     thread::Builder::new()
         .name("measurements".into())
-        .spawn(move || measure_thread(rx, measured_selections))
+        .spawn(move || measure_thread(rx, measured_selections, battery, battery_poke))
         .expect("the measurement thread starts");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

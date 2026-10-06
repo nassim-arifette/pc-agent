@@ -3,6 +3,7 @@ use crate::{
     activity_tools, conversation, history_tools, initial_message_with_privacy, Args, PastTurn,
     PrivacyContext, Sharing, StorageContext, ToolClass, ToolOutput, ToolSpec, Toolbox,
 };
+use pcagent_inspect::{CoverageStatus, Inspection};
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{Metric, Origin, Snapshot, Status, Window};
 use pcagent_storage::LargestItemsPage;
@@ -32,6 +33,7 @@ pub enum Resource {
     Disk,
     Gpu,
     ThermalPower,
+    Battery,
 }
 
 impl Resource {
@@ -85,8 +87,26 @@ impl Resource {
                     | GpuPowerMilliwatts
                     | GpuSlowdownReasons
             ),
+            // Battery readings are C4 observations, never telemetry metrics; only a battery
+            // source offers this resource.
+            Self::Battery => false,
         }
     }
+}
+
+/// The opaque reference shape of the battery collector: `battery-` and a lowercase UUID.
+pub fn is_battery_ref(value: &str) -> bool {
+    let Some(value) = value.strip_prefix("battery-") else {
+        return false;
+    };
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+            }
+        })
 }
 
 /// Local references are accepted only after exact resolution against a host-owned capture.
@@ -154,6 +174,9 @@ impl SelectionTarget {
             Self::Resource {
                 resource: Resource::ThermalPower,
             } => "the selected temperature and power measurements",
+            Self::Resource {
+                resource: Resource::Battery,
+            } => "the selected battery measurements",
             Self::Process { .. } => "the selected process measurements",
             Self::Event { .. } => "the selected recorded activity event",
             Self::Recording { .. } => "the selected existing recording",
@@ -181,6 +204,9 @@ pub enum SelectionSource {
     Events(HistorySeries),
     Recording(RecordingSource),
     Storage(StorageSource),
+    /// One live battery read: C4 observations of the batteries the window shows. The host keeps
+    /// only the metrics it displays, partial or contradicting values included.
+    Battery(Inspection),
 }
 
 pub struct RecordingSource {
@@ -275,6 +301,20 @@ impl SelectionSource {
                         }),
                 )
             }
+            Self::Battery(read) => {
+                if read.observations.iter().any(|observation| {
+                    is_battery_ref(&observation.entity_ref)
+                        && !observation.value.is_null()
+                        && matches!(
+                            observation.status,
+                            CoverageStatus::Ok | CoverageStatus::Partial
+                        )
+                }) {
+                    targets.push(SelectionTarget::Resource {
+                        resource: Resource::Battery,
+                    });
+                }
+            }
         }
         let mut seen = BTreeSet::new();
         targets.retain(|target| {
@@ -306,6 +346,7 @@ impl SelectionSource {
             Self::Storage(value) => {
                 bytes(&value.page).saturating_add(value.context.retained_bytes())
             }
+            Self::Battery(value) => bytes(value),
         }
     }
 
@@ -408,6 +449,19 @@ impl SelectionSource {
             (Self::Storage(source), SelectionTarget::Storage { .. }) => {
                 Some(source.window.finished_at_unix_ms)
             }
+            (
+                Self::Battery(read),
+                SelectionTarget::Resource {
+                    resource: Resource::Battery,
+                },
+            ) => read
+                .observations
+                .iter()
+                .filter(|observation| {
+                    is_battery_ref(&observation.entity_ref) && !observation.value.is_null()
+                })
+                .map(|observation| observation.measured_at_unix_ms)
+                .max(),
             _ => None,
         };
         at.filter(|at| *at != 0)
@@ -571,6 +625,22 @@ impl FrozenSelection {
                         limitations: page.limitations,
                     },
                     json!({"kind":"storage","alias":alias}),
+                )
+            }
+            (
+                SelectionSource::Battery(capture),
+                SelectionTarget::Resource {
+                    resource: Resource::Battery,
+                },
+            ) => {
+                // Projected like get_power_and_thermal; only opaque battery references leave.
+                let mut read = capture.clone();
+                read.observations
+                    .retain(|observation| is_battery_ref(&observation.entity_ref));
+                read.names.clear();
+                (
+                    crate::system_tools::project(&read, sharing, privacy),
+                    json!({"kind":"resource","resource":"battery"}),
                 )
             }
             _ => return Err("The target does not belong to this source type."),
@@ -1699,5 +1769,302 @@ mod tests {
         assert_eq!(answer.repairs, 1);
         assert!(answer.unverified.is_empty());
         assert!(model.0.is_empty());
+    }
+
+    const BATTERY: &str = "battery-00000000-0000-4000-8000-00000000b001";
+    const DEVICES_DETAIL: &str = "At most eight interfaces and a four-second scan budget. Device paths/tags are used only locally; names, manufacturers, serials and unique IDs are never queried. A stalled driver is subject to its caller's time bound, which does not cancel native I/O.";
+
+    fn battery_observation(
+        entity_ref: &str,
+        metric: &str,
+        value: Value,
+        unit: &str,
+        status: CoverageStatus,
+    ) -> pcagent_inspect::Observation {
+        pcagent_inspect::Observation {
+            observation_id: format!("measurement-{metric}"),
+            measured_at_unix_ms: 4010,
+            window: Window {
+                started_at_unix_ms: 4000,
+                finished_at_unix_ms: 4010,
+                duration_ms: 10,
+            },
+            entity_ref: entity_ref.into(),
+            metric: metric.into(),
+            value,
+            unit: unit.into(),
+            status,
+            source: "DeviceIoControl/IOCTL_BATTERY_QUERY_STATUS".into(),
+            origin: Origin::SyntheticFixture,
+        }
+    }
+
+    /// A synthetic live battery read, shaped like the collector's (no device is opened).
+    fn battery_read(observations: Vec<pcagent_inspect::Observation>) -> Inspection {
+        Inspection {
+            status: Status::Partial,
+            measured_at_unix_ms: 4020,
+            window: Window {
+                started_at_unix_ms: 3990,
+                finished_at_unix_ms: 4020,
+                duration_ms: 30,
+            },
+            origin: Origin::SyntheticFixture,
+            observations,
+            coverage: vec![pcagent_inspect::Coverage {
+                scope: "battery_devices".into(),
+                status: CoverageStatus::Ok,
+                source: "SetupAPI/GUID_DEVICE_BATTERY".into(),
+                detail: DEVICES_DETAIL.into(),
+            }],
+            names: Default::default(),
+        }
+    }
+
+    fn discharging_battery() -> Inspection {
+        use CoverageStatus::*;
+        battery_read(vec![
+            battery_observation(BATTERY, "battery_kind", json!("system"), "category", Ok),
+            battery_observation(
+                BATTERY,
+                "battery_charge_percent",
+                json!(78.1),
+                "percent",
+                Ok,
+            ),
+            battery_observation(
+                BATTERY,
+                "battery_power_rate_mw",
+                json!(-8400),
+                "milliwatts",
+                Ok,
+            ),
+            battery_observation(
+                BATTERY,
+                "battery_cycle_count",
+                Value::Null,
+                "count",
+                Unsupported,
+            ),
+        ])
+    }
+
+    fn battery_target() -> SelectionTarget {
+        SelectionTarget::Resource {
+            resource: Resource::Battery,
+        }
+    }
+
+    #[test]
+    fn battery_read_targets_only_the_battery_resource_and_explain_freezes_it_without_collecting() {
+        let source = SelectionSource::Battery(discharging_battery());
+        assert_eq!(source.targets(), vec![battery_target()]);
+        assert_eq!(source.measured_at(&battery_target()), Some(4010));
+        assert!(!source.is_history());
+        let selection = frozen(&source, &battery_target());
+        let cloud = &selection.output().cloud;
+        assert_eq!(
+            cloud["selection"]["target"],
+            json!({"kind":"resource","resource":"battery"})
+        );
+        assert_eq!(cloud["selection"]["fresh_collection"], false);
+        assert_eq!(cloud["freshness"], "already_measured");
+        assert_eq!(cloud["measured_at_unix_ms"], 4010);
+        assert_eq!(cloud["age_ms"], 1990);
+        let value = |metric: &str| {
+            cloud["observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|observation| observation["metric"] == metric)
+                .map(|observation| observation["value"].clone())
+                .unwrap()
+        };
+        assert_eq!(value("battery_charge_percent"), 78.1);
+        assert_eq!(value("battery_power_rate_mw"), -8400);
+        assert!(
+            value("battery_cycle_count").is_null(),
+            "an unknown counter stays null, never 0"
+        );
+        assert!(selection.snapshot().evidence.is_empty());
+        assert!(selection.snapshot().processes.is_empty());
+        assert!(selection.output().inspection_complete);
+        let mut delegate = SnapshotTools::new(|_, _| panic!("Explain never reads the battery"));
+        let mut selected = SelectedTools::new(&mut delegate, &selection);
+        assert_eq!(selected.specs().len(), 1);
+        let read = selected.run(&GET_SELECTED_EVIDENCE, &Args::default());
+        assert_eq!(read.cloud, *cloud);
+        let message =
+            selection.preview_message(&[], "Explain the selected battery reading.", &privacy());
+        assert_eq!(message["initial_observation"]["measured_at_unix_ms"], 4010);
+        assert!(checked(
+            "During the selected capture, the battery charge was 78.1% [O0].",
+            message.clone()
+        ));
+        assert!(!checked(
+            "During the selected capture, the battery charge was 95% [O0].",
+            message
+        ));
+        assert_eq!(
+            battery_target().default_question(SelectionIntent::Explain),
+            "Explain the selected battery measurements, stating what is measured and what remains uncertain."
+        );
+    }
+
+    #[test]
+    fn battery_reads_without_values_have_no_target_and_snapshots_never_offer_battery() {
+        let collector = |scope: &str, status| {
+            let mut read = battery_read(vec![]);
+            read.coverage[0].scope = scope.into();
+            read.coverage[0].status = status;
+            SelectionSource::Battery(read)
+        };
+        // A desktop: Windows lists no battery.
+        assert!(collector("battery_devices", CoverageStatus::Unsupported)
+            .targets()
+            .is_empty());
+        // A read refused while the previous one is still running.
+        assert!(collector("collector", CoverageStatus::Partial)
+            .targets()
+            .is_empty());
+        let unknown = SelectionSource::Battery(battery_read(vec![battery_observation(
+            BATTERY,
+            "battery_charge_percent",
+            Value::Null,
+            "percent",
+            CoverageStatus::Unsupported,
+        )]));
+        assert!(unknown.targets().is_empty());
+        let not_a_battery = SelectionSource::Battery(battery_read(vec![battery_observation(
+            "system",
+            "battery_charge_percent",
+            json!(50.0),
+            "percent",
+            CoverageStatus::Ok,
+        )]));
+        assert!(not_a_battery.targets().is_empty());
+        let snapshot = SelectionSource::Snapshot(capture());
+        assert!(!snapshot.targets().contains(&battery_target()));
+        assert!(FrozenSelection::freeze(
+            &snapshot,
+            &battery_target(),
+            SelectionIntent::Explain,
+            6000,
+            Sharing::Anonymized,
+            false,
+            &privacy(),
+        )
+        .is_err());
+        assert!(!Resource::Battery.contains(Metric::GpuPowerMilliwatts));
+    }
+
+    #[test]
+    fn battery_resource_deserializes_and_unknown_resources_stay_rejected() {
+        let reference: SelectionRef = serde_json::from_value(json!({
+            "source_id": "selection-source-00000000-0000-4000-8000-000000000001",
+            "target": {"kind": "resource", "resource": "battery"}
+        }))
+        .unwrap();
+        assert!(reference.validate());
+        assert_eq!(reference.target, battery_target());
+        for bad in ["battery_health", "Battery", "batteries"] {
+            assert!(
+                serde_json::from_value::<SelectionTarget>(
+                    json!({"kind":"resource","resource":bad})
+                )
+                .is_err(),
+                "{bad}"
+            );
+        }
+        assert!(is_battery_ref(BATTERY));
+        for bad in [
+            "battery-1",
+            "battery-00000000-0000-4000-8000-00000000B001",
+            "proc-a1b2c3d4",
+            r"\\?\acpi#pnp0c0a#1#{72631e54-78a4-11d0-bcf7-00aa00b7b32a}",
+        ] {
+            assert!(!is_battery_ref(bad), "{bad}");
+        }
+    }
+
+    fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(values) => values.iter().for_each(|value| strings(value, out)),
+            Value::Object(values) => values.iter().for_each(|(key, value)| {
+                out.push(key);
+                strings(value, out);
+            }),
+            _ => {}
+        }
+    }
+
+    /// A `{8-4-4-4-12}` interface GUID such as `{72631e54-78a4-11d0-bcf7-00aa00b7b32a}`.
+    fn braced_guid(text: &str) -> bool {
+        text.match_indices('{').any(|(at, _)| {
+            let rest = &text.as_bytes()[at + 1..];
+            rest.len() > 36
+                && rest[36] == b'}'
+                && rest[..36].iter().enumerate().all(|(index, byte)| {
+                    if matches!(index, 8 | 13 | 18 | 23) {
+                        *byte == b'-'
+                    } else {
+                        byte.is_ascii_hexdigit()
+                    }
+                })
+        })
+    }
+
+    #[test]
+    fn battery_selection_never_serializes_device_identities() {
+        let device = r"\\?\acpi#pnp0c0a#1#{72631e54-78a4-11d0-bcf7-00aa00b7b32a}";
+        assert!(braced_guid(device));
+        let mut read = discharging_battery();
+        read.names
+            .insert(BATTERY.into(), "PRIVATE-BATTERY-MODEL".into());
+        // A host bug that kept a non-opaque key must still not reach the model.
+        read.observations.push(battery_observation(
+            device,
+            "battery_charge_percent",
+            json!(12.5),
+            "percent",
+            CoverageStatus::Ok,
+        ));
+        let source = SelectionSource::Battery(read);
+        for sharing in [Sharing::Anonymized, Sharing::Complete] {
+            let selection = FrozenSelection::freeze(
+                &source,
+                &battery_target(),
+                SelectionIntent::Explain,
+                6000,
+                sharing,
+                false,
+                &privacy(),
+            )
+            .unwrap();
+            let message = selection.preview_message(&[], "Explain the battery.", &privacy());
+            let cloud = &message["initial_observation"];
+            assert!(cloud.get("shared_names").is_none());
+            assert!(cloud.get("names").is_none());
+            let observations = cloud["observations"].as_array().unwrap();
+            assert_eq!(observations.len(), 4);
+            assert!(observations
+                .iter()
+                .all(|observation| observation["entity_ref"]
+                    .as_str()
+                    .is_some_and(is_battery_ref)));
+            let mut all = Vec::new();
+            strings(&message, &mut all);
+            for text in all {
+                assert!(!text.contains(r"\\?\"), "device path in {text}");
+                assert!(!braced_guid(text), "interface GUID in {text}");
+                assert!(!text.contains("PRIVATE-BATTERY-MODEL"));
+            }
+            // The fixed coverage text may say what is never queried; it carries no identity.
+            assert!(cloud["coverage"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("serials"));
+        }
     }
 }
