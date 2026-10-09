@@ -4,7 +4,7 @@
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
-import { markdown } from "../markdown.js";
+import { markdown, labelCitations } from "../markdown.js";
 import { mark } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "../ask.js";
 import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
@@ -13,7 +13,7 @@ import { health } from "../live.js";
 import { numbering, citationTitle, toolLabel } from "../citations.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
-import { bytes, duration, labelled, usd } from "../format.js";
+import { bytes, date, duration, labelled, usd } from "../format.js";
 import { modelName } from "../models.js";
 import { navigate } from "../router.js";
 import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "../web.js";
@@ -62,6 +62,7 @@ function head(text) {
  */
 function stepLabel(step, steps = [], index = -1) {
   if (step.type === "snapshot") return t("step.snapshot");
+  if (step.type === "switch") return t("step.switch", { model: modelName(step.to) });
   if (step.type === "model") {
     if (step.state === "failed") {
       const key = `step.model.failed.${step.outcome}`;
@@ -78,6 +79,8 @@ function stepLabel(step, steps = [], index = -1) {
         break;
       }
       if (steps[i].type === "tool") tools += 1;
+      // Its answer was handed to a stronger model (chantier 14), not sent back for corrections.
+      if (steps[i].type === "switch") return t("step.model.handed", { model: modelName(steps[i].to) });
     }
     if (tools) return t(tools === 1 ? "step.model.asked.one" : "step.model.asked.many", { count: tools });
     // A usable reply without a tool call that was followed by another request: the controller
@@ -136,20 +139,44 @@ function stepList(steps) {
 
 // ---------- Answers ----------
 
+/** Text placed in Markdown brackets stays text: a title cannot open or close a link. */
+function mdText(text) {
+  return String(text).replace(/([\\[\]*_`])/g, "\\$1");
+}
+
+/** One source in the copied list: its title, when it was measured or found, then its facts. */
+function sourceLines(n, c) {
+  const url = c.web?.url;
+  // Parentheses and spaces would end the link early: they are percent-encoded.
+  const target = url && /^https:\/\//i.test(url) ? url.replace(/[()\s]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`) : null;
+  const title = target ? `[${mdText(citationTitle(c))}](${target})` : mdText(citationTitle(c));
+  const when = c.web ? webOrigin(c).trim() : c.measured_at_unix_ms ? `· ${t("copy.measured", { at: date(c.measured_at_unix_ms, true) })}` : "";
+  const earlier = c.earlier ? ` · ${t("copy.earlier")}` : "";
+  return [`${n}. ${title}${when ? ` ${when}` : ""}${earlier}`, ...c.facts.map((fact) => `   - ${fact}`)];
+}
+
+/** The answer as Markdown: the question, the answer with its numbered citations, then its sources. */
 function answerText(question, report) {
   const a = report.answer;
   const numbers = numbering(a);
-  const text = a.text.replace(/\[((?:[OFW]\d{1,5})(?:\s*[,;]\s*[OFW]\d{1,5})*)\]/g, (_, refs) => refs.split(/\s*[,;]\s*/).map((r) => `[${numbers.get(r) ?? r}]`).join(""));
-  const lines = [`PC Agent — ${question}`, "", text];
-  if (a.unverified.length) lines.push("", `${t("answer.unverified")}:`, ...a.unverified.map((i) => `- "${i.excerpt}": ${t(`issue.${i.kind}`)}`));
-  for (const c of a.citations) lines.push("", `[${numbers.get(c.reference)}] ${citationTitle(c)}${webOrigin(c)}`, ...c.facts.map((x) => `- ${x}`));
-  if (report.usage?.cost) lines.push("", `${t("usage.cost")}: ${usd(report.usage.cost.usd)}`);
+  const lines = [labelled(`**${t("copy.question")}**`, question), "", labelCitations(a.text, (reference) => numbers.get(reference) ?? reference)];
+  if (a.unverified.length) {
+    lines.push("", `**${t("answer.unverified")}**`, ...a.unverified.map((i) => `- ${t("copy.quoted", { text: i.excerpt })} — ${t(`issue.${i.kind}`)}`));
+  }
+  if (a.citations.length) {
+    lines.push("", "---", "", `**${t("copy.sources")}**`, "");
+    a.citations.forEach((c) => lines.push(...sourceLines(numbers.get(c.reference), c)));
+  }
+  if (report.usage?.cost) lines.push("", `_${labelled(t("usage.cost"), usd(report.usage.cost.usd))}_`);
   return lines.join("\n");
 }
 
 function findingText(question, report) {
   const f = report.selected;
-  return [`PC Agent — ${question}`, classificationLabel(f), f.summary, "", ...f.facts.map((x) => `- ${x}`), "", `${t("answer.next")}: ${f.next_step}`].join("\n");
+  const lines = [labelled(`**${t("copy.question")}**`, question), "", `**${classificationLabel(f)}**`, "", f.summary];
+  if (f.facts.length) lines.push("", ...f.facts.map((x) => `- ${x}`));
+  if (f.next_step) lines.push("", labelled(`**${t("answer.next")}**`, f.next_step));
+  return lines.join("\n");
 }
 
 function errorCallout(report) {
@@ -368,6 +395,8 @@ function turnView(turn, index, { last, inv, cloud }) {
     : null;
   const summary = steps || sources ? h("div", { class: "summaries" }, steps, sources) : null;
   const body = !report ? null : a ? writtenAnswer(report, index) : localFinding(turn.question, report);
+  // The text written before a Stop stays readable, plainly unchecked (this session only).
+  const partial = !a && turn.partial ? partialAnswer(turn.partial) : null;
   const followUps =
     last && a?.follow_ups?.length && !(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"))
       ? h("div", { class: "follow-ups" }, a.follow_ups.map((q) => h("button", { type: "button", class: "chip", onclick: () => ask(q, { followUp: true }) }, q)))
@@ -385,7 +414,26 @@ function turnView(turn, index, { last, inv, cloud }) {
     "section",
     { class: "turn" },
     bubble(turn.question),
-    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, body, actionCards(turn, last), followUps, footer),
+    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), followUps, footer),
+  );
+}
+
+/** Chips of a text still being written (or stopped): numbered in the order they appear. */
+function draftLabels() {
+  const order = new Map();
+  return (reference) => {
+    if (!order.has(reference)) order.set(reference, order.size + 1);
+    return order.get(reference);
+  };
+}
+
+/** What the model had written when the turn was stopped: kept, never checked. */
+function partialAnswer(text) {
+  return h(
+    "div",
+    { class: "draft-host" },
+    h("div", { class: "answer-text draft stopped" }, markdown(text, null, draftLabels())),
+    h("p", { class: "draft-note" }, icon("alert"), t("chat.partial")),
   );
 }
 
@@ -518,8 +566,12 @@ export function mount(page) {
 
   let draftHost = null;
 
-  /** The answer while the model writes it: plain text with numbered chips, replaced by the
-   * checked answer when the run ends. */
+  /**
+   * The answer while the model writes it: plain text with numbered chips, replaced by the checked
+   * answer when the run ends. While a new request checks or rewrites it (a correction, a cut-off
+   * reply asked again, or a stronger model taking over), the last text stays on screen, dimmed,
+   * until the new one catches up: it never vanishes.
+   */
   const renderDraft = () => {
     const inv = liveInv();
     if (!draftHost || !inv) return;
@@ -527,15 +579,11 @@ export function mount(page) {
       fill(draftHost);
       return;
     }
-    const order = new Map();
-    const label = (reference) => {
-      if (!order.has(reference)) order.set(reference, order.size + 1);
-      return order.get(reference);
-    };
+    const note = inv.checking ? (inv.switchedTo ? t("chat.draft.switched", { model: modelName(inv.switchedTo) }) : t("chat.draft.checking")) : t("chat.draft");
     fill(
       draftHost,
-      h("div", { class: "answer-text draft", "aria-live": "off" }, markdown(inv.draft, null, label)),
-      h("p", { class: "draft-note" }, h("span", { class: "spinner" }), t("chat.draft")),
+      h("div", { class: ["answer-text draft", inv.checking ? "checking" : ""], "aria-live": "off" }, markdown(inv.draft, null, draftLabels())),
+      h("p", { class: "draft-note" }, h("span", { class: "spinner" }), note),
     );
   };
 
@@ -566,6 +614,7 @@ export function mount(page) {
         const setup = ["missing_key", "missing_model", "invalid_model", "model_unavailable", "http"].includes(code);
         content = [
           h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t(code === "cancelled" ? "inv.stopped.title" : "inv.failed.title")), h("span", null, text === `error.${code}` ? inv.failure.message : text))),
+          inv.partial ? partialAnswer(inv.partial) : null,
           h(
             "div",
             { class: "row" },

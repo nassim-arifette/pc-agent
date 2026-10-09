@@ -930,6 +930,16 @@ a {
 .answer-text.draft .cite {
   cursor: default;
 }
+/* A draft being checked or rewritten stays readable, dimmed, until the new text catches up. */
+.answer-text.draft.checking {
+  opacity: 0.55;
+  transition: opacity var(--t) var(--ease);
+}
+.draft-note .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--warn);
+}
 .draft-note {
   display: flex;
   align-items: center;
@@ -994,6 +1004,16 @@ a {
 }
 .cite:hover {
   border-color: var(--accent-line);
+}
+/* The sources of one sentence, together at its end: [1 2] rather than 1 1 1 2. */
+.cite-group {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 1px 0 3px;
+  vertical-align: 1px;
+}
+.cite-group .cite {
+  margin: 0;
 }
 .cite.static,
 .cite.static:hover {
@@ -1133,6 +1153,9 @@ a {
 .pick-slot {
   display: flex;
 }
+.pick-slot {
+  gap: 2px;
+}
 
 /* Model and reasoning picker next to Send: quiet text, a menu that opens upwards. */
 .pick-host {
@@ -1165,7 +1188,8 @@ a {
   color: var(--text-3);
   transform: rotate(90deg);
 }
-.pick-faint {
+.pick-faint,
+.pick-reasoning {
   color: var(--text-3);
 }
 .pick-menu {
@@ -1235,8 +1259,9 @@ a {
   font-size: 12px;
   color: var(--text-3);
 }
-@media (max-width: 620px) {
-  .pick-faint {
+@media (max-width: 560px) {
+  .pick-faint,
+  .pick-reasoning {
     display: none;
   }
 }
