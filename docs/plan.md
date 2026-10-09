@@ -22,9 +22,10 @@ Toute décision de produit ou de code suit ces principes.
    suppose pas.
 4. **Une interface de conversation.** Historique, fil, questions de suivi. La réponse d'abord, les
    preuves à un clic.
-5. **La confidentialité par un choix éclairé, pas en aveuglant le modèle.** Aperçu exact de ce qui
-   part, choix mémorisé et modifiable ; les noms de programmes et de dossiers partent si
-   l'utilisateur l'accepte.
+5. **La confidentialité par un choix visible, pas en aveuglant le modèle.** Ce qui part se règle
+   par des bascules dans la zone de saisie, actives par défaut, et l'aperçu exact reste à un clic ;
+   le choix est mémorisé et modifiable. Les noms de programmes et de dossiers partent tant que
+   leur bascule est active (décision du 9 octobre, C5).
 6. **Mesurer au bon moment.** Un historique tant que l'app tourne et un enregistrement pendant le
    problème, pas seulement une mesure d'une seconde au moment de la question.
 7. **Pas d'admin par défaut.** Élévation ponctuelle et consentie pour des inspections précises,
@@ -95,8 +96,9 @@ Chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en 
   finding local, y compris un finding remplacé depuis par une mesure plus fraîche (il décrit un
   moment antérieur). Le modèle ne voit jamais les identifiants locaux. L'interface rend les
   citations cliquables.
-- `action_refs` : uniquement des propositions créées pendant le tour par `prepare_action_plan`.
-  Rien ne s'exécute sans clic.
+- `action_refs` : uniquement des propositions créées pendant le tour par `prepare_action_plan` ou,
+  pour une analyse approfondie, par `propose_elevated_check` (chantier 8). Rien ne s'exécute sans
+  clic.
 - `follow_ups` : affichées comme boutons sous la réponse.
 - Sources web (chantier 15) : citations `[W1]` et vérification décrites en C6.
 
@@ -159,7 +161,7 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 | `send_message(conversation_id?, text, scope_ids)` | démarre un tour ; renvoie `{conversation_id, turn_id}` |
 | `stop_turn(turn_id)`, `answer_extension(turn_id, accept)` | reprennent `stop_investigation` et `answer_extension` |
 | `current_turn()` | le tour en cours, ou rien : `{turn_id, conversation_id, question, started_at_unix_ms, stopping, extension}` ; la fenêtre le rattache après un rechargement (arrêt et demande d'extension en attente compris) |
-| `privacy_get()`, `privacy_set(settings)` | mode d'envoi et confirmation (C5) |
+| `privacy_get()`, `privacy_set(settings)` | mode d'envoi et bascules de la zone de saisie (C5, C6 ; complément du 9 octobre ci-dessous) |
 
 Événements : `turn:step` (forme actuelle de `Step`), `turn:delta` (réponse en flux, si le
 fournisseur le permet), `turn:extension`, `turn:done { turn }`, `turn:failed { code, message }`.
@@ -225,6 +227,25 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
 
 La recherche externe reste conditionnée à un contrat distinct et à la preuve du besoin ; ces
 compléments n'adoptent pas le C6 proposé dans la PR #31.
+
+#### Complément du 9 octobre : partage et analyse approfondie
+
+Ce complément applique les décisions du 9 octobre (section 7 quater). Les commandes existantes
+gardent leur nom ; elles gagnent des champs ou des valeurs.
+
+- `privacy_get` / `privacy_set` portent le mode (Complet, Anonymisé, Local) et trois bascules
+  mémorisées entre les sessions : `program_names` (vrai par défaut ; faux équivaut au mode
+  Anonymisé), `file_names` (vrai par défaut) et `web_search` (vrai par défaut, sans effet sans clé
+  Tavily). Le champ de confirmation n'est plus exigé avant un envoi : il n'y a plus de dialogue
+  (C5). Un réglage absent du fichier existant prend la valeur par défaut.
+- `cloud_preview` et `selection_preview` ne changent pas : la page demande toujours le ticket
+  d'aperçu à usage unique avant chaque envoi, sans l'afficher. « Voir ce qui part » affiche ce
+  même aperçu. Le ticket lie toujours la sélection, la question, le contexte, les bascules et la
+  liste finie des noms de fichiers.
+- `elevation_prepare` accepte, en plus des tâches fixes existantes, le lot fermé « Analyse
+  approfondie » et la référence d'une proposition `propose_elevated_check` (chantier 8). Une
+  proposition ne fait que préremplir l'écran de revue ; `elevation_run` reste déclenché par le seul
+  clic local, suivi de l'invite de Windows.
 
 #### Complément du 6 octobre : Stockage en carte, arbre et liste
 
@@ -358,8 +379,18 @@ observations d'origine web sont décrites en C6.
 Jamais, quel que soit le mode : le nom d'utilisateur, le chemin du profil en clair, les lignes de
 commande, le contenu des fichiers, les clés et secrets, les identifiants de la machine.
 
-« Complet » est proposé par défaut au premier lancement, avec l'aperçu exact de ce qui part. Le
-choix est mémorisé, modifiable dans les réglages et rappelé dans la zone de saisie.
+« Complet » est le mode par défaut. Décision du 9 octobre : aucun dialogue avant l'envoi, ni au
+premier usage, ni à chaque question. Sous la zone de saisie, des bascules montrent ce qui part et se
+changent en un clic :
+- **Noms des programmes** : active par défaut ; désactivée, l'envoi suit le mode Anonymisé ;
+- **Noms de fichiers** : affichée seulement quand un dossier analysé est joint, active par défaut ;
+  seuls partent les noms de la liste finie figée dans le ticket d'aperçu ;
+- **Recherche web** (C6) : active par défaut dès qu'une clé Tavily est enregistrée, grisée sinon.
+
+Le choix est mémorisé entre les sessions et modifiable dans les réglages, où l'on choisit aussi le
+mode Local. Le lien « Voir ce qui part » ouvre l'aperçu exact de la prochaine requête, identique
+octet pour octet à ce qui sera envoyé ; après le tour, ses étapes montrent ce qui est parti. La
+liste « jamais » ci-dessus ne change pas.
 
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
@@ -379,10 +410,12 @@ quand le chantier 15 démarre ; le lot 3 du chantier 4 n'en dépend pas.
 - **Observations (C4) :** origine `web`, avec la requête exacte, l'URL, le domaine, le titre, la
   date de publication (ou inconnue), la date de consultation et les extraits. Statuts : `ok`,
   `partial`, `unsupported` (pas de clé ou recherche désactivée), `denied` (consentement refusé).
-- **Réglages (C3) :** `privacy_get`/`privacy_set` portent le réglage « recherche web ». La clé
-  Tavily suit le chemin de la clé Nebius : jamais par la page, jamais dans les journaux.
-- **Ce qui part (C5) :** Tavily est un destinataire distinct de Nebius, avec son propre
-  consentement, mémorisé et modifiable. La requête exacte s'affiche dans les étapes du tour.
+- **Réglages (C3) :** `privacy_get`/`privacy_set` portent le réglage « recherche web », vrai par
+  défaut depuis le 9 octobre ; sans clé, les outils web répondent `unsupported`. La clé Tavily
+  suit le chemin de la clé Nebius : jamais par la page, jamais dans les journaux.
+- **Ce qui part (C5) :** Tavily est un destinataire distinct de Nebius, avec sa propre bascule
+  dans la zone de saisie, active par défaut quand une clé existe, mémorisée et modifiable. La
+  requête exacte s'affiche dans les étapes du tour.
 
 | Mode | Requêtes de recherche web |
 | --- | --- |
@@ -565,8 +598,9 @@ qui évalue ; `watch:open` au clic sur une notification.
 
 - Appliquer C5 aux projections envoyées au modèle (`workstation.rs`, `storage_context.rs`), en
   réutilisant la liste finie de noms déjà livrée pour le stockage.
-- Premier lancement : écran de choix avec l'aperçu exact (`cloud_preview`). S'y ajoutent un réglage
-  et un indicateur dans la zone de saisie.
+- Pas d'écran de choix ni de dialogue avant l'envoi (décision du 9 octobre, C5) : des bascules
+  dans la zone de saisie, actives par défaut, et l'aperçu exact à la demande (« Voir ce qui part »,
+  `cloud_preview`). Le mode se règle aussi dans les réglages.
 - **Fait quand :**
   - des tests prouvent, dans chaque mode, l'absence du nom d'utilisateur et du chemin du profil dans tout ce qui part ;
   - l'aperçu correspond octet pour octet à ce qui est envoyé.
@@ -577,7 +611,8 @@ qui évalue ; `watch:open` au clic sur une notification.
     plus.
   - La CLI est complète par défaut, avec `--anonymize` en option.
   - Dans l'app, une case figure dans la boîte de consentement (l'aperçu et le message exact
-    suivent le choix, qui est mémorisé), et un réglage est ajouté dans Confidentialité.
+    suivent le choix, qui est mémorisé), et un réglage est ajouté dans Confidentialité. La boîte
+    de consentement est remplacée par les bascules de la zone de saisie (9 octobre, #54).
   - Essai réel : Super nomme le programme (« Windows Terminal… 2,39 Gio [O1] ») au lieu d'une
     référence opaque.
   - Reste à faire : les noms de dossiers et de fichiers relatifs aux dossiers connus. Aujourd'hui,
@@ -745,10 +780,15 @@ chantiers 5 et 8.
 - Barre d'actions sur la sélection (maquette du 1er octobre) : cliquer sur un élément (une carte
   « Mémoire », une application, un bloc « Téléchargements », un événement) fait apparaître une petite
   barre collée à lui, la même dans toutes les vues :
-  - **Expliquer** répond avec ce qui est déjà mesuré (rapide, peu cher) ; la réponse s'affiche dans
-    l'inspecteur, sans quitter la vue, avec un lien « Enquêter pour aller plus loin » ;
-  - **Enquêter** ouvre dans le Chat une conversation ciblée sur l'élément, où le modèle lance ses
-    outils, coût annoncé ;
+  - **Expliquer**, affiché « Résumer ces mesures » depuis le 9 octobre, répond avec ce qui est
+    déjà mesuré (rapide, peu cher) ; la réponse s'affiche dans l'inspecteur, sans quitter la vue,
+    avec un lien « Chercher la cause » qui continue la même conversation (`conversation_id` de
+    `selection_send`) ;
+  - **Enquêter**, affiché « Chercher la cause », ouvre dans le Chat une conversation ciblée sur
+    l'élément, où le modèle lance ses outils et peut proposer des actions, coût annoncé ;
+  - les intentions `explain` et `investigate` (C3) et les raccourcis ne changent pas ; la question
+    envoyée n'apparaît pas comme une bulle écrite par l'utilisateur, mais comme une étiquette
+    (« Résumer · Mémoire ») ;
   - **Surveiller** ouvre la création d'une règle locale (C7), préremplie depuis l'élément ; il
     reste grisé, avec la raison, sur ce qui ne se mesure pas en continu (enregistrement, batterie,
     latence du disque).
@@ -914,11 +954,22 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
 ### Chantier 8 — Admin à la demande (piste B ; S09, E05)
 
 - Binaire séparé `pcagent-elevated` (`apps/elevated`), lancé par `ShellExecuteExW` avec le verbe
-  `runas` pour une seule tâche fixe :
+  `runas` pour une tâche fixe ou pour le lot fermé « Analyse approfondie » :
   - pas de réseau ni de LLM ;
   - arguments validés ;
   - sortie JSON versionnée dans un fichier temporaire à accès restreint ;
-  - 120 s au plus, annulable.
+  - 120 s au plus pour une tâche, annulable.
+- Lot « Analyse approfondie » (décision du 9 octobre) :
+  - une seule invite UAC lance, l'une après l'autre, une liste fermée et versionnée : caches
+    système, points de restauration, santé des disques, énergie par application et MFT du disque
+    système. Ni le modèle ni la page ne composent la liste : l'écran de revue permet seulement de
+    décocher une tâche ou d'ajouter la MFT d'un autre disque NTFS du PC ;
+  - protocole du helper en version 3 : une requête porte une tâche ou ce lot ; la réponse porte une
+    section par tâche, avec son statut et sa couverture. Une tâche en échec ou hors délai n'annule
+    pas les autres ;
+  - budget du lot plafonné, mesuré avant d'être fixé ; l'expiration de la requête laisse le temps
+    de lire l'écran de revue ; taille de réponse plafonnée par section ;
+  - les résultats rejoignent le cache de `get_approved_elevated_inspection`, une entrée par tâche.
 - Tâches, par ordre d'intérêt (ordre revu le 1er octobre : la MFT passe avant la santé des disques) :
   1. tailles des caches système (`Windows.old`, cache Windows Update, Optimisation de la
      distribution, points de restauration) : souvent les plus gros éléments récupérables, invisibles
@@ -929,11 +980,21 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   3. santé des disques (compteurs de fiabilité, SMART) ;
   4. chemins complets des processus protégés ;
   5. trace ETW de 30 à 60 s pendant le problème (latence DPC/ISR, E/S disque par fichier).
-- Interface : un bouton « Analyse approfondie (administrateur) », proposé par l'utilisateur ou par
-  le modèle. La tâche est expliquée avant l'invite de Windows.
+- Interface : un bouton « Analyse approfondie (administrateur) » dans Stockage, PC en direct,
+  l'accueil du Chat et le premier lancement. Les tâches sont expliquées avant l'invite de Windows.
+  Il est aussi proposé depuis le chat :
+  - par une règle locale : quand un tour a reçu une couverture `needs_admin`, une carte « Lancer
+    l'analyse approfondie » apparaît sous la réponse ; le modèle n'y a aucune autorité ;
+  - par le modèle : l'outil fermé `propose_elevated_check(tasks)` crée une proposition citée dans
+    `action_refs` (C1) ; sa carte préremplit l'écran de revue, et rien ne se lance sans le clic
+    local puis l'invite de Windows.
+- La fenêtre et le LLM ne tournent jamais en admin, même pour le hackathon : un démarrage élevé est
+  refusé avec un message visible, au lieu d'une fermeture silencieuse (#64).
 - **Fait quand :**
   - la fenêtre et le LLM ne tournent jamais en admin ;
-  - le protocole est testé : arguments hostiles, sortie tronquée, refus d'élévation.
+  - le protocole est testé : arguments hostiles, sortie tronquée, refus d'élévation ;
+  - le lot est testé : une seule invite, une tâche en échec n'annule pas les autres, une
+    proposition du modèle ne lance rien sans clic.
 
 ### Chantier 9 — Capteurs matériels (piste B ; E02)
 
@@ -1087,9 +1148,9 @@ garde sa marque et sa propre clé API.
   - cartes de source pour `[W1]` : titre, domaine, dates ;
   - lien ouvert dans le navigateur, avec une URL résolue côté Rust à partir de la citation, en
     https seulement ;
-  - consentement « recherche web » et clé Tavily dans les réglages.
-- **À décider :** confirmer la première recherche de chaque conversation, comme une extension de
-  budget, ou se fier au consentement mémorisé.
+  - bascule « Recherche web » dans la zone de saisie (C5), clé Tavily dans les réglages.
+- **Décidé le 9 octobre :** pas de confirmation de la première recherche ; la bascule mémorisée
+  fait foi, active par défaut dès qu'une clé existe.
 - **À vérifier :**
   - les conditions de Tavily, avant d'écrire dans l'app la « zero data retention » annoncée par
     sa FAQ ;
@@ -1192,6 +1253,27 @@ Règles de travail :
 4. Tavily est la source web retenue, avec une clé facultative. Le chantier 15 démarre seulement si
    l'évaluation montre un manque d'informations récentes.
 
+## 7 quater. Retours du 9 octobre
+
+Revue de l'interface et retours du porteur du projet, suivis dans les issues #50 à #71 (suivi #72).
+
+1. **Partage :** aucun dialogue avant l'envoi. Des bascules dans la zone de saisie, actives par
+   défaut (noms des programmes, noms de fichiers, recherche web), et l'aperçu exact à la demande.
+   La liste de ce qui ne part jamais ne change pas (C5, C6, chantier 3 ; #54).
+2. **Admin :** la fenêtre et le LLM restent sans admin. Un lot fermé passe sous une seule invite
+   UAC et peut être proposé depuis le chat, par une règle locale ou par le modèle (chantier 8, C1,
+   C3 ; #62).
+3. **Expliquer et Enquêter :** deux boutons, affichés « Résumer ces mesures » et « Chercher la
+   cause ». Le résumé s'affiche dans l'inspecteur ; « Chercher la cause » continue la même
+   conversation (chantier 6, phase 2 ; #56).
+4. **Branches :** `plan-mockups` (compléments C3 du 6 octobre et C7) et `wp6-viewbar` (barre
+   secondaire par vue) sont fusionnées.
+5. **Orientations, chacune à détailler dans sa propre PR du plan :** le type des processus d'un
+   navigateur est dérivé localement de la ligne de commande, qui n'est ni gardée ni envoyée (C4,
+   C5 ; #60) ; l'historique gagne une lecture réduite et une table compacte des valeurs système
+   (C2, C3 ; #58, #59) ; les images jointes sont repoussées après la soumission, sauf si Nebius
+   sert un modèle NVIDIA qui accepte à la fois les images et les outils (#55).
+
 ## 8. Suivi
 
 | Chantier | Piste | État | PR |
@@ -1200,12 +1282,12 @@ Règles de travail :
 | Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |
 | 1 — Le LLM rédige | A | logique terminée : réponse, vérification des mesures C4, contexte multi-tour, stockage et identifiants stables, flux et arrêt testés ; comparaison de qualité à faire au chantier 7 | #19, #23, wp1-stream, wp1-phase1-logic |
 | 2 — Tous les processus, sans admin | B | logique terminée : fenêtres, regroupement, services et GPU par processus ; couverture et coût mesurés sans admin (voir docs/telemetry.md) | #22, wp1-phase1-logic |
-| 3 — Choix de partage | A, C | logique terminée : trois modes persistants, aperçu figé, retrait des noms des suivis, noms de fichiers sur liste finie et filtre C5 ; premier choix, indicateur et consentement fichiers à brancher dans le frontend | #21, #23, wp1-phase1-logic |
+| 3 — Choix de partage | A, C | logique terminée : trois modes persistants, aperçu figé, retrait des noms des suivis, noms de fichiers sur liste finie et filtre C5 ; bascules de la zone de saisie, actives par défaut, et aperçu à la demande (9 octobre) à faire | #21, #23, wp1-phase1-logic, #54 |
 | 4 — Nouveaux outils | B | logique terminée : outils fermés, collecte native bornée, couverture et projections C4/C5 ; tests synthétiques et traces locales (voir docs/system-inspection.md) | wp1-phase1-logic |
 | 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
 | 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) | #23, #24, #36 |
 | 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
-| 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser | #33, #36 |
+| 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; lot sous une seule invite et proposition depuis le chat (9 octobre) à faire | #33, #36, #62 |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
@@ -1216,10 +1298,11 @@ Règles de travail :
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
 | 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
-| 6 — Stockage en carte, arbre et liste | B, A, C | en cours : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
-| 6 — Vue Historique | C, A | en cours : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
-| 6 — Surveillances | B, A, C | en cours : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
+| 6 — Stockage en carte, arbre et liste | B, A, C | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
+| 6 — Vue Historique | C, A | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
+| 6 — Surveillances | B, A, C | à faire, aucune branche ouverte au 9 octobre : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
 | 6 — Barre secondaire par vue | C | livré : une vue peut déclarer sa barre dans l'emplacement de la liste des conversations (`shell.setViewBar`), redessinée sur ses sujets, avec repli, fenêtre étroite, focus et repère accessibles ; aucune vue ne l'utilise encore (Stockage, Historique, Surveillances) | wp6-viewbar |
+| Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater | #72 |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
