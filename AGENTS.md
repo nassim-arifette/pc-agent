@@ -14,8 +14,8 @@ ancienne feuille de route, ancienne comparaison de modèles) : ne pas les suivre
 - **La référence de qualité est Claude ou ChatGPT sur les mêmes situations.** On la mesure avec
   l'évaluation (chantier 7).
 - **L'interface est une conversation**, avec historique : la réponse d'abord, les preuves à un clic.
-- **Confidentialité par choix éclairé**, avec aperçu exact de ce qui part (contrat C5), pas en
-  aveuglant le modèle.
+- **Confidentialité par choix visible** : bascules dans la zone de saisie, actives par défaut, et
+  aperçu exact de ce qui part à un clic (contrat C5), pas en aveuglant le modèle.
 - **Mesurer au bon moment** : historique et enregistrement pendant le problème.
 - **Pas d'admin par défaut.** L'élévation est ponctuelle, dans `pcagent-elevated`, sans réseau ni
   LLM.
