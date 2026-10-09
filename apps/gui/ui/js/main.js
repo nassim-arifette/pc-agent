@@ -1,6 +1,19 @@
 // Entry point: preferences, the Rust bridge, the window layout and the router. The layout is a
-// rail of views, the conversation list (on the chat only), the current view and a context panel
-// that stays closed until a citation, the PC status or a storage link opens it.
+// rail of views, a sidebar (the conversation list on the chat, or the view bar of a view that
+// declares one), the current view and a context panel that stays closed until a citation, the PC
+// status or a storage link opens it.
+//
+// Views export `mount(page, shell)` and may return an unmount function. `shell` lends them the
+// sidebar slot while they are mounted (calls made after the view is unmounted do nothing):
+// - `shell.setViewBar({ label, topics, render })` declares the view's bar. `label` is the i18n key
+//   that names the sidebar landmark; `render()` returns the bar's content (nodes for fill()), drawn
+//   once mount returns (at once when declared later), again after each store topic listed in
+//   `topics`, and on refreshViewBar().
+//   Focus inside the bar survives a redraw when the focused control carries a stable data-key.
+// - `shell.refreshViewBar()` redraws it after the view's own state changes.
+// - `shell.closeViewBar(focusTarget)` folds the bar after a pick on a narrow window, where it
+//   floats over the page, and moves focus to `focusTarget` (or the main region).
+// A view that never calls setViewBar keeps the full width, as before.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -32,6 +45,7 @@ import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import { mark } from "./brand.js";
 import { refreshRouting } from "./picker.js";
+import { keepFocus } from "./actionbar.js";
 import * as chat from "./views/chat.js";
 import * as history from "./views/history.js";
 import * as live from "./views/live.js";
@@ -51,6 +65,13 @@ let unmount = null;
 let mountedRoute = null;
 let sidebarOpen = !narrow.matches;
 let filter = "";
+/** What the sidebar slot holds: "chat" (the conversation list) or "view" (the current view's bar). */
+let slot = "chat";
+/** The mounted view's bar: { label, render, host, off }, or null when it declared none. */
+let viewBar = null;
+/** Increments at each mount, so a shell lent to an unmounted view stops acting. */
+let mountToken = 0;
+let mounting = false;
 
 // ---------- Sidebar ----------
 
@@ -166,6 +187,8 @@ function renderSidebar() {
   });
   historyHost = h("nav", { class: "history", "aria-label": t("history.title") });
   footHost = h("div", { class: "sidebar-foot" });
+  slot = "chat";
+  sidebarHost.setAttribute("aria-label", t("history.title"));
   fill(
     sidebarHost,
     h(
@@ -189,7 +212,7 @@ function renderSidebar() {
           icon("plus"),
           h("span", null, t("sidebar.new")),
         ),
-        h("button", { type: "button", class: "icon-btn", title: t("sidebar.hide"), "aria-label": t("sidebar.hide"), onclick: () => setSidebar(false) }, icon("sidebar")),
+        sidebarToggle(false, t("sidebar.hide")),
       ),
       h("label", { class: "search" }, icon("search"), search),
       historyHost,
@@ -198,6 +221,70 @@ function renderSidebar() {
   );
   fill(historyHost, historyView());
   renderFoot();
+}
+
+/** The button that hides the sidebar (inside it) or shows it again (in the top bar). */
+function sidebarToggle(open, label) {
+  return h("button", { type: "button", class: ["icon-btn", "sidebar-toggle"], title: label, "aria-label": label, onclick: () => setSidebar(open) }, icon("sidebar"));
+}
+
+// ---------- View bar ----------
+
+/** Fills the sidebar slot with the view bar's frame: the hide button, the view's part, then the model status. */
+function renderViewBar() {
+  slot = "view";
+  historyHost = null;
+  viewBar.host = h("div", { class: "viewbar" });
+  footHost = h("div", { class: "sidebar-foot" });
+  sidebarHost.setAttribute("aria-label", t(viewBar.label));
+  fill(
+    sidebarHost,
+    h("div", { class: "sidebar-inner" }, h("div", { class: ["sidebar-top", "viewbar-top"] }, sidebarToggle(false, t("sidebar.hideBar"))), viewBar.host, footHost),
+  );
+  renderFoot();
+}
+
+const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])";
+
+/** Redraws the view's part of its bar; a focused control comes back by data-key, else by position. */
+function drawViewBar() {
+  const host = viewBar?.host;
+  if (!host) return;
+  const active = document.activeElement;
+  const at = host.contains(active) ? [...host.querySelectorAll(FOCUSABLE)].indexOf(active) : -1;
+  keepFocus(host, () => fill(host, viewBar.render()));
+  if (at >= 0 && !host.contains(document.activeElement)) {
+    const controls = host.querySelectorAll(FOCUSABLE);
+    controls[Math.min(at, controls.length - 1)]?.focus({ preventScroll: true });
+  }
+}
+
+function dropViewBar() {
+  viewBar?.off?.();
+  viewBar = null;
+}
+
+/** What a view gets at mount to use the sidebar slot; see the comment at the top of this file. */
+function viewShell(token) {
+  const current = () => token === mountToken;
+  return {
+    setViewBar({ label, topics = [], render }) {
+      if (!current()) return;
+      dropViewBar();
+      viewBar = { label, render, host: null, off: topics.length ? subscribe((topic) => topics.includes(topic) && drawViewBar()) : null };
+      renderViewBar();
+      applyRouteLayout();
+      renderTopbar();
+      // While mounting, route() draws it once the view's state is set up.
+      if (!mounting) drawViewBar();
+    },
+    refreshViewBar() {
+      if (current() && !mounting) drawViewBar();
+    },
+    closeViewBar(focusTarget = null) {
+      if (current() && viewBar && narrow.matches && sidebarOpen) setSidebar(false, focusTarget);
+    },
+  };
 }
 
 function renderFoot() {
@@ -244,18 +331,39 @@ function renderRail() {
   );
 }
 
-function setSidebar(open) {
+/**
+ * Folds or unfolds the sidebar. Focus inside a sidebar that turns inert goes to `focusTarget`, or
+ * to the top bar's button that shows it again; the top bar's button, removed once the sidebar is
+ * open, hands focus to the hide button.
+ */
+function setSidebar(open, focusTarget = null) {
+  const active = document.activeElement;
+  const fromSidebar = sidebarHost.contains(active);
+  const fromToggle = topbar.contains(active) && active.classList.contains("sidebar-toggle");
   sidebarOpen = open;
   app.classList.toggle("sidebar-closed", !open);
-  sidebarHost.inert = !open || currentRoute() !== "chat";
+  applyRouteLayout();
   renderTopbar();
+  if (!open && fromSidebar) {
+    for (const el of [focusTarget, topbar.querySelector(".sidebar-toggle"), main]) {
+      el?.focus();
+      if (el && document.activeElement === el) break;
+    }
+  } else if (open && fromToggle) {
+    sidebarHost.querySelector(".sidebar-toggle")?.focus({ preventScroll: true });
+  }
 }
 
-/** The conversation list belongs to the chat; other views use the full width. */
+/** The chat and the views that declare a bar have a sidebar. */
+function hasSidebar() {
+  return currentRoute() === "chat" || Boolean(viewBar);
+}
+
+/** The sidebar shows the conversation list or the view's bar; other views use the full width. */
 function applyRouteLayout() {
-  const chatRoute = currentRoute() === "chat";
-  app.classList.toggle("no-sidebar", !chatRoute);
-  sidebarHost.inert = !sidebarOpen || !chatRoute;
+  const withSidebar = hasSidebar();
+  app.classList.toggle("no-sidebar", !withSidebar);
+  sidebarHost.inert = !sidebarOpen || !withSidebar;
 }
 
 // ---------- Top bar ----------
@@ -268,7 +376,7 @@ function renderTopbar() {
   const title = route === "chat" ? state.conversation?.title || "" : "";
   fill(
     topbar,
-    sidebarOpen || route !== "chat" ? null : h("button", { type: "button", class: "icon-btn", title: t("sidebar.show"), "aria-label": t("sidebar.show"), onclick: () => setSidebar(true) }, icon("sidebar")),
+    sidebarOpen || !hasSidebar() ? null : sidebarToggle(true, t(route === "chat" ? "sidebar.show" : "sidebar.showBar")),
     h("div", { class: "topbar-title", title }, title),
     h("span", { class: "spacer" }),
     h(
@@ -313,12 +421,22 @@ function renderShell() {
 function route(force = false) {
   const name = currentRoute();
   if (!force && name === mountedRoute) return;
+  const token = ++mountToken;
   unmount?.();
+  dropViewBar();
   mountedRoute = name;
   const page = h("div", { class: ["page", `page-${name}`] });
   fill(main, page);
   main.scrollTop = 0;
-  unmount = VIEWS[name].mount(page) || null;
+  mounting = true;
+  try {
+    unmount = VIEWS[name].mount(page, viewShell(token)) || null;
+  } finally {
+    mounting = false;
+  }
+  // The slot holds the conversation list whenever the view has no bar of its own.
+  if (viewBar) drawViewBar();
+  else if (slot !== "chat") renderSidebar();
   applyRouteLayout();
   renderFoot();
   renderTopbar();
@@ -327,8 +445,10 @@ function route(force = false) {
 
 /** Redraws everything, e.g. after the language changes. */
 function redraw() {
+  mountToken += 1;
   unmount?.();
   unmount = null;
+  dropViewBar();
   mountedRoute = null;
   renderShell();
   route(true);

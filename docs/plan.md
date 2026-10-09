@@ -1219,6 +1219,7 @@ Règles de travail :
 | 6 — Stockage en carte, arbre et liste | B, A, C | en cours : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
 | 6 — Vue Historique | C, A | en cours : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
 | 6 — Surveillances | B, A, C | en cours : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
+| 6 — Barre secondaire par vue | C | livré : une vue peut déclarer sa barre dans l'emplacement de la liste des conversations (`shell.setViewBar`), redessinée sur ses sujets, avec repli, fenêtre étroite, focus et repère accessibles ; aucune vue ne l'utilise encore (Stockage, Historique, Surveillances) | wp6-viewbar |
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés

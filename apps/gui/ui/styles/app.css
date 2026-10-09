@@ -440,6 +440,86 @@ a {
   font-size: 12px;
   color: var(--text-3);
 }
+
+/* ---------- View bar: a view's own part of the sidebar ---------- */
+.viewbar-top {
+  justify-content: flex-end;
+}
+.viewbar {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+.viewbar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.viewbar-label {
+  padding: 8px 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.viewbar-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+}
+.viewbar-item:hover,
+.viewbar-item[aria-current="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+.viewbar-item[aria-current="true"] .viewbar-item-title {
+  font-weight: 560;
+}
+.viewbar-item-icon {
+  display: flex;
+  flex: none;
+  margin-top: 1px;
+}
+.viewbar-item-icon .icon {
+  width: 16px;
+  height: 16px;
+}
+.viewbar-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.viewbar-item-title {
+  font-size: 13.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viewbar-item-sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.viewbar-hint,
+.viewbar-empty {
+  margin: 6px 10px 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--text-3);
+}
 .dot {
   width: 8px;
   height: 8px;
