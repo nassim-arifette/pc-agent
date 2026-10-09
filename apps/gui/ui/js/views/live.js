@@ -44,7 +44,7 @@ function resources(dash, history) {
     resource: "cpu",
     label: t("metric.cpu"),
     // A rate needs two samples: the first one says it is still measuring.
-    value: busy.value != null ? basisPoints(busy.value) : busy.status === "partial" ? "…" : null,
+    value: busy.value != null ? basisPoints(busy.value) : busy.status === "partial" ? t("metric.measuring") : null,
     detail: dash.cpu.busiest_core.value != null ? t("metric.cpu.core", { value: basisPoints(dash.cpu.busiest_core.value) }) : "",
     warn: busy.value >= 9000,
     history: history.map((d) => (d.cpu.busy.value != null ? d.cpu.busy.value / 10000 : null)),

@@ -1793,18 +1793,11 @@ a {
 .grid-stats {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 16px;
-  align-items: start;
+/* Settings: one readable column, so no control is ever squeezed beside its label. */
+.settings-column {
+  max-width: 760px;
 }
-/* Storage and Settings follow the room left by the sidebar and the panel, not the window. */
-@container (max-width: 900px) {
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
+/* The page follows the room left by the sidebar and the panel, not the window. */
 @container (max-width: 640px) {
   .setting-row {
     flex-wrap: wrap;
@@ -2081,20 +2074,34 @@ a {
 }
 .setting-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px 16px;
   padding: 14px 0;
   border-top: 1px solid var(--stroke);
 }
-.setting-row:first-of-type {
+.card-head + .setting-row,
+.card-head + .card-rows > .setting-row:first-child {
   border-top: 0;
   padding-top: 0;
 }
+/* The text keeps a readable width; when the control does not fit beside it, it goes below. */
 .setting-text {
+  flex: 1 1 240px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+}
+.card-rows {
+  margin-top: 4px;
+}
+.card-rows > .setting-row:last-child {
+  padding-bottom: 0;
+}
+.input-grow {
+  flex: 1;
   min-width: 0;
 }
 .check {
@@ -3415,10 +3422,13 @@ details.more > div {
   .livepage {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* In one column the cards come first: the inspector follows them once something is selected. */
   .insp {
     position: static;
     max-height: none;
-    order: -1;
+  }
+  .insp.insp-empty {
+    display: none;
   }
 }
 @media (max-width: 620px) {
@@ -3433,6 +3443,18 @@ details.more > div {
 /* ---------- Action bar: the selected item's actions, anchored under it ---------- */
 .actbar-anchor {
   position: relative;
+}
+/* The bar never covers the next row: the selected item makes room for it on its side. In the
+   card grid the rows open up instead, so the selected card's neighbours keep its height. */
+.actbar-anchor:not(.livepage-card-slot):has(> .actbar:not(.actbar-above)) {
+  margin-bottom: 52px;
+}
+.actbar-anchor:not(.livepage-card-slot):has(> .actbar.actbar-above) {
+  margin-top: 52px;
+}
+.livepage-cards:has(.actbar) {
+  row-gap: 62px;
+  padding-bottom: 52px;
 }
 .actbar {
   position: absolute;
