@@ -320,6 +320,11 @@ async function startTurn(question, conversationId, followUp, start) {
     status: "running",
     steps: [],
     draft: null,
+    // While a new request checks or rewrites the draft: its text so far, and which model took over.
+    nextDraft: null,
+    checking: false,
+    switchedTo: null,
+    partial: null,
     report: null,
     failure: null,
     extension: null,
@@ -382,8 +387,16 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
       break;
     case "model_started":
       inv.steps.push({ key: `model-${step.request}`, type: "model", state: "running", at });
-      // A new request may write a new answer; an earlier draft was not accepted.
-      inv.draft = null;
+      // A new request may write a new answer: the earlier draft was not accepted as it is. It
+      // stays on screen, marked as being checked, until the new text catches up with it.
+      if (inv.draft) inv.checking = true;
+      inv.nextDraft = null;
+      break;
+    case "model_changed":
+      // A stronger model takes the question over with the measurements already taken (chantier 14).
+      inv.steps.push({ key: `switch-${inv.steps.length}`, type: "switch", state: "done", to: step.change?.to_model_id, at });
+      inv.switchedTo = step.change?.to_model_id ?? null;
+      if (inv.draft) inv.checking = true;
       break;
     case "answer_draft": {
       // turn:delta carries the text; this step only marks which request is writing.
@@ -400,6 +413,8 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
         completionTokens: step.completion_tokens,
         outcome: step.outcome,
       });
+      // The new reply is complete: it replaces the kept draft even if it is shorter.
+      if (inv.checking && inv.nextDraft) showNextDraft(inv);
       break;
     case "tool_started":
       inv.steps.push({ key: `tool-${inv.steps.length}`, type: "tool", tool: step.tool, state: "running", at });
@@ -423,11 +438,28 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
   notify("inv");
 }
 
-/** The whole draft so far when `replace` is true; never verified, replaced by the finished turn. */
+function showNextDraft(inv) {
+  inv.draft = inv.nextDraft;
+  inv.nextDraft = null;
+  inv.checking = false;
+  inv.switchedTo = null;
+}
+
+/**
+ * The whole draft so far when `replace` is true; never verified, replaced by the finished turn.
+ * While an earlier draft is kept on screen, the new text is collected aside and shown once it is
+ * at least as long, so a correction never blanks the answer.
+ */
 function onDelta({ turn_id: turnId, text, replace }) {
   const inv = current(turnId);
   if (!inv || inv.status === "done") return;
-  inv.draft = replace === false && inv.draft ? inv.draft + text : text;
+  if (inv.checking) {
+    inv.nextDraft = replace === false && inv.nextDraft ? inv.nextDraft + text : text;
+    if (inv.nextDraft.length < inv.draft.length) return;
+    showNextDraft(inv);
+  } else {
+    inv.draft = replace === false && inv.draft ? inv.draft + text : text;
+  }
   notify("draft");
 }
 
@@ -449,7 +481,13 @@ function finish(inv, turn, conversationId, failure) {
   // The last request of a completed turn is the one that wrote the answer.
   const lastModel = [...inv.steps].reverse().find((s) => s.type === "model");
   if (lastModel && report && !report.error && lastModel.state === "done") lastModel.final = true;
+  // Without a written answer (stopped, or failed before submitting), the text already on screen
+  // is kept as an unchecked partial answer instead of disappearing.
+  const partial = report?.answer ? null : inv.nextDraft || inv.draft || null;
+  inv.partial = partial;
   inv.draft = null;
+  inv.nextDraft = null;
+  inv.checking = false;
   inv.extension = null;
   inv.finishedAt = Date.now();
   if (failure && (!report || SETUP_ERRORS.includes(failure.code))) {
@@ -461,7 +499,7 @@ function finish(inv, turn, conversationId, failure) {
     const conversation = state.conversation;
     if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
       conversation.id = conversationId ?? conversation.id;
-      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [] };
+      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial };
       conversation.turns.push(saved);
       if (report.mode === "nebius" && turn.id) loadPlans(saved);
     }

@@ -1,8 +1,8 @@
-// The model and reasoning picker next to Send, as in chat apps: one button showing the Nemotron
-// model (or Auto) and how much it reasons, opening a small menu. Models are listed from the most
-// capable to the lightest. A model is saved with save_cloud_settings; Auto is the engine's
-// calibrated Super → Ultra routing (model_routing_set), offered only once a reviewed calibration
-// exists. Both commands invalidate any reviewed preview on the Rust side.
+// The model and reasoning pickers next to Send, as in chat apps: one button for the Nemotron
+// model (or Auto), another for how much it reasons, each opening a small menu. Models are listed
+// from the most capable to the lightest. A model is saved with save_cloud_settings; Auto is the
+// engine's calibrated Super → Ultra routing (model_routing_set), offered only once a reviewed
+// calibration exists. Both commands invalidate any reviewed preview on the Rust side.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -101,26 +101,14 @@ function item({ label, note, checked, disabled = false, onPick }) {
   );
 }
 
-async function openPicker(button) {
-  if (openMenu) {
-    closeMenu();
-    return;
-  }
-  await refreshRouting();
-  // A changed policy redrew the composer: open the menu on the new button.
-  if (!button.isConnected) {
-    document.querySelector(".pick-button")?.click();
-    return;
-  }
-  const cloud = state.info.cloud;
+/** The model menu: Auto, then the models from the most capable to the lightest. */
+function modelItems() {
   const routing = state.routing;
   const automatic = routing?.settings?.mode === "automatic";
   const current = activeModel();
   const models = [...(state.info.models || [])].sort((a, b) => rank(a.id) - rank(b.id));
   const listed = models.some((m) => m.id === current);
-  const menu = h(
-    "div",
-    { class: "pick-menu", role: "menu", "aria-label": t("picker.label") },
+  return [
     h("div", { class: "pick-section" }, t("picker.model")),
     item({
       label: t("picker.auto"),
@@ -134,11 +122,38 @@ async function openPicker(button) {
     ),
     // A custom ID set in Settings stays visible and selected.
     listed || !current || automatic ? null : item({ label: modelName(current), note: t("picker.custom"), checked: true, onPick: () => closeMenu() }),
+  ];
+}
+
+/** The reasoning menu: how long the model thinks before answering. */
+function reasoningItems() {
+  const reasoning = state.info.cloud.reasoning || "on";
+  return [
     h("div", { class: "pick-section" }, t("picker.reasoning")),
     REASONING.map((r) =>
-      item({ label: t(`picker.reasoning.${r}`), note: t(`picker.reasoning.${r}.note`), checked: cloud.reasoning === r, onPick: () => chooseReasoning(r) }),
+      item({ label: t(`picker.reasoning.${r}`), note: t(`picker.reasoning.${r}.note`), checked: reasoning === r, onPick: () => chooseReasoning(r) }),
     ),
-  );
+  ];
+}
+
+const MENUS = {
+  model: { label: "picker.model", items: modelItems },
+  reasoning: { label: "picker.reasoning", items: reasoningItems },
+};
+
+async function openPicker(button, kind) {
+  if (openMenu) {
+    const same = openMenu.button === button;
+    closeMenu();
+    if (same) return;
+  }
+  await refreshRouting();
+  // A changed policy redrew the composer: open the menu on the new button.
+  if (!button.isConnected) {
+    document.querySelector(`.pick-button[data-picker="${kind}"]`)?.click();
+    return;
+  }
+  const menu = h("div", { class: "pick-menu", role: "menu", "aria-label": t(MENUS[kind].label) }, MENUS[kind].items());
   button.parentElement.append(menu);
   button.setAttribute("aria-expanded", "true");
   // Open upwards when there is room inside the view, otherwise downwards; never clipped.
@@ -178,33 +193,39 @@ async function openPicker(button) {
   menu.querySelector('.pick-item[aria-checked="true"]')?.focus();
 }
 
-/**
- * The picker button, or null when the AI is not configured. `disabled` while a turn runs: the
- * running turn keeps the model and reasoning it started with.
- */
-export function modelPicker({ disabled = false } = {}) {
-  const cloud = state.info?.cloud;
-  if (!cloud?.ready) return null;
-  const reasoning = cloud.reasoning || "on";
-  const automatic = state.routing?.settings?.mode === "automatic";
+function pickerButton(kind, text, { disabled }) {
   const host = h("span", { class: "pick-host" });
   const button = h(
     "button",
     {
       type: "button",
-      class: "pick-button",
+      class: ["pick-button", `pick-${kind}`],
+      dataset: { picker: kind },
       "aria-haspopup": "menu",
       "aria-expanded": "false",
-      title: t("picker.label"),
+      title: t(`picker.${kind}.title`),
       disabled,
-      onclick: () => openPicker(button),
+      onclick: () => openPicker(button, kind),
     },
-    h("span", null, automatic ? t("picker.auto") : modelName(activeModel())),
-    h("span", { class: "pick-faint" }, t(`picker.short.${reasoning}`)),
+    h("span", null, text),
     icon("chevron"),
   );
   fill(host, button);
   return host;
+}
+
+/**
+ * The model and reasoning buttons, or nothing when the AI is not configured. `disabled` while a
+ * turn runs: the running turn keeps the model and reasoning it started with.
+ */
+export function modelPicker({ disabled = false } = {}) {
+  const cloud = state.info?.cloud;
+  if (!cloud?.ready) return null;
+  const automatic = state.routing?.settings?.mode === "automatic";
+  return [
+    pickerButton("model", automatic ? t("picker.auto") : modelName(activeModel()), { disabled }),
+    pickerButton("reasoning", t(`picker.short.${cloud.reasoning || "on"}`), { disabled }),
+  ];
 }
 
 /** Closes an open picker, e.g. when the composer redraws. */
