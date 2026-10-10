@@ -85,16 +85,15 @@ Investigate use the battery read's own source (`battery_source_id`, resource `ba
 freezes that read without reading the battery again. It holds only the batteries shown and the
 metrics the window displays for them (a partial value shown as not reported included), under their opaque `battery-<uuid>` references, with the
 read's window and coverage ([battery.md](battery.md#live-display)). One target covers every
-battery shown, so with two batteries the consent dialog says that the readings of every battery
-shown are sent. Applications' battery use is never shown here.
+battery shown, so with two batteries the readings of every battery shown are sent. Applications' battery use is never shown here.
 
 The page never sends measurements or names itself. It passes a host-issued reference
 (`selection_source_id` of the dashboard or of `process_activity`, or `battery_source_id`, plus a
 closed target) to
 `selection_preview`, which freezes that capture and returns the exact first message and a
-single-use ticket; `selection_send` must match it exactly ([selection.md](selection.md)). In a
-cloud mode the preview dialog shows the item, its measurement age, the model, what is sent and
-never sent, and the exact JSON; in local mode the turn starts directly. The question is written in
+single-use ticket; `selection_send` must match it exactly ([selection.md](selection.md)). No
+dialog stands before the send (C5, 9 October): the turn starts at once and its steps keep the exact
+first message (*Message sent to Nebius*). The question is written in
 the interface language and follows C5 like the data: never a PID, a program name only in complete
 sharing. An application is explained through its largest measured process, which the inspector
 names. History events and finished recordings use the same flow through `selection_sources()`; if
@@ -105,9 +104,8 @@ their source has expired, the typed question of the previous version is used ins
 Each page of scan results the host returns is published as a selection source
 (`retain_storage_page`): the page carries its `selection_source_id` and the target of an item is
 `{ kind: "storage", scope_id, item_ref }`. Selecting a folder or a file of the results shows the
-action bar. The question and the preview name it generically (*the folder chosen in the scan*) and
-the consent dialog says it leaves under an alias, its name and path staying on this PC; file names
-are not offered from here. Sources expire after five minutes (or earlier when newer captures fill
+action bar. The question and the preview name it generically (*the folder chosen in the scan*): it
+leaves under an alias, its name and path staying on this PC; file names are not offered from here. Sources expire after five minutes (or earlier when newer captures fill
 the registry): before a preview, the page looks the item up in `selection_sources()` and, when its
 source is gone, reads the same page of the same scan again with `scan_page`, which publishes it
 anew. A new scan revokes the previous one's sources; a page the host could not publish leaves the
@@ -195,21 +193,27 @@ with two eyes that signs answers and never animates on its own. The design explo
 clickable prototype live on a private design canvas; the decisions are recorded in
 [the plan](plan.md).
 
-## Consent and privacy
+## Sharing and privacy
 
-- The person chooses how questions are analyzed, once and then whenever they like (composer pill,
-  Settings): **AI with program names** (complete sharing, recommended), **AI with names hidden**
-  (anonymized) or **on this PC only** (local rules, no request). The choice is stored by the Rust
-  side (`privacy_get`, `privacy_set`); choosing a cloud mode is not consent by itself.
-- Before a cloud question, a dialog shows the stored mode (with *Change*), the question exactly as
-  it will be sent after identities, paths and secrets were removed (and says when something was
-  removed), what is sent and never sent, and the exact first message. Approving it confirms the
-  choice. The reviewed snapshot is frozen in a single-use ticket that `send_message` requires.
-- File and folder names of the scanned folder are a separate opt-in, offered only in complete
-  sharing. The dialog lists the exact names and folder-relative paths (`%SCOPE%\...`) that may be
-  sent; never file contents or paths outside the folder.
-- *Don't ask again until I close PC Agent* lasts for the session only and still requests a fresh
-  ticket per question; it applies to the folder actually approved.
+Decided on 9 October (plan, section 7 quater; C5): no dialog stands before a send, not even the
+first one. What leaves is shown and changed under the composer, and remembered by the Rust side
+(`privacy_get`, `privacy_set`).
+
+- **Toggles under the composer**, pressed while their part leaves:
+  - *Names*: program names (complete sharing) or opaque references (anonymized);
+  - *Web*: lookups through Tavily, on by default; with no Tavily key it is dashed and opens Settings;
+  - the scanned folder (its name), shown after a scan: it goes with the questions until detached;
+  - *File names*, shown while a folder is attached in complete sharing: the finite list of names
+    and folder-relative paths (`%SCOPE%\...`), never file contents or paths outside the folder.
+- **See what leaves** (the eye) opens the exact first message for the text typed, or a sample
+  question when the box is empty: the question as sent after identities, paths and secrets were
+  removed, what is sent and never sent, the file names, and the JSON. Nothing is sent from there.
+- Each cloud question still takes its exact preview just before the send, frozen in a single-use
+  ticket that `send_message` requires; the turn's steps keep that message (*Message sent to
+  Nebius*, this session only). `confirmed` is still stored after a first send but no longer required.
+- **Local analysis** (on this PC only) is chosen in Settings, or used when no key is set up; the
+  composer then shows a *On this PC* pill, which goes back to the AI in one click when it is ready.
+- Settings keeps the three modes as cards and the file-names toggle; web search keeps its own card.
 - When the budget runs out, the window asks before extending it and shows the cost so far.
 - The key is written to `%APPDATA%\pcagent\.env` (the CLI's file) by the Rust side and never sent
   back to the page, which only sees whether a key exists and its last four characters.
@@ -220,19 +224,19 @@ Typed web lookups through Tavily (contract C6): `lookup_driver_notes`, `lookup_k
 `lookup_upgrade_price` and `lookup_pc_specs`. The model never writes the query; the Rust side
 composes it from measurements.
 
-- **Settings**, *Web search (Tavily)*: a switch for the separate, remembered consent
-  (`web_search` in `privacy_get`/`privacy_set`), what a lookup sends (a short query from the
+- **Composer and Settings**, *Web*: a remembered toggle, on by default (`web_search` in
+  `privacy_get`/`privacy_set`). The Settings card says what a lookup sends (a short query from the
   hardware model, a driver version, an update number or an error code, a program or module name
   only in complete sharing, the country for prices) and never sends (the question, text written by
   the model, the user name, paths, command lines, file contents, serial numbers and identifiers).
   The switch works only in a cloud mode with a saved key; otherwise it is disabled and says why.
-- `privacy_set` always receives the whole object, `web_search` included: Rust fills a missing field
-  with `false`, so an older call that sent `{mode, confirmed}` alone would turn web search off.
+- `privacy_set` always receives the whole object, `web_search` and `file_names` included: Rust turns
+  a missing toggle on, so a call that left one out could turn it back on.
 - **The Tavily key** is optional; everything else works without it. `save_search_key` stores it in
   `%APPDATA%\pcagent\.env` beside the Nebius key and refuses keys that do not start with `tvly-`
   (sending `null` removes it). The page sees only `search_key_configured` and the last four
   characters (`search_key_hint`).
-- **Consent dialog**: when lookups can run, a line says that queries may also go to Tavily and
+- **See what leaves**: when lookups can run, a line says that queries may also go to Tavily and
   appear in the steps.
 - **Steps**: `tool_finished` carries the exact `query` of a lookup, shown under its step as *Sent to
   Tavily*. A reopened conversation shows the tool steps its turns recorded (`tool_events`), with
@@ -247,7 +251,7 @@ composes it from measurements.
   calls `get_drivers` and `lookup_driver_notes` and the answer cites two web pages (one without a
   date); `?web=key` saves a key with web search off. `open_web_source` is recorded in
   `window.__pcagentMock.openedWebSources`, never navigated to. The tour captures the settings card,
-  the consent line, the query under its step and an open web source (`13` to `16`).
+  the composer with *Web* on, the query under its step and an open web source (`13` to `16`).
 
 ## Turns and events
 
@@ -356,9 +360,9 @@ python -m http.server 5173 --bind 127.0.0.1
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run; `space` or `clean` proposes cleanup actions and `startup` a start-up entry
 to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
-screenshots of the main states (welcome, consent, running, answer, sources, live PC, storage, the
+screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with the action bar under an
-application (`10a`) and under memory, Explain and its preview, the action bar under a History
+application (`10a`) and under memory, Explain and its answer, the action bar under a History
 event (`17`) and a Storage folder (`18`), the battery card with its inspector discharging (`19`)
 and plugged in (`20`), and the pill of a critically low battery (`21`)) in light and dark themes
 (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and

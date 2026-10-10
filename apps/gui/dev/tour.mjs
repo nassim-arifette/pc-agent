@@ -1,4 +1,4 @@
-// Screenshots of the main states (welcome, consent, running, answer, sources, live PC, history,
+// Screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, history,
 // storage with the deeper checks, settings, the Live PC view with Explain, web search, the action
 // bar under a selected item in Live PC, History and Storage, and the battery: its card and
 // inspector discharging and plugged in, then the status pill of a critically low battery) in light
@@ -34,12 +34,13 @@ try {
     await page.waitFor("document.querySelector('.welcome') && document.querySelector('.status-text.warn')");
     await page.sleep(400);
     await shot(`1-home-${theme}`);
-    // Ask, approve the consent dialog, and catch the analysis while it runs.
-    await page.click(".suggestion", 0);
-    await page.waitFor("document.querySelector('.dialog .btn-primary') && !document.querySelector('.dialog .btn-primary').disabled", 10000);
+    // "See what leaves" from the composer, then ask: no dialog stands before a send (C5).
+    await page.click(".share-preview");
+    await page.waitFor("document.querySelector('.dialog .two-lists')", 10000);
     await page.sleep(400);
-    await shot(`2-consent-${theme}`);
+    await shot(`2-preview-${theme}`);
     await page.click(".dialog .btn-primary");
+    await page.click(".suggestion", 0);
     await page.waitFor("document.querySelector('.progress .step')", 10000);
     await page.sleep(700);
     await shot(`3-running-${theme}`);
@@ -96,10 +97,6 @@ try {
     await page.sleep(300);
     await shot(`10-live-${theme}`);
     await page.click(".actbar .actbar-primary");
-    await page.waitFor("document.querySelector('.dialog .select-exact')", 10000);
-    await page.sleep(400);
-    await shot(`11-explain-preview-${theme}`);
-    await page.click(".dialog .btn-primary");
     await page.waitFor("document.querySelector('.answer-foot')", 20000);
     await page.sleep(300);
     await shot(`12-explain-answer-${theme}`);
@@ -111,12 +108,10 @@ try {
     await page.sleep(300);
     await shot(`13-settings-web-${theme}`);
     await page.goto(`${base}?cloud=ready&privacy=complete&web=on#/chat`);
-    await page.waitFor("document.querySelector('.welcome')");
-    await page.click(".suggestion", 0);
-    await page.waitFor("document.querySelector('.dialog .web-consent') && !document.querySelector('.dialog .btn-primary').disabled", 10000);
+    await page.waitFor("document.querySelector('.welcome') && document.querySelector('.share-toggle[aria-pressed=\"true\"] + .share-toggle[aria-pressed=\"true\"]')");
     await page.sleep(300);
-    await shot(`14-web-consent-${theme}`);
-    await page.click(".dialog .btn-primary");
+    await shot(`14-web-toggles-${theme}`);
+    await page.click(".suggestion", 0);
     await page.waitFor("document.querySelector('.answer-foot') && document.querySelector('.answer-text .web-cite')", 30000);
     await page.click(".steps-fold > summary");
     await page.eval("document.querySelector('.web-step-query').scrollIntoView({ block: 'center' })");

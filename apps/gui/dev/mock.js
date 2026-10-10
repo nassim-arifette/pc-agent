@@ -536,7 +536,10 @@ function done(id, report) {
 let running = null;
 let nextTurn = 1;
 const privacyParam = params.get("privacy");
-let privacy = ["complete", "anonymized", "local"].includes(privacyParam) ? { mode: privacyParam, confirmed: true, web_search: webParam === "on" } : { mode: "complete", confirmed: false, web_search: webParam === "on" };
+// The composer's toggles are on by default (C5, 9 October); ?web=key saves a key with web search off.
+let privacy = ["complete", "anonymized", "local"].includes(privacyParam)
+  ? { mode: privacyParam, confirmed: true, web_search: webParam !== "key", file_names: true }
+  : { mode: "complete", confirmed: false, web_search: webParam !== "key", file_names: true };
 /** Lookups run only in a cloud mode, with the separate consent and a saved key, as in app.rs. */
 const webActive = () => privacy.mode !== "local" && privacy.web_search && Boolean(searchKey);
 // Web pages "opened" through open_web_source: recorded for review scripts, never navigated to.
@@ -928,12 +931,12 @@ export function createMock() {
       return startupEnabled;
     },
     privacy_get: () => ({ ...privacy }),
-    // Same shape as PrivacySettings: unknown fields are refused, a missing web_search is false.
+    // Same shape as PrivacySettings: unknown fields are refused, a missing toggle is on.
     privacy_set: ({ settings }) => {
-      const unknown = Object.keys(settings).filter((key) => !["mode", "confirmed", "web_search"].includes(key));
+      const unknown = Object.keys(settings).filter((key) => !["mode", "confirmed", "web_search", "file_names"].includes(key));
       if (unknown.length) throw new Error(`unknown field ${unknown[0]}`);
-      if (settings.mode !== privacy.mode || !settings.confirmed) pendingPreview = null;
-      privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed), web_search: Boolean(settings.web_search) };
+      if (settings.mode !== privacy.mode || !settings.confirmed || settings.web_search !== privacy.web_search) pendingPreview = null;
+      privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed), web_search: settings.web_search ?? true, file_names: settings.file_names ?? true };
       return { ...privacy };
     },
     cloud_preview: async ({ question, names, conversationId = null, fileNames = false }) => {
@@ -1004,7 +1007,6 @@ export function createMock() {
     },
     selection_send: async ({ reference, intent, question = null, conversationId = null, previewId }) => {
       const cloudRun = privacy.mode !== "local" && cloud().ready;
-      if (cloudRun && !privacy.confirmed) throw new Error("Confirm the sharing choice before sending.");
       const ticket = selectionTickets.get(previewId);
       if (!ticket) throw new Error("Open the selected-evidence sharing preview before sending.");
       if (JSON.stringify(ticket.reference) !== JSON.stringify(reference) || ticket.intent !== intent || ticket.question !== question || ticket.conversationId !== conversationId) {
@@ -1016,7 +1018,6 @@ export function createMock() {
     },
     send_message: async ({ conversationId = null, text, scopeIds = [], previewId = null }) => {
       const cloudRun = privacy.mode !== "local";
-      if (cloudRun && !privacy.confirmed) throw new Error("Review the sharing preview and confirm the privacy choice first.");
       if (scopeIds.length > 1) throw new Error("Attach one scanned folder to a message.");
       return commands.start_investigation({ request: { question: text, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
     },

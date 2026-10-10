@@ -14,13 +14,14 @@ export const state = {
   /** Saved conversations, most recently updated first. */
   conversations: [],
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
-  /** "Don't ask again until I close PC Agent" was ticked in the consent dialog. */
-  skipConsent: false,
+  /** The scan the person detached from their questions with the composer's folder chip. */
+  scanDetached: null,
   /**
-   * The stored sharing choice: complete, anonymized or local; cloud modes need confirmation.
-   * `web_search` is the separate consent for web lookups through Tavily (C6).
+   * The stored sharing choice: complete, anonymized or local, and the composer's toggles, on by
+   * default (C5): `web_search` for web lookups through Tavily (C6), `file_names` for the names of
+   * an attached scanned folder. No dialog waits for a confirmation.
    */
-  privacy: { mode: "complete", confirmed: false, web_search: false },
+  privacy: { mode: "complete", confirmed: false, web_search: true, file_names: true },
   /** Live measurements shared by the status pill and the panel, with a short history for sparklines. */
   live: { dash: null, error: null, paused: false, history: [] },
   /** The context panel: closed by default, opened on a tab, optionally pointing at one source. */
@@ -40,28 +41,33 @@ export async function refreshPrivacy() {
   try {
     state.privacy = await call("privacy_get");
   } catch {
-    state.privacy = { mode: "local", confirmed: false, web_search: false };
+    state.privacy = { mode: "local", confirmed: false, web_search: false, file_names: false };
   }
   notify("privacy");
   return state.privacy;
 }
 
 /**
- * Stores a sharing choice. Changing the mode invalidates any reviewed preview on the Rust side.
- * The whole settings object is always sent: Rust fills a missing `web_search` with false, so
- * leaving it out would silently turn web search off.
+ * Stores a sharing choice, keeping the toggles not named in `changes`. Changing the mode or a
+ * toggle invalidates any preview on the Rust side. The whole settings object is always sent: Rust
+ * turns a missing toggle on, so leaving one out could silently turn it back on.
  */
-export async function setPrivacy(mode, confirmed, webSearch = Boolean(state.privacy.web_search)) {
-  const previous = state.privacy.mode;
-  state.privacy = await call("privacy_set", { settings: { mode, confirmed, web_search: webSearch } });
-  if (state.privacy.mode !== previous) state.skipConsent = false;
+export async function setPrivacy(mode, changes = {}) {
+  const current = state.privacy;
+  const settings = { mode, confirmed: Boolean(current.confirmed), web_search: current.web_search !== false, file_names: current.file_names !== false, ...changes };
+  state.privacy = await call("privacy_set", { settings });
   notify("privacy");
   return state.privacy;
 }
 
-/** Turns the web search consent on or off, keeping the sharing choice as it is. */
+/** Turns web lookups on or off, keeping the sharing choice as it is. */
 export function setWebSearch(on) {
-  return setPrivacy(state.privacy.mode, state.privacy.confirmed, Boolean(on));
+  return setPrivacy(state.privacy.mode, { web_search: Boolean(on) });
+}
+
+/** Turns the names of an attached scanned folder on or off. */
+export function setFileNames(on) {
+  return setPrivacy(state.privacy.mode, { file_names: Boolean(on) });
 }
 
 /** Web lookups can run: a usable cloud mode, the consent, and a saved Tavily key. */
@@ -296,20 +302,21 @@ function current(turnId) {
  * Sends a question in the open conversation when `followUp` is true, otherwise in a new one.
  * The sharing mode is the stored privacy choice; a cloud mode needs the reviewed preview ticket.
  */
-export async function sendMessage(question, { followUp = false, previewId = null, scopeIds = [] } = {}) {
+export async function sendMessage(question, { followUp = false, previewId = null, scopeIds = [], sent = null } = {}) {
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
-  return startTurn(question, conversationId, followUp, () => call("send_message", { conversationId, text: question, scopeIds, previewId }));
+  return startTurn(question, conversationId, followUp, sent, () => call("send_message", { conversationId, text: question, scopeIds, previewId }));
 }
 
 /**
  * Starts an Explain or Investigate turn on a selected measurement, in a new conversation, with the
  * question and reference of the reviewed preview ticket; any difference makes Rust refuse it.
  */
-export async function sendSelection(question, { reference, intent, previewId }) {
-  return startTurn(question, null, false, () => call("selection_send", { reference, intent, question, conversationId: null, previewId }));
+export async function sendSelection(question, { reference, intent, previewId, sent = null }) {
+  return startTurn(question, null, false, sent, () => call("selection_send", { reference, intent, question, conversationId: null, previewId }));
 }
 
-async function startTurn(question, conversationId, followUp, start) {
+/** `sent` is the exact first message of a cloud turn, from its preview: shown in its steps. */
+async function startTurn(question, conversationId, followUp, sent, start) {
   if (!followUp || !state.conversation) state.conversation = { id: null, title: question, turns: [] };
   state.inv = {
     turnId: null,
@@ -325,6 +332,7 @@ async function startTurn(question, conversationId, followUp, start) {
     checking: false,
     switchedTo: null,
     partial: null,
+    sent,
     report: null,
     failure: null,
     extension: null,
@@ -499,7 +507,7 @@ function finish(inv, turn, conversationId, failure) {
     const conversation = state.conversation;
     if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
       conversation.id = conversationId ?? conversation.id;
-      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial };
+      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial, sent: inv.sent ?? null };
       conversation.turns.push(saved);
       if (report.mode === "nebius" && turn.id) loadPlans(saved);
     }
