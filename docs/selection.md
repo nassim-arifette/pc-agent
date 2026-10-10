@@ -1,9 +1,28 @@
 # Selected evidence — backend contract
 
-This document describes the additive phase-2 backend contract for **Explain** and **Investigate**.
+This document describes the phase-2 selected-evidence flow for **Explain** and **Investigate**,
+displayed as **Summarize these measurements** and **Find the cause**.
 The corresponding C3 addition is recorded separately in plan PR #34 before exposing these
 commands. Existing `send_message`, `cloud_preview` and conversation events retain their contracts.
-No frontend files are changed by the backend implementation.
+
+## Interface and conversation
+
+**Summarize these measurements** keeps the current data view open and shows the answer in its
+inspector. It reuses the open conversation when one exists, or creates one otherwise. The generated
+question is displayed as a compact selection label rather than an ordinary typed message. The
+answer still belongs to the saved conversation and uses the existing turn IDs, streaming events,
+cancellation and verification.
+
+The inspector's **Find the cause** action continues that summary's conversation in Chat. It
+prepares a new `investigate` preview using the same selected reference and the summary's
+`conversation_id`; the consumed `explain` ticket cannot be reused. The direct **Find the cause**
+action opens a conversation focused on the selected measurements. Display metadata for selection
+labels stays local; no command or event contract changes for this presentation.
+
+An expired or invalidated reference stops either action with a visible explanation. History events
+and finished recordings never fall back to a generic typed question when their capture is missing:
+the person must refresh the view and select the measurements again. A new preview must still
+match the conversation, sharing choices and model settings at send time.
 
 ## Local reference and source registry
 
@@ -141,7 +160,8 @@ conversation containing the removed context. Model policy remains locked through
 with ticket storage acquired before routing, so a concurrent setting change cannot approve stale policy.
 The app registers sources in its existing measurement/history/scan read paths, invalidates them
 when the corresponding state is replaced or deleted, and uses the existing conversation worker
-and event protocol for approved selected turns. No frontend rendering or navigation is included.
+and event protocol for approved selected turns. The interface chooses where the answer appears;
+the backend persists the turn independently of the currently displayed view.
 
 Validation uses synthetic snapshots, persisted-history fixtures and scripted models. It covers
 invalid/stale references, conversation-context revocation, process-session identity changes, scan replacement, unknown historical metadata,

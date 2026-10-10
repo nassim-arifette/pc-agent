@@ -39,9 +39,26 @@ function bubble(text) {
   return h("div", { class: "bubble-row" }, h("div", { class: "user-bubble" }, text));
 }
 
+/** Selection metadata comes from the local action, never from the generated question or finding. */
+function requestView(question, selection) {
+  if (!selection || !["explain", "investigate"].includes(selection.intent)) return bubble(question);
+  const resource = selection.reference?.target?.kind === "resource" ? selection.reference.target.resource : null;
+  const resources = { memory: "metric.memory", cpu: "metric.cpu", battery: "battery.label" };
+  const resourceLabel = Object.hasOwn(resources, resource) ? resources[resource] : "select.label.fallback";
+  const label = typeof selection.label === "string" && selection.label.trim()
+    ? selection.label.trim()
+    : t(resourceLabel);
+  return h(
+    "div",
+    { class: "selection-request", dataset: { intent: selection.intent } },
+    icon(selection.intent === "explain" ? "bulb" : "search"),
+    h("span", { class: "selection-request-label" }, t(`select.label.${selection.intent}`, { what: label })),
+  );
+}
+
 function meta(report, inv) {
   const parts = [];
-  if (report?.mode === "local_rules") parts.push(t("chat.local"));
+  if (["local_rules", "local_evidence"].includes(report?.mode)) parts.push(t("chat.local"));
   else {
     const model = report?.usage?.cost?.price?.model_id || state.info?.cloud?.model_id;
     parts.push(model ? modelName(model) : t("mode.cloud"));
@@ -79,8 +96,12 @@ function stepLabel(step, steps = [], index = -1) {
         break;
       }
       if (steps[i].type === "tool") tools += 1;
-      // Its answer was handed to a stronger model (chantier 14), not sent back for corrections.
-      if (steps[i].type === "switch") return t("step.model.handed", { model: modelName(steps[i].to) });
+      // A switch may follow checks, before the first answer has been written.
+      if (steps[i].type === "switch") {
+        return tools
+          ? t(tools === 1 ? "step.model.asked.one" : "step.model.asked.many", { count: tools })
+          : t("step.model.handed", { model: modelName(steps[i].to) });
+      }
     }
     if (tools) return t(tools === 1 ? "step.model.asked.one" : "step.model.asked.many", { count: tools });
     // A usable reply without a tool call that was followed by another request: the controller
@@ -374,6 +395,21 @@ function actionCards(turn, current) {
   );
 }
 
+function sentMessage(sent) {
+  return h("details", { class: "more sent-message" }, h("summary", null, icon("chevron"), t("chat.sent")), h("pre", { class: "code" }, JSON.stringify(sent, null, 2)));
+}
+
+function stepsFold(shown, sent) {
+  if (!shown.length) return sent ? sentMessage(sent) : null;
+  return h(
+    "details",
+    { class: "steps-fold" },
+    h("summary", { class: "summary" }, icon("chevron"), h("span", { class: "summary-main" }, t("chat.steps", { count: shown.length }))),
+    stepList(shown),
+    sent ? sentMessage(sent) : null,
+  );
+}
+
 /** One answered turn. `inv` is the live run that produced it, when still known. */
 function turnView(turn, index, { last, inv, cloud }) {
   const report = turn.report;
@@ -384,15 +420,7 @@ function turnView(turn, index, { last, inv, cloud }) {
   const shown = inv?.steps?.length ? inv.steps : recordedSteps(report);
   // What left for Nebius, exactly, kept from the preview taken before the send (this session).
   const sent = turn.sent ?? inv?.sent ?? null;
-  const steps = shown.length || sent
-    ? h(
-        "details",
-        { class: "steps-fold" },
-        h("summary", { class: "summary" }, icon("chevron"), h("span", { class: "summary-main" }, t("chat.steps", { count: shown.length }))),
-        shown.length ? stepList(shown) : null,
-        sent ? h("details", { class: "more sent-message" }, h("summary", null, icon("chevron"), t("chat.sent")), h("pre", { class: "code" }, JSON.stringify(sent, null, 2))) : null,
-      )
-    : null;
+  const steps = stepsFold(shown, sent);
   const sources = cited
     ? h(
         "button",
@@ -421,7 +449,7 @@ function turnView(turn, index, { last, inv, cloud }) {
   return h(
     "section",
     { class: "turn" },
-    bubble(turn.question),
+    requestView(turn.question, turn.selection ?? inv?.selection),
     h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), followUps, footer),
   );
 }
@@ -553,7 +581,8 @@ export function mount(page) {
     const inv = state.inv;
     // Action proposals load after the turn and change when decided: they are part of the key.
     const plans = turns.map((turn) => (turn.plans || []).map((p) => `${p.decision || "-"}${p.restore ? `:${p.restore.preparing ? "p" : p.restore.plan?.decision || "r"}` : ""}`).join("")).join("|");
-    const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}|${plans}`;
+    const selections = turns.map((turn) => turn.selection ?? (inv && inv.report === turn.report ? inv.selection : null));
+    const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}|${plans}|${JSON.stringify(selections)}`;
     if (key === turnsKey) return;
     turnsKey = key;
     // A saved conversation whose only question never got an answer (the window closed or
@@ -605,7 +634,7 @@ export function mount(page) {
       return;
     }
     const running = inv.status === "running" || inv.status === "stopping";
-    const key = `${inv.id}|${inv.status}|${inv.steps.map((s) => `${s.state}${s.writing ? "w" : ""}`).join(",")}`;
+    const key = `${inv.id}|${inv.status}|${inv.steps.map((s) => `${s.state}${s.writing ? "w" : ""}`).join(",")}|${JSON.stringify(inv.selection ?? null)}`;
     if (key !== liveKey) {
       liveKey = key;
       window.clearInterval(elapsedTimer);
@@ -618,11 +647,15 @@ export function mount(page) {
       let content;
       if (inv.status === "failed") {
         const code = inv.failure?.code;
+        if (code === "start" && !inv.selection && !box?.text().trim()) box?.setText(inv.question);
         const text = t(`error.${code}`);
         const setup = ["missing_key", "missing_model", "invalid_model", "model_unavailable", "http"].includes(code);
         content = [
           h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t(code === "cancelled" ? "inv.stopped.title" : "inv.failed.title")), h("span", null, text === `error.${code}` ? inv.failure.message : text))),
           inv.partial ? partialAnswer(inv.partial) : null,
+          // A failed request still has inspectable steps and the message used for that request.
+          // A rejected start or a cancellation before any model request sent nothing.
+          stepsFold(inv.steps, inv.cloud && inv.steps.some((step) => step.type === "model") ? inv.sent : null),
           h(
             "div",
             { class: "row" },
@@ -650,7 +683,7 @@ export function mount(page) {
         h(
           "section",
           { class: ["turn", enter ? "enter" : ""] },
-          bubble(inv.question),
+          requestView(inv.question, inv.selection),
           h("div", { class: "assistant" }, head(running ? `${inv.cloud ? meta(null, null) : t("chat.local")} · ${t("chat.running")}` : meta(null, inv)), ...content),
         ),
       );
@@ -669,6 +702,7 @@ export function mount(page) {
     const conversation = state.conversation;
     if (!conversation && !liveInv()) {
       if (mode !== "home") renderHome();
+      box?.refresh();
       return;
     }
     const stick = mode !== "thread" || nearBottom();

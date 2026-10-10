@@ -2,6 +2,8 @@
 // "conversation", "history", "scan", "extension", "live", "panel", "draft", "privacy") and redraw
 // the parts they own.
 import { call, on } from "./api.js";
+import { t } from "./i18n.js";
+import { rememberSelection, selectionForTurn, selectionForConversation, forgetSelections } from "./selection-meta.js";
 
 const listeners = new Set();
 
@@ -9,8 +11,15 @@ export const state = {
   info: null,
   /** The current investigation, or null. */
   inv: null,
+  /** One selected-evidence summary, kept while its inspector is closed or another view is open. */
+  summary: null,
+  /** A send is waiting for saved settings or its exact preview; reserve it before any await. */
+  preparing: false,
+  privacyPending: 0,
+  privacyRevision: 0,
   /** The open conversation: { id, title, turns: [{ question, report, at }] }, or null. */
   conversation: null,
+  conversationRevision: 0,
   /** Saved conversations, most recently updated first. */
   conversations: [],
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
@@ -52,22 +61,58 @@ export async function refreshPrivacy() {
  * toggle invalidates any preview on the Rust side. The whole settings object is always sent: Rust
  * turns a missing toggle on, so leaving one out could silently turn it back on.
  */
-export async function setPrivacy(mode, changes = {}) {
-  const current = state.privacy;
-  const settings = { mode, confirmed: Boolean(current.confirmed), web_search: current.web_search !== false, file_names: current.file_names !== false, ...changes };
-  state.privacy = await call("privacy_set", { settings });
+let privacyWrites = Promise.resolve();
+
+export function setPrivacy(mode, changes = {}) {
+  const patch = { ...changes, ...(mode == null ? {} : { mode }) };
+  state.privacyPending += 1;
+  state.privacyRevision += 1;
   notify("privacy");
-  return state.privacy;
+  // Compose against the last saved choice, not the state before an earlier write completed.
+  const write = privacyWrites.catch(() => {}).then(async () => {
+    const current = state.privacy;
+    const settings = { ...current, confirmed: Boolean(current.confirmed), web_search: current.web_search !== false, file_names: current.file_names !== false, ...patch };
+    state.privacy = await call("privacy_set", { settings });
+    return state.privacy;
+  });
+  privacyWrites = write;
+  const finished = () => {
+    state.privacyPending -= 1;
+    notify("privacy");
+  };
+  write.then(finished, finished);
+  return write;
+}
+
+/** A send must use the persisted choices; a failed last save refuses the send. */
+export async function waitForPrivacy() {
+  let pending;
+  do {
+    pending = privacyWrites;
+    await pending;
+  } while (pending !== privacyWrites);
+}
+
+export function beginTurnPreparation() {
+  if (state.preparing || running()) return false;
+  state.preparing = true;
+  notify("inv");
+  return true;
+}
+
+export function endTurnPreparation() {
+  state.preparing = false;
+  notify("inv");
 }
 
 /** Turns web lookups on or off, keeping the sharing choice as it is. */
 export function setWebSearch(on) {
-  return setPrivacy(state.privacy.mode, { web_search: Boolean(on) });
+  return setPrivacy(null, { web_search: Boolean(on) });
 }
 
 /** Turns the names of an attached scanned folder on or off. */
 export function setFileNames(on) {
-  return setPrivacy(state.privacy.mode, { file_names: Boolean(on) });
+  return setPrivacy(null, { file_names: Boolean(on) });
 }
 
 /** Web lookups can run: a usable cloud mode, the consent, and a saved Tavily key. */
@@ -204,7 +249,10 @@ function running() {
 
 export async function refreshConversations() {
   try {
-    state.conversations = await call("conversations_list");
+    state.conversations = (await call("conversations_list")).map((conversation) => {
+      const selection = selectionForConversation(conversation.id);
+      return selection ? { ...conversation, title: t(`select.label.${selection.intent}`, { what: selection.label }) } : conversation;
+    });
   } catch {
     state.conversations = [];
   }
@@ -218,11 +266,13 @@ export async function openConversation(id) {
     await refreshConversations();
     return false;
   }
+  const selection = selectionForConversation(saved.id);
+  state.conversationRevision += 1;
   state.conversation = {
     id: saved.id,
-    title: saved.title,
+    title: selection ? t(`select.label.${selection.intent}`, { what: selection.label }) : saved.title,
     // The turn ID lets the Rust side find a cited web page again (open_web_source).
-    turns: saved.turns.map((turn) => ({ id: turn.id, question: turn.question, report: turn.report, at: turn.asked_at_unix_ms })),
+    turns: saved.turns.map((turn) => ({ id: turn.id, question: turn.question, report: turn.report, at: turn.asked_at_unix_ms, selection: selectionForTurn(turn.id) })),
   };
   // A running turn keeps going; it shows only in its own conversation.
   if (!running()) state.inv = null;
@@ -258,14 +308,18 @@ export async function resumeTurn() {
     extension: turn.extension ?? null,
     startedAt: turn.started_at_unix_ms || Date.now(),
     resumed: true,
+    selection: selectionForTurn(turn.turn_id),
   };
   if (turn.conversation_id) await openConversation(turn.conversation_id);
+  if (state.inv?.turnId === turn.turn_id) state.inv.owner = state.conversation?.id === turn.conversation_id ? state.conversation : null;
   notify("inv");
   if (turn.extension) notify("extension");
+  return true;
 }
 
 /** Leaves the open conversation; the next question starts a new one. */
 export function newConversation() {
+  state.conversationRevision += 1;
   state.conversation = null;
   if (!running()) state.inv = null;
   notify("conversation");
@@ -274,12 +328,19 @@ export function newConversation() {
 
 export async function deleteConversation(id) {
   await call("conversation_delete", { id });
+  forgetSelections(id);
+  if (state.inv?.conversationId === id) state.inv.selection = null;
+  if (state.summary?.inv?.conversationId === id || state.summary?.conversationId === id) { state.summary = null; notify("summary"); }
   if (state.conversation?.id === id) newConversation();
   await refreshConversations();
 }
 
 export async function clearConversations() {
   const removed = await call("conversations_clear");
+  forgetSelections();
+  if (state.inv) state.inv.selection = null;
+  state.summary = null;
+  notify("summary");
   newConversation();
   await refreshConversations();
   return removed;
@@ -308,22 +369,30 @@ export async function sendMessage(question, { followUp = false, previewId = null
 }
 
 /**
- * Starts an Explain or Investigate turn on a selected measurement, in a new conversation, with the
+ * Starts an Explain or Investigate turn on a selected measurement, in the reviewed conversation, with the
  * question and reference of the reviewed preview ticket; any difference makes Rust refuse it.
  */
-export async function sendSelection(question, { reference, intent, previewId, sent = null }) {
-  return startTurn(question, null, false, sent, () => call("selection_send", { reference, intent, question, conversationId: null, previewId }));
+export async function sendSelection(question, { reference, intent, previewId, conversationId = null, label, sent = null, summary = null }) {
+  if (conversationId !== (state.conversation?.id ?? null)) return false;
+  const selection = { reference, intent, label };
+  return startTurn(question, conversationId, Boolean(conversationId), sent, () => call("selection_send", { reference, intent, question, conversationId, previewId }), selection, summary);
 }
 
 /** `sent` is the exact first message of a cloud turn, from its preview: shown in its steps. */
-async function startTurn(question, conversationId, followUp, sent, start) {
-  if (!followUp || !state.conversation) state.conversation = { id: null, title: question, turns: [] };
+async function startTurn(question, conversationId, followUp, sent, start, selection = null, summary = null) {
+  if (running()) return false;
+  const createdConversation = !followUp || !state.conversation;
+  if (createdConversation) state.conversation = { id: null, title: selection ? t(`select.label.${selection.intent}`, { what: selection.label }) : question, turns: [] };
+  const conversation = state.conversation;
   state.inv = {
     turnId: null,
     question,
+    selection,
+    createdConversation,
     // Same rule as effectiveMode() and send_message: a cloud mode without a usable key runs locally.
     cloud: state.privacy.mode !== "local" && Boolean(state.info?.cloud?.ready),
     conversationId,
+    owner: conversation,
     status: "running",
     steps: [],
     draft: null,
@@ -338,18 +407,28 @@ async function startTurn(question, conversationId, followUp, sent, start) {
     extension: null,
     startedAt: Date.now(),
   };
+  const inv = state.inv;
+  if (summary) { summary.inv = inv; summary.status = "running"; notify("summary"); }
   notify("conversation");
   notify("inv");
   try {
     const started = await start();
-    if (state.inv && state.inv.turnId == null) state.inv.turnId = started.turn_id;
-    if (state.inv && state.inv.turnId === started.turn_id) state.inv.conversationId = started.conversation_id;
-    if (state.conversation && state.conversation.id == null) state.conversation.id = started.conversation_id;
-    refreshConversations();
-  } catch (error) {
-    state.inv.status = "failed";
-    state.inv.failure = { code: "start", message: error.message };
+    if (inv.turnId == null) inv.turnId = started.turn_id;
+    if (inv.turnId === started.turn_id) inv.conversationId = started.conversation_id;
+    if (conversation.id == null) conversation.id = started.conversation_id;
+    rememberSelection(inv.turnId, inv.conversationId, inv.selection, createdConversation);
+    if (inv.status === "stopping") {
+      try { await call("stop_turn", { turnId: inv.turnId }); }
+      catch { /* The turn may have ended before its start acknowledgement arrived. */ }
+    }
     notify("inv");
+    refreshConversations();
+    return true;
+  } catch (error) {
+    inv.status = "failed";
+    inv.failure = { code: "start", message: error.message };
+    notify("inv");
+    return false;
   }
 }
 
@@ -403,7 +482,7 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
     case "model_changed":
       // A stronger model takes the question over with the measurements already taken (chantier 14).
       inv.steps.push({ key: `switch-${inv.steps.length}`, type: "switch", state: "done", to: step.change?.to_model_id, at });
-      inv.switchedTo = step.change?.to_model_id ?? null;
+      inv.switchedTo = inv.draft ? (step.change?.to_model_id ?? null) : null;
       if (inv.draft) inv.checking = true;
       break;
     case "answer_draft": {
@@ -483,9 +562,16 @@ function onExtension(payload) {
 const SETUP_ERRORS = ["missing_key", "missing_model", "invalid_model", "model_unavailable", "http", "network", "start"];
 
 function finish(inv, turn, conversationId, failure) {
+  inv.conversationId = conversationId ?? inv.conversationId;
+  // An event can finish before the start acknowledgement. Bind the original owner even on
+  // failure, so deletion and a later acknowledgement cannot attach this run to another draft.
+  if (inv.owner && inv.owner.id == null) inv.owner.id = inv.conversationId;
+  // Reopening the same thread replaces its view object while the turn is running.
+  const conversation = state.conversation?.id === inv.conversationId ? state.conversation : inv.owner;
+  rememberSelection(inv.turnId, inv.conversationId, inv.selection, inv.createdConversation);
   const report = turn?.report ?? null;
   for (const step of inv.steps) if (step.state === "running") step.state = "cancelled";
-  if (report?.mode === "local_rules") inv.steps.push({ key: "local", type: "local", state: "done" });
+  if (["local_rules", "local_evidence"].includes(report?.mode)) inv.steps.push({ key: "local", type: "local", state: "done" });
   // The last request of a completed turn is the one that wrote the answer.
   const lastModel = [...inv.steps].reverse().find((s) => s.type === "model");
   if (lastModel && report && !report.error && lastModel.state === "done") lastModel.final = true;
@@ -504,12 +590,14 @@ function finish(inv, turn, conversationId, failure) {
   } else {
     inv.status = "done";
     inv.report = report;
-    const conversation = state.conversation;
     if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
       conversation.id = conversationId ?? conversation.id;
-      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial, sent: inv.sent ?? null };
-      conversation.turns.push(saved);
-      if (report.mode === "nebius" && turn.id) loadPlans(saved);
+      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial, sent: inv.sent ?? null, selection: inv.selection ?? null };
+      // A reopened thread may already contain the persisted turn before its event reaches us.
+      const existing = turn.id ? conversation.turns.find((item) => item.id === turn.id) : null;
+      if (existing) Object.assign(existing, saved, { plans: existing.plans ?? [] });
+      else conversation.turns.push(saved);
+      if (report.mode === "nebius" && turn.id) loadPlans(existing ?? saved);
     }
   }
   notify("conversation");

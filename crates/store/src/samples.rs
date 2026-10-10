@@ -1,6 +1,9 @@
 //! Persistent, bounded measurement history. Raw samples expire into minute aggregates after a
 //! day; extrema and coverage are retained. A missing sample never becomes a zero reading.
+mod codec;
+mod history;
 use super::{stored, Store, StoreError};
+pub(super) use history::HistoryCache;
 use pcagent_shared::{
     new_id, new_short_ref, ratio_basis_points, Metric, Origin, Snapshot, Status, Window,
 };
@@ -12,6 +15,10 @@ pub const SAMPLE_RETENTION_MS: u64 = 7 * 24 * 3_600_000;
 const RAW_RETENTION_MS: u64 = 24 * 3_600_000;
 const MAX_POINTS: usize = 2000;
 const MAX_QUERY_ROWS: usize = 100_000;
+
+pub(super) fn decode_sample(text: &str) -> Result<StoredSample, StoreError> {
+    codec::decode(text)
+}
 pub(super) const MIGRATION: &str = "BEGIN;
 CREATE TABLE samples (
  id INTEGER PRIMARY KEY, sample_key TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL,
@@ -630,7 +637,7 @@ impl Store {
                 )
             })
             .collect();
-        let text = serde_json::to_string(&stored_sample).map_err(|_| StoreError::Corrupt)?;
+        let text = codec::encode(&stored_sample)?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO samples(sample_key,session_id,measured_at,resolution_ms,payload) VALUES(?1,?2,?3,?4,?5)",
             params![sample.id, sample.session_id, stored(sample.measured_at_unix_ms), stored(sample.resolution_ms), text])? > 0;
@@ -675,7 +682,7 @@ impl Store {
                     params![session, minute * 60_000, (minute + 1) * 60_000],
                     |r| r.get::<_, String>(0),
                 )?;
-                rows.map(|row| serde_json::from_str(&row?).map_err(|_| StoreError::Corrupt))
+                rows.map(|row| codec::decode(&row?))
                     .collect::<Result<_, _>>()?
             };
             if samples.is_empty() {
@@ -718,7 +725,7 @@ impl Store {
                     }
                 }
                 merged.values = values.into_values().collect();
-                let text = serde_json::to_string(&merged).map_err(|_| StoreError::Corrupt)?;
+                let text = codec::encode(&merged)?;
                 merged_rows.push((merged.id, text));
             }
             let tx = self.conn.transaction()?;
@@ -732,194 +739,6 @@ impl Store {
             tx.commit()?;
         }
         Ok(removed)
-    }
-
-    pub fn metric_history(&self, query: &HistoryQuery) -> Result<HistorySeries, StoreError> {
-        if query.from_unix_ms >= query.to_unix_ms
-            || query.to_unix_ms - query.from_unix_ms > SAMPLE_RETENTION_MS
-            || query.to_unix_ms > i64::MAX as u64
-            || query.entity_ref.len() > 128
-        {
-            return Err(StoreError::InvalidQuery);
-        }
-        let mut stmt = self.conn.prepare("SELECT payload FROM samples WHERE measured_at>=?1 AND measured_at<=?2 ORDER BY measured_at,id LIMIT ?3")?;
-        // Include a minute bucket overlapping the requested start; raw point queries retain
-        // their exact timestamps. No overlapping aggregate is silently presented as absent.
-        let rows = stmt.query_map(
-            params![
-                stored(query.from_unix_ms.saturating_sub(60_000)),
-                stored(query.to_unix_ms),
-                MAX_QUERY_ROWS as i64
-            ],
-            |r| r.get::<_, String>(0),
-        )?;
-        let mut points = Vec::new();
-        let mut gaps = Vec::new();
-        let mut names = BTreeMap::new();
-        let mut sources = Vec::new();
-        let mut previous: Option<(u64, u64, String, Origin)> = None;
-        let mut origins = Vec::new();
-        let mut rows_read = 0;
-        for row in rows {
-            let sample: StoredSample =
-                serde_json::from_str(&row?).map_err(|_| StoreError::Corrupt)?;
-            rows_read += 1;
-            let at = sample.measured_at_unix_ms;
-            if at < query.from_unix_ms
-                && (sample.resolution_ms < 60_000
-                    || at.saturating_add(sample.resolution_ms) <= query.from_unix_ms)
-            {
-                continue;
-            }
-            if !origins.contains(&sample.origin) {
-                origins.push(sample.origin);
-            }
-            let tolerance = sample.resolution_ms.max(1000) * 2;
-            if let Some((before, interval, session, origin)) = &previous {
-                if at.saturating_sub(*before) > tolerance.max(*interval * 2)
-                    || session != &sample.session_id
-                    || origin != &sample.origin
-                {
-                    gaps.push(HistoryGap {
-                        from_unix_ms: *before,
-                        to_unix_ms: at,
-                        reason: if origin != &sample.origin {
-                            "origin_changed"
-                        } else if session != &sample.session_id {
-                            "collector_restarted"
-                        } else {
-                            "not_recorded"
-                        }
-                        .into(),
-                    });
-                }
-            } else if at.saturating_sub(query.from_unix_ms) > tolerance {
-                gaps.push(HistoryGap {
-                    from_unix_ms: query.from_unix_ms,
-                    to_unix_ms: at,
-                    reason: "not_recorded".into(),
-                });
-            }
-            previous = Some((
-                at,
-                sample.resolution_ms,
-                sample.session_id.clone(),
-                sample.origin,
-            ));
-            let value = sample
-                .values
-                .iter()
-                .find(|v| v.metric == query.metric && v.entity_ref == query.entity_ref);
-            let (weighted_sum, weight_ms) = value.map(mean_parts).unwrap_or_default();
-            points.push(HistoryPoint {
-                unix_ms: at,
-                value: value.and_then(|v| v.value),
-                min: value.and_then(|v| v.min),
-                max: value.and_then(|v| v.max),
-                status: value.map_or(Status::Unsupported, |v| v.status),
-                measured_samples: value.map_or(0, |v| v.measured),
-                expected_samples: value.map_or(1, |v| v.expected),
-                resolution_ms: sample.resolution_ms,
-                observed_from_unix_ms: value.and_then(|v| v.observed_from_unix_ms),
-                observed_to_unix_ms: value.and_then(|v| v.observed_to_unix_ms),
-                observed_duration_ms: value.map_or(0, |v| v.observed_duration_ms),
-                origin: sample.origin,
-                session_id: sample.session_id,
-                weighted_sum,
-                weight_ms,
-            });
-            if let Some(value) = value {
-                if !sources.contains(&value.source) {
-                    sources.push(value.source.clone());
-                }
-            }
-            for (key, name) in sample.process_names {
-                if names.len() < 200 || names.contains_key(&key) {
-                    names.insert(key, name);
-                }
-            }
-        }
-        let last = previous
-            .as_ref()
-            .map_or(query.from_unix_ms, |p| p.0.saturating_add(p.1));
-        if query.to_unix_ms.saturating_sub(last) > previous.as_ref().map_or(0, |p| p.1 * 2) {
-            gaps.push(HistoryGap {
-                from_unix_ms: last,
-                to_unix_ms: query.to_unix_ms,
-                reason: "not_recorded".into(),
-            });
-        }
-        let mut limitations = vec!["Persisted local samples; values are not interpolated. After 24 hours, values are duration-weighted minute averages with measured minima and maxima. Instantaneous gauges use the sampling interval as averaging weight, not as a measured window.".into(),
-            "Only the top 20 processes at each sample are retained; absence of a process is unknown, not zero.".into(),
-            "Observation timestamps and accumulated measured duration are preserved separately from the nominal sampling cadence. A recording's first rate may cover the preceding background interval. Minute buckets overlapping the requested range are returned in full.".into()];
-        if rows_read == MAX_QUERY_ROWS {
-            limitations.push("History row limit reached; narrow the requested window.".into());
-        }
-        if points.len() > MAX_POINTS {
-            let width = points.len().div_ceil(MAX_POINTS);
-            let mut reduced: Vec<HistoryPoint> = Vec::new();
-            let mut chunk_len = 0;
-            let mut previous_at = 0;
-            let mut previous_resolution = 0;
-            for point in points {
-                let compatible = reduced.last().is_some_and(|last| {
-                    last.origin == point.origin
-                        && last.session_id == point.session_id
-                        && point.unix_ms.saturating_sub(previous_at)
-                            <= point.resolution_ms.max(previous_resolution) * 2
-                });
-                previous_at = point.unix_ms;
-                previous_resolution = point.resolution_ms;
-                if chunk_len < width && compatible {
-                    merge_points(reduced.last_mut().expect("compatible point"), &point);
-                    chunk_len += 1;
-                } else {
-                    reduced.push(point);
-                    chunk_len = 1;
-                }
-            }
-            points = reduced;
-            if points.len() > MAX_POINTS {
-                points.drain(..points.len() - MAX_POINTS);
-                gaps.push(HistoryGap {
-                    from_unix_ms: query.from_unix_ms,
-                    to_unix_ms: points[0].unix_ms,
-                    reason: "response_limit".into(),
-                });
-                limitations.push("Too many disconnected segments to aggregate safely; only the latest 2000 segments are returned. Narrow the requested window.".into());
-            }
-            limitations.push("Response points were aggregated to the 2000-point limit; extrema and sample coverage are retained.".into());
-        }
-        let usable = points.iter().filter(|p| p.value.is_some()).count();
-        let status = if usable == 0 {
-            Status::Partial
-        } else if gaps.is_empty()
-            && points.iter().all(|p| p.status == Status::Ok)
-            && rows_read < MAX_QUERY_ROWS
-        {
-            Status::Ok
-        } else {
-            Status::Partial
-        };
-        Ok(HistorySeries {
-            metric: query.metric,
-            entity_ref: query.entity_ref.clone(),
-            unit: query.metric.unit().into(),
-            status,
-            origin: if origins.len() == 1 {
-                Some(origins[0])
-            } else {
-                None
-            },
-            from_unix_ms: query.from_unix_ms,
-            to_unix_ms: query.to_unix_ms,
-            points,
-            gaps,
-            events: self.activity_events(query.from_unix_ms, query.to_unix_ms, 100)?,
-            process_names: names,
-            sources,
-            limitations,
-        })
     }
 
     fn update_events(conn: &rusqlite::Connection, sample: &StoredSample) -> Result<(), StoreError> {
@@ -1191,6 +1010,7 @@ impl Store {
         )?)
     }
     pub fn clear_samples(&self) -> Result<usize, StoreError> {
+        self.history_cache.borrow_mut().take();
         let removed = self.conn.execute("DELETE FROM samples", [])?;
         self.conn.execute("DELETE FROM sample_entities", [])?;
         self.conn.execute("DELETE FROM activity_events", [])?;
