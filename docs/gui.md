@@ -470,6 +470,19 @@ It lives outside `ui/`, so the app never embeds it.
   the same conversation, two compact selection labels after a reload, and explicit local labels
   in the inspector and Chat for `local_evidence`. The isolated, non-elevated profile made zero
   provider requests and reported no JavaScript errors; its app and WebView processes were closed.
+- History performance on 2026-10-10: 42 checks cover delayed successes/errors and disposal (six),
+  chart density, extrema, unknowns, exact timestamp joins and ambiguous operands (17), and rendered
+  loading, period changes and resizing in French/light and English/dark desktop/narrow layouts
+  (19). No horizontal overflow or JavaScript errors were reported. Resizing makes no extra IPC
+  request. The Rust workspace passed formatting, Clippy and 732 tests (two ignored), including
+  legacy/compact/mixed storage, exact u128 weights and cache invalidation after writes, retention,
+  event-only changes and deletion. See [history performance](history-performance.md) for the
+  reproducible offline benchmark and its limits. Twelve native checks (11 UI/IPC checks and one
+  database check) passed on the rebuilt Windows GUI: the embedded asset matches the source,
+  legacy history loads for all three periods, delayed replies cannot replace a newer period,
+  and resizing makes no extra IPC request. French desktop and English narrow/dark captures were
+  inspected. The isolated profile retained 114 legacy rows and added four compact live samples,
+  with zero conversations or provider requests. Its app process and debug port were closed.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 

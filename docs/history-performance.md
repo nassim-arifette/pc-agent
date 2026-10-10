@@ -77,3 +77,55 @@ that reader to measure the warm application cache. The report uses the median of
 Cold here means no application cache; it does not mean the operating system's disk cache was
 flushed. Fresh-database bytes include SQLite overhead. The fixture and timings are measurements
 of this workload, not promises about an arbitrary user's database.
+
+## Initial measurements on the development PC
+
+| Synthetic fixture | Legacy database | Compact database | Reduction | Identical response checksum |
+| --- | ---: | ---: | ---: | --- |
+| 10 minutes, 114 samples | 5,287,936 bytes | 1,552,384 bytes | 70.6% | yes |
+| 1 hour, 684 samples | 31,309,824 bytes | 8,896,512 bytes | 71.6% | yes |
+
+The initial 12 KiB-per-row exploratory target was missed: the ten-minute compact fixture uses
+13,617 bytes per row including SQLite overhead. The documented 16 KiB gate checks this first
+implementation without concealing that earlier result. It is not a disk-retention budget or a
+bound on minute rows with high process turnover.
+
+The first ten-minute cold bundle measured 369.42 ms before and 44.70 ms after; its warm compact
+bundle measured 1.03 ms. The first one-hour run measured 1,933.08 ms before and 1,460.73 ms after,
+with a 3.32 ms warm compact bundle. The one-hour run overlapped another release build under severe
+memory pressure, so its latency comparison is inconclusive; the exploratory 2x speed gate failed.
+Storage sizes, exact-response checksums and the separate u128 precision probe remain valid.
+
+## Final replays after build and native validation
+
+The benchmark was rebuilt from the final source. The following sequential runs reused the marked
+fixtures after compilation and the isolated native app had stopped. All five runs exited
+successfully. Times are medians of five bundles, in milliseconds; each bundle reads five metrics.
+The first two rows compare equivalent fixtures stored in the legacy and compact formats.
+
+| Fixture and query window | Legacy executable, cold | New executable, cold | New executable, warm |
+| --- | ---: | ---: | ---: |
+| 10-minute fixture, 10-minute window | 369.42 (initial baseline) | 16.66 | 0.32 |
+| 1-hour fixture, 1-hour window | 896.86 (final replay) | 83.09 | 0.99 |
+| Legacy 10-minute database, 10-minute window | 369.42 (initial baseline) | 45.03 | 0.18 |
+| 7-day compact fixture, 1-hour window | not measured | 85.67 | 0.97 |
+| 7-day compact fixture, 24-hour window | not measured | 1,819.46 | 2.69 |
+| 7-day compact fixture, 7-day window | not measured | 3,203.64 | 2.18 |
+
+The final one-hour comparison is 10.79x faster for this workload. The ten-minute legacy timing
+was not repeated, so its before/after timing comparison is less controlled. The seven-day fixture
+contains 25,917 rows and occupies 341,585,920 bytes (13,180 bytes per row). Its longest response
+retains at most 1,995 points and preserves both expected gaps. No legacy seven-day timing was
+measured. Warm timings assume no intervening write; live collection can invalidate the cache.
+
+The 16,384-byte-per-row gate passed for all three compact fixtures. No speed threshold was enabled
+for these final replays. Public-response checksums match the legacy baseline for both short
+fixtures (`973e07c3496b7169`, `4ecc870ddbd6cfea`), including the old database read by the new
+executable. The seven-day checksum (`7b7d957d87d5eecc`) is stable across repetitions. Coverage,
+unknowns, extrema, gaps, point bounds and exact u128 precision checks all passed.
+
+Local reports are under `D:\pcagent-tmp\history-perf-20261010`: `baseline-1h-quiet.json`,
+`optimized-10m-final.json`, `optimized-1h-final.json`, `legacy-10m-final.json` and
+`optimized-7d-final.json`. The preparation run overlapped compilation and contributes no timings
+to this final table. These synthetic results do not establish a production disk budget or a
+latency guarantee for databases with more processes, legacy rows or concurrent writes.
