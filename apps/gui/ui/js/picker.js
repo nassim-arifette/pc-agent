@@ -20,7 +20,7 @@ function rank(id) {
 }
 
 /** The routing policy: configured model, always Super/Ultra, or calibrated automatic. */
-export async function refreshRouting() {
+export async function refreshRouting({ redraw = true } = {}) {
   const before = JSON.stringify(state.routing ?? null);
   try {
     state.routing = await call("model_routing_get");
@@ -28,11 +28,12 @@ export async function refreshRouting() {
     state.routing = null;
   }
   // Redraw only on a change: a redraw replaces the picker button the menu is attached to.
-  if (JSON.stringify(state.routing) !== before) notify("info");
+  if (redraw && JSON.stringify(state.routing) !== before) notify("info");
   return state.routing;
 }
 
 let openMenu = null;
+let opening = null;
 
 function closeMenu() {
   if (!openMenu) return;
@@ -142,17 +143,26 @@ const MENUS = {
 };
 
 async function openPicker(button, kind) {
+  if (opening) {
+    const same = opening.button === button;
+    opening = null;
+    if (same) return;
+  }
   if (openMenu) {
     const same = openMenu.button === button;
     closeMenu();
     if (same) return;
   }
-  await refreshRouting();
-  // A changed policy redrew the composer: open the menu on the new button.
-  if (!button.isConnected) {
-    document.querySelector(`.pick-button[data-picker="${kind}"]`)?.click();
-    return;
-  }
+  const pending = { button };
+  opening = pending;
+  const before = JSON.stringify(state.routing ?? null);
+  await refreshRouting({ redraw: false });
+  if (opening !== pending) return;
+  opening = null;
+  // Redraw before attaching the menu, then use the replacement button without another IPC call.
+  if (JSON.stringify(state.routing) !== before) notify("info");
+  if (!button.isConnected) button = document.querySelector(`.pick-button[data-picker="${kind}"]`);
+  if (!button?.isConnected || button.disabled) return;
   const menu = h("div", { class: "pick-menu", role: "menu", "aria-label": t(MENUS[kind].label) }, MENUS[kind].items());
   button.parentElement.append(menu);
   button.setAttribute("aria-expanded", "true");
@@ -230,5 +240,6 @@ export function modelPicker({ disabled = false } = {}) {
 
 /** Closes an open picker, e.g. when the composer redraws. */
 export function closePicker() {
+  opening = null;
   closeMenu();
 }

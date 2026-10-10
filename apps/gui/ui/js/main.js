@@ -527,7 +527,11 @@ async function boot() {
   startLive();
   refreshConversations();
   // A turn still running after a reload is shown again, with Stop and any pending question.
-  refreshPrivacy().finally(() => resumeTurn());
+  refreshPrivacy().finally(async () => {
+    // A summary may have been running in a data view. After a reload its live inspector is
+    // gone, so surface the retained turn in the Chat where Stop and extensions are available.
+    if (await resumeTurn()) navigate("chat");
+  });
   try {
     await refreshInfo();
   } catch {

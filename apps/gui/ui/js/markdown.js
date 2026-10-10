@@ -7,13 +7,24 @@ import { t } from "./i18n.js";
 
 // One bracket group of references: [O2], [O2, F1], [O2; W1] or [O1 O2], as the verifier accepts.
 const REF = "[OFW]\\d{1,5}";
-const GROUP = `\\[(${REF}(?:(?:\\s*[,;]\\s*|\\s+)${REF})*)\\]`;
+const GROUP = `\\[\\s*(${REF}(?:(?:\\s*[,;]\\s*|\\s+)${REF})*)\\s*\\]`;
 const CITATION = new RegExp(GROUP, "g");
 const SPACED_CITATION = new RegExp(`\\s*${GROUP}`, "g");
 // A full stop (or !, ?, …) followed by citation groups: the groups belong to the sentence it ends.
-const AFTER_STOP = new RegExp(`([.!?…]+)((?:\\s*\\[${REF}(?:(?:\\s*[,;]\\s*|\\s+)${REF})*\\])+)`, "g");
+const AFTER_STOP = new RegExp(`([.!?…]+)((?:\\s*${GROUP})+)`, "g");
 // A sentence ends at a stop followed by a space or the end; a decimal point ("1.54") does not.
 const SENTENCE_END = /[.!?…]+(?=\s|$)/g;
+const ABBREVIATION = /\b(?:e\.g|i\.e|env|approx|cf|vs|p\.\s*ex)\.$/iu;
+
+function abbreviationAt(text, stopIndex) {
+  const before = text.slice(0, stopIndex + 1);
+  const after = text.slice(stopIndex + 1).trimStart();
+  return after.length > 0 && (
+    ABBREVIATION.test(before)
+    || (/\bp\.$/iu.test(before) && /^ex\./iu.test(after))
+    || (/\betc\.$/iu.test(before) && /^\p{Ll}/u.test(after))
+  );
+}
 
 function references(group) {
   return group.split(/[\s,;]+/).filter(Boolean);
@@ -45,10 +56,13 @@ function gatherSentence(sentence) {
  * changes; the verifier reads the answer as the model wrote it.
  */
 export function gatherCitations(text) {
-  const moved = String(text).replace(AFTER_STOP, (_, stop, groups) => `${groups}${stop}`);
+  const moved = String(text).replace(AFTER_STOP, (match, stop, groups, _reference, offset, original) =>
+    stop === "." && abbreviationAt(original, offset) ? match : `${groups}${stop}`,
+  );
   const sentences = [];
   let start = 0;
   for (const end of moved.matchAll(SENTENCE_END)) {
+    if (end[0] === "." && abbreviationAt(moved, end.index)) continue;
     sentences.push(moved.slice(start, end.index + end[0].length));
     start = end.index + end[0].length;
   }
