@@ -502,9 +502,8 @@ fn selection_send(
     let privacy = lock(&state.privacy).clone();
     let cloud = privacy.mode.sharing().is_some()
         && Config::from_lookup(|name| Credentials::load().get(name)).is_ok();
-    if cloud && !privacy.confirmed {
-        return Err("Confirm the sharing choice before sending.".into());
-    }
+    // No confirmation dialog stands before a send (C5, 9 October): the single-use ticket of the
+    // exact preview is what a cloud send needs.
     let (sharing, file_names, _) = lock(&state.selections)
         .choices(&preview_id)
         .ok_or("Open the selected-evidence sharing preview before sending.")?;
@@ -889,9 +888,8 @@ fn send_message(
         let creds = Credentials::load();
         Config::from_lookup(|name| creds.get(name)).is_ok()
     });
-    if sharing.is_some() && !privacy.confirmed {
-        return Err("Review the sharing preview and confirm the privacy choice first.".into());
-    }
+    // No confirmation dialog stands before a send (C5, 9 October): a cloud send still needs the
+    // single-use ticket of its exact preview, checked when the turn starts.
     let file_names = sharing.is_some()
         && lock(&state.preview)
             .as_ref()
@@ -1151,6 +1149,7 @@ fn launch_investigation(
     };
     drop(history_guard);
     // A follow-up reads its conversation again; a first question starts one.
+    let kept = lock(&state.privacy).clone();
     let remembered = PrivacySettings {
         mode: if !cloud {
             PrivacyMode::Local
@@ -1160,8 +1159,9 @@ fn launch_investigation(
             PrivacyMode::Anonymized
         },
         confirmed: true,
-        // The web consent is its own choice and survives a change of sharing mode.
-        web_search: lock(&state.privacy).web_search,
+        // The web and file-name toggles are their own choices and survive a change of mode.
+        web_search: kept.web_search,
+        file_names: kept.file_names,
     };
     settings::save(&remembered)?;
     if lock(&state.privacy).mode != remembered.mode {

@@ -382,8 +382,16 @@ function turnView(turn, index, { last, inv, cloud }) {
   // The run's steps fold out in place; the cited measurements open in the panel. A saved turn
   // whose run is no longer on screen shows the tool steps it recorded.
   const shown = inv?.steps?.length ? inv.steps : recordedSteps(report);
-  const steps = shown.length
-    ? h("details", { class: "steps-fold" }, h("summary", { class: "summary" }, icon("chevron"), h("span", { class: "summary-main" }, t("chat.steps", { count: shown.length }))), stepList(shown))
+  // What left for Nebius, exactly, kept from the preview taken before the send (this session).
+  const sent = turn.sent ?? inv?.sent ?? null;
+  const steps = shown.length || sent
+    ? h(
+        "details",
+        { class: "steps-fold" },
+        h("summary", { class: "summary" }, icon("chevron"), h("span", { class: "summary-main" }, t("chat.steps", { count: shown.length }))),
+        shown.length ? stepList(shown) : null,
+        sent ? h("details", { class: "more sent-message" }, h("summary", null, icon("chevron"), t("chat.sent")), h("pre", { class: "code" }, JSON.stringify(sent, null, 2))) : null,
+      )
     : null;
   const sources = cited
     ? h(

@@ -7,7 +7,7 @@ import { t } from "../i18n.js";
 import { call } from "../api.js";
 import { disclosure, modeCards, cloudReady } from "../ask.js";
 import { getPrefs, setPref } from "../prefs.js";
-import { state, subscribe, refreshInfo, clearConversations, setPrivacy } from "../store.js";
+import { state, subscribe, refreshInfo, clearConversations, setPrivacy, setFileNames } from "../store.js";
 import { badge, button, dialog, segmented, toast, toggle } from "../ui.js";
 import { price } from "../format.js";
 import { modelName } from "../models.js";
@@ -206,9 +206,11 @@ function privacyCard() {
           toast(t("mode.cloud.setup"), "bad");
           return;
         }
-        // Keeping the same mode keeps its confirmation; a new cloud mode is confirmed by its
-        // first reviewed preview.
-        await setPrivacy(mode, mode === "local" || (mode === state.privacy.mode && state.privacy.confirmed));
+        try {
+          await setPrivacy(mode);
+        } catch (error) {
+          toast(error.message, "bad");
+        }
         draw();
       }),
     );
@@ -224,12 +226,17 @@ function privacyCard() {
     h(
       "div",
       { class: "card-rows" },
+      // The same toggle as under the composer once a scanned folder is attached.
       settingRow(
-        t("settings.privacy.ask"),
-        t("settings.privacy.askNote"),
-        toggle(!state.skipConsent, (on) => {
-          state.skipConsent = !on;
-        }, t("settings.privacy.ask")),
+        t("settings.privacy.files"),
+        t("settings.privacy.filesNote"),
+        toggle(state.privacy.file_names !== false, async (on) => {
+          try {
+            await setFileNames(on);
+          } catch (error) {
+            toast(error.message, "bad");
+          }
+        }, t("settings.privacy.files")),
       ),
     ),
     h("details", { class: "more" }, h("summary", null, icon("chevron"), t("settings.privacy.what")), what),

@@ -1265,6 +1265,57 @@ a {
     display: none;
   }
 }
+/* What leaves with a cloud question: one toggle per part, pressed while it goes. */
+.share-toggle {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.share-toggle .icon {
+  width: 14px;
+  height: 14px;
+}
+.share-toggle span {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.share-toggle:hover {
+  background: var(--hover);
+}
+.share-toggle[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.share-toggle.unavailable {
+  border-style: dashed;
+}
+.mode-host {
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.share-preview .icon {
+  width: 16px;
+  height: 16px;
+}
+.sent-message {
+  margin-top: 8px;
+}
+@media (max-width: 620px) {
+  .share-toggle span {
+    display: none;
+  }
+}
 .mode-pill {
   height: 28px;
   display: inline-flex;
