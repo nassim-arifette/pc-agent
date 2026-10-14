@@ -6,7 +6,6 @@ import { h, s, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
-import { ask } from "../ask.js";
 import { findReference, runSelection } from "../select.js";
 import { actionBar, keepFocus, selectionKeys } from "../actionbar.js";
 import { subscribe } from "../store.js";
@@ -45,27 +44,26 @@ function gapsHint(share) {
 }
 
 /**
- * Explains or investigates a stored event or recording through its host-issued source. Without
- * one (history not read yet in this session, or expired), the typed question still works.
+ * Explains or investigates only the stored event or recording named by a host-issued source.
+ * An expired capture must be read again before either action can use its measurements.
  */
-async function selectOrAsk(match, { label, subject }, intent, fallback) {
+async function runStoredSelection(match, { label, subject }, intent) {
   const reference = await findReference(match);
   if (reference) return runSelection({ reference, label, subject }, intent);
-  return ask(fallback);
+  toast(t("select.unavailable"), "bad");
 }
 
 /**
- * What the action bar and the shortcuts do for a stored event. Always ready: the typed question is
- * the fallback. The bar sits under the row's right end, away from the names on its left.
+ * What the action bar and the shortcuts do for a stored event. The reference is checked when
+ * invoked. The bar sits under the row's right end, away from the names on its left.
  */
 function eventItem(e) {
   const when = clock(e.started_at_unix_ms);
   const run = (intent) =>
-    selectOrAsk(
+    runStoredSelection(
       (target) => target.kind === "event" && target.event_id === e.id,
       { label: `${eventLabel(e)} · ${when}`, subject: t("history.event.subject", { what: eventLabel(e), when }) },
       intent,
-      t("history.event.question", { what: eventLabel(e).toLowerCase(), when }),
     );
   return { key: `event:${e.id}`, label: `${eventLabel(e)} · ${when}`, ready: true, explain: () => run("explain"), investigate: () => run("investigate"), align: "end" };
 }
@@ -76,11 +74,10 @@ function recordingItem(r) {
   const to = r.ended_at_unix_ms ? clock(r.ended_at_unix_ms, { seconds: true }) : from;
   const label = t("history.recording.label", { from, to });
   const run = (intent) =>
-    selectOrAsk(
+    runStoredSelection(
       (target) => target.kind === "recording" && target.recording_id === r.id,
       { label, subject: t("history.recording.subject", { from, to }) },
       intent,
-      t("history.recording.question", { from, to }),
     );
   return { key: `recording:${r.id}`, label, ready: true, explain: () => run("explain"), investigate: () => run("investigate"), align: "end" };
 }
@@ -157,37 +154,124 @@ function eventValue(e) {
   return number(e.peak);
 }
 
-/** Merges the series of one row point by point; a point missing in any input stays unknown. */
+/** Join derived measurements by timestamp, never by an unrelated position in another series. */
 function rowPoints(row, series) {
-  const first = series[0]?.points || [];
-  return first.map((p, i) => {
-    const values = series.map((s) => s.points[i]?.value ?? null);
-    const known = values.every((v) => v != null);
-    const v = known ? row.value(values) : null;
-    return { at: p.unix_ms, value: v == null || Number.isNaN(v) ? null : Math.max(0, Math.min(1, v)) };
+  const inputs = series.map((one) => {
+    const input = new Map();
+    for (const point of one?.points || []) {
+      if (!input.has(point.unix_ms)) input.set(point.unix_ms, []);
+      input.get(point.unix_ms).push(point);
+    }
+    return input;
+  });
+  const times = [...new Set(inputs.flatMap((input) => [...input.keys()]))].sort((a, b) => a - b);
+  const samples = times.flatMap((at) => Array.from({ length: Math.max(...inputs.map((input) => input.get(at)?.length || 0)) }, (_, index) => ({ at, index })));
+  const gaps = series.flatMap((one) => one?.gaps || []).sort((a, b) => a.from_unix_ms - b.from_unix_ms);
+  const mergedGaps = [];
+  for (const gap of gaps) {
+    const last = mergedGaps.at(-1);
+    if (last && gap.from_unix_ms < last.to_unix_ms) last.to_unix_ms = Math.max(last.to_unix_ms, gap.to_unix_ms);
+    else mergedGaps.push({ ...gap });
+  }
+  const bounded = (value) => value == null || !Number.isFinite(value) ? null : Math.max(0, Math.min(1, value));
+  let previous = null;
+  let gapIndex = 0;
+  return samples.map(({ at, index }) => {
+    const points = inputs.map((input) => input.get(at)?.[index]);
+    const values = points.map((point) => point?.value ?? null);
+    while (mergedGaps[gapIndex]?.to_unix_ms <= (previous?.at ?? -Infinity)) gapIndex += 1;
+    const gap = mergedGaps[gapIndex];
+    const inGap = gap && gap.from_unix_ms < at && gap.to_unix_ms > at;
+    // Without a serialized session ID, coincident operands cannot be paired unambiguously.
+    const ambiguous = inputs.length > 1 && inputs.some((input) => (input.get(at)?.length || 0) > 1);
+    const known = !inGap && !ambiguous && values.every((value) => value != null && Number.isFinite(value));
+    const value = known ? bounded(row.value(values)) : null;
+    const resolution = Math.max(0, ...points.map((point) => point?.resolution_ms || 0));
+    const breakBefore = Boolean(previous && ((gap && gap.from_unix_ms < at && gap.to_unix_ms > previous.at)
+      || (resolution && previous.resolution && at - previous.at > Math.max(resolution, previous.resolution) * 2)));
+    let min = null;
+    let max = null;
+    // Independent extrema cannot establish a memory-use range when total capacity changes.
+    // A fixed denominator makes both endpoints exact; otherwise keep only the reported mean.
+    const stableTotal = row.id !== "memory" || (points[1]?.min === values[1] && points[1]?.max === values[1]);
+    if (value != null && stableTotal && points.every((point) => Number.isFinite(point?.min) && Number.isFinite(point?.max))) {
+      const ends = [row.value(points.map((point) => point.min)), row.value(points.map((point) => point.max))].map(bounded);
+      if (ends.every((end) => end != null)) { min = Math.min(...ends, value); max = Math.max(...ends, value); }
+    }
+    previous = { at, resolution };
+    return { at, value, min, max, breakBefore, weight: points[0]?.observed_duration_ms > 0 ? points[0].observed_duration_ms : null };
   });
 }
 
-/** A line chart that breaks at unknown values instead of drawing through them. */
-function chart(points, from, to, events, cls) {
+/** Reduce only the display, retaining extrema and every break in the measured timeline. */
+function chartSegments(points, from, to, width) {
+  const bins = Math.max(1, Math.floor(width / 2.5));
+  const segments = [];
+  let segment = [];
+  let bucket = null;
+  const flushBucket = () => {
+    if (!bucket) return;
+    segment.push({ at: bucket.at / (bucket.weight || 1), value: bucket.value / (bucket.weight || 1), min: bucket.min, max: bucket.max });
+    bucket = null;
+  };
+  const flushSegment = () => {
+    flushBucket();
+    if (segment.length) segments.push(segment);
+    segment = [];
+  };
+  for (const point of points) {
+    if (point.value == null || point.breakBefore) flushSegment();
+    if (point.value == null) continue;
+    const bin = Math.floor(((point.at - from) / Math.max(1, to - from)) * bins);
+    if (bucket && bucket.bin !== bin) flushBucket();
+    const weight = point.weight;
+    if (!bucket) bucket = { bin, at: point.at * (weight || 1), value: point.value * (weight || 1), weight, min: point.min, max: point.max };
+    else {
+      if (bucket.weight && weight) {
+        bucket.at += point.at * weight;
+        bucket.value += point.value * weight;
+        bucket.weight += weight;
+      } else {
+        // Gauges expose no averaging weights. Keep an original mean from this pixel bin,
+        // with the extrema of all its points, rather than inventing a mean across cadences.
+        bucket.at = point.at;
+        bucket.value = point.value;
+        bucket.weight = null;
+      }
+      bucket.min = bucket.min == null || point.min == null ? null : Math.min(bucket.min, point.min);
+      bucket.max = bucket.max == null || point.max == null ? null : Math.max(bucket.max, point.max);
+    }
+  }
+  flushSegment();
+  return segments;
+}
+
+/** Means and measured ranges share the same segments; neither crosses unknown coverage. */
+function chart(points, from, to, events, cls, width = 1000) {
   const W = 1000;
   const H = 54;
   const x = (at) => ((at - from) / Math.max(1, to - from)) * W;
   const y = (v) => H - 3 - v * (H - 6);
-  const segments = [];
-  let current = [];
-  for (const p of points) {
-    if (p.value == null) {
-      if (current.length) segments.push(current);
-      current = [];
-    } else current.push(`${x(p.at).toFixed(1)},${y(p.value).toFixed(1)}`);
+  const segments = chartSegments(points, from, to, width);
+  const coordinate = (point, value = point.value) => `${x(point.at).toFixed(1)},${y(value).toFixed(1)}`;
+  const bands = [];
+  for (const segment of segments) {
+    let band = [];
+    const flush = () => { if (band.length) bands.push(band); band = []; };
+    for (const point of segment) {
+      if (point.min == null || point.max == null) flush();
+      else band.push(point);
+    }
+    flush();
   }
-  if (current.length) segments.push(current);
   return s(
     "svg",
     { class: ["history-chart", cls], viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", "aria-hidden": "true" },
     events.map((e) => s("rect", { class: "history-mark", x: x(e.started_at_unix_ms).toFixed(1), y: 0, width: Math.max(2, x(e.ended_at_unix_ms) - x(e.started_at_unix_ms)).toFixed(1), height: H })),
-    segments.map((seg) => (seg.length === 1 ? s("circle", { cx: seg[0].split(",")[0], cy: seg[0].split(",")[1], r: 2 }) : s("polyline", { points: seg.join(" ") }))),
+    bands.map((band) => band.length === 1
+      ? s("rect", { class: "history-range", x: x(band[0].at) - 0.8, y: y(band[0].max), width: 1.6, height: y(band[0].min) - y(band[0].max) })
+      : s("polygon", { class: "history-range", points: [...band.map((point) => coordinate(point, point.max)), ...band.slice().reverse().map((point) => coordinate(point, point.min))].join(" ") })),
+    segments.map((segment) => (segment.length === 1 ? s("circle", { cx: x(segment[0].at), cy: y(segment[0].value), r: 2 }) : s("polyline", { points: segment.map((point) => coordinate(point)).join(" ") }))),
   );
 }
 
@@ -206,6 +290,11 @@ function axis(from, to) {
 export function mount(page) {
   let period = "day";
   let disposed = false;
+  let loadRequest = 0;
+  let statusRequest = 0;
+  let loading = false;
+  let loaded = null;
+  let chartWidth = 0;
   let status = null;
   let startup = null;
   // The selected event or finished recording: { kind: "event" | "recording", id }.
@@ -269,7 +358,7 @@ export function mount(page) {
       ],
       { label: t("history.record.title"), dismissValue: null },
     );
-    if (!seconds) return;
+    if (!seconds || disposed) return;
     cancelledByUs = false;
     try {
       await call("record_activity_start", { durationSeconds: seconds });
@@ -378,11 +467,23 @@ export function mount(page) {
   // ---------- Charts and events ----------
 
   const load = async () => {
+    if (disposed) return;
+    const request = ++loadRequest;
+    const current = () => !disposed && request === loadRequest;
+    loading = true;
     const span = PERIODS.find((p) => p.id === period).ms;
     const to = Date.now();
     const from = to - span;
-    // The skeleton only on the first load; later reloads keep the charts until new data arrives.
+    // Keep the last chart legible, but make its pending replacement explicit and its events inert.
     if (!chartsHost.querySelector(".hist-row")) fill(chartsHost, h("div", { class: "skeleton", style: { height: "260px" } }));
+    chartsHost.querySelector('[role="status"]')?.remove();
+    chartsHost.prepend(h("p", { class: "note row", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), t("history.loading", { period: t(PERIODS.find((p) => p.id === period).label) })));
+    chartsHost.setAttribute("aria-busy", "true");
+    eventsHost.inert = true;
+    if (selected?.kind === "event") {
+      selected = null;
+      if (shownEvents) renderEvents(shownEvents);
+    }
     const metrics = [...new Set(ROWS.flatMap((r) => r.metrics))];
     let series;
     try {
@@ -390,14 +491,18 @@ export function mount(page) {
         await Promise.all(metrics.map(async (metric) => [metric, await call("metric_history", { metric, fromUnixMs: from, toUnixMs: to })])),
       );
     } catch (error) {
-      if (disposed) return;
+      if (!current()) return;
+      loading = false;
+      loaded = null;
+      chartsHost.setAttribute("aria-busy", "false");
+      eventsHost.inert = false;
       fill(chartsHost, h("div", { class: "callout warn" }, icon("alert"), h("div", null, h("strong", null, t("history.unavailable")), h("span", null, error.message))));
       shownEvents = null;
       if (selected?.kind === "event") selected = null;
       fill(eventsHost);
       return;
     }
-    if (disposed) return;
+    if (!current()) return;
     const events = [];
     const seen = new Set();
     for (const one of Object.values(series)) {
@@ -408,6 +513,19 @@ export function mount(page) {
       }
     }
     events.sort((a, b) => b.started_at_unix_ms - a.started_at_unix_ms);
+    loading = false;
+    loaded = { series, from, to, events };
+    chartsHost.setAttribute("aria-busy", "false");
+    eventsHost.inert = false;
+    drawCharts();
+    renderEvents(events);
+  };
+
+  const drawCharts = () => {
+    if (disposed || loading || !loaded) return;
+    const { series, from, to, events } = loaded;
+    // Account for the card padding and labels; resize only redraws cached data, never rereads it.
+    chartWidth = Math.max(80, Math.round(chartsHost.getBoundingClientRect().width - 174));
     const gaps = series.cpu_busy_basis_points?.gaps || [];
     const missing = gaps.reduce((sum, g) => sum + (g.to_unix_ms - g.from_unix_ms), 0);
     fill(
@@ -427,12 +545,12 @@ export function mount(page) {
           "div",
           { class: "hist-row" },
           h("div", { class: "hist-row-label" }, h("span", null, t(row.label)), h("strong", null, latest == null ? "—" : percent(latest))),
-          known.length ? chart(points, from, to, rowEvents, row.color) : h("div", { class: "history-empty-row" }, t("history.noData")),
+          known.length ? chart(points, from, to, rowEvents, row.color, chartWidth) : h("div", { class: "history-empty-row" }, t("history.noData")),
         );
       }),
       axis(from, to),
+      h("p", { class: "note", style: { "margin-top": "12px" } }, t("history.range.note")),
     );
-    renderEvents(events);
   };
 
   const renderEvents = (events) => keepFocus(eventsHost, () => drawEvents(events));
@@ -529,7 +647,7 @@ export function mount(page) {
               } catch (error) {
                 toast(error.message, "bad");
               }
-              renderCost();
+              if (!disposed) renderCost();
             }, t("startup.title")),
       ),
       h(
@@ -547,7 +665,7 @@ export function mount(page) {
               ],
               { label: t("history.clear.title"), dismissValue: false },
             );
-            if (!yes) return;
+            if (!yes || disposed) return;
             try {
               await call("history_clear");
               toast(t("history.cleared"));
@@ -562,13 +680,17 @@ export function mount(page) {
   };
 
   const refreshStatus = async () => {
-    window.clearTimeout(poll);
-    try {
-      status = await call("history_status");
-    } catch {
-      status = null;
-    }
     if (disposed) return;
+    const request = ++statusRequest;
+    window.clearTimeout(poll);
+    let nextStatus;
+    try {
+      nextStatus = await call("history_status");
+    } catch {
+      nextStatus = null;
+    }
+    if (disposed || request !== statusRequest) return;
+    status = nextStatus;
     const wasRecording = Boolean(recordHost.querySelector(".recording"));
     if (status?.recording) {
       lastRecording = status.recording;
@@ -609,8 +731,16 @@ export function mount(page) {
   const unsubscribe = subscribe((topic) => {
     if (topic === "info") renderCost();
   });
+  const resize = new ResizeObserver(() => {
+    const width = Math.max(80, Math.round(chartsHost.getBoundingClientRect().width - 174));
+    if (width !== chartWidth) drawCharts();
+  });
+  resize.observe(chartsHost);
   return () => {
     disposed = true;
+    loadRequest += 1;
+    statusRequest += 1;
+    resize.disconnect();
     window.clearTimeout(poll);
     unsubscribe();
     stopKeys();

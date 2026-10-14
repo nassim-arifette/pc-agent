@@ -1421,6 +1421,59 @@ a {
   color: var(--text-3);
   font-size: 13.5px;
 }
+
+/* A selected measurement's summary shares the context panel in every data view. */
+.selection-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.summary-heading, .summary-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.summary-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.summary-answer {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.summary-sources > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.summary-sources[open] > summary { margin-bottom: 12px; }
+.summary-meta { color: var(--text-3); font-size: 12px; }
+.summary-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.selection-summary .source-card { padding: 12px; }
+.selection-summary .sent-message .code { max-height: 220px; overflow: auto; }
+.selection-summary .insp-title:focus-visible, .selection-summary .source-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.livepage.with-summary { grid-template-columns: minmax(0, 1fr); }
+.selection-request {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 14px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.selection-request > .icon { flex: none; width: 15px; height: 15px; margin-top: 2px; }
+.selection-request-label { min-width: 0; overflow-wrap: anywhere; }
 .caption {
   font-family: var(--font);
   font-size: 12px;
@@ -2814,6 +2867,15 @@ details.more > div {
   fill: var(--warn);
   opacity: 0.12;
 }
+.history-chart .history-range {
+  fill: currentColor;
+  opacity: 0.16;
+  stroke: none;
+}
+.history-chart.res-cpu { color: var(--res-cpu); }
+.history-chart.res-mem { color: var(--res-mem); }
+.history-chart.res-disk { color: var(--res-disk); }
+.history-chart.res-gpu { color: var(--res-gpu); }
 .history-chart.res-cpu polyline { stroke: var(--res-cpu); }
 .history-chart.res-cpu circle { fill: var(--res-cpu); }
 .history-chart.res-mem polyline { stroke: var(--res-mem); }

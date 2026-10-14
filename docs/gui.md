@@ -96,8 +96,23 @@ dialog stands before the send (C5, 9 October): the turn starts at once and its s
 first message (*Message sent to Nebius*). The question is written in
 the interface language and follows C5 like the data: never a PID, a program name only in complete
 sharing. An application is explained through its largest measured process, which the inspector
-names. History events and finished recordings use the same flow through `selection_sources()`; if
-their source has expired, the typed question of the previous version is used instead.
+names. History events and finished recordings use the same flow through `selection_sources()`;
+an expired source refuses the action and asks for a refresh, without starting a generic inquiry.
+
+*Summarize these measurements* keeps the data view open and writes its draft and final answer in
+the right-hand inspector, with citations, verification, Stop, errors and the exact sent message.
+It appends to the current conversation when one exists. *Find the cause* opens the Chat with a
+fresh Investigate ticket in that same conversation. From the summary it uses the summary's own
+conversation and frozen reference, even after another conversation was opened. An expired
+reference or deleted conversation refuses the continuation. The eventual cost is shown when
+reported; no numerical estimate is invented before an investigation.
+
+Selection requests appear as compact labels, separate from typed user questions. Their local
+display metadata (intent, label and conversation/turn IDs) stays in WebView storage, bounded to
+500 entries and 90 days, and is removed when the corresponding conversation or history is deleted.
+It never enters model context. Old reports without this metadata retain their original display.
+A running turn reattaches in the Chat after a reload, with its Stop control; an inspector result
+remains readable as an ordinary saved turn there.
 
 ## Storage selection
 
@@ -208,9 +223,14 @@ first one. What leaves is shown and changed under the composer, and remembered b
 - **See what leaves** (the eye) opens the exact first message for the text typed, or a sample
   question when the box is empty: the question as sent after identities, paths and secrets were
   removed, what is sent and never sent, the file names, and the JSON. Nothing is sent from there.
-- Each cloud question still takes its exact preview just before the send, frozen in a single-use
-  ticket that `send_message` requires; the turn's steps keep that message (*Message sent to
-  Nebius*, this session only). `confirmed` is still stored after a first send but no longer required.
+- Each cloud question needs a frozen single-use preview ticket. When *See what leaves* was opened
+  for the typed question, the next send reuses that exact preview if the question and settings
+  still match; otherwise it prepares a fresh one. An expired or invalidated ticket refuses the
+  send. The turn's steps keep that message (*Message sent to Nebius*, this session only), including
+  failed model requests. `confirmed` is still stored after a first send but no longer required.
+- Sharing changes are saved in order, and a send waits for them. Changes while its preview is
+  being prepared cancel the send; the question stays in the composer. Only one send can prepare
+  at a time, including selection actions. Changing file-name sharing invalidates host tickets too.
 - **Local analysis** (on this PC only) is chosen in Settings, or used when no key is set up; the
   composer then shows a *On this PC* pill, which goes back to the AI in one click when it is ready.
 - Settings keeps the three modes as cards and the file-names toggle; web search keeps its own card.
@@ -425,6 +445,44 @@ It lives outside `ui/`, so the app never embeds it.
   nvidia.com sources, no repair), and `current_turn` was empty afterwards. With the mock:
   `?turn=orphan` (Stop ends it) and `?conversation=empty`, French and English, no JavaScript
   errors.
+- Review corrections on 2026-10-10, with the mock: 52 browser assertions cover serialized sharing
+  choices, keyboard focus, duplicate sends, draft recovery, reuse of the exact reviewed preview,
+  the connection-test result after saving, delayed model menus, failed-turn disclosures, empty
+  step lists and spaced citations after English and French abbreviations. Rendered checks in
+  French and English at 1280 × 800 (light) and 860 × 640 (dark) found no horizontal overflow or
+  JavaScript errors. A Rust regression checks that changing file-name sharing revokes a preview.
+- The rebuilt release Windows app passed nine checks on 2026-10-10 through its actual Tauri
+  bridge: current embedded JavaScript, real measurements, complete/anonymized previews, memory
+  selection, serialized privacy settings, two local turns and history after a reload. The isolated
+  temporary profile used dummy credentials and made no cloud request; no JavaScript errors were
+  reported. Workspace validation passed formatting, Clippy and 715 tests (two ignored).
+- Selection summaries on 2026-10-10: 57 rendered checks cover Live PC, History and Storage,
+  streaming, citations, Stop, retry, same-conversation continuation, expired references, local
+  mode, focus, deletion during preparation and reloading a running summary into Chat. French
+  light and English dark layouts passed at desktop and narrow sizes without horizontal overflow
+  or JavaScript errors. The native `local_evidence` mode is explicitly labelled as local in the
+  inspector and Chat, including after a reload, without a model name or cloud request step.
+  Another 28 controller regressions cover sharing and conversation races,
+  deletion, late events and acknowledgements, reopened threads and duplicate completion; 12 label
+  checks and eight History selection checks passed. These synthetic checks made no cloud call.
+- The final release Windows build passed 12 native checks for that selection flow: current
+  embedded assets, real memory measurements summarized without leaving Live PC, continuation in
+  the same conversation, two compact selection labels after a reload, and explicit local labels
+  in the inspector and Chat for `local_evidence`. The isolated, non-elevated profile made zero
+  provider requests and reported no JavaScript errors; its app and WebView processes were closed.
+- History performance on 2026-10-10: 42 checks cover delayed successes/errors and disposal (six),
+  chart density, extrema, unknowns, exact timestamp joins and ambiguous operands (17), and rendered
+  loading, period changes and resizing in French/light and English/dark desktop/narrow layouts
+  (19). No horizontal overflow or JavaScript errors were reported. Resizing makes no extra IPC
+  request. The Rust workspace passed formatting, Clippy and 732 tests (two ignored), including
+  legacy/compact/mixed storage, exact u128 weights and cache invalidation after writes, retention,
+  event-only changes and deletion. See [history performance](history-performance.md) for the
+  reproducible offline benchmark and its limits. Twelve native checks (11 UI/IPC checks and one
+  database check) passed on the rebuilt Windows GUI: the embedded asset matches the source,
+  legacy history loads for all three periods, delayed replies cannot replace a newer period,
+  and resizing makes no extra IPC request. French desktop and English narrow/dark captures were
+  inspected. The isolated profile retained 114 legacy rows and added four compact live samples,
+  with zero conversations or provider requests. Its app process and debug port were closed.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
 
