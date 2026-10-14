@@ -68,6 +68,8 @@ use windows_sys::Win32::{
     },
 };
 
+/// Kept before the request's expiry to serialize, write and hand over a response.
+const RESPONSE_MARGIN: Duration = Duration::from_secs(2);
 const REQUEST_FILE: &str = "request.json";
 const RESPONSE_FILE: &str = "response.json";
 const CANCEL_FILE: &str = "cancel";
@@ -679,10 +681,22 @@ pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
             drop(resolution);
         }
         ElevatedTask::MftInventory { volume } => {
-            let result = super::mft_native::collect(*volume, remaining()?, &mut || {
-                job.cancelled()
-                    .map_err(|_| super::mft::CollectError::CancelCheck)
-            });
+            // The host stops waiting at the request's expiry at the latest (its budget is capped
+            // by it and also counts the consent prompt), and a response finished after it is
+            // refused: end the collection early enough to write the partial result.
+            let until_expiry = Duration::from_millis(
+                request
+                    .expires_at_unix_ms
+                    .saturating_sub(pcagent_shared::unix_ms()),
+            )
+            .checked_sub(RESPONSE_MARGIN)
+            .filter(|left| !left.is_zero())
+            .ok_or(ElevationError::TimedOut)?;
+            let result =
+                super::mft_native::collect(*volume, remaining()?.min(until_expiry), &mut || {
+                    job.cancelled()
+                        .map_err(|_| super::mft::CollectError::CancelCheck)
+                });
             match result {
                 Ok(value) => {
                     response.status = match value.end {

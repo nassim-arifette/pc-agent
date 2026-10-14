@@ -16,6 +16,10 @@ pub mod elevation;
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod parse;
+/// Heap meter for memory-accounting tests; compiled into the unit-test binary only.
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod test_alloc;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;

@@ -657,6 +657,7 @@ mod tests {
             unknown_logical_files: 0,
             unknown_allocation_files: 0,
             hard_linked_files: 0,
+            partial_path: false,
         }
     }
 

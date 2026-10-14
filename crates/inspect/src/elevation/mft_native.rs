@@ -13,7 +13,7 @@ use std::{
     mem::{offset_of, size_of},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     ptr::{null, null_mut},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{GetLastError, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE},
@@ -357,5 +357,21 @@ pub(crate) fn collect(
     }
     // Account for the open/query time in the worker's outer hard deadline as well as this budget.
     let mut source = NativeSource::open(volume)?;
-    mft::collect(&mut source, bounds, cancelled)
+    // The cancel check reads the job's marker file. The collector asks before and after every
+    // record, which on a million-record volume would add millions of filesystem calls; the
+    // helper's watchdog already polls the marker every 50 ms, so ask at most that often.
+    // Once cancellation is seen it stays seen.
+    let mut checked: Option<Instant> = None;
+    let mut seen = false;
+    let mut throttled = || {
+        if !seen && checked.is_none_or(|at| at.elapsed() >= CANCEL_CHECK_INTERVAL) {
+            checked = Some(Instant::now());
+            seen = cancelled()?;
+        }
+        Ok(seen)
+    };
+    mft::collect(&mut source, bounds, &mut throttled)
 }
+
+/// Longest wait between two reads of the cancel marker during a collection.
+const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(50);

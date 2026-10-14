@@ -147,19 +147,23 @@ function treeList(items, volume, kind) {
     "div",
     { class: "list" },
     items.map((item) => {
-      const path = `${volume}:\\${item.path.replace(/^[\\/]+/, "")}`;
+      // A partial path starts below folders that were not read: "…" stands for the unknown part.
+      const rest = item.path.replace(/^[\\/]+/, "");
+      const path = item.partial_path ? `${volume}:\\…\\${rest}` : `${volume}:\\${rest}`;
       const name = path.split("\\").filter(Boolean).pop() || path;
       const unknown = item.unknown_logical_files + item.unknown_allocation_files;
+      const where = item.partial_path ? `${path}\n${t("quick.partialPath")}` : path;
       return h(
         "div",
-        { class: "list-row quick-row" },
-        h("div", { class: "list-name" }, icon(kind === "dirs" ? "folder" : "file"), h("div", { class: "text" }, h("strong", { title: path }, name), h("span", { title: path }, path))),
+        { class: ["list-row", "quick-row", item.partial_path && "quick-row-partial"] },
+        h("div", { class: "list-name" }, icon(kind === "dirs" ? "folder" : "file"), h("div", { class: "text" }, h("strong", { title: where }, name), h("span", { title: where }, path))),
         bar(itemSize(item) / max, kind === "dirs" ? "" : "mint"),
         h(
           "div",
           { class: "list-value" },
           bytes(itemSize(item)),
           unknown ? h("span", { class: "partial-mark", title: t("quick.unknownFiles", { count: number(unknown) }), "aria-label": t("quick.unknownFiles", { count: number(unknown) }) }, icon("info")) : null,
+          item.partial_path ? h("span", { class: "partial-mark", title: t("quick.partialPath"), "aria-label": t("quick.partialPath") }, icon("alert")) : null,
         ),
         h("div", { class: "quick-files" }, kind === "dirs" ? t("quick.files", { count: number(item.files) }) : ""),
       );
@@ -177,6 +181,23 @@ function resultView(onRender) {
   const share = walked != null && left != null && walked + left > 0 ? walked / (walked + left) : null;
   const complete = share === 1;
   const notes = (r.coverage || []).filter((c) => c.status !== "ok").map((c) => c.detail);
+  // Never present a partial walk as the whole drive: say so above the numbers and the lists.
+  const partialItems = Boolean(tree && [...(tree.directories || []), ...(tree.files || [])].some((item) => item.partial_path));
+  const partialNote =
+    !complete || partialItems
+      ? h(
+          "div",
+          { class: "callout warn quick-partial" },
+          icon("info"),
+          h(
+            "div",
+            null,
+            h("strong", null, complete ? t("quick.partialPathsTitle") : t("quick.partialTitle", { share: share != null ? percent(share) : "—" })),
+            complete ? null : h("span", null, t("quick.partialNote")),
+            partialItems ? h("span", null, t("quick.partialPaths")) : null,
+          ),
+        )
+      : null;
   return h(
     "section",
     { class: "card card-pad section quick-result" },
@@ -190,7 +211,7 @@ function resultView(onRender) {
       "div",
       { class: "grid grid-metrics grid-stats" },
       h("div", { class: "card stat" }, h("span", { class: "stat-label" }, t("quick.stat.files")), h("span", { class: "stat-value" }, files ? number(files.value) : "—")),
-      h("div", { class: "card stat" }, h("span", { class: "stat-label" }, t("quick.stat.data")), h("span", { class: "stat-value" }, data ? bytes(data.value) : "—"), h("span", { class: "hint" }, t("quick.stat.dataNote"))),
+      h("div", { class: "card stat" }, h("span", { class: "stat-label" }, t("quick.stat.data")), h("span", { class: "stat-value" }, data ? bytes(data.value) : "—"), h("span", { class: "hint" }, t(complete ? "quick.stat.dataNote" : "quick.stat.dataPartial"))),
       h(
         "div",
         { class: "card stat" },
@@ -200,6 +221,7 @@ function resultView(onRender) {
         h("span", null, badge(t(complete ? "quick.complete" : "quick.partial"), complete ? "good" : "warn", complete ? "check" : "info")),
       ),
     ),
+    partialNote,
     tree
       ? [
           h(

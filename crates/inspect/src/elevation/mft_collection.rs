@@ -1,10 +1,23 @@
 //! Streaming accounting over a read-only source. Only finite aggregates leave this module.
+//!
+//! Memory bounds come from `tests::memory_*` and the tree's own measurements: an indexed file
+//! costs about 75 accounted bytes (node, name, finish share) plus 16 per data run, a directory
+//! about 115, so a 1.2 million record system volume needs roughly 100 MiB of the 256 MiB bound.
+use super::memory::{btree_bytes, Chunked};
 use super::*;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+use std::mem::size_of;
 use std::time::{Duration, Instant};
 
-pub const MAX_NATIVE_RECORDS: usize = 1_000_000;
-pub const MAX_RETAINED_BYTES: usize = 96 * 1024 * 1024;
-pub const MAX_NATIVE_RUNS: usize = 2_000_000;
+/// Records examined per collection (the memory bound admits about this many at ~64 B each).
+pub const MAX_NATIVE_RECORDS: usize = 4_000_000;
+/// Accounted metadata: index with its finish working memory, run list and pending groups.
+pub const MAX_RETAINED_BYTES: usize = 256 * 1024 * 1024;
+/// Decoded data runs kept to check that allocations do not overlap (16 bytes each).
+pub const MAX_NATIVE_RUNS: usize = 4_000_000;
+/// Part of the duration kept for joining, checking and summarizing what the walk read.
+pub const MAX_FINISH_RESERVE: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectError {
@@ -49,6 +62,10 @@ impl CollectionBounds {
             return Err(CollectError::InvalidBounds);
         }
         Ok(())
+    }
+    /// The walk stops this early so the rest of the duration can finish what it read.
+    fn walk_duration(self) -> Duration {
+        self.duration - (self.duration / 8).min(MAX_FINISH_RESERVE)
     }
 }
 
@@ -209,26 +226,25 @@ impl Collection {
     }
 }
 
+/// Pending group bookkeeping per record: its share of the `BTreeMap` entry and node.
+const PENDING_ENTRY_BYTES: usize = 128;
+
+/// Accounted heap of one parsed record held in `pending`: the record in its group vector
+/// (capacity at most twice the length), the map entry, and everything the record owns. The
+/// formula is checked against the real heap in `tests::memory_*`.
 fn parsed_memory(parsed: &Parsed) -> usize {
-    let mut total = std::mem::size_of::<Parsed>() + 256;
-    total = total.saturating_add(tree::parsed_bytes(parsed));
-    total = total.saturating_add(parsed.attributes.len().saturating_mul(128));
-    total = total.saturating_add(
-        parsed
-            .attribute_list
-            .as_ref()
-            .map_or(0, |v| v.len())
-            .saturating_mul(128),
-    );
-    total = total.saturating_add(
-        parsed
-            .data
-            .capacity()
-            .saturating_mul(std::mem::size_of::<StreamFragment>()),
-    );
+    let mut total = 2 * size_of::<Parsed>() + PENDING_ENTRY_BYTES;
+    total += tree::parsed_bytes(parsed);
+    total += parsed.file_names.capacity() * size_of::<AttributeIdentity>();
+    total += parsed.attribute_list.as_ref().map_or(0, |list| {
+        btree_bytes(list.len(), size_of::<AttributeIdentity>())
+    });
+    total += btree_bytes(parsed.limits.len(), size_of::<Limit>());
+    total += btree_bytes(parsed.tree_limits.len(), size_of::<TreeLimit>());
+    total += parsed.data.capacity() * size_of::<StreamFragment>();
     for fragment in &parsed.data {
         if let Data::Nonresident { runs, .. } = &fragment.data {
-            total = total.saturating_add(runs.capacity().saturating_mul(16));
+            total += runs.capacity() * size_of::<(u64, u64)>();
         }
     }
     total
@@ -271,11 +287,21 @@ fn append_summary(into: &mut Summary, delta: Summary) -> Result<(), ParseError> 
     Ok(())
 }
 
+/// Physical data runs (first cluster, cluster count) of every accounted group, in chunks so
+/// the list never reallocates; checked for overlap once the walk ends.
+type Runs = Chunked<(u64, u64), 64, 8192>;
+type Head = Reverse<(u64, u64, usize, usize)>;
+
+/// Accounted bytes of the run list, including the merge heap of the overlap check.
+fn runs_bytes(runs: &Runs) -> usize {
+    runs.bytes() + runs.chunk_slots() * size_of::<Head>()
+}
+
 fn account(
     key: Key,
     group: Vec<Parsed>,
     summary: &mut Summary,
-    physical: &mut Vec<(u64, u64)>,
+    runs: &mut Runs,
     g: Geometry,
     tree: &mut tree::TreeBuilder,
     available: usize,
@@ -287,9 +313,12 @@ fn account(
     account_group(key, group, &mut delta, &mut ranges, g)?;
     let mut merged = summary.clone();
     append_summary(&mut merged, delta.clone())?;
+    // Capacity was reserved by `reserve_runs`; a failed push means the allocator failed.
+    if !ranges.into_iter().all(|range| runs.push(range)) {
+        return Err(ParseError::BoundExceeded);
+    }
     tree.record(metadata, &delta, available);
     *summary = merged;
-    physical.extend(ranges);
     Ok(())
 }
 
@@ -304,34 +333,111 @@ fn physical_runs(parsed: &Parsed) -> usize {
         .sum()
 }
 
-fn reserve_ranges(
-    physical: &mut Vec<(u64, u64)>,
+/// Admits `additional` runs if the run bound and the memory bound (with `other_bytes`) allow.
+fn reserve_runs(
+    runs: &Runs,
     additional: usize,
     other_bytes: usize,
     bounds: CollectionBounds,
     high_water: &mut u64,
 ) -> bool {
-    let Some(needed) = physical.len().checked_add(additional) else {
+    let Some(needed) = runs.len().checked_add(additional) else {
         return false;
     };
-    let Some(next) = needed.checked_next_power_of_two() else {
-        return false;
-    };
-    let capacity = physical.capacity().max(next);
-    // Reserve geometric capacity explicitly before accounting. Retained metadata is bounded;
-    // a reallocation can also transiently retain the prior run buffer (at most 32 MiB).
-    let memory = other_bytes.saturating_add(capacity.saturating_mul(16));
+    let memory = other_bytes
+        .saturating_add(runs_bytes(runs))
+        .saturating_add(runs.growth(additional));
     if needed > bounds.max_runs || memory > bounds.max_retained_bytes {
         return false;
     }
-    if capacity > physical.capacity()
-        && physical
-            .try_reserve_exact(capacity - physical.len())
-            .is_err()
-    {
+    *high_water = (*high_water).max(memory as u64);
+    true
+}
+
+/// Sorts each chunk in place, then merges them in start order: any run starting before the
+/// previous one ends is an overlap. Returns the allocated bytes.
+fn allocation_of(runs: &mut Runs, cluster_bytes: u64) -> Result<u64, ParseError> {
+    let chunks = runs.chunks_mut();
+    for chunk in chunks.iter_mut() {
+        chunk.sort_unstable();
+    }
+    let mut heads: BinaryHeap<Head> = BinaryHeap::with_capacity(chunks.len());
+    for (k, chunk) in chunks.iter().enumerate() {
+        if let Some(&(start, length)) = chunk.first() {
+            heads.push(Reverse((start, length, k, 0)));
+        }
+    }
+    let (mut previous_end, mut count) = (0, 0);
+    while let Some(Reverse((start, length, k, at))) = heads.pop() {
+        if start < previous_end {
+            return Err(ParseError::OverlappingAllocation);
+        }
+        previous_end = add(start, length)?;
+        count = add(count, length)?;
+        if let Some(&(start, length)) = chunks[k].get(at + 1) {
+            heads.push(Reverse((start, length, k, at + 1)));
+        }
+    }
+    mul(count, cluster_bytes)
+}
+
+/// A pending group can be joined once its base and every record its resident attribute list
+/// names have been read. Groups without such a list wait for the end of the walk.
+fn complete(key: Key, group: &[Parsed]) -> bool {
+    let Some(base) = group
+        .iter()
+        .find(|record| record.is_base && record.key == key)
+    else {
+        return false;
+    };
+    match &base.attribute_list {
+        Some(list) if !list.is_empty() && !base.unresolved_list => list
+            .iter()
+            .filter(|identity| identity.record != key)
+            .all(|identity| group.iter().any(|record| record.key == identity.record)),
+        _ => false,
+    }
+}
+
+/// Joins and accounts one group, then releases its pending bytes. False: the memory bound.
+#[allow(clippy::too_many_arguments)]
+fn flush(
+    key: Key,
+    group: Vec<Parsed>,
+    out: &mut Collection,
+    runs: &mut Runs,
+    tree: &mut tree::TreeBuilder,
+    pending_bytes: &mut usize,
+    g: Geometry,
+    bounds: CollectionBounds,
+) -> bool {
+    let count: usize = group.iter().map(physical_runs).sum();
+    let group_memory: usize = group.iter().map(parsed_memory).sum();
+    if !reserve_runs(
+        runs,
+        count,
+        pending_bytes.saturating_add(tree.retained_bytes()),
+        bounds,
+        &mut out.retained_bytes_high_water,
+    ) {
         return false;
     }
-    *high_water = (*high_water).max(memory as u64);
+    let available = bounds.max_retained_bytes.saturating_sub(
+        pending_bytes
+            .saturating_add(tree.retained_bytes())
+            .saturating_add(runs_bytes(runs))
+            .saturating_add(runs.growth(count)),
+    );
+    if account(key, group, &mut out.summary, runs, g, tree, available).is_err() {
+        out.invalid_records += 1;
+        out.summary.limitations.insert(Limit::InvalidRecord);
+    }
+    *pending_bytes = pending_bytes.saturating_sub(group_memory);
+    out.retained_bytes_high_water = out.retained_bytes_high_water.max(
+        pending_bytes
+            .saturating_add(tree.retained_bytes())
+            .saturating_add(runs_bytes(runs)) as u64,
+    );
     true
 }
 
@@ -349,6 +455,32 @@ fn stop(
     Ok(None)
 }
 
+/// Reads the root record (5) once more after a walk that stopped before it, only so complete
+/// paths can be anchored. It is neither counted as examined nor accounted as file data.
+fn read_root(source: &mut impl Source, g: Geometry, tree: &mut tree::TreeBuilder) {
+    let Ok(record) = source.record_at_or_below(5) else {
+        return;
+    };
+    if record.number != 5
+        || record.bytes.len() != g.record_bytes
+        || record
+            .returned_sequence
+            .is_some_and(|sequence| word(&record.bytes, 16) != Ok(sequence))
+    {
+        return;
+    }
+    let raw = Record {
+        number: 5,
+        bytes: &record.bytes,
+    };
+    if let Ok(Some(parsed)) = parse(&raw, g, &mut 0) {
+        if parsed.directory && parsed.is_base {
+            let metadata = tree::Metadata::from_group(parsed.key, std::slice::from_ref(&parsed));
+            tree.record(metadata, &Summary::default(), 0);
+        }
+    }
+}
+
 /// Stream every available record within count/memory/time limits, keeping only metadata.
 /// A caller must be the approved helper; this function never starts or requests elevation.
 pub fn collect(
@@ -358,6 +490,7 @@ pub fn collect(
 ) -> Result<Collection, CollectError> {
     bounds.validate()?;
     let started = Instant::now();
+    let walk = bounds.walk_duration();
     // Do not open/query a source after cancellation has already been requested.
     if cancelled()? {
         return Ok(Collection::cancelled_before_open());
@@ -399,14 +532,19 @@ pub fn collect(
         Limit::NativeAccuracyUnvalidated,
     ]);
     let mut cursor = initial.record_slots - 1;
-    let mut physical = Vec::<(u64, u64)>::new();
+    let mut runs = Runs::with_bound(
+        bounds
+            .max_runs
+            .saturating_mul(size_of::<(u64, u64)>())
+            .min(bounds.max_retained_bytes),
+    );
     let mut pending = BTreeMap::<Key, Vec<Parsed>>::new();
     let mut pending_bytes = 0_usize;
     let mut total_runs = 0_usize;
     let mut tree = tree::TreeBuilder::new(bounds.max_retained_bytes);
-    out.retained_bytes_high_water = tree.retained_bytes() as u64;
+    out.retained_bytes_high_water = (tree.retained_bytes() + runs_bytes(&runs)) as u64;
     loop {
-        if let Some(end) = stop(cancelled, started, bounds.duration)? {
+        if let Some(end) = stop(cancelled, started, walk)? {
             out.end = end;
             break;
         }
@@ -432,11 +570,11 @@ pub fn collect(
         out.record_slots_walked = initial.record_slots - record.number;
         out.record_slots_not_walked = record.number;
         let next = record.number.checked_sub(1);
-        if let Some(end) = stop(cancelled, started, bounds.duration)? {
+        if let Some(end) = stop(cancelled, started, walk)? {
             out.end = end;
             break;
         }
-        let mut runs = 0;
+        let mut record_runs = 0;
         let parsed = if record
             .returned_sequence
             .is_some_and(|sequence| word(&record.bytes, 16) != Ok(sequence))
@@ -449,12 +587,12 @@ pub fn collect(
                     bytes: &record.bytes,
                 },
                 g,
-                &mut runs,
+                &mut record_runs,
             )
         };
         // `record` and its resident bytes are not retained by Parsed.
         drop(record.bytes);
-        total_runs = total_runs.saturating_add(runs);
+        total_runs = total_runs.saturating_add(record_runs);
         if total_runs > bounds.max_runs {
             out.end = CollectionEnd::RunLimit;
             break;
@@ -465,16 +603,16 @@ pub fn collect(
                     let retained = pending_bytes
                         .saturating_add(parsed_memory(&parsed))
                         .saturating_add(tree.retained_bytes())
-                        .saturating_add(physical.capacity().saturating_mul(16));
+                        .saturating_add(runs_bytes(&runs));
                     let available = bounds.max_retained_bytes.saturating_sub(retained);
                     tree.record(
                         tree::Metadata::from_group(parsed.key, std::slice::from_ref(&parsed)),
                         &Summary::default(),
                         available,
                     );
-                    out.retained_bytes_high_water = out.retained_bytes_high_water.max(
-                        (pending_bytes + tree.retained_bytes() + physical.capacity() * 16) as u64,
-                    );
+                    out.retained_bytes_high_water = out
+                        .retained_bytes_high_water
+                        .max((pending_bytes + tree.retained_bytes() + runs_bytes(&runs)) as u64);
                 }
                 drop(parsed);
                 out.summary.limitations.insert(Limit::SystemRecordsExcluded);
@@ -486,52 +624,45 @@ pub fn collect(
                 let memory = pending_bytes
                     .saturating_add(retain)
                     .saturating_add(tree.retained_bytes())
-                    .saturating_add(physical.capacity().saturating_mul(16));
+                    .saturating_add(runs_bytes(&runs));
                 if memory > bounds.max_retained_bytes {
                     out.end = CollectionEnd::MemoryLimit;
                     break;
                 }
                 out.retained_bytes_high_water = out.retained_bytes_high_water.max(memory as u64);
                 let key = parsed.base;
-                if parsed.is_base
+                pending_bytes = pending_bytes.saturating_add(retain);
+                let group = if parsed.is_base
                     && parsed.attribute_list.is_none()
                     && !parsed.unresolved_list
                     && !pending.contains_key(&key)
                 {
-                    if !reserve_ranges(
-                        &mut physical,
-                        physical_runs(&parsed),
-                        pending_bytes + retain + tree.retained_bytes(),
+                    Some(vec![parsed])
+                } else {
+                    let group = pending.entry(key).or_insert_with(|| Vec::with_capacity(1));
+                    group.push(parsed);
+                    // A complete group is joined now instead of waiting for the walk's end.
+                    if complete(key, group) {
+                        pending.remove(&key)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(group) = group {
+                    if !flush(
+                        key,
+                        group,
+                        &mut out,
+                        &mut runs,
+                        &mut tree,
+                        &mut pending_bytes,
+                        g,
                         bounds,
-                        &mut out.retained_bytes_high_water,
                     ) {
                         out.end = CollectionEnd::MemoryLimit;
                         break;
                     }
-                    let available = bounds.max_retained_bytes.saturating_sub(
-                        pending_bytes + retain + tree.retained_bytes() + physical.capacity() * 16,
-                    );
-                    if account(
-                        key,
-                        vec![parsed],
-                        &mut out.summary,
-                        &mut physical,
-                        g,
-                        &mut tree,
-                        available,
-                    )
-                    .is_err()
-                    {
-                        out.invalid_records += 1;
-                        out.summary.limitations.insert(Limit::InvalidRecord);
-                    }
-                } else {
-                    pending_bytes = pending_bytes.saturating_add(retain);
-                    pending.entry(key).or_default().push(parsed);
                 }
-                out.retained_bytes_high_water = out
-                    .retained_bytes_high_water
-                    .max((pending_bytes + tree.retained_bytes() + physical.capacity() * 16) as u64);
             }
             Ok(None) | Err(_) => {
                 // The native API promises an in-use record; deleted/invalid results are gaps.
@@ -542,8 +673,10 @@ pub fn collect(
         let Some(next) = next else { break };
         cursor = next;
     }
-    for (key, group) in pending {
-        if let Some(end) = stop(cancelled, started, bounds.duration)? {
+    // The rest of the duration joins, checks and summarizes what the walk read.
+    let finish = bounds.duration;
+    for (key, group) in std::mem::take(&mut pending) {
+        if let Some(end) = stop(cancelled, started, finish)? {
             out.end = end;
             // No partially joined chain is claimed once cancellation/deadline wins.
             out.summary
@@ -551,14 +684,15 @@ pub fn collect(
                 .insert(Limit::AttributeListUnresolved);
             break;
         }
-        let runs: usize = group.iter().map(physical_runs).sum();
-        let group_memory: usize = group.iter().map(parsed_memory).sum();
-        if !reserve_ranges(
-            &mut physical,
-            runs,
-            pending_bytes + tree.retained_bytes(),
+        if !flush(
+            key,
+            group,
+            &mut out,
+            &mut runs,
+            &mut tree,
+            &mut pending_bytes,
+            g,
             bounds,
-            &mut out.retained_bytes_high_water,
         ) {
             out.end = CollectionEnd::MemoryLimit;
             out.summary
@@ -566,36 +700,28 @@ pub fn collect(
                 .insert(Limit::AttributeListUnresolved);
             break;
         }
-        let available = bounds
-            .max_retained_bytes
-            .saturating_sub(pending_bytes + tree.retained_bytes() + physical.capacity() * 16);
-        if account(
-            key,
-            group,
-            &mut out.summary,
-            &mut physical,
-            g,
-            &mut tree,
-            available,
-        )
-        .is_err()
-        {
-            out.invalid_records += 1;
-            out.summary.limitations.insert(Limit::InvalidRecord);
-        }
-        pending_bytes = pending_bytes.saturating_sub(group_memory);
-        out.retained_bytes_high_water = out
-            .retained_bytes_high_water
-            .max((pending_bytes + tree.retained_bytes() + physical.capacity() * 16) as u64);
     }
-    if let Some(end) = stop(cancelled, started, bounds.duration)? {
+    if let Some(end) = stop(cancelled, started, finish)? {
         out.end = end;
         out.allocation_additive = false;
-    } else if allocation(&mut physical, g.cluster_bytes).is_err() {
+    } else if allocation_of(&mut runs, g.cluster_bytes).is_err() {
         out.allocation_additive = false;
         out.summary.limitations.insert(Limit::InvalidRecord);
     }
-    if let Some(end) = stop(cancelled, started, bounds.duration)? {
+    drop(runs);
+    if !tree.has_root()
+        && matches!(
+            out.end,
+            CollectionEnd::RecordLimit
+                | CollectionEnd::MemoryLimit
+                | CollectionEnd::RunLimit
+                | CollectionEnd::TimedOut
+        )
+        && stop(cancelled, started, finish)?.is_none()
+    {
+        read_root(source, g, &mut tree);
+    }
+    if let Some(end) = stop(cancelled, started, finish)? {
         out.end = end;
     }
     let incomplete =
@@ -604,7 +730,7 @@ pub fn collect(
         &out.summary,
         out.allocation_additive,
         incomplete,
-        &mut || stop(cancelled, started, bounds.duration),
+        &mut || stop(cancelled, started, finish),
     )?;
     out.tree = inventory;
     if let Some(end) = ending {
@@ -659,6 +785,7 @@ pub fn collect(
 mod tests {
     use super::super::tests::{geometry, listed_data, nonresident, record, resident};
     use super::*;
+    use crate::test_alloc::measure;
 
     struct Fixtures {
         records: BTreeMap<u64, Vec<u8>>,
@@ -773,7 +900,8 @@ mod tests {
         let mut bound = bounds();
         bound.max_records = 1;
         let collection = collect(&mut source, bound, &mut || Ok(false)).unwrap();
-        assert_eq!(source.requests, [63]);
+        // After an early end the root record (5) is read once more, only to anchor paths.
+        assert_eq!(source.requests, [63, 5]);
         assert_eq!(collection.end, CollectionEnd::RecordLimit);
         assert_eq!(collection.record_slots_walked, 14);
         assert_eq!(collection.record_slots_not_walked, 50);
@@ -1045,7 +1173,132 @@ mod tests {
         assert_eq!(collection.summary.logical_bytes_known, 1_750_000);
         assert_eq!(collection.summary.resident_files, 250_000);
         assert_eq!(collection.summary.data_cluster_bytes_known, 0);
-        assert!(collection.retained_bytes_high_water < 16_384);
+        // Only the fixed chunk tables of the index and run list: nothing is kept per record.
+        assert!(collection.retained_bytes_high_water < 128 * 1024);
         collection.validate().unwrap();
+    }
+
+    /// A file whose second data extent lives in an extension record one ordinal above it.
+    fn listed_pair(base: u64, lcn: u64) -> [(u64, Vec<u8>); 2] {
+        let run = |lcn: u64| [0x31, 1, lcn as u8, (lcn >> 8) as u8, (lcn >> 16) as u8, 0];
+        let head = record(
+            1024,
+            3,
+            0,
+            2,
+            &[
+                listed_data(&[(base, 3, 0, 0), (base + 1, 8, 1, 0)]),
+                nonresident(0, 1, 7000, 8192, 8192, 0, &run(lcn)),
+            ],
+        );
+        let extension = record(
+            1024,
+            8,
+            base | (3_u64 << 48),
+            0,
+            &[nonresident(1, 1, 0, 0, 0, 0, &run(lcn + 2))],
+        );
+        [(base, head), (base + 1, extension)]
+    }
+
+    #[test]
+    fn complete_pending_groups_are_joined_during_the_walk() {
+        let mut records = vec![system_record()];
+        for k in 0..300 {
+            records.extend(listed_pair(1000 + 2 * k, 100 + 4 * k));
+        }
+        let mut source = Fixtures::new(records);
+        source.snapshot.record_slots = 2000;
+        source.snapshot.geometry.volume_clusters = 1 << 20;
+        source.final_journal = source.snapshot.journal;
+        let collection = collect(&mut source, bounds(), &mut || Ok(false)).unwrap();
+        assert_eq!(collection.end, CollectionEnd::Enumerated);
+        assert_eq!(collection.summary.base_files, 300);
+        assert_eq!(collection.summary.extension_records, 300);
+        assert_eq!(collection.summary.data_cluster_bytes_known, 300 * 8192);
+        assert!(!collection
+            .summary
+            .limitations
+            .contains(&Limit::AttributeListUnresolved));
+        // Holding all 300 groups until the end would need about 1 MiB; joining each group
+        // once its extension and base are read keeps one at a time.
+        let fixed = (tree::TreeBuilder::new(MAX_RETAINED_BYTES).retained_bytes()
+            + runs_bytes(&Runs::with_bound(MAX_NATIVE_RUNS * 16))) as u64;
+        assert!(collection.retained_bytes_high_water < fixed + 64 * 1024);
+        collection.validate().unwrap();
+    }
+
+    #[test]
+    fn memory_accounting_covers_pending_records() {
+        let entries: Vec<_> = (0..150).map(|start| (42, 3, start, 0)).collect();
+        let cases = [
+            (1024, record(1024, 1, 0, 1, &[resident(DATA, 7, 0)])),
+            (1024, ordinary(10)),
+            (1024, listed_pair(42, 10)[0].1.clone()),
+            (1024, listed_pair(42, 10)[1].1.clone()),
+            (
+                16384,
+                record(
+                    16384,
+                    3,
+                    0,
+                    1,
+                    &[listed_data(&entries), resident(DATA, 1, 0)],
+                ),
+            ),
+        ];
+        for (size, bytes) in cases {
+            let (parsed, usage) = measure(|| {
+                parse(
+                    &Record {
+                        number: 42,
+                        bytes: &bytes,
+                    },
+                    geometry(size),
+                    &mut 0,
+                )
+                .unwrap()
+                .unwrap()
+            });
+            // The record itself sits in its group vector; the rest is its own heap.
+            let heap = parsed_memory(&parsed) - 2 * size_of::<Parsed>() - PENDING_ENTRY_BYTES;
+            assert!(
+                usage.retained <= heap,
+                "real {} accounted {heap}",
+                usage.retained
+            );
+            eprintln!(
+                "pending record of {size} bytes: real heap {} + struct {}, accounted {}",
+                usage.retained,
+                size_of::<Parsed>(),
+                parsed_memory(&parsed)
+            );
+        }
+    }
+
+    #[test]
+    fn chunked_overlap_check_matches_a_sorted_scan() {
+        let mut runs = Runs::with_bound(1 << 20);
+        for i in (0..20_000_u64).rev() {
+            assert!(runs.push((10 + 3 * i, 2)));
+        }
+        assert_eq!(allocation_of(&mut runs, 4096), Ok(20_000 * 2 * 4096));
+        assert!(runs.push((11, 1)));
+        assert_eq!(
+            allocation_of(&mut runs, 4096),
+            Err(ParseError::OverlappingAllocation)
+        );
+    }
+
+    #[test]
+    fn limits_are_consistent_with_the_measured_costs() {
+        // Each examined record yields at most one node; runs and the index share the bound.
+        assert!(tree::MAX_TREE_RETAINED_BYTES + MAX_NATIVE_RUNS * 16 <= MAX_RETAINED_BYTES);
+        assert!(tree::MAX_TREE_NODES <= MAX_NATIVE_RECORDS);
+        // The reserve leaves the walk most of the duration and the finish at least 1/8.
+        let bounds = CollectionBounds::for_budget(Duration::from_secs(120));
+        assert_eq!(bounds.walk_duration(), Duration::from_secs(112));
+        let short = CollectionBounds::for_budget(Duration::from_secs(8));
+        assert_eq!(short.walk_duration(), Duration::from_secs(7));
     }
 }

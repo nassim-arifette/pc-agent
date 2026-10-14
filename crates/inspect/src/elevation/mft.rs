@@ -197,7 +197,8 @@ struct Parsed {
     directory: bool,
     links: u16,
     data: Vec<StreamFragment>,
-    attributes: BTreeSet<AttributeIdentity>,
+    /// FILE_NAME attribute identities of this record (the only kind matched against a list).
+    file_names: Vec<AttributeIdentity>,
     attribute_list: Option<BTreeSet<AttributeIdentity>>,
     unresolved_list: bool,
     excluded: bool,
@@ -504,7 +505,7 @@ fn parse(
         directory: flags & 2 != 0,
         links: word(body, 18)?,
         data: Vec::new(),
-        attributes: BTreeSet::new(),
+        file_names: Vec::new(),
         attribute_list: None,
         unresolved_list: false,
         excluded: false,
@@ -569,8 +570,8 @@ fn parse(
             record: key,
             instance: word(attr, 14)?,
         };
-        out.attributes.insert(identity);
         if kind == 0x30 {
+            out.file_names.push(identity);
             if form != 0 || named || word(attr, 12)? != 0 {
                 out.tree_limits.insert(tree::TreeLimit::InvalidFileName);
             } else {
@@ -993,6 +994,9 @@ mod tree;
 pub use tree::{
     TreeItem, TreeLimit, TreeSummary, MAX_TREE_ITEMS, MAX_TREE_PATH_BYTES, MAX_TREE_RESPONSE_BYTES,
 };
+
+#[path = "mft_memory.rs"]
+mod memory;
 
 #[path = "mft_collection.rs"]
 mod collection;

@@ -1,11 +1,23 @@
 //! Bounded local filename/parent index. Paths are private helper data, never cloud evidence.
+//!
+//! The index keeps fixed-size nodes in chunked arrays and every stored filename once, as UTF-8,
+//! in a chunked arena: nothing is allocated per file. A file node takes 40 bytes plus its name,
+//! a directory node 24 bytes plus its name, and both reserve the working memory their share of
+//! `finish` needs, so the accounted total bounds the index for its whole lifetime.
+//! `tests::memory_*` compare this accounting with the real heap.
+use super::memory::{Arena, Chunked};
 use super::*;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::fmt;
+use std::mem::size_of;
 #[cfg(test)]
 use std::time::Duration;
 
-pub const MAX_TREE_NODES: usize = 250_000;
-pub const MAX_TREE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
+/// One node per examined record at most.
+pub const MAX_TREE_NODES: usize = collection::MAX_NATIVE_RECORDS;
+/// Index share of the collector's bound (`MAX_RETAINED_BYTES`), finish working memory included.
+pub const MAX_TREE_RETAINED_BYTES: usize = 192 * 1024 * 1024;
 pub const MAX_TREE_ITEMS: usize = 16;
 pub const MAX_TREE_PATH_BYTES: usize = 512;
 pub const MAX_TREE_RESPONSE_BYTES: usize = 48 * 1024;
@@ -34,6 +46,8 @@ pub enum TreeLimit {
     AllocationNotAdditive,
     TopDirectoriesTruncated,
     TopFilesTruncated,
+    /// Some returned items start below a folder that was not read (`TreeItem::partial_path`).
+    PartialPaths,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +61,10 @@ pub struct TreeItem {
     pub unknown_logical_files: u64,
     pub unknown_allocation_files: u64,
     pub hard_linked_files: u64,
+    /// The folders above `path` were not read: the path starts below an unknown folder and the
+    /// amounts belong to the unattributed share. Never a complete location or total.
+    #[serde(default)]
+    pub partial_path: bool,
 }
 impl fmt::Debug for TreeItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -58,6 +76,7 @@ impl fmt::Debug for TreeItem {
             .field("unknown_logical_files", &self.unknown_logical_files)
             .field("unknown_allocation_files", &self.unknown_allocation_files)
             .field("hard_linked_files", &self.hard_linked_files)
+            .field("partial_path", &self.partial_path)
             .finish()
     }
 }
@@ -65,9 +84,9 @@ impl fmt::Debug for TreeItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TreeSummary {
-    /// Largest attributed subtrees; a parent and its child overlap and must not be summed.
+    /// Largest subtrees; a parent and its child overlap and must not be summed.
     pub directories: Vec<TreeItem>,
-    /// Each attributed file contributes at most once, regardless of its filename aliases.
+    /// Each file contributes at most once, regardless of its filename aliases.
     pub files: Vec<TreeItem>,
     pub indexed_nodes: u64,
     pub indexed_name_links: u64,
@@ -115,7 +134,7 @@ impl TreeSummary {
             || self.indexed_nodes > MAX_TREE_NODES as u64
             || self.indexed_name_links > self.indexed_nodes.saturating_mul(MAX_LINKS as u64)
             || self.retained_bytes > MAX_TREE_RETAINED_BYTES as u64
-            || self.retained_bytes < self.indexed_nodes.saturating_mul(384)
+            || self.retained_bytes < self.indexed_nodes.saturating_mul(MIN_NODE_BYTES)
             || self.attributed_files.checked_add(self.unattributed_files)
                 != Some(summary.base_files as u64)
             || self.attributed_files > self.indexed_nodes
@@ -151,13 +170,29 @@ impl TreeSummary {
         for list in [&self.directories, &self.files] {
             let mut paths = BTreeSet::new();
             for item in list {
+                // A partial item belongs to the unattributed share; only complete paths are
+                // unique (two unread folders can hold equally named subfolders).
+                let (files, logical, allocated) = if item.partial_path {
+                    (
+                        self.unattributed_files,
+                        self.unattributed_logical_bytes_known,
+                        self.unattributed_data_cluster_bytes_known,
+                    )
+                } else {
+                    (
+                        self.attributed_files,
+                        self.attributed_logical_bytes_known,
+                        self.attributed_data_cluster_bytes_known,
+                    )
+                };
                 if item.path.len() > MAX_TREE_PATH_BYTES
                     || !item.path.starts_with('\\')
                     || !item.path.split('\\').skip(1).all(component_ok)
-                    || !paths.insert(&item.path)
+                    || (!item.partial_path && !paths.insert(&item.path))
+                    || (item.partial_path && !self.limitations.contains(&TreeLimit::PartialPaths))
                     || item.files == 0
-                    || item.files > self.attributed_files
-                    || item.logical_bytes_known > self.attributed_logical_bytes_known
+                    || item.files > files
+                    || item.logical_bytes_known > logical
                     || item.unknown_logical_files > item.files
                     || item.unknown_allocation_files > item.files
                     || item.hard_linked_files > item.files
@@ -165,27 +200,37 @@ impl TreeSummary {
                     || item.unknown_allocation_files > summary.unknown_data_allocation_files as u64
                     || item.hard_linked_files > summary.hard_linked_files as u64
                     || item.data_cluster_bytes_known.is_some() != allocation_additive
-                    || item.data_cluster_bytes_known.is_some_and(|bytes| {
-                        self.attributed_data_cluster_bytes_known
-                            .is_none_or(|total| bytes > total)
-                    })
+                    || item
+                        .data_cluster_bytes_known
+                        .is_some_and(|bytes| allocated.is_none_or(|total| bytes > total))
                 {
                     return Err(ParseError::InvalidAttribute);
                 }
             }
         }
-        let mut returned_files = Numbers::default();
+        let mut complete = Numbers::default();
+        let mut partial = Numbers::default();
         for item in &self.files {
             if item.files != 1 {
                 return Err(ParseError::InvalidAttribute);
             }
-            returned_files.add(&Numbers::from_item(item))?;
+            let share = if item.partial_path {
+                &mut partial
+            } else {
+                &mut complete
+            };
+            share.add(&Numbers::from_item(item))?;
         }
-        if returned_files.files > self.attributed_files
-            || returned_files.logical > self.attributed_logical_bytes_known
+        if complete.files > self.attributed_files
+            || complete.logical > self.attributed_logical_bytes_known
             || self
                 .attributed_data_cluster_bytes_known
-                .is_some_and(|bytes| returned_files.allocated > bytes)
+                .is_some_and(|bytes| complete.allocated > bytes)
+            || partial.files > self.unattributed_files
+            || partial.logical > self.unattributed_logical_bytes_known
+            || self
+                .unattributed_data_cluster_bytes_known
+                .is_some_and(|bytes| partial.allocated > bytes)
             || serde_json::to_vec(self)
                 .map_err(|_| ParseError::InvalidAttribute)?
                 .len()
@@ -256,8 +301,9 @@ pub(super) fn retain_link(links: &mut Vec<NameLink>, link: NameLink) -> bool {
     true
 }
 
+/// Heap bytes of a parsed record's filename links (vector capacity and decoded names).
 pub(super) fn parsed_bytes(parsed: &Parsed) -> usize {
-    parsed.names.capacity() * std::mem::size_of::<NameLink>()
+    parsed.names.capacity() * size_of::<NameLink>()
         + parsed
             .names
             .iter()
@@ -265,6 +311,7 @@ pub(super) fn parsed_bytes(parsed: &Parsed) -> usize {
             .sum::<usize>()
 }
 
+/// Filename metadata of one joined record group, before it is packed into the index.
 pub(super) struct Metadata {
     key: Key,
     directory: bool,
@@ -290,13 +337,7 @@ impl Metadata {
         let mut observed = BTreeSet::new();
         for record in group {
             out.limits.extend(&record.tree_limits);
-            for identity in record
-                .attributes
-                .iter()
-                .filter(|id| id.key.kind == FILE_NAME)
-            {
-                observed.insert(*identity);
-            }
+            observed.extend(record.file_names.iter().copied());
             for link in &record.names {
                 if record.is_base
                     || base
@@ -335,17 +376,6 @@ impl Metadata {
         }
         Some(out)
     }
-    fn bytes(&self) -> usize {
-        // Covers BTreeMap/Vec capacity and a reserved per-directory rollup entry.
-        let overhead = if self.directory { 640 } else { 384 };
-        overhead
-            + self.names.capacity() * std::mem::size_of::<NameLink>()
-            + self
-                .names
-                .iter()
-                .map(|link| link.name.capacity())
-                .sum::<usize>()
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -358,16 +388,6 @@ struct Numbers {
     hard_links: u64,
 }
 impl Numbers {
-    fn from_summary(summary: &Summary) -> Self {
-        Self {
-            files: summary.base_files as u64,
-            logical: summary.logical_bytes_known,
-            allocated: summary.data_cluster_bytes_known,
-            unknown_logical: summary.unknown_logical_files as u64,
-            unknown_allocation: summary.unknown_data_allocation_files as u64,
-            hard_links: summary.hard_linked_files as u64,
-        }
-    }
     fn from_item(item: &TreeItem) -> Self {
         Self {
             files: item.files,
@@ -376,6 +396,17 @@ impl Numbers {
             unknown_logical: item.unknown_logical_files,
             unknown_allocation: item.unknown_allocation_files,
             hard_links: item.hard_linked_files,
+        }
+    }
+    fn from_file(node: &FileNode) -> Self {
+        let flag = |bit: u8| u64::from(node.link.flags & bit != 0);
+        Self {
+            files: 1,
+            logical: node.logical,
+            allocated: node.allocated,
+            unknown_logical: flag(UNKNOWN_LOGICAL),
+            unknown_allocation: flag(UNKNOWN_ALLOCATION),
+            hard_links: flag(HARD_LINKED),
         }
     }
     fn add(&mut self, other: &Self) -> Result<(), ParseError> {
@@ -387,7 +418,11 @@ impl Numbers {
         self.hard_links = add(self.hard_links, other.hard_links)?;
         Ok(())
     }
-    fn item(self, path: String, additive: bool) -> TreeItem {
+    /// Ranking amounts: known allocation (only when additive), then known logical bytes.
+    fn rank(&self, additive: bool) -> (u64, u64) {
+        (if additive { self.allocated } else { 0 }, self.logical)
+    }
+    fn item(self, path: String, additive: bool, partial_path: bool) -> TreeItem {
         TreeItem {
             path,
             files: self.files,
@@ -396,40 +431,147 @@ impl Numbers {
             unknown_logical_files: self.unknown_logical,
             unknown_allocation_files: self.unknown_allocation,
             hard_linked_files: self.hard_links,
+            partial_path,
         }
     }
 }
 
-struct Node {
-    metadata: Metadata,
-    numbers: Numbers,
+/// A subtree rollup during `finish`; counts fit in u32 (at most `MAX_TREE_NODES` files).
+#[derive(Clone, Copy, Default)]
+struct Rollup {
+    files: u32,
+    unknown_logical: u32,
+    unknown_allocation: u32,
+    hard_links: u32,
+    logical: u64,
+    allocated: u64,
 }
+impl Rollup {
+    fn add(&mut self, other: &Numbers) -> Result<(), ParseError> {
+        let count = |value: u32, more: u64| {
+            u32::try_from(more)
+                .ok()
+                .and_then(|more| value.checked_add(more))
+                .ok_or(ParseError::ArithmeticOverflow)
+        };
+        self.files = count(self.files, other.files)?;
+        self.unknown_logical = count(self.unknown_logical, other.unknown_logical)?;
+        self.unknown_allocation = count(self.unknown_allocation, other.unknown_allocation)?;
+        self.hard_links = count(self.hard_links, other.hard_links)?;
+        self.logical = add(self.logical, other.logical)?;
+        self.allocated = add(self.allocated, other.allocated)?;
+        Ok(())
+    }
+    fn numbers(&self) -> Numbers {
+        Numbers {
+            files: u64::from(self.files),
+            logical: self.logical,
+            allocated: self.allocated,
+            unknown_logical: u64::from(self.unknown_logical),
+            unknown_allocation: u64::from(self.unknown_allocation),
+            hard_links: u64::from(self.hard_links),
+        }
+    }
+}
+
+/// A key packed so that integer order is `Key` order: record number above, sequence below.
+fn pack(key: Key) -> u64 {
+    key.0 << 16 | u64::from(key.1)
+}
+fn unpack(packed: u64) -> Key {
+    Key(packed >> 16, packed as u16)
+}
+
+/// One filename: packed parent key and the name's place in the arena. On a node's first link,
+/// `flags` carries the node's flags.
+#[derive(Clone, Copy)]
+struct Link {
+    parent: u64,
+    name: u32,
+    len: u16,
+    flags: u8,
+}
+const UNKNOWN_LOGICAL: u8 = 1;
+const UNKNOWN_ALLOCATION: u8 = 2;
+const HARD_LINKED: u8 = 4;
+const EXTRA_LINKS: u8 = 8;
+const UNSUPPORTED_PARENT: u8 = 16;
+const NO_NAME: u8 = 32;
+
+/// 40 bytes: the file's key, its supported-data amounts and its first-ranked name.
+#[derive(Clone, Copy)]
+struct FileNode {
+    key: u64,
+    logical: u64,
+    allocated: u64,
+    link: Link,
+}
+/// 24 bytes: a directory needs only its first-ranked name to form paths.
+#[derive(Clone, Copy)]
+struct DirNode {
+    key: u64,
+    link: Link,
+}
+/// Further names of a hard-linked file, in rank order, stored after its node.
+#[derive(Clone, Copy)]
+struct ExtraLink {
+    file: u32,
+    link: Link,
+}
+
+type Nodes<T> = Chunked<T, 64, 8192>;
+
+/// `finish` working memory per file: chosen link (1 byte), canonical parent (4) and a
+/// conflict-sort index (4), rounded up.
+pub(super) const FILE_FINISH_BYTES: usize = 12;
+/// `finish` working memory per directory: key order, a second index order, parent, canonical
+/// id and resolution stack (5 x 4 bytes), state, depth and path length (4), path fingerprint
+/// (16) and subtree rollup (32).
+pub(super) const DIR_FINISH_BYTES: usize = 72;
+/// Root anchor, limitation set, top-N heaps, path scratch and one record's packed names.
+const FIXED_BYTES: usize = 2048;
+/// Smallest accounted node, for `TreeSummary::validate`.
+const MIN_NODE_BYTES: u64 = size_of::<DirNode>() as u64;
+
 pub(super) struct TreeBuilder {
     root: Option<Key>,
-    directories: BTreeMap<Key, Node>,
-    files: BTreeMap<Key, Node>,
-    directory_bytes: usize,
-    file_bytes: usize,
+    dirs: Nodes<DirNode>,
+    files: Nodes<FileNode>,
+    extra: Nodes<ExtraLink>,
+    names: Arena,
+    links: u64,
     capacity: usize,
+    /// Kept for directories: a full file index cannot block the parents read later.
+    dir_reserve: usize,
     limits: BTreeSet<TreeLimit>,
 }
 impl TreeBuilder {
     pub(super) fn new(global_bound: usize) -> Self {
+        let capacity = MAX_TREE_RETAINED_BYTES.min(global_bound / 4 * 3);
+        let dir_reserve = capacity / 3;
         Self {
             root: None,
-            directories: BTreeMap::new(),
-            files: BTreeMap::new(),
-            directory_bytes: 0,
-            file_bytes: 0,
-            capacity: MAX_TREE_RETAINED_BYTES
-                .min(global_bound / 3)
-                .saturating_sub(32),
+            dirs: Nodes::with_bound(capacity),
+            files: Nodes::with_bound(capacity - dir_reserve),
+            extra: Nodes::with_bound(capacity / 4),
+            names: Arena::with_bound(capacity),
+            links: 0,
+            capacity,
+            dir_reserve,
             limits: BTreeSet::new(),
         }
     }
     pub(super) fn retained_bytes(&self) -> usize {
-        // Root identity has a permanent small reservation, even before its late ordinal is read.
-        self.directory_bytes + self.file_bytes + 32
+        FIXED_BYTES
+            + self.dirs.bytes()
+            + self.files.bytes()
+            + self.extra.bytes()
+            + self.names.bytes()
+            + self.dirs.len() * DIR_FINISH_BYTES
+            + self.files.len() * FILE_FINISH_BYTES
+    }
+    pub(super) fn has_root(&self) -> bool {
+        self.root.is_some()
     }
     pub(super) fn record(&mut self, metadata: Option<Metadata>, delta: &Summary, available: usize) {
         let Some(metadata) = metadata else {
@@ -447,32 +589,122 @@ impl TreeBuilder {
         if !metadata.directory && (metadata.names.is_empty() || delta.base_files == 0) {
             return;
         }
-        let key = metadata.key;
-        let bytes = metadata.bytes();
-        let nodes = self.directories.len() + self.files.len();
-        let (map, used) = if metadata.directory {
-            (&mut self.directories, &mut self.directory_bytes)
+        // A directory forms paths with its first-ranked name only.
+        let names = if metadata.directory {
+            &metadata.names[..metadata.names.len().min(1)]
         } else {
-            (&mut self.files, &mut self.file_bytes)
+            &metadata.names[..]
         };
-        let previous = map.get(&key).map_or(0, |node| node.metadata.bytes());
-        let growth = bytes.saturating_sub(previous);
-        if *used - previous + bytes > self.capacity / 2 || growth > available {
+        let extra = names.len().saturating_sub(1);
+        let growth = self
+            .names
+            .growth(names.iter().map(|link| link.name.len()))
+            .saturating_add(if metadata.directory {
+                self.dirs.growth(1).saturating_add(DIR_FINISH_BYTES)
+            } else {
+                self.files
+                    .growth(1)
+                    .saturating_add(self.extra.growth(extra))
+                    .saturating_add(FILE_FINISH_BYTES)
+            });
+        let limit = if metadata.directory {
+            self.capacity
+        } else {
+            self.capacity - self.dir_reserve
+        };
+        if self.retained_bytes().saturating_add(growth) > limit || growth > available {
             self.limits.insert(TreeLimit::IndexMemoryLimit);
             return;
         }
-        if !map.contains_key(&key) && nodes >= MAX_TREE_NODES {
+        if self.dirs.len() + self.files.len() >= MAX_TREE_NODES {
             self.limits.insert(TreeLimit::IndexNodeLimit);
             return;
         }
-        *used = *used - previous + bytes;
-        map.insert(
-            key,
-            Node {
-                metadata,
-                numbers: Numbers::from_summary(delta),
-            },
-        );
+        let mut stored = Vec::with_capacity(names.len());
+        for link in names {
+            let (Some(at), Ok(len)) = (
+                self.names.push(link.name.as_bytes()),
+                u16::try_from(link.name.len()),
+            ) else {
+                self.limits.insert(TreeLimit::IndexMemoryLimit);
+                return;
+            };
+            stored.push(Link {
+                parent: pack(link.parent),
+                name: at,
+                len,
+                flags: 0,
+            });
+        }
+        let key = pack(metadata.key);
+        let pushed = if metadata.directory {
+            let mut link = stored.first().copied().unwrap_or(Link {
+                parent: 0,
+                name: 0,
+                len: 0,
+                flags: NO_NAME,
+            });
+            if metadata.unsupported_parent {
+                link.flags |= UNSUPPORTED_PARENT;
+            }
+            self.dirs.push(DirNode { key, link })
+        } else {
+            let mut link = stored[0];
+            for (bit, set) in [
+                (UNKNOWN_LOGICAL, delta.unknown_logical_files != 0),
+                (UNKNOWN_ALLOCATION, delta.unknown_data_allocation_files != 0),
+                (HARD_LINKED, delta.hard_linked_files != 0),
+                (EXTRA_LINKS, stored.len() > 1),
+            ] {
+                if set {
+                    link.flags |= bit;
+                }
+            }
+            let file = self.files.len() as u32;
+            self.files.push(FileNode {
+                key,
+                logical: delta.logical_bytes_known,
+                allocated: delta.data_cluster_bytes_known,
+                link,
+            }) && stored[1..]
+                .iter()
+                .all(|&link| self.extra.push(ExtraLink { file, link }))
+        };
+        if pushed {
+            self.links += stored.len() as u64;
+        } else {
+            self.limits.insert(TreeLimit::IndexMemoryLimit);
+        }
+    }
+
+    fn name(&self, link: Link) -> &str {
+        // Only names decoded from valid UTF-16 are stored, so this never falls back.
+        std::str::from_utf8(self.names.get(link.name, link.len)).unwrap_or("")
+    }
+
+    /// The file's names in rank order: its node's link, then its extra links.
+    fn file_links(&self, index: u32) -> impl Iterator<Item = Link> + '_ {
+        let node = self.files.get(index as usize);
+        let first_extra = if node.link.flags & EXTRA_LINKS != 0 {
+            let (mut low, mut high) = (0, self.extra.len());
+            while low < high {
+                let middle = (low + high) / 2;
+                if self.extra.get(middle).file < index {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            low
+        } else {
+            self.extra.len()
+        };
+        std::iter::once(node.link).chain(
+            (first_extra..self.extra.len())
+                .map(|i| self.extra.get(i))
+                .take_while(move |entry| entry.file == index)
+                .map(|entry| entry.link),
+        )
     }
 
     pub(super) fn finish(
@@ -483,13 +715,8 @@ impl TreeBuilder {
         stop: &mut dyn FnMut() -> Result<Option<CollectionEnd>, CollectError>,
     ) -> Result<(TreeSummary, Option<CollectionEnd>), CollectError> {
         let mut out = TreeSummary {
-            indexed_nodes: (self.directories.len() + self.files.len()) as u64,
-            indexed_name_links: self
-                .directories
-                .values()
-                .chain(self.files.values())
-                .map(|node| node.metadata.names.len() as u64)
-                .sum(),
+            indexed_nodes: (self.dirs.len() + self.files.len()) as u64,
+            indexed_name_links: self.links,
             retained_bytes: self.retained_bytes() as u64,
             limitations: self.limits.clone(),
             ..TreeSummary::default()
@@ -500,99 +727,29 @@ impl TreeBuilder {
         if !additive {
             out.limitations.insert(TreeLimit::AllocationNotAdditive);
         }
-        let mut totals = Numbers::default();
-        let mut directory_totals = BTreeMap::<Key, Numbers>::new();
-        let mut attributed_paths = BTreeSet::new();
-        let mut ending = None;
-        for node in self.files.values() {
-            if let Some(end) = stop()? {
-                ending = Some(end);
-                break;
-            }
-            let mut selected = None;
-            for link in &node.metadata.names {
-                match directory_path(link.parent, &self.directories, self.root) {
-                    Ok((mut path, ancestors)) => {
-                        if path != "\\" {
-                            path.push('\\');
-                        }
-                        path.push_str(&link.name);
-                        if path.len() <= MAX_TREE_PATH_BYTES {
-                            selected = Some((path, ancestors));
-                            break;
-                        }
-                        out.limitations.insert(TreeLimit::PathLimit);
-                    }
-                    Err(limit) => {
-                        out.limitations.insert(limit);
-                    }
-                }
-            }
-            let Some((path, ancestors)) = selected else {
-                continue;
-            };
-            // A rename/replacement during this non-atomic scan can reuse a metadata path.
-            // Retain one observed attribution and leave later conflicting files unattributed.
-            let path_key: [u8; 32] = Sha256::digest(path.as_bytes()).into();
-            if !attributed_paths.insert(path_key) {
-                out.limitations.insert(TreeLimit::PathConflict);
-                continue;
-            }
-            totals.add(&node.numbers)?;
-            for ancestor in ancestors {
-                if ancestor.0 != 5 {
-                    directory_totals
-                        .entry(ancestor)
-                        .or_default()
-                        .add(&node.numbers)?;
-                }
-            }
-            keep_top(&mut out.files, node.numbers.item(path, additive));
-            if totals.files > MAX_TREE_ITEMS as u64 {
-                out.limitations.insert(TreeLimit::TopFilesTruncated);
-            }
-        }
-        if ending.is_none() {
-            for (key, numbers) in directory_totals {
-                if let Some(end) = stop()? {
-                    ending = Some(end);
-                    break;
-                }
-                match directory_path(key, &self.directories, self.root) {
-                    Ok((path, _)) => {
-                        if out.directories.iter().any(|item| item.path == path) {
-                            out.limitations.insert(TreeLimit::PathConflict);
-                            continue;
-                        }
-                        if out.directories.len() == MAX_TREE_ITEMS {
-                            out.limitations.insert(TreeLimit::TopDirectoriesTruncated);
-                        }
-                        keep_top(&mut out.directories, numbers.item(path, additive));
-                    }
-                    Err(limit) => {
-                        out.limitations.insert(limit);
-                    }
-                }
-            }
-        }
+        let ending = Finish::run(&self, additive, &mut out, stop)?;
         if ending.is_some() {
+            // Nothing half-computed is returned: every file stays unattributed.
+            out.directories.clear();
+            out.files.clear();
             out.limitations.insert(TreeLimit::Interrupted);
+            out.limitations.remove(&TreeLimit::PartialPaths);
+            out.attributed_files = 0;
+            out.attributed_logical_bytes_known = 0;
+            out.attributed_data_cluster_bytes_known = additive.then_some(0);
         }
-        out.attributed_files = totals.files;
         out.unattributed_files = (summary.base_files as u64)
-            .checked_sub(totals.files)
+            .checked_sub(out.attributed_files)
             .ok_or(ParseError::ArithmeticOverflow)?;
-        out.attributed_logical_bytes_known = totals.logical;
         out.unattributed_logical_bytes_known = summary
             .logical_bytes_known
-            .checked_sub(totals.logical)
+            .checked_sub(out.attributed_logical_bytes_known)
             .ok_or(ParseError::ArithmeticOverflow)?;
-        out.attributed_data_cluster_bytes_known = additive.then_some(totals.allocated);
         out.unattributed_data_cluster_bytes_known = if additive {
             Some(
                 summary
                     .data_cluster_bytes_known
-                    .checked_sub(totals.allocated)
+                    .checked_sub(out.attributed_data_cluster_bytes_known.unwrap_or(0))
                     .ok_or(ParseError::ArithmeticOverflow)?,
             )
         } else {
@@ -603,89 +760,613 @@ impl TreeBuilder {
     }
 }
 
-fn keep_top(items: &mut Vec<TreeItem>, item: TreeItem) {
-    items.push(item);
-    items.sort_by(|left, right| {
-        right
-            .data_cluster_bytes_known
-            .cmp(&left.data_cluster_bytes_known)
-            .then_with(|| right.logical_bytes_known.cmp(&left.logical_bytes_known))
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    if items.len() > MAX_TREE_ITEMS {
-        items.pop();
+/// Directory resolution states during `finish`; errors keep the limitation that stopped them.
+const UNVISITED: u8 = 0;
+const VISITING: u8 = 1;
+const COMPLETE: u8 = 2;
+const PARTIAL: u8 = 3;
+const ERRORS: [TreeLimit; 5] = [
+    TreeLimit::ParentMetadataIncomplete,
+    TreeLimit::ParentSequenceChanged,
+    TreeLimit::ParentCycle,
+    TreeLimit::DepthLimit,
+    TreeLimit::PathLimit,
+];
+fn error_state(limit: TreeLimit) -> u8 {
+    16 + ERRORS.iter().position(|known| *known == limit).unwrap_or(0) as u8
+}
+fn state_error(state: u8) -> Option<TreeLimit> {
+    (state & !CONFLICT)
+        .checked_sub(16)
+        .and_then(|index| ERRORS.get(usize::from(index)).copied())
+}
+/// Marks a resolvable directory whose path an earlier directory already has.
+const CONFLICT: u8 = 0x80;
+/// Parent sentinels: the chain reaches the read root, or ends at an unread folder or an error.
+const ROOT: u32 = u32::MAX - 1;
+const NONE: u32 = u32::MAX;
+/// Canonical parents of files directly below the root, read or not.
+const ROOT_CANON: u32 = u32::MAX - 1;
+const UNREAD_ROOT_CANON: u32 = u32::MAX - 2;
+/// A chosen filename whose path starts below an unread folder.
+const PARTIAL_CHOICE: u8 = 0x80;
+/// How often the loops of `finish` honour cancellation and the deadline.
+const STOP_EVERY: usize = 1 << 16;
+
+enum Top {
+    Root,
+    Unread,
+    Error(TreeLimit),
+    Resolved(u32),
+}
+
+enum Placement {
+    Complete(u32),
+    Partial(u32),
+    Failed(TreeLimit),
+}
+
+type Stop<'s> = &'s mut dyn FnMut() -> Result<Option<CollectionEnd>, CollectError>;
+
+/// Local path identity; it only compares directories and never leaves `finish`.
+fn fingerprint(tag: u8, parent: &[u8], name: &[u8]) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update([tag]);
+    hash.update(parent);
+    hash.update((name.len() as u16).to_le_bytes());
+    hash.update(name);
+    hash.finalize()[..16].try_into().unwrap()
+}
+
+fn vec_of<T: Clone>(len: usize, value: T) -> Result<Vec<T>, CollectError> {
+    let mut out = Vec::new();
+    // Accounted in the per-node finish reserve; failure is reported, never an abort.
+    out.try_reserve_exact(len)
+        .map_err(|_| CollectError::InvalidBounds)?;
+    out.resize(len, value);
+    Ok(out)
+}
+
+/// Working state of `TreeBuilder::finish`, sized by `DIR_FINISH_BYTES` and `FILE_FINISH_BYTES`.
+struct Finish<'a> {
+    tree: &'a TreeBuilder,
+    by_key: Vec<u32>,
+    state: Vec<u8>,
+    parent: Vec<u32>,
+    depth: Vec<u8>,
+    length: Vec<u16>,
+    canon: Vec<u32>,
+    ticks: usize,
+}
+impl<'a> Finish<'a> {
+    /// Fills `out` and returns `None`, or returns the stop reason (the caller clears `out`).
+    fn run(
+        tree: &'a TreeBuilder,
+        additive: bool,
+        out: &mut TreeSummary,
+        stop: Stop<'_>,
+    ) -> Result<Option<CollectionEnd>, CollectError> {
+        let dirs = tree.dirs.len();
+        let mut by_key: Vec<u32> = vec_of(dirs, 0)?;
+        for (index, slot) in by_key.iter_mut().enumerate() {
+            *slot = index as u32;
+        }
+        by_key.sort_unstable_by_key(|&index| tree.dirs.get(index as usize).key);
+        let mut finish = Finish {
+            tree,
+            by_key,
+            state: vec_of(dirs, UNVISITED)?,
+            parent: vec_of(dirs, NONE)?,
+            depth: vec_of(dirs, 0)?,
+            length: vec_of(dirs, 0)?,
+            canon: vec_of(dirs, NONE)?,
+            ticks: 0,
+        };
+        if let Some(end) = stop()? {
+            return Ok(Some(end));
+        }
+        let fingerprints = match finish.resolve(&mut out.limitations, stop)? {
+            Ok(fingerprints) => fingerprints,
+            Err(end) => return Ok(Some(end)),
+        };
+        if let Some(end) = finish.canonicalize(fingerprints, &mut out.limitations, stop)? {
+            return Ok(Some(end));
+        }
+        let mut choice: Vec<u8> = vec_of(tree.files.len(), 0)?;
+        let mut canon: Vec<u32> = vec_of(tree.files.len(), NONE)?;
+        if let Some(end) =
+            finish.place_files(&mut choice, &mut canon, &mut out.limitations, stop)?
+        {
+            return Ok(Some(end));
+        }
+        if let Some(end) = finish.drop_conflicts(&mut choice, &canon, &mut out.limitations, stop)? {
+            return Ok(Some(end));
+        }
+        drop(canon);
+        finish.summarize(&choice, additive, out, stop)
+    }
+
+    fn tick(&mut self, stop: Stop<'_>) -> Result<Option<CollectionEnd>, CollectError> {
+        self.ticks += 1;
+        if self.ticks.is_multiple_of(STOP_EVERY) {
+            return stop();
+        }
+        Ok(None)
+    }
+
+    fn find(&self, key: u64) -> Option<u32> {
+        let dirs = &self.tree.dirs;
+        self.by_key
+            .binary_search_by_key(&key, |&index| dirs.get(index as usize).key)
+            .ok()
+            .map(|position| self.by_key[position])
+    }
+
+    /// Whether a read directory has this record number under another sequence.
+    fn number_read(&self, number: u64) -> bool {
+        let dirs = &self.tree.dirs;
+        let at = self
+            .by_key
+            .partition_point(|&index| dirs.get(index as usize).key >> 16 < number);
+        at < self.by_key.len() && dirs.get(self.by_key[at] as usize).key >> 16 == number
+    }
+
+    /// Resolves every directory chain once: complete up to the read root, partial up to an
+    /// unread folder, or failed with the limitation that stopped it. Returns path fingerprints.
+    fn resolve(
+        &mut self,
+        limits: &mut BTreeSet<TreeLimit>,
+        stop: Stop<'_>,
+    ) -> Result<Result<Vec<[u8; 16]>, CollectionEnd>, CollectError> {
+        let tree = self.tree;
+        let mut fingerprints: Vec<[u8; 16]> = vec_of(tree.dirs.len(), [0; 16])?;
+        let mut stack: Vec<u32> = Vec::new();
+        for start in 0..tree.dirs.len() {
+            if let Some(end) = self.tick(stop)? {
+                return Ok(Err(end));
+            }
+            if self.state[start] != UNVISITED {
+                continue;
+            }
+            stack.clear();
+            let mut current = start as u32;
+            let top = loop {
+                match self.state[current as usize] {
+                    UNVISITED => {}
+                    VISITING => break Top::Error(TreeLimit::ParentCycle),
+                    _ => break Top::Resolved(current),
+                }
+                self.state[current as usize] = VISITING;
+                // At most one entry per directory, which DIR_FINISH_BYTES accounts.
+                stack.push(current);
+                let node = tree.dirs.get(current as usize);
+                if node.link.flags & (UNSUPPORTED_PARENT | NO_NAME) != 0 {
+                    break Top::Error(TreeLimit::ParentMetadataIncomplete);
+                }
+                let parent = unpack(node.link.parent);
+                if parent.0 == 5 {
+                    break match tree.root {
+                        Some(root) if root == parent => Top::Root,
+                        Some(_) => Top::Error(TreeLimit::ParentSequenceChanged),
+                        None => Top::Unread,
+                    };
+                }
+                match self.find(node.link.parent) {
+                    Some(index) => {
+                        self.parent[current as usize] = index;
+                        current = index;
+                    }
+                    None if self.number_read(parent.0) => {
+                        break Top::Error(TreeLimit::ParentSequenceChanged)
+                    }
+                    None => break Top::Unread,
+                }
+            };
+            let mut result = top;
+            while let Some(index) = stack.pop() {
+                let at = index as usize;
+                let node = tree.dirs.get(at);
+                let name = tree.names.get(node.link.name, node.link.len);
+                let resolved = match result {
+                    Top::Root => {
+                        self.parent[at] = ROOT;
+                        Ok((COMPLETE, 1, 0, fingerprint(b'R', &[], name)))
+                    }
+                    Top::Unread => {
+                        self.parent[at] = NONE;
+                        limits.insert(TreeLimit::ParentMissing);
+                        let anchor = node.key.to_le_bytes();
+                        Ok((PARTIAL, 1, 0, fingerprint(b'A', &anchor, name)))
+                    }
+                    Top::Error(limit) => Err(limit),
+                    Top::Resolved(parent) => {
+                        let p = parent as usize;
+                        match state_error(self.state[p]) {
+                            Some(limit) => Err(limit),
+                            None => Ok((
+                                self.state[p],
+                                usize::from(self.depth[p]) + 1,
+                                usize::from(self.length[p]),
+                                fingerprint(b'D', &fingerprints[p], name),
+                            )),
+                        }
+                    }
+                };
+                let resolved = resolved.and_then(|(state, depth, base, print)| {
+                    let length = base + 1 + name.len();
+                    if depth >= MAX_DEPTH {
+                        Err(TreeLimit::DepthLimit)
+                    } else if length > MAX_TREE_PATH_BYTES {
+                        Err(TreeLimit::PathLimit)
+                    } else {
+                        Ok((state, depth, length, print))
+                    }
+                });
+                match resolved {
+                    Ok((state, depth, length, print)) => {
+                        self.state[at] = state;
+                        self.depth[at] = depth as u8;
+                        self.length[at] = length as u16;
+                        fingerprints[at] = print;
+                    }
+                    Err(limit) => {
+                        self.state[at] = error_state(limit);
+                        self.parent[at] = NONE;
+                    }
+                }
+                result = Top::Resolved(index);
+            }
+        }
+        Ok(Ok(fingerprints))
+    }
+
+    /// Gives directories with one path one canonical id. The lowest key keeps the path; later
+    /// ones (a live rename or replacement) are path conflicts and are not listed.
+    fn canonicalize(
+        &mut self,
+        fingerprints: Vec<[u8; 16]>,
+        limits: &mut BTreeSet<TreeLimit>,
+        stop: Stop<'_>,
+    ) -> Result<Option<CollectionEnd>, CollectError> {
+        let tree = self.tree;
+        let mut order: Vec<u32> = Vec::new();
+        order
+            .try_reserve_exact(tree.dirs.len())
+            .map_err(|_| CollectError::InvalidBounds)?;
+        order.extend(
+            (0..tree.dirs.len() as u32)
+                .filter(|&index| matches!(self.state[index as usize], COMPLETE | PARTIAL)),
+        );
+        order.sort_unstable_by(|&a, &b| {
+            fingerprints[a as usize]
+                .cmp(&fingerprints[b as usize])
+                .then_with(|| {
+                    tree.dirs
+                        .get(a as usize)
+                        .key
+                        .cmp(&tree.dirs.get(b as usize).key)
+                })
+        });
+        let mut first = NONE;
+        for position in 0..order.len() {
+            if let Some(end) = self.tick(stop)? {
+                return Ok(Some(end));
+            }
+            let index = order[position] as usize;
+            if position == 0 || fingerprints[order[position - 1] as usize] != fingerprints[index] {
+                first = index as u32;
+            } else {
+                self.state[index] |= CONFLICT;
+                limits.insert(TreeLimit::PathConflict);
+            }
+            self.canon[index] = first;
+        }
+        Ok(None)
+    }
+
+    /// Where one filename places its file, from its parent directory's resolution.
+    fn place(&self, link: Link) -> Placement {
+        let tree = self.tree;
+        let parent = unpack(link.parent);
+        let fits = |base: usize| base + 1 + usize::from(link.len) <= MAX_TREE_PATH_BYTES;
+        if parent.0 == 5 {
+            return match tree.root {
+                Some(root) if root == parent => Placement::Complete(ROOT_CANON),
+                Some(_) => Placement::Failed(TreeLimit::ParentSequenceChanged),
+                None => Placement::Partial(UNREAD_ROOT_CANON),
+            };
+        }
+        match self.find(link.parent) {
+            Some(index) => {
+                let at = index as usize;
+                let base = usize::from(self.length[at]);
+                match self.state[at] & !CONFLICT {
+                    COMPLETE if fits(base) => Placement::Complete(self.canon[at]),
+                    PARTIAL if fits(base) => Placement::Partial(self.canon[at]),
+                    COMPLETE | PARTIAL => Placement::Failed(TreeLimit::PathLimit),
+                    state => Placement::Failed(
+                        state_error(state).unwrap_or(TreeLimit::ParentMetadataIncomplete),
+                    ),
+                }
+            }
+            None if self.number_read(parent.0) => {
+                Placement::Failed(TreeLimit::ParentSequenceChanged)
+            }
+            // Its own folder was not read: listed by name alone, below an unknown location.
+            None => {
+                if fits(0) {
+                    Placement::Partial(NONE)
+                } else {
+                    Placement::Failed(TreeLimit::PathLimit)
+                }
+            }
+        }
+    }
+
+    /// Chooses each file's name: the first complete one in rank order, else the first partial.
+    /// `choice` is the link position plus one (0: none), with `PARTIAL_CHOICE` for a partial.
+    fn place_files(
+        &mut self,
+        choice: &mut [u8],
+        canon: &mut [u32],
+        limits: &mut BTreeSet<TreeLimit>,
+        stop: Stop<'_>,
+    ) -> Result<Option<CollectionEnd>, CollectError> {
+        for file in 0..self.tree.files.len() {
+            if let Some(end) = self.tick(stop)? {
+                return Ok(Some(end));
+            }
+            let mut partial = None;
+            for (position, link) in self.tree.file_links(file as u32).enumerate() {
+                match self.place(link) {
+                    Placement::Complete(parent) => {
+                        partial = None;
+                        choice[file] = position as u8 + 1;
+                        canon[file] = parent;
+                        break;
+                    }
+                    Placement::Partial(parent) => {
+                        limits.insert(TreeLimit::ParentMissing);
+                        partial = partial.or(Some((position, parent)));
+                    }
+                    Placement::Failed(limit) => {
+                        limits.insert(limit);
+                    }
+                }
+            }
+            if let Some((position, parent)) = partial {
+                choice[file] = (position as u8 + 1) | PARTIAL_CHOICE;
+                canon[file] = parent;
+            }
+        }
+        Ok(None)
+    }
+
+    fn chosen(&self, file: u32, choice: u8) -> Link {
+        let position = usize::from(choice & !PARTIAL_CHOICE).saturating_sub(1);
+        self.tree
+            .file_links(file)
+            .nth(position)
+            .unwrap_or_else(|| self.tree.files.get(file as usize).link)
+    }
+
+    /// Two files with one path (same canonical folder and name): the lowest key keeps it.
+    /// Files whose own folder was not read have no comparable location and are all kept.
+    fn drop_conflicts(
+        &mut self,
+        choice: &mut [u8],
+        canon: &[u32],
+        limits: &mut BTreeSet<TreeLimit>,
+        stop: Stop<'_>,
+    ) -> Result<Option<CollectionEnd>, CollectError> {
+        let tree = self.tree;
+        let mut order: Vec<u32> = Vec::new();
+        order
+            .try_reserve_exact(tree.files.len())
+            .map_err(|_| CollectError::InvalidBounds)?;
+        order.extend(
+            (0..tree.files.len() as u32)
+                .filter(|&file| choice[file as usize] != 0 && canon[file as usize] != NONE),
+        );
+        {
+            let choice = &*choice;
+            let name = |file: u32| {
+                let link = self.chosen(file, choice[file as usize]);
+                tree.names.get(link.name, link.len)
+            };
+            order.sort_unstable_by(|&a, &b| {
+                canon[a as usize]
+                    .cmp(&canon[b as usize])
+                    .then_with(|| name(a).cmp(name(b)))
+                    .then_with(|| {
+                        tree.files
+                            .get(a as usize)
+                            .key
+                            .cmp(&tree.files.get(b as usize).key)
+                    })
+            });
+        }
+        let mut head = 0;
+        for position in 1..order.len() {
+            if let Some(end) = self.tick(stop)? {
+                return Ok(Some(end));
+            }
+            let (first, file) = (order[head], order[position]);
+            let same = canon[first as usize] == canon[file as usize] && {
+                let a = self.chosen(first, choice[first as usize]);
+                let b = self.chosen(file, choice[file as usize]);
+                tree.names.get(a.name, a.len) == tree.names.get(b.name, b.len)
+            };
+            if same {
+                choice[file as usize] = 0;
+                limits.insert(TreeLimit::PathConflict);
+            } else {
+                head = position;
+            }
+        }
+        Ok(None)
+    }
+
+    fn parent_of(&self, link: Link) -> u32 {
+        if unpack(link.parent).0 == 5 {
+            ROOT
+        } else {
+            self.find(link.parent).unwrap_or(NONE)
+        }
+    }
+
+    fn dir_path(&self, index: u32) -> String {
+        let mut chain = Vec::new();
+        let mut current = index;
+        while current != ROOT && current != NONE && chain.len() < MAX_DEPTH {
+            chain.push(current);
+            current = self.parent[current as usize];
+        }
+        let mut path = String::new();
+        for &index in chain.iter().rev() {
+            path.push('\\');
+            path.push_str(self.tree.name(self.tree.dirs.get(index as usize).link));
+        }
+        path
+    }
+
+    /// Rolls files up into their folders, then picks and names the largest items.
+    fn summarize(
+        &mut self,
+        choice: &[u8],
+        additive: bool,
+        out: &mut TreeSummary,
+        stop: Stop<'_>,
+    ) -> Result<Option<CollectionEnd>, CollectError> {
+        let tree = self.tree;
+        let mut rollups: Vec<Rollup> = vec_of(tree.dirs.len(), Rollup::default())?;
+        let mut attributed = Numbers::default();
+        let mut top_files = BinaryHeap::new();
+        let mut file_candidates = 0_usize;
+        for (file, &chosen) in choice.iter().enumerate() {
+            if let Some(end) = self.tick(stop)? {
+                return Ok(Some(end));
+            }
+            if chosen == 0 {
+                continue;
+            }
+            let node = tree.files.get(file);
+            let numbers = Numbers::from_file(&node);
+            if chosen & PARTIAL_CHOICE == 0 {
+                attributed.add(&numbers)?;
+            }
+            let parent = self.parent_of(self.chosen(file as u32, chosen));
+            if parent != ROOT && parent != NONE {
+                rollups[parent as usize].add(&numbers)?;
+            }
+            file_candidates += 1;
+            keep(
+                &mut top_files,
+                numbers.rank(additive),
+                node.key,
+                file as u32,
+            );
+        }
+        // Children before parents: depth only decreases along a resolved chain.
+        let mut order: Vec<u32> = Vec::new();
+        order
+            .try_reserve_exact(tree.dirs.len())
+            .map_err(|_| CollectError::InvalidBounds)?;
+        order.extend(
+            (0..tree.dirs.len() as u32).filter(|&index| {
+                matches!(self.state[index as usize] & !CONFLICT, COMPLETE | PARTIAL)
+            }),
+        );
+        order.sort_unstable_by_key(|&index| Reverse(self.depth[index as usize]));
+        for &index in &order {
+            if let Some(end) = self.tick(stop)? {
+                return Ok(Some(end));
+            }
+            let parent = self.parent[index as usize];
+            if parent != ROOT && parent != NONE {
+                let child = rollups[index as usize].numbers();
+                rollups[parent as usize].add(&child)?;
+            }
+        }
+        let mut top_dirs = BinaryHeap::new();
+        let mut dir_candidates = 0_usize;
+        for &index in &order {
+            let rollup = rollups[index as usize];
+            if self.state[index as usize] & CONFLICT != 0 || rollup.files == 0 {
+                continue;
+            }
+            dir_candidates += 1;
+            let key = tree.dirs.get(index as usize).key;
+            keep(&mut top_dirs, rollup.numbers().rank(additive), key, index);
+        }
+        if dir_candidates > MAX_TREE_ITEMS {
+            out.limitations.insert(TreeLimit::TopDirectoriesTruncated);
+        }
+        if file_candidates > MAX_TREE_ITEMS {
+            out.limitations.insert(TreeLimit::TopFilesTruncated);
+        }
+        for Reverse((_, _, index)) in top_dirs {
+            let partial = self.state[index as usize] & !CONFLICT == PARTIAL;
+            let path = self.dir_path(index);
+            let item = rollups[index as usize]
+                .numbers()
+                .item(path, additive, partial);
+            out.directories.push(item);
+        }
+        for Reverse((_, _, file)) in top_files {
+            let at = file as usize;
+            let link = self.chosen(file, choice[at]);
+            let parent = self.parent_of(link);
+            let mut path = if parent == ROOT || parent == NONE {
+                String::new()
+            } else {
+                self.dir_path(parent)
+            };
+            path.push('\\');
+            path.push_str(tree.name(link));
+            let partial = choice[at] & PARTIAL_CHOICE != 0;
+            let item = Numbers::from_file(&tree.files.get(at)).item(path, additive, partial);
+            out.files.push(item);
+        }
+        for list in [&mut out.directories, &mut out.files] {
+            list.sort_by(|left, right| {
+                right
+                    .data_cluster_bytes_known
+                    .cmp(&left.data_cluster_bytes_known)
+                    .then_with(|| right.logical_bytes_known.cmp(&left.logical_bytes_known))
+                    .then_with(|| left.path.cmp(&right.path))
+            });
+        }
+        if out
+            .directories
+            .iter()
+            .chain(&out.files)
+            .any(|item| item.partial_path)
+        {
+            out.limitations.insert(TreeLimit::PartialPaths);
+        }
+        out.attributed_files = attributed.files;
+        out.attributed_logical_bytes_known = attributed.logical;
+        out.attributed_data_cluster_bytes_known = additive.then_some(attributed.allocated);
+        Ok(None)
     }
 }
 
-fn directory_path(
-    key: Key,
-    directories: &BTreeMap<Key, Node>,
-    root: Option<Key>,
-) -> Result<(String, Vec<Key>), TreeLimit> {
-    let mut current = key;
-    let mut seen = BTreeSet::new();
-    let mut chain = Vec::new();
-    let mut names = Vec::new();
-    loop {
-        if chain.len() >= MAX_DEPTH {
-            return Err(TreeLimit::DepthLimit);
-        }
-        if !seen.insert(current) {
-            return Err(TreeLimit::ParentCycle);
-        }
-        if current.0 == 5 {
-            if root == Some(current) {
-                chain.push(current);
-                break;
-            }
-            return Err(if root.is_some() {
-                TreeLimit::ParentSequenceChanged
-            } else {
-                TreeLimit::ParentMissing
-            });
-        }
-        let Some(node) = directories.get(&current) else {
-            return Err(
-                if directories
-                    .range(Key(current.0, 0)..=Key(current.0, u16::MAX))
-                    .next()
-                    .is_some()
-                {
-                    TreeLimit::ParentSequenceChanged
-                } else {
-                    TreeLimit::ParentMissing
-                },
-            );
-        };
-        if node.metadata.unsupported_parent {
-            return Err(TreeLimit::ParentMetadataIncomplete);
-        }
-        chain.push(current);
-        let link = node
-            .metadata
-            .names
-            .first()
-            .ok_or(TreeLimit::ParentMetadataIncomplete)?;
-        names.push(link.name.as_str());
-        current = link.parent;
+type Ranked = Reverse<((u64, u64), Reverse<u64>, u32)>;
+
+/// Keeps the `MAX_TREE_ITEMS` best entries: larger amounts first, then the lower key.
+fn keep(heap: &mut BinaryHeap<Ranked>, rank: (u64, u64), key: u64, index: u32) {
+    heap.push(Reverse((rank, Reverse(key), index)));
+    if heap.len() > MAX_TREE_ITEMS {
+        heap.pop();
     }
-    let mut path = String::from("\\");
-    for name in names.into_iter().rev() {
-        if path.len() > 1 {
-            path.push('\\');
-        }
-        path.push_str(name);
-        if path.len() > MAX_TREE_PATH_BYTES {
-            return Err(TreeLimit::PathLimit);
-        }
-    }
-    Ok((path, chain))
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::{geometry, listed_data, nonresident, record, resident};
     use super::*;
+    use crate::test_alloc::measure;
 
     fn filename(parent: Key, name: &str, namespace: u8, id: u16) -> Vec<u8> {
         let words: Vec<_> = name.encode_utf16().collect();
@@ -717,8 +1398,10 @@ mod tests {
     }
     impl Source for Fixtures {
         fn snapshot(&mut self) -> Result<VolumeSnapshot, CollectError> {
+            let mut geometry = geometry(self.size);
+            geometry.volume_clusters = geometry.volume_clusters.max(self.slots * 2);
             Ok(VolumeSnapshot {
-                geometry: geometry(self.size),
+                geometry,
                 record_slots: self.slots,
                 journal: None,
             })
@@ -745,6 +1428,13 @@ mod tests {
     fn scan_bound(
         records: impl IntoIterator<Item = (u64, Vec<u8>)>,
         bounds: CollectionBounds,
+    ) -> Collection {
+        scan_slots(records, bounds, 128)
+    }
+    fn scan_slots(
+        records: impl IntoIterator<Item = (u64, Vec<u8>)>,
+        bounds: CollectionBounds,
+        slots: u64,
     ) -> Collection {
         let mut records: BTreeMap<_, _> = records
             .into_iter()
@@ -780,7 +1470,7 @@ mod tests {
             .or_insert_with(|| record(4096, 1, 0, 1, &[resident(DATA, 0, 0)]));
         let mut source = Fixtures {
             records,
-            slots: 128,
+            slots,
             size: 4096,
         };
         collect(&mut source, bounds, &mut || Ok(false)).unwrap()
@@ -860,6 +1550,14 @@ mod tests {
             .tree
             .limitations
             .contains(&TreeLimit::ParentCycle));
+        // The file whose folder was never read is still listed, by name, as partial.
+        assert_eq!(collection.tree.files.len(), 1);
+        assert_eq!(collection.tree.files[0].path, "\\missing.bin");
+        assert!(collection.tree.files[0].partial_path);
+        assert!(collection
+            .tree
+            .limitations
+            .contains(&TreeLimit::PartialPaths));
         collection.validate().unwrap();
     }
 
@@ -1012,24 +1710,28 @@ mod tests {
             (5, directory(1, root, ".")),
             (20, directory(2, root, "parent")),
         ];
-        for i in 0..30_u8 {
+        // Resident files keep the run list empty, so only the index meets the small bound.
+        for i in 0..1_500_u64 {
             records.push((
-                50 + u64::from(i),
-                file(
-                    &[filename(Key(20, 2), &format!("file-{i:02}.bin"), 1, 1)],
-                    i + 1,
-                    100,
+                50 + i,
+                record(
+                    4096,
                     1,
+                    0,
+                    1,
+                    &[
+                        filename(Key(20, 2), &format!("file-{i:04}.bin"), 1, 1),
+                        resident(DATA, 100, 99),
+                    ],
                 ),
             ));
         }
         let mut bounds = CollectionBounds::for_budget(Duration::from_secs(30));
-        bounds.max_retained_bytes = MAX_RECORD_BYTES;
-        let collection = scan_bound(records, bounds);
+        bounds.max_retained_bytes = 64 * 1024;
+        let collection = scan_slots(records, bounds, 2048);
         assert_eq!(collection.end, CollectionEnd::Enumerated);
-        assert_eq!(collection.summary.base_files, 30);
-        assert_eq!(collection.summary.logical_bytes_known, 3000);
-        assert_eq!(collection.summary.data_cluster_bytes_known, 30 * 4096);
+        assert_eq!(collection.summary.base_files, 1_500);
+        assert_eq!(collection.summary.logical_bytes_known, 150_000);
         assert!(collection.tree.attributed_files > 0);
         assert!(collection.tree.unattributed_files > 0);
         assert!(collection
@@ -1037,6 +1739,7 @@ mod tests {
             .limitations
             .contains(&TreeLimit::IndexMemoryLimit));
         assert_eq!(collection.tree.directories[0].path, "\\parent");
+        assert!(!collection.tree.directories[0].partial_path);
         assert!(collection.retained_bytes_high_water <= bounds.max_retained_bytes as u64);
         collection.validate().unwrap();
     }
@@ -1221,5 +1924,340 @@ mod tests {
         let output = serde_json::to_string(&collection.tree).unwrap();
         assert!(output.contains("private.bin")); // Private IPC retains metadata for local exploration.
         assert!(!format!("{:?}", collection).contains("private.bin"));
+    }
+
+    /// Downloads (90) below alex (21) below Users (20) below the root; files above them.
+    fn downloads() -> Vec<(u64, Vec<u8>)> {
+        let root = Key(5, 1);
+        vec![
+            (5, directory(1, root, ".")),
+            (20, directory(2, root, "Users")),
+            (21, directory(3, Key(20, 2), "alex")),
+            (90, directory(4, Key(21, 3), "Downloads")),
+            (
+                95,
+                file(&[filename(Key(21, 3), "notes.txt", 1, 1)], 30, 200, 1),
+            ),
+            (
+                100,
+                file(&[filename(Key(90, 4), "big.iso", 1, 1)], 10, 300, 1),
+            ),
+            (
+                101,
+                file(&[filename(Key(90, 4), "small.txt", 1, 1)], 20, 100, 1),
+            ),
+        ]
+    }
+
+    #[test]
+    fn an_early_end_still_lists_the_largest_items_read_and_marks_them_partial() {
+        let complete = scan(downloads());
+        assert_eq!(complete.end, CollectionEnd::Enumerated);
+        assert_eq!(
+            complete.tree.files[0].path,
+            "\\Users\\alex\\Downloads\\big.iso"
+        );
+        assert_eq!(complete.tree.directories[0].path, "\\Users");
+        assert!(complete
+            .tree
+            .directories
+            .iter()
+            .chain(&complete.tree.files)
+            .all(|item| !item.partial_path));
+        assert!(!complete.tree.limitations.contains(&TreeLimit::PartialPaths));
+        complete.validate().unwrap();
+
+        // The walk stops after Downloads (90): alex, Users and the root are not walked.
+        let mut bounds = CollectionBounds::for_budget(Duration::from_secs(30));
+        bounds.max_records = 4;
+        let partial = scan_bound(downloads(), bounds);
+        assert_eq!(partial.end, CollectionEnd::RecordLimit);
+        assert_eq!(partial.summary.base_files, 3);
+        assert_eq!(partial.tree.attributed_files, 0);
+        assert_eq!(partial.tree.unattributed_files, 3);
+        let files: Vec<_> = partial
+            .tree
+            .files
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "\\Downloads\\big.iso",
+                "\\notes.txt",
+                "\\Downloads\\small.txt"
+            ]
+        );
+        assert_eq!(partial.tree.directories.len(), 1);
+        let folder = &partial.tree.directories[0];
+        assert_eq!(folder.path, "\\Downloads");
+        assert_eq!((folder.files, folder.logical_bytes_known), (2, 400));
+        assert!(partial
+            .tree
+            .directories
+            .iter()
+            .chain(&partial.tree.files)
+            .all(|item| item.partial_path));
+        for limit in [
+            TreeLimit::PartialPaths,
+            TreeLimit::ParentMissing,
+            TreeLimit::CollectionIncomplete,
+        ] {
+            assert!(partial.tree.limitations.contains(&limit), "{limit:?}");
+        }
+        partial.validate().unwrap();
+
+        // A partial item can never pass for a complete one or exceed the unattributed share.
+        let mut forged = partial.tree.clone();
+        forged.files[0].partial_path = false;
+        assert!(forged.validate(&partial.summary, true).is_err());
+        let mut forged = partial.tree.clone();
+        forged.limitations.remove(&TreeLimit::PartialPaths);
+        assert!(forged.validate(&partial.summary, true).is_err());
+        let mut forged = partial.tree.clone();
+        forged.directories[0].logical_bytes_known = 601;
+        assert!(forged.validate(&partial.summary, true).is_err());
+    }
+
+    /// A synthetic volume generated on demand: the root, a folder tree, then one file per
+    /// record with one data run each. Names have realistic lengths (13 to 36 bytes).
+    struct Volume {
+        dirs: u64,
+        files: u64,
+        delay: Duration,
+    }
+    const LETTERS: &str = "abcdefghijklmnopqrstuvwxyz";
+    impl Volume {
+        fn new(dirs: u64, files: u64) -> Self {
+            Self {
+                dirs,
+                files,
+                delay: Duration::ZERO,
+            }
+        }
+        fn slots(&self) -> u64 {
+            16 + self.dirs + self.files
+        }
+        fn geometry() -> Geometry {
+            let mut geometry = geometry(1024);
+            geometry.volume_clusters = 1 << 24;
+            geometry
+        }
+        fn bytes(&self, n: u64) -> Vec<u8> {
+            if n == 5 {
+                let mut raw = record(1024, 1, 0, 1, &[filename(Key(5, 1), ".", 1, 0)]);
+                raw[22..24].copy_from_slice(&3_u16.to_le_bytes());
+                return raw;
+            }
+            if n < 16 {
+                return record(1024, 1, 0, 1, &[resident(DATA, 0, 0)]);
+            }
+            let i = n - 16;
+            if i < self.dirs {
+                let parent = if i < 16 { 5 } else { 16 + i / 16 };
+                let name = format!("Folder-{i:06}-{}", &LETTERS[..(i % 12) as usize]);
+                let mut raw = record(1024, 1, 0, 1, &[filename(Key(parent, 1), &name, 1, 0)]);
+                raw[22..24].copy_from_slice(&3_u16.to_le_bytes());
+                return raw;
+            }
+            let j = i - self.dirs;
+            let lcn = 1000 + j;
+            let mut data = nonresident(
+                0,
+                1,
+                100 + j % 1000,
+                4096,
+                4096,
+                0,
+                &[0x31, 1, lcn as u8, (lcn >> 8) as u8, (lcn >> 16) as u8, 0],
+            );
+            data[14..16].copy_from_slice(&99_u16.to_le_bytes());
+            let name = format!("file-{j:07}-{}.bin", &LETTERS[..(j % 20) as usize]);
+            let parent = Key(16 + j % self.dirs, 1);
+            record(1024, 1, 0, 1, &[filename(parent, &name, 1, 1), data])
+        }
+    }
+    impl Source for Volume {
+        fn snapshot(&mut self) -> Result<VolumeSnapshot, CollectError> {
+            Ok(VolumeSnapshot {
+                geometry: Self::geometry(),
+                record_slots: self.slots(),
+                journal: None,
+            })
+        }
+        fn record_at_or_below(&mut self, ordinal: u64) -> Result<RecordData, CollectError> {
+            std::thread::sleep(self.delay);
+            Ok(RecordData {
+                number: ordinal,
+                returned_sequence: None,
+                bytes: self.bytes(ordinal),
+            })
+        }
+    }
+
+    #[test]
+    fn a_timed_out_walk_keeps_time_to_list_what_it_read() {
+        let mut volume = Volume::new(4, 10_000);
+        volume.delay = Duration::from_millis(3);
+        let mut bounds = CollectionBounds::for_budget(Duration::from_secs(30));
+        bounds.duration = Duration::from_millis(600);
+        let collection = collect(&mut volume, bounds, &mut || Ok(false)).unwrap();
+        assert_eq!(collection.end, CollectionEnd::TimedOut);
+        assert!(collection.records_examined > 0);
+        assert!(collection.record_slots_not_walked > 0);
+        assert!(!collection.tree.files.is_empty());
+        assert!(collection.tree.files.iter().all(|item| item.partial_path));
+        assert!(!collection
+            .tree
+            .limitations
+            .contains(&TreeLimit::Interrupted));
+        assert!(collection
+            .summary
+            .limitations
+            .contains(&Limit::DurationLimit));
+        collection.validate().unwrap();
+    }
+
+    #[test]
+    fn memory_accounting_covers_the_real_heap_of_index_nodes() {
+        let volume = Volume::new(2_000, 20_000);
+        let parsed: Vec<_> = (5..16 + 22_000)
+            .filter(|&n| n == 5 || n >= 16)
+            .map(|n| {
+                let bytes = volume.bytes(n);
+                let record = Record {
+                    number: n,
+                    bytes: &bytes,
+                };
+                parse(&record, Volume::geometry(), &mut 0).unwrap().unwrap()
+            })
+            .collect();
+        let (dirs, files): (Vec<_>, Vec<_>) = parsed.into_iter().partition(|p| p.directory);
+        let delta = Summary {
+            base_files: 1,
+            data_streams: 1,
+            logical_bytes_known: 100,
+            data_cluster_bytes_known: 4096,
+            ..Summary::default()
+        };
+        let mut tree = TreeBuilder::new(collection::MAX_RETAINED_BYTES);
+        let start = tree.retained_bytes();
+        let (_, directories) = measure(|| {
+            for parsed in &dirs {
+                let metadata = Metadata::from_group(parsed.key, std::slice::from_ref(parsed));
+                tree.record(metadata, &Summary::default(), usize::MAX);
+            }
+        });
+        let after_dirs = tree.retained_bytes();
+        let (_, nodes) = measure(|| {
+            for parsed in &files {
+                let metadata = Metadata::from_group(parsed.key, std::slice::from_ref(parsed));
+                tree.record(metadata, &delta, usize::MAX);
+            }
+        });
+        let accounted = tree.retained_bytes();
+        // The root (record 5) is an anchor, not a node.
+        let (dir_count, file_count) = (dirs.len() - 1, files.len());
+        assert_eq!(tree.dirs.len(), dir_count);
+        assert_eq!(tree.files.len(), file_count);
+        // Index storage is exact: what is allocated is what is accounted, apart from the
+        // finish reserve that `finish` allocates later.
+        let storage = |bytes: usize, dirs: usize, files: usize| {
+            bytes - dirs * DIR_FINISH_BYTES - files * FILE_FINISH_BYTES
+        };
+        assert!(directories.retained <= storage(after_dirs - start, dir_count, 0));
+        assert!(nodes.retained <= storage(accounted - after_dirs, 0, file_count));
+        let summary = Summary {
+            base_files: file_count,
+            data_streams: file_count,
+            logical_bytes_known: 100 * file_count as u64,
+            data_cluster_bytes_known: 4096 * file_count as u64,
+            ..Summary::default()
+        };
+        let (result, finish) = measure(|| tree.finish(&summary, true, false, &mut || Ok(None)));
+        let (inventory, ending) = result.unwrap();
+        assert!(ending.is_none());
+        assert_eq!(inventory.attributed_files, file_count as u64);
+        // `finish` stays within its reserve; the bounded response is its output.
+        let reserve = dir_count * DIR_FINISH_BYTES + file_count * FILE_FINISH_BYTES + FIXED_BYTES;
+        assert!(finish.peak <= reserve + MAX_TREE_RESPONSE_BYTES);
+        eprintln!(
+            "index node bytes: directory real {:.1} accounted {:.1}; file real {:.1} accounted {:.1}; finish peak {} for reserve {}",
+            directories.retained as f64 / dir_count as f64,
+            (after_dirs - start) as f64 / dir_count as f64,
+            nodes.retained as f64 / file_count as f64,
+            (accounted - after_dirs) as f64 / file_count as f64,
+            finish.peak,
+            reserve,
+        );
+    }
+
+    #[test]
+    fn memory_accounting_bounds_a_whole_collection_and_scales_to_large_volumes() {
+        let mut volume = Volume::new(4_000, 40_000);
+        let records = volume.slots();
+        let (collection, usage) = measure(|| {
+            collect(
+                &mut volume,
+                CollectionBounds::for_budget(Duration::from_secs(120)),
+                &mut || Ok(false),
+            )
+            .unwrap()
+        });
+        assert_eq!(collection.end, CollectionEnd::Enumerated);
+        assert_eq!(collection.tree.attributed_files, 40_000);
+        assert!(collection.allocation_additive);
+        // The real heap stays within the accounted high water plus one record's transient
+        // buffers and the returned response.
+        let transient = 64 * 1024;
+        assert!(
+            usage.peak as u64 <= collection.retained_bytes_high_water + transient,
+            "peak {} high water {}",
+            usage.peak,
+            collection.retained_bytes_high_water
+        );
+        // At this size chunk and arena slack weigh more per record than on a large volume
+        // (1.2 M generated records measure 98 accounted bytes each, 112 MiB in all), so this
+        // projection overestimates; it must still leave 40 % of the bound free.
+        let per_record = collection.retained_bytes_high_water as f64 / records as f64;
+        let projected = per_record * 1_200_000.0;
+        eprintln!(
+            "collection of {records} records: real peak {} ({:.1} B/record), accounted high water {} ({:.1} B/record); 1.2 M records projected {:.1} MiB of {} MiB",
+            usage.peak,
+            usage.peak as f64 / records as f64,
+            collection.retained_bytes_high_water,
+            per_record,
+            projected / 1048576.0,
+            collection::MAX_RETAINED_BYTES >> 20,
+        );
+        assert!(projected <= collection::MAX_RETAINED_BYTES as f64 * 0.6);
+    }
+
+    /// Run with `cargo test --release -p pcagent-inspect -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "1.2 million generated records: run in release to measure"]
+    fn memory_peak_of_a_1_2_million_record_volume() {
+        let mut volume = Volume::new(150_000, 1_050_000 - 16);
+        let records = volume.slots();
+        let started = std::time::Instant::now();
+        let (collection, usage) = measure(|| {
+            collect(
+                &mut volume,
+                CollectionBounds::for_budget(Duration::from_secs(120)),
+                &mut || Ok(false),
+            )
+            .unwrap()
+        });
+        assert_eq!(collection.end, CollectionEnd::Enumerated);
+        assert_eq!(collection.tree.attributed_files, 1_050_000 - 16);
+        eprintln!(
+            "{records} records in {:?}: real peak {:.1} MiB, accounted high water {:.1} MiB, index {:.1} MiB, collector {} ms",
+            started.elapsed(),
+            usage.peak as f64 / 1048576.0,
+            collection.retained_bytes_high_water as f64 / 1048576.0,
+            collection.tree.retained_bytes as f64 / 1048576.0,
+            collection.duration_ms,
+        );
     }
 }
