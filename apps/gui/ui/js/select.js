@@ -4,7 +4,7 @@
 // send (C5, 9 October): the message leaves as the composer's toggles say and stays in the steps.
 import { t } from "./i18n.js";
 import { call } from "./api.js";
-import { state, sendSelection } from "./store.js";
+import { state, notify, sendSelection, waitForPrivacy, beginTurnPreparation, endTurnPreparation, openPanel, closePanel, openConversation } from "./store.js";
 import { toast } from "./ui.js";
 import { effectiveMode, namesShared } from "./ask.js";
 import { navigate } from "./router.js";
@@ -47,26 +47,70 @@ export async function findReference(match) {
 
 /**
  * Runs Explain or Investigate on `selection` = { reference, label, name?, subject? }: prepares the
- * exact preview, then starts the turn in a new conversation and opens the chat. `label` is shown
+ * exact preview in the current conversation. Explain stays in the inspector; Investigate opens
+ * the chat. An inspector continuation explicitly keeps its summary's conversation. `label` is shown
  * on this PC only; `name` is the program name a question may carry; `subject` replaces the generic
  * "of …" part of the question and must hold no name or ID.
  */
-export async function runSelection(selection, intent) {
-  if (!INTENTS.includes(intent) || !selection?.reference) return;
+export async function runSelection(selection, intent, { conversationId: requestedConversation } = {}) {
+  if (!INTENTS.includes(intent) || !selection?.reference) return false;
   if (running()) {
     toast(t("select.busy"));
-    navigate("chat");
-    return;
+    if (state.summary?.inv === state.inv) openPanel("selection");
+    else navigate("chat");
+    return false;
   }
-  const cloud = effectiveMode() !== "local";
-  const asked = question(selection, intent);
-  let preview;
+  if (!beginTurnPreparation()) return false;
+  const selected = structuredClone(selection);
+  const summary = intent === "explain" ? { selection: selected, status: "preparing", error: null, inv: null, conversationId: requestedConversation ?? state.conversation?.id ?? null } : null;
+  if (summary) {
+    state.summary = summary;
+    openPanel("selection");
+    notify("summary");
+  }
   try {
-    preview = await call("selection_preview", { reference: selection.reference, intent, question: asked, conversationId: null, names: namesShared(), fileNames: false });
+    if (requestedConversation != null && requestedConversation !== state.conversation?.id) {
+      if (!await openConversation(requestedConversation)) throw new Error(t("select.conversationGone"));
+    }
+    const conversation = state.conversation;
+    const conversationId = conversation?.id ?? null;
+    const conversationRevision = state.conversationRevision;
+    const sameConversation = () => conversation === state.conversation && conversationId === (state.conversation?.id ?? null) && conversationRevision === state.conversationRevision;
+    await waitForPrivacy();
+    if (!sameConversation() || (summary && state.summary !== summary)) throw new Error(t("share.changed"));
+    const privacyRevision = state.privacyRevision;
+    const cloud = effectiveMode() !== "local";
+    const asked = question(selected, intent);
+    const preview = await call("selection_preview", { reference: selected.reference, intent, question: asked, conversationId, names: namesShared(), fileNames: false });
+    if (privacyRevision !== state.privacyRevision || !sameConversation() || (summary && state.summary !== summary)) {
+      throw new Error(t("share.changed"));
+    }
+    if (intent === "investigate") {
+      closePanel();
+      navigate("chat");
+    }
+    return await sendSelection(asked, { reference: selected.reference, intent, conversationId, label: selected.label || t("select.label.fallback"), previewId: preview.preview_id, sent: cloud ? (preview.message ?? null) : null, summary });
   } catch (error) {
-    toast(error.message, "bad");
-    return;
+    if (summary) {
+      summary.status = "failed";
+      summary.error = { message: error.message };
+      notify("summary");
+    } else toast(error.message, "bad");
+    return false;
+  } finally {
+    endTurnPreparation();
   }
-  navigate("chat");
-  await sendSelection(asked, { reference: selection.reference, intent, previewId: preview.preview_id, sent: cloud ? (preview.message ?? null) : null });
+}
+
+/** A fresh Investigate ticket for the same evidence and the summary's existing conversation. */
+export function continueSummary() {
+  const summary = state.summary;
+  if (summary?.inv?.status !== "done" || !summary.inv.conversationId) return false;
+  return runSelection(summary.selection, "investigate", { conversationId: summary.inv.conversationId });
+}
+
+export function retrySummary() {
+  const summary = state.summary;
+  if (!summary) return false;
+  return runSelection(summary.selection, "explain", { conversationId: summary.inv?.conversationId ?? summary.conversationId });
 }

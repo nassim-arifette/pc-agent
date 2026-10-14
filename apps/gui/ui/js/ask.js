@@ -6,7 +6,7 @@ import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { call } from "./api.js";
-import { state, notify, sendMessage, stopInvestigation, setPrivacy, setWebSearch, setFileNames, webSearchActive } from "./store.js";
+import { state, notify, sendMessage, stopInvestigation, setPrivacy, setWebSearch, setFileNames, webSearchActive, waitForPrivacy, beginTurnPreparation, endTurnPreparation } from "./store.js";
 import { button, dialog, toast } from "./ui.js";
 import { bytes } from "./format.js";
 import { navigate } from "./router.js";
@@ -102,16 +102,30 @@ function previewOf(question, conversationId) {
   return call("cloud_preview", { question, names: namesShared(), conversationId, fileNames: fileNamesShared() });
 }
 
+let shownPreview = null;
+
+function previewKey(question, conversationId) {
+  return JSON.stringify([question, conversationId, state.privacyRevision, state.privacy,
+    scanAttached() ? state.scan.scopeId : null, state.info?.cloud?.model_id,
+    state.info?.cloud?.reasoning, state.routing]);
+}
+
 /**
  * "See what leaves": the exact first message for the text in the composer (or a sample question
  * when it is empty), what it holds and what never leaves. Nothing is sent from here.
  */
 export async function showPreview(text, { followUp = false } = {}) {
+  if (state.preparing) return;
   const typed = (text || "").trim();
   const question = typed || t("consent.sample");
   let preview;
   try {
-    preview = await previewOf(question, followUp ? (state.conversation?.id ?? null) : null);
+    await waitForPrivacy();
+    const conversationId = followUp ? (state.conversation?.id ?? null) : null;
+    const key = previewKey(question, conversationId);
+    preview = await previewOf(question, conversationId);
+    // Reuse the reviewed bytes once, only if the typed question and choices are unchanged.
+    shownPreview = typed && key === previewKey(question, conversationId) ? { key, preview } : null;
   } catch (error) {
     toast(error.message, "bad");
     return;
@@ -159,28 +173,40 @@ export async function showPreview(text, { followUp = false } = {}) {
  */
 export async function ask(question, { followUp = false } = {}) {
   const text = (question || "").trim();
-  if (!text) return;
+  if (!text) return false;
   if (state.inv && (state.inv.status === "running" || state.inv.status === "stopping")) {
     navigate("chat");
-    return;
+    return false;
   }
-  const conversationId = followUp ? (state.conversation?.id ?? null) : null;
-  let previewId = null;
-  let scopeIds = [];
-  let sent = null;
-  if (effectiveMode() !== "local") {
-    try {
-      const preview = await previewOf(text, conversationId);
+  if (!beginTurnPreparation()) return false;
+  try {
+    await waitForPrivacy();
+    const conversationId = followUp ? (state.conversation?.id ?? null) : null;
+    const key = previewKey(text, conversationId);
+    const scopeId = scanAttached() ? state.scan.scopeId : null;
+    let previewId = null;
+    let scopeIds = [];
+    let sent = null;
+    const reviewed = shownPreview?.key === key ? shownPreview.preview : null;
+    shownPreview = null;
+    if (effectiveMode() !== "local") {
+      const preview = reviewed ?? await previewOf(text, conversationId);
       previewId = preview.id;
       sent = preview.message ?? null;
-      scopeIds = scanAttached() && preview.storage_folder ? [state.scan.scopeId] : [];
-    } catch (error) {
-      toast(error.message, "bad");
-      return;
+      scopeIds = scopeId && preview.storage_folder ? [scopeId] : [];
     }
+    if (key !== previewKey(text, followUp ? (state.conversation?.id ?? null) : null)) {
+      toast(t("share.changed"));
+      return false;
+    }
+    navigate("chat");
+    return await sendMessage(text, { followUp, previewId, scopeIds, sent });
+  } catch (error) {
+    toast(error.message, "bad");
+    return false;
+  } finally {
+    endTurnPreparation();
   }
-  navigate("chat");
-  await sendMessage(text, { followUp, previewId, scopeIds, sent });
 }
 
 /** From a local result or Storage: switch back to the AI when it is set up, then ask. */
@@ -204,10 +230,10 @@ export async function askLocally(question, { followUp = true } = {}) {
 }
 
 /** One toggle under the composer: pressed when that part leaves with the question. */
-function shareToggle({ iconName, label, title, pressed, onClick, unavailable = false }) {
+function shareToggle({ key, iconName, label, title, pressed, onClick, unavailable = false }) {
   return h(
     "button",
-    { type: "button", class: ["share-toggle", unavailable ? "unavailable" : ""], "aria-pressed": String(pressed), title, onclick: onClick },
+    { type: "button", class: ["share-toggle", unavailable ? "unavailable" : ""], "data-share-key": key, "aria-pressed": String(pressed), "aria-disabled": state.privacyPending > 0 ? "true" : null, title, onclick: () => { if (!state.privacyPending) onClick(); } },
     icon(iconName),
     h("span", null, label),
   );
@@ -229,6 +255,7 @@ function shareToggles({ followUp, text }) {
   };
   return [
     shareToggle({
+      key: "names",
       iconName: names ? "cloud" : "shield",
       label: t("share.names"),
       title: t(names ? "share.names.on" : "share.names.off"),
@@ -236,6 +263,7 @@ function shareToggles({ followUp, text }) {
       onClick: run(() => setPrivacy(names ? "anonymized" : "complete")),
     }),
     shareToggle({
+      key: "web",
       iconName: "globe",
       label: t("share.web"),
       title: t(!webKey ? "share.web.noKey" : web ? "share.web.on" : "share.web.off"),
@@ -250,6 +278,7 @@ function shareToggles({ followUp, text }) {
     }),
     state.scan.status === "done" && state.scan.scopeId
       ? shareToggle({
+          key: "folder",
           iconName: "folder",
           label: folder,
           title: t(attached ? "share.folder.on" : "share.folder.off", { folder }),
@@ -262,6 +291,7 @@ function shareToggles({ followUp, text }) {
       : null,
     attached && names
       ? shareToggle({
+          key: "files",
           iconName: "file",
           label: t("share.files"),
           title: t(state.privacy.file_names !== false ? "share.files.on" : "share.files.off", { folder }),
@@ -320,20 +350,27 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   const pickHost = h("span", { class: "pick-slot" });
   const sendHost = h("span", { class: "send-host" });
   const running = () => Boolean(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"));
-  const submit = () => {
-    if (running()) return;
+  const submit = async () => {
+    if (running() || state.preparing) return;
     const text = area.value;
     if (!text.trim()) return;
-    area.value = "";
-    grow();
-    ask(text, { followUp });
+    if (await ask(text, { followUp }) && area.value === text) {
+      area.value = "";
+      grow();
+    }
   };
   const refresh = () => {
+    // The welcome composer is replaced by the thread when a send starts. Keep its text stable
+    // until that handoff; otherwise edits made while preparing would be lost with the old node.
+    area.readOnly = state.preparing;
+    area.setAttribute("aria-busy", String(state.preparing));
+    const focusedShare = modeHost.contains(document.activeElement) ? document.activeElement.dataset.shareKey : null;
     const mode = effectiveMode();
     fill(modeHost, mode === "local" ? localPill() : shareToggles({ followUp, text: () => area.value }));
+    if (focusedShare) modeHost.querySelector(`[data-share-key="${CSS.escape(focusedShare)}"]`)?.focus({ preventScroll: true });
     // The model and its reasoning only matter when the question goes to the AI.
     closePicker();
-    fill(pickHost, mode === "local" ? null : modelPicker({ disabled: running() }));
+    fill(pickHost, mode === "local" ? null : modelPicker({ disabled: running() || state.preparing }));
     fill(
       sendHost,
       running()
@@ -342,7 +379,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
             { type: "button", class: "send stop", title: t("inv.stop"), "aria-label": t("inv.stop"), disabled: state.inv.status === "stopping", onclick: () => stopInvestigation() },
             icon("stop"),
           )
-        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), onclick: submit }, icon("send")),
+        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), disabled: state.preparing, onclick: submit }, icon("send")),
     );
   };
   area.addEventListener("input", grow);
@@ -370,6 +407,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   if (autofocus) requestAnimationFrame(() => area.focus());
   return {
     el,
+    text: () => area.value,
     focus: () => area.focus(),
     setText(text) {
       area.value = text;

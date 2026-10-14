@@ -46,6 +46,8 @@ enum Command {
 }
 struct Inner {
     path: PathBuf,
+    // Keep the read connection (and its revision-bound chart cache) across GUI/tool requests.
+    history_reader: Mutex<Store>,
     tx: mpsc::Sender<Command>,
     status: Arc<Mutex<SamplerStatus>>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
@@ -71,6 +73,7 @@ impl Sampler {
         // Validate the database before reporting a running sampler to the caller.
         let store = Store::open(path)?;
         store.interrupt_old_recordings(unix_ms())?;
+        let history_reader = Mutex::new(Store::open(path)?);
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(SamplerStatus {
             running: true,
@@ -87,6 +90,7 @@ impl Sampler {
             .map_err(|e| StoreError::Database(e.to_string()))?;
         Ok(Self(Arc::new(Inner {
             path: path.to_owned(),
+            history_reader,
             tx,
             status,
             worker: Mutex::new(Some(worker)),
@@ -104,7 +108,11 @@ impl Sampler {
         }
     }
     pub fn history(&self, query: &HistoryQuery) -> Result<HistorySeries, StoreError> {
-        Store::open(&self.0.path)?.metric_history(query)
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .metric_history(query)
     }
     pub fn process_peaks(
         &self,
@@ -189,8 +197,17 @@ impl Sampler {
     pub fn clear(&self) -> Result<usize, StoreError> {
         let (tx, rx) = mpsc::channel();
         self.0.tx.send(Command::Clear(tx)).map_err(|_| stopped())?;
-        rx.recv_timeout(Duration::from_secs(15))
+        let result = rx
+            .recv_timeout(Duration::from_secs(15))
+            .map_err(|_| stopped())?;
+        self.0
+            .history_reader
+            .lock()
             .map_err(|_| stopped())?
+            .history_cache
+            .borrow_mut()
+            .take();
+        result
     }
 }
 fn stopped() -> StoreError {

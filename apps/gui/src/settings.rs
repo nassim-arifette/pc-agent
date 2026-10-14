@@ -43,6 +43,15 @@ pub struct PrivacySettings {
     #[serde(default = "on")]
     pub file_names: bool,
 }
+impl PrivacySettings {
+    /// Every disclosure choice belongs to the preview ticket, including the file-name allowlist.
+    pub fn invalidates_preview(&self, previous: &Self) -> bool {
+        self.mode != previous.mode
+            || self.web_search != previous.web_search
+            || self.file_names != previous.file_names
+            || !self.confirmed
+    }
+}
 fn on() -> bool {
     true
 }
@@ -111,6 +120,22 @@ fn save_to(path: &Path, settings: &PrivacySettings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_name_changes_revoke_previews_after_the_first_send() {
+        let previous = PrivacySettings {
+            confirmed: true,
+            ..PrivacySettings::default()
+        };
+        assert!(!previous.invalidates_preview(&previous));
+        let without_names = PrivacySettings {
+            file_names: false,
+            ..previous.clone()
+        };
+        assert!(without_names.invalidates_preview(&previous));
+        assert!(previous.invalidates_preview(&without_names));
+        assert!(!without_names.invalidates_preview(&without_names));
+    }
+
     #[test]
     fn first_launch_uses_complete_sharing_with_its_toggles_on() {
         let settings = PrivacySettings::default();

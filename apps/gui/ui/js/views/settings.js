@@ -7,7 +7,7 @@ import { t } from "../i18n.js";
 import { call } from "../api.js";
 import { disclosure, modeCards, cloudReady } from "../ask.js";
 import { getPrefs, setPref } from "../prefs.js";
-import { state, subscribe, refreshInfo, clearConversations, setPrivacy, setFileNames } from "../store.js";
+import { state, subscribe, notify, refreshInfo, clearConversations, setPrivacy, setFileNames } from "../store.js";
 import { badge, button, dialog, segmented, toast, toggle } from "../ui.js";
 import { price } from "../format.js";
 import { modelName } from "../models.js";
@@ -16,6 +16,9 @@ import { webSettingsCard } from "../web.js";
 
 /** The AI form as typed and not saved yet; null fields follow the saved settings. */
 const typed = { key: "", choice: null, custom: null };
+// Saving before a connection test refreshes app info and replaces the form. Keep the operation
+// and its outcome outside those DOM nodes so redraws cannot hide it or start a duplicate test.
+const connectionTest = { running: false, check: null, error: null };
 
 function forgetTyped() {
   typed.key = "";
@@ -34,6 +37,11 @@ function aiCard() {
   const known = models.some((m) => m.id === cloud.model_id);
   const savedChoice = cloud.model_id ? (known ? cloud.model_id : "custom") : models[0]?.id || "custom";
   let choice = typed.choice ?? savedChoice;
+  const clearTestResult = () => {
+    connectionTest.check = null;
+    connectionTest.error = null;
+    result.textContent = "";
+  };
 
   const status = cloud.ready
     ? badge(t("settings.ai.ready"), "good", "check")
@@ -49,6 +57,7 @@ function aiCard() {
     spellcheck: "false",
     oninput: (e) => {
       typed.custom = e.target.value;
+      clearTestResult();
     },
   });
   const customField = h("label", { class: "field", style: { "margin-top": "8px" } }, h("span", { class: "label" }, t("settings.model.customLabel")), custom);
@@ -60,6 +69,7 @@ function aiCard() {
       onchange: (e) => {
         choice = e.target.value;
         typed.choice = choice;
+        clearTestResult();
         sync();
       },
     },
@@ -86,6 +96,7 @@ function aiCard() {
           REASONING.map((r) => ({ value: r, label: t(`picker.reasoning.${r}`) })),
           cloud.reasoning || "on",
           async (value) => {
+            clearTestResult();
             try {
               state.info.cloud = await call("save_cloud_settings", { apiKey: null, modelId: cloud.model_id, reasoning: value });
               await refreshInfo();
@@ -108,6 +119,7 @@ function aiCard() {
     "aria-label": t("settings.key"),
     oninput: (e) => {
       typed.key = e.target.value;
+      clearTestResult();
     },
   });
   const reveal = h(
@@ -126,7 +138,16 @@ function aiCard() {
     },
     icon("eye"),
   );
-  const result = h("p", { class: "hint form-result", role: "status" });
+  const testResult = connectionTest.running
+    ? t("settings.testing")
+    : connectionTest.error
+      ? t("settings.test.fail", { message: connectionTest.error })
+      : connectionTest.check
+        ? connectionTest.check.price
+          ? t("settings.test.ok", { input: price(connectionTest.check.price.input_per_million), output: price(connectionTest.check.price.output_per_million) })
+          : t("settings.test.okNoPrice")
+        : "";
+  const result = h("p", { class: "hint form-result", role: "status" }, testResult);
   const modelId = () => (choice === "custom" ? custom.value.trim() : choice);
   const changed = () => Boolean(key.value.trim()) || modelId() !== (cloud.model_id || "");
 
@@ -151,31 +172,33 @@ function aiCard() {
     iconName: "plug",
     title: t("settings.test.title"),
     onClick: async () => {
-      testButton.disabled = true;
+      if (connectionTest.running) return;
+      const needsSave = changed();
+      connectionTest.running = true;
+      connectionTest.check = null;
+      connectionTest.error = null;
+      notify("connection-test");
       try {
-        if (changed() && !(await save())) return;
-        result.textContent = t("settings.testing");
-        const check = await call("test_cloud");
-        result.textContent = check.price
-          ? t("settings.test.ok", { input: price(check.price.input_per_million), output: price(check.price.output_per_million) })
-          : t("settings.test.okNoPrice");
+        if (needsSave && !(await save())) return;
+        connectionTest.check = await call("test_cloud");
       } catch (error) {
-        result.textContent = t("settings.test.fail", { message: error.message });
+        connectionTest.error = error.message;
       } finally {
-        if (testButton.isConnected) testButton.disabled = false;
+        connectionTest.running = false;
+        notify("connection-test");
       }
     },
   });
 
   // A form, so Enter in the key field saves; nothing is submitted anywhere.
-  return h(
+  const form = h(
     "form",
     {
       class: "card card-pad",
       autocomplete: "off",
       onsubmit: (e) => {
         e.preventDefault();
-        save();
+        if (!connectionTest.running) save();
       },
     },
     h("div", { class: "card-head" }, h("div", null, h("h2", { class: "card-title" }, icon("sparkle"), t("settings.ai.title")), h("p", { class: "hint" }, t("settings.ai.sub"))), status),
@@ -193,6 +216,10 @@ function aiCard() {
     reasoning ? h("div", { class: "card-rows" }, reasoning) : null,
     cloud.file ? h("p", { class: "note", style: { "margin-top": "10px" } }, t("settings.file", { path: cloud.file })) : null,
   );
+  if (connectionTest.running) {
+    for (const control of form.querySelectorAll("input, select, button")) control.disabled = true;
+  }
+  return form;
 }
 
 function privacyCard() {
@@ -400,7 +427,7 @@ export function mount(page) {
   // changed policy notifies "info", which draws the page again.
   refreshRouting();
   const unsubscribe = subscribe((topic) => {
-    if (topic === "info") render();
+    if (topic === "info" || topic === "connection-test") render();
     // Web search exists only with AI analysis: its card follows the sharing choice.
     else if (topic === "privacy") web?.redraw();
   });

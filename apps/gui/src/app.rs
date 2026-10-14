@@ -843,13 +843,8 @@ fn privacy_set(
     settings: PrivacySettings,
 ) -> Result<PrivacySettings, String> {
     settings::save(&settings)?;
-    // A reviewed preview says whether web lookups may run: changing that consent needs a new one.
-    let invalidates_preview = {
-        let current = lock(&state.privacy);
-        current.mode != settings.mode
-            || current.web_search != settings.web_search
-            || !settings.confirmed
-    };
+    // Every sharing toggle belongs to the frozen preview; changing one needs a new ticket.
+    let invalidates_preview = settings.invalidates_preview(&lock(&state.privacy));
     *lock(&state.privacy) = settings.clone();
     if invalidates_preview {
         state.preview_revision.fetch_add(1, Ordering::SeqCst);

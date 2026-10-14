@@ -1,6 +1,6 @@
 // The context panel on the right: closed by default, opened from a citation, the PC status or a
-// storage link. Three tabs: the sources of the conversation's answers, live measurements, and
-// the last folder analysis.
+// storage link. The selected summary, conversation sources, live measurements and last folder
+// analysis keep their own context.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -10,6 +10,8 @@ import { numbering, citationTitle, isWeb } from "./citations.js";
 import { webSourceCard } from "./web.js";
 import { bytes, clock, date, labelled, number, price, usd } from "./format.js";
 import { navigate } from "./router.js";
+import { mountSelectionInspector } from "./selection-inspector.js";
+import { keepFocus } from "./actionbar.js";
 
 const TABS = [
   { id: "sources", label: "panel.sources" },
@@ -182,10 +184,33 @@ function storageView() {
 }
 
 const appsView = { sort: "memory", expanded: null };
+let disposePanel = null;
 
 export function mountPanel(host) {
+  disposePanel?.();
+  let disposeSummary = null;
+  let showingSummary = false;
+  let wasOpen = false;
+  let returnFocus = null;
+  let returnKey = null;
+  const close = () => {
+    closePanel();
+    const target = returnFocus?.isConnected ? returnFocus : returnKey ? document.querySelector(`[data-key="${CSS.escape(returnKey)}"]`) : null;
+    target?.focus({ preventScroll: true });
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    } else if (state.panel.tab === "selection" && ["e", "E", "Enter"].includes(event.key)) {
+      // The data view's shortcuts must not start another selection while using this inspector.
+      event.stopPropagation();
+    }
+  };
+  host.addEventListener("keydown", onKey);
   // Applications are measured only while the Live PC tab is open (see watchActivity).
-  watchActivity(() => state.panel.open && state.panel.tab === "live");
+  const stopWatching = watchActivity(() => state.panel.open && state.panel.tab === "live");
   const tabs = h("div", { class: "tabs-pill", role: "tablist", "aria-label": t("panel.label") });
   const body = h("div", { class: "panel-body", role: "tabpanel" });
   fill(
@@ -198,7 +223,7 @@ export function mountPanel(host) {
         { class: "panel-top" },
         tabs,
         h("span", { class: "spacer" }),
-        h("button", { type: "button", class: "icon-btn", title: t("panel.close"), "aria-label": t("panel.close"), onclick: closePanel }, icon("x")),
+        h("button", { type: "button", class: "icon-btn", title: t("panel.close"), "aria-label": t("panel.close"), onclick: close }, icon("x")),
       ),
       body,
     ),
@@ -206,14 +231,15 @@ export function mountPanel(host) {
 
   const renderTabs = () => {
     const sources = answeredTurns().reduce((n, { turn }) => n + turn.report.answer.citations.length, 0);
-    fill(
+    keepFocus(tabs, () => fill(
       tabs,
-      TABS.map((tab) =>
+      (state.summary ? [{ id: "selection", label: "panel.selection" }, ...TABS] : TABS).map((tab) =>
         h(
           "button",
           {
             type: "button",
             role: "tab",
+            "data-key": `panel:${tab.id}`,
             "aria-selected": String(state.panel.tab === tab.id),
             onclick: () => openPanel(tab.id),
           },
@@ -221,17 +247,42 @@ export function mountPanel(host) {
           tab.id === "sources" && sources ? h("span", { class: "count" }, String(sources)) : null,
         ),
       ),
-    );
+    ));
   };
 
   const render = () => {
+    if (state.panel.open && state.panel.tab === "selection" && !state.summary) {
+      close();
+      return;
+    }
+    if (state.panel.open && !wasOpen) {
+      returnFocus = document.activeElement;
+      returnKey = returnFocus?.closest?.("[data-key]")?.dataset.key || null;
+    }
+    wasOpen = state.panel.open;
     host.classList.toggle("open", state.panel.open);
     host.setAttribute("aria-hidden", String(!state.panel.open));
     host.inert = !state.panel.open;
-    if (!state.panel.open) return;
+    if (!state.panel.open) {
+      disposeSummary?.();
+      disposeSummary = null;
+      showingSummary = false;
+      return;
+    }
     renderTabs();
     const tab = state.panel.tab;
-    if (tab === "sources") fill(body, sourcesView());
+    if (tab === "selection" && state.summary) {
+      if (!showingSummary) {
+        showingSummary = true;
+        fill(body);
+        disposeSummary = mountSelectionInspector(body);
+      }
+      return;
+    }
+    disposeSummary?.();
+    disposeSummary = null;
+    showingSummary = false;
+    if (tab === "sources" || tab === "selection") fill(body, sourcesView());
     else if (tab === "live") {
       fill(
         body,
@@ -259,12 +310,18 @@ export function mountPanel(host) {
   };
 
   render();
-  subscribe((topic) => {
+  const unsubscribe = subscribe((topic) => {
     if (topic === "panel") pokeActivity();
-    if (topic === "panel" || topic === "conversation") render();
+    if (topic === "panel" || topic === "conversation" || topic === "summary") render();
     else if (topic === "live" && state.panel.open && (state.panel.tab === "live" || state.panel.tab === "storage")) render();
     else if (topic === "scan" && state.panel.open && state.panel.tab === "storage") render();
   });
+  disposePanel = () => {
+    disposeSummary?.();
+    unsubscribe();
+    stopWatching();
+    host.removeEventListener("keydown", onKey);
+  };
 }
 
 /** Opens the sources on one citation of one turn. */

@@ -18,6 +18,7 @@ pub use samples::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::path::Path;
 use thiserror::Error;
 
@@ -73,6 +74,7 @@ pub struct Conversation {
 
 pub struct Store {
     conn: Connection,
+    history_cache: RefCell<Option<samples::HistoryCache>>,
 }
 
 /// A title from the first question: its first line, trimmed and shortened.
@@ -165,7 +167,10 @@ impl Store {
         if version < 5 {
             conn.execute_batch(battery::MIGRATION)?;
         }
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            history_cache: RefCell::new(None),
+        })
     }
 
     /// Starts a conversation titled after its first question.

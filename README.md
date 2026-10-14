@@ -32,9 +32,11 @@ language (English, French) and animations.
 
 Each question starts or continues a conversation. A follow-up reads the earlier questions and answers again, then measures afresh. Conversations are kept only on this PC, in `%APPDATA%\pcagent\pcagent.sqlite` next to the settings, for 90 days. They are listed in the sidebar, and they can be deleted one by one or all at once from Settings.
 
-Local analysis is the default. Before an AI investigation, the window lists what is sent and
-what is never sent, can show the exact first message, and asks for confirmation; budget
-extensions are asked the same way, with the cost so far. The key is stored by the Rust side in
+With a usable key and model, questions use the AI by default. Remembered toggles under the composer
+control program names, file names from an attached scan, and web search (when its key is configured).
+They start enabled; the folder chip can detach a scan. *See what leaves* opens the exact first
+message on demand, without a confirmation dialog before sending. Settings also offer local analysis.
+Budget extensions still ask for approval, with the cost so far. The key is stored by the Rust side in
 the same `%APPDATA%\pcagent\.env` file as the CLI and never reaches the page.
 
 ![Welcome screen: the question box, suggested questions and the PC status](docs/images/gui-home.png)
@@ -118,10 +120,10 @@ NEBIUS_API_KEY=<your key>
 NEBIUS_MODEL_ID=nvidia/nemotron-3-super-120b-a12b
 ```
 
-Only these two names are read from that file, and environment variables take precedence over it. A `.env` in the current directory is never read: running pcagent inside someone else's folder must not send your question and measurements to their account. `pcagent doctor` shows where each value comes from.
+Only `NEBIUS_API_KEY`, `NEBIUS_MODEL_ID`, `NEBIUS_REASONING` and `TAVILY_API_KEY` are read from that file, and environment variables take precedence over it. A `.env` in the current directory is never read: running pcagent inside someone else's folder must not send your question and measurements to their account. `pcagent doctor` shows where each value comes from.
 
 `--allow-cloud` authorizes this invocation to send the following to Nebius:
-- **your question verbatim**;
+- **your question after local filtering of identities and secrets**;
 - usable metric values grouped by entity, with their units and observation windows;
 - a summary of unmeasured metrics, coverage and limitations;
 - opaque process references (`proc-<8 hex>`) and NVIDIA GPU indexes (`gpu-nvidia-0`);

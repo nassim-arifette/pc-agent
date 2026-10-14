@@ -416,7 +416,7 @@ function render() {
     head,
     h(
       "div",
-      { class: "livepage" },
+      { class: ["livepage", state.panel.open && state.panel.tab === "selection" && "with-summary"] },
       h(
         "div",
         { class: "livepage-main", "data-actbar-bounds": true },
@@ -425,7 +425,7 @@ function render() {
         applications(item),
         hidden ? h("p", { class: "note" }, t("procs.hidden", { count: hidden })) : null,
       ),
-      inspector(item),
+      state.panel.open && state.panel.tab === "selection" ? null : inspector(item),
     ),
   );
   if (focusedKey) host.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus({ preventScroll: true });
@@ -445,7 +445,7 @@ export function mount(page) {
   render();
   pokeActivity();
   const unsubscribe = subscribe((topic) => {
-    if (topic === "live") render();
+    if (topic === "live" || topic === "panel") render();
   });
   return () => {
     host = null;

@@ -1,5 +1,5 @@
 //! Observed process resource peaks, including spikes below system anomaly thresholds.
-use crate::{stored, Store, StoreError, StoredSample, SAMPLE_RETENTION_MS};
+use crate::{stored, Store, StoreError, SAMPLE_RETENTION_MS};
 use pcagent_shared::{Evidence, Metric, Origin, Status, Window};
 use rusqlite::params;
 use serde::Serialize;
@@ -93,8 +93,7 @@ impl Store {
                 );
                 break;
             }
-            let sample: StoredSample =
-                serde_json::from_str(&row?).map_err(|_| StoreError::Corrupt)?;
+            let sample = super::samples::decode_sample(&row?)?;
             if sample.measured_at_unix_ms < from_unix_ms
                 && (sample.resolution_ms < 60_000
                     || sample
@@ -218,6 +217,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StoredSample;
     use pcagent_shared::Snapshot;
 
     fn sample(session: &str, at: u64, cpu: Option<u64>) -> StoredSample {
