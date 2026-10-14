@@ -110,24 +110,29 @@ export function togglePanel() {
 // ---------- Live measurements ----------
 
 const LIVE_MS = 5000;
+// A processor rate needs two samples: a first read without one is followed up quickly.
+const LIVE_RETRY_MS = 1200;
 const HISTORY = 24;
 let liveTimer = null;
 
 async function liveTick() {
   window.clearTimeout(liveTimer);
   const live = state.live;
+  let next = LIVE_MS;
   if (!live.paused && !document.hidden) {
     try {
       live.dash = await call("dashboard");
       live.error = null;
       live.history.push(live.dash);
       if (live.history.length > HISTORY) live.history.shift();
+      const busy = live.dash?.cpu?.busy;
+      if (busy && busy.value == null && busy.status === "partial") next = LIVE_RETRY_MS;
     } catch (error) {
       live.error = error.message;
     }
     notify("live");
   }
-  liveTimer = window.setTimeout(liveTick, LIVE_MS);
+  liveTimer = window.setTimeout(liveTick, next);
 }
 
 /** Measures every 5 s while the window is visible; the first sample comes right away. */
