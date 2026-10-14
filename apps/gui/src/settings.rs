@@ -1,4 +1,7 @@
-//! Local C5 sharing preferences. Corrupt or missing state never silently authorizes cloud use.
+//! Local C5 sharing preferences. Since 9 October nothing waits for a confirmation dialog: the
+//! composer's toggles show what leaves, on by default, and the exact preview is one click away.
+//! Corrupt or missing state falls back to those defaults; a cloud request still needs a saved key
+//! and a single-use preview ticket for its question.
 use pcagent_agent::{credentials, Sharing};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -25,14 +28,33 @@ impl PrivacyMode {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivacySettings {
     pub mode: PrivacyMode,
+    /// Set by the first cloud send; kept for the record, no longer required before one.
     pub confirmed: bool,
-    /// Web lookups (C6): a separate, remembered consent; never in local mode.
-    #[serde(default)]
+    /// Web lookups (C6): their own remembered toggle, on by default; never in local mode, and
+    /// without effect until a Tavily key is saved.
+    #[serde(default = "on")]
     pub web_search: bool,
+    /// Names from the finite list of an attached scanned folder (C5), on by default; complete
+    /// sharing only, and bound to each preview ticket.
+    #[serde(default = "on")]
+    pub file_names: bool,
+}
+fn on() -> bool {
+    true
+}
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            mode: PrivacyMode::default(),
+            confirmed: false,
+            web_search: true,
+            file_names: true,
+        }
+    }
 }
 
 fn path() -> Option<PathBuf> {
@@ -90,11 +112,23 @@ fn save_to(path: &Path, settings: &PrivacySettings) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
-    fn first_launch_proposes_complete_without_authorizing_a_request() {
+    fn first_launch_uses_complete_sharing_with_its_toggles_on() {
         let settings = PrivacySettings::default();
         assert_eq!(settings.mode, PrivacyMode::Complete);
         assert!(!settings.confirmed);
+        assert!(settings.web_search && settings.file_names);
         assert_eq!(PrivacyMode::Local.sharing(), None);
+        // A file saved before the toggles existed keeps its mode and gets them on.
+        let older: PrivacySettings =
+            serde_json::from_str(r#"{"mode":"anonymized","confirmed":true}"#).unwrap();
+        assert_eq!(older.mode, PrivacyMode::Anonymized);
+        assert!(older.web_search && older.file_names);
+        // A toggle turned off stays off.
+        let off: PrivacySettings = serde_json::from_str(
+            r#"{"mode":"complete","confirmed":true,"web_search":false,"file_names":false}"#,
+        )
+        .unwrap();
+        assert!(!off.web_search && !off.file_names);
         assert!(serde_json::from_str::<PrivacySettings>(
             r#"{"mode":"complete","confirmed":true,"api_key":"not-accepted"}"#
         )
@@ -114,6 +148,7 @@ mod tests {
                 mode,
                 confirmed: true,
                 web_search: mode != PrivacyMode::Local,
+                file_names: mode == PrivacyMode::Complete,
             };
             save_to(&path, &expected).unwrap();
             assert_eq!(load_from(&path).unwrap(), expected);

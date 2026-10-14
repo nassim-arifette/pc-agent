@@ -1,11 +1,12 @@
-// The question composer and the flow that sends it: the stored sharing choice (complete,
-// anonymized or local), and before anything leaves for Nebius, an exact preview of the first
-// message, including the cleaned question and any file names, approved with a single-use ticket.
+// The question composer and the flow that sends it. Toggles under the text say what leaves for
+// Nebius (program names, web lookups, an attached folder and its file names), on by default and
+// remembered; "See what leaves" shows the exact first message. No dialog stands before a send:
+// each cloud question still takes its exact preview just before, bound to a single-use ticket.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { call } from "./api.js";
-import { state, sendMessage, stopInvestigation, setPrivacy } from "./store.js";
+import { state, notify, sendMessage, stopInvestigation, setPrivacy, setWebSearch, setFileNames, webSearchActive } from "./store.js";
 import { button, dialog, toast } from "./ui.js";
 import { bytes } from "./format.js";
 import { navigate } from "./router.js";
@@ -34,7 +35,7 @@ export function disclosure(preview, mode = state.privacy.mode) {
   const names = mode === "complete";
   const sent = [
     t("consent.sent.question"),
-    preview?.message?.previous_turns?.length ? t("consent.sent.history", { count: preview.message.previous_turns.length }) : null,
+    preview?.message?.previous_turns?.length ? t(preview.message.previous_turns.length === 1 ? "consent.sent.history.one" : "consent.sent.history", { count: preview.message.previous_turns.length }) : null,
     preview ? t("consent.sent.measures", { count: preview.measured }) : null,
     preview ? t("consent.sent.findings", { count: preview.findings }) : null,
     names ? (preview?.names ? t("consent.sent.names", { count: preview.names }) : t("consent.sent.namesAny")) : t("consent.sent.refs"),
@@ -80,236 +81,82 @@ export function modeCards(selected, onPick) {
   );
 }
 
-/** Opens the sharing choice; resolves with the stored settings, or null when dismissed. */
-export async function choosePrivacy() {
-  let picked = state.privacy.mode;
-  const host = h("div");
-  const draw = () => fill(host, modeCards(picked, (mode) => {
-    picked = mode;
-    draw();
-  }));
-  draw();
-  const mode = await dialog(
-    (close) => [
-      h("h2", { class: "dialog-title" }, t("privacy.title")),
-      h("p", null, t("privacy.lead")),
-      host,
-      h(
-        "div",
-        { class: "dialog-actions" },
-        button(t("common.cancel"), { onClick: () => close(null) }),
-        button(t("privacy.save"), { variant: "primary", onClick: () => close(picked) }),
-      ),
-    ],
-    { label: t("privacy.title"), dismissValue: null },
-  );
-  if (!mode) return null;
-  if (mode !== "local" && !cloudReady()) {
-    toast(t("mode.cloud.setup"), "bad");
-    navigate("settings");
-    return null;
-  }
-  // Choosing a cloud mode here is not consent: the first preview still has to be approved.
-  return setPrivacy(mode, mode === "local" ? true : state.privacy.mode === mode && state.privacy.confirmed);
-}
-
 function folderName(path) {
   const trimmed = (path || "").replace(/[\\/]+$/, "");
   return trimmed.split(/[\\/]/).pop() || trimmed;
 }
 
-/** Previews and asks; resolves with { previewId, scopeIds } or null when the person cancels. */
-async function consent(question, conversationId) {
-  const names = namesShared();
-  let fileNames = false;
-  let preview = null;
+/** The finished scan goes with the questions unless the person detached it in the composer. */
+export function scanAttached() {
+  const scan = state.scan;
+  return scan.status === "done" && Boolean(scan.scopeId) && state.scanDetached !== scan.scopeId;
+}
+
+/** The names of the attached folder's files go too: complete sharing and its toggle on. */
+function fileNamesShared() {
+  return scanAttached() && namesShared() && state.privacy.file_names !== false;
+}
+
+/** The exact preview of a question as it would leave now, with its single-use ticket. */
+function previewOf(question, conversationId) {
+  return call("cloud_preview", { question, names: namesShared(), conversationId, fileNames: fileNamesShared() });
+}
+
+/**
+ * "See what leaves": the exact first message for the text in the composer (or a sample question
+ * when it is empty), what it holds and what never leaves. Nothing is sent from here.
+ */
+export async function showPreview(text, { followUp = false } = {}) {
+  const typed = (text || "").trim();
+  const question = typed || t("consent.sample");
+  let preview;
   try {
-    preview = await call("cloud_preview", { question, names, conversationId, fileNames });
+    preview = await previewOf(question, followUp ? (state.conversation?.id ?? null) : null);
   } catch (error) {
     toast(error.message, "bad");
-    return null;
+    return;
   }
-  let useStorage = Boolean(preview.storage_folder);
-  let dontAsk = false;
-  let revision = 0;
-  let pending = false;
-  let closed = false;
-  let sendButton = null;
-  const listHost = h("div");
-  const questionHost = h("div");
-  const filesHost = h("div");
-  const messageHost = h("div");
-  const draw = () => {
-    fill(listHost, disclosure(preview));
-    // The question as it will be sent, after identities and secrets were removed.
-    const sent = preview.message?.question ?? question;
-    fill(
-      questionHost,
+  const sent = preview.message?.question ?? question;
+  const files = preview.file_name_sharing?.names || [];
+  await dialog(
+    (close) => [
+      h("div", { class: "dialog-head" }, h("div", { class: "metric-icon" }, icon("eye")), h("h2", { class: "dialog-title" }, t("consent.preview.title"))),
+      h("p", null, t("consent.preview.lead")),
       h(
         "div",
         { class: "sent-question" },
-        h("span", { class: "caption" }, t("consent.question")),
+        h("span", { class: "caption" }, t(typed ? "consent.question" : "consent.question.sample")),
         h("q", null, sent),
         sent.trim() !== question.trim() ? h("span", { class: "note" }, icon("shield"), t("consent.question.cleaned")) : null,
       ),
-    );
-    const shared = preview.file_name_sharing?.names || [];
-    fill(
-      filesHost,
-      fileNames && shared.length
+      disclosure(preview),
+      webConsentNote(),
+      files.length
         ? h(
             "div",
             { class: "file-names" },
-            h("span", { class: "caption" }, t("consent.files.list", { count: shared.length })),
-            h("ul", null, shared.slice(0, 40).map((n) => h("li", null, h("span", { class: "mono" }, n.relative_path || n.name)))),
-            shared.length > 40 ? h("span", { class: "note" }, t("consent.files.more", { count: shared.length - 40 })) : null,
+            h("span", { class: "caption" }, t("consent.files.list", { count: files.length })),
+            h("ul", null, files.slice(0, 40).map((n) => h("li", null, h("span", { class: "mono" }, n.relative_path || n.name)))),
+            files.length > 40 ? h("span", { class: "note" }, t("consent.files.more", { count: files.length - 40 })) : null,
           )
         : null,
-    );
-    fill(
-      messageHost,
       h(
         "details",
         { class: "more" },
         h("summary", null, icon("chevron"), t("consent.show")),
         h("div", null, h("p", { class: "note" }, t("consent.size", { size: bytes(preview.bytes) })), h("pre", { class: "code" }, JSON.stringify(preview.message, null, 2))),
       ),
-    );
-  };
-  draw();
-  /** A new preview replaces the ticket; sending waits for it and ignores older answers. */
-  const repreview = async () => {
-    const request = ++revision;
-    pending = true;
-    if (sendButton) sendButton.disabled = true;
-    try {
-      const next = await call("cloud_preview", { question, names, conversationId, fileNames });
-      if (closed || request !== revision) return;
-      preview = next;
-      pending = false;
-      if (sendButton) sendButton.disabled = false;
-      draw();
-    } catch (error) {
-      if (closed || request !== revision) return;
-      preview = null;
-      fill(messageHost, h("p", { class: "note" }, error.message));
-      toast(error.message, "bad");
-    }
-  };
-  const storageRow = preview.storage_folder
-    ? h(
-        "label",
-        { class: "check" },
-        h("input", {
-          type: "checkbox",
-          checked: true,
-          onchange: (e) => {
-            useStorage = e.target.checked;
-            if (!useStorage && fileNames) {
-              fileNames = false;
-              filesRow.querySelector("input").checked = false;
-              repreview();
-            }
-          },
-        }),
-        t("consent.storage", { folder: folderName(preview.storage_folder) }),
-      )
-    : null;
-  // File names are a separate consent, only in complete sharing and for the scanned folder.
-  const filesRow =
-    preview.storage_folder && names
-      ? h(
-          "label",
-          { class: "check" },
-          h("input", {
-            type: "checkbox",
-            onchange: (e) => {
-              fileNames = e.target.checked;
-              if (fileNames && !useStorage) {
-                useStorage = true;
-                storageRow.querySelector("input").checked = true;
-              }
-              repreview();
-            },
-          }),
-          h("span", null, h("strong", null, t("consent.files")), h("span", { class: "hint" }, ` — ${t("consent.files.note")}`)),
-        )
-      : null;
-  const modeRow = h(
-    "div",
-    { class: "consent-mode" },
-    icon(MODE_ICONS[state.privacy.mode]),
-    h("span", null, h("strong", null, t(`privacy.${state.privacy.mode}`)), " · ", t(`privacy.${state.privacy.mode}.note`)),
-    h("span", { class: "spacer" }),
+      h("div", { class: "dialog-actions" }, button(t("common.close"), { variant: "primary", onClick: () => close(null) })),
+    ],
+    { label: t("consent.preview.title"), dismissValue: null },
   );
-  const decision = await dialog(
-    (close) => {
-      modeRow.append(
-        h("button", { type: "button", class: "link-btn", onclick: () => close({ change: true }) }, t("privacy.change")),
-      );
-      return [
-        h("div", { class: "dialog-head" }, h("div", { class: "metric-icon" }, icon("cloud")), h("h2", { class: "dialog-title" }, t("consent.title"))),
-        h("p", null, t("consent.lead")),
-        modeRow,
-        questionHost,
-        listHost,
-        webConsentNote(),
-        storageRow,
-        filesRow,
-        filesHost,
-        messageHost,
-        h(
-          "label",
-          { class: "check" },
-          h("input", {
-            type: "checkbox",
-            onchange: (e) => {
-              dontAsk = e.target.checked;
-            },
-          }),
-          t("consent.dontAsk"),
-        ),
-        h(
-          "div",
-          { class: "dialog-actions" },
-          button(t("common.cancel"), { onClick: () => close(null) }),
-          (sendButton = h(
-            "button",
-            {
-              type: "button",
-              class: "btn btn-primary",
-              "data-autofocus": true,
-              onclick: () => {
-                if (pending || !preview) return;
-                close({ send: true });
-              },
-            },
-            icon("send"),
-            t("consent.send"),
-          )),
-        ),
-      ];
-    },
-    { label: t("consent.title"), dismissValue: null },
-  );
-  closed = true;
-  if (!decision) return null;
-  if (decision.change) {
-    const settings = await choosePrivacy();
-    return settings ? { retry: true } : null;
-  }
-  // Approving this preview confirms the stored choice; the same mode keeps the ticket valid.
-  if (!state.privacy.confirmed) await setPrivacy(state.privacy.mode, true);
-  if (dontAsk) {
-    state.skipConsent = true;
-    state.lastUseStorage = useStorage;
-    state.lastStorageFolder = useStorage ? preview.storage_folder : null;
-    state.lastFileNames = fileNames;
-  }
-  return { previewId: preview.id, scopeIds: useStorage && state.scan.scopeId ? [state.scan.scopeId] : [] };
 }
 
-/** Sends a question from any screen: a follow-up of the open conversation, or a new one. */
+/**
+ * Sends a question from any screen: a follow-up of the open conversation, or a new one. A cloud
+ * question leaves as the composer's toggles say, without a dialog (C5, 9 October): its exact
+ * preview is taken just before, bound to a single-use ticket, and kept in the turn's steps.
+ */
 export async function ask(question, { followUp = false } = {}) {
   const text = (question || "").trim();
   if (!text) return;
@@ -317,60 +164,147 @@ export async function ask(question, { followUp = false } = {}) {
     navigate("chat");
     return;
   }
-  // First cloud question: the choice itself is made deliberately, once. Without a usable key the
-  // question is answered locally, as the composer and status already say.
-  if (effectiveMode() !== "local" && !state.privacy.confirmed && !state.privacyAsked) {
-    state.privacyAsked = true;
-    const settings = await choosePrivacy();
-    if (!settings) return;
-  }
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
   let previewId = null;
   let scopeIds = [];
+  let sent = null;
   if (effectiveMode() !== "local") {
-    if (state.skipConsent && state.privacy.confirmed) {
-      try {
-        const fileNames = Boolean(state.lastFileNames && namesShared());
-        const preview = await call("cloud_preview", { question: text, names: namesShared(), conversationId, fileNames });
-        previewId = preview.id;
-        // Session consent applies to the folder actually approved, not to a later different scan.
-        const sameFolder = Boolean(state.lastUseStorage && preview.storage_folder && preview.storage_folder === state.lastStorageFolder);
-        scopeIds = sameFolder && state.scan.scopeId ? [state.scan.scopeId] : [];
-      } catch (error) {
-        toast(error.message, "bad");
-        return;
-      }
-    } else {
-      const decision = await consent(text, conversationId);
-      if (!decision) return;
-      if (decision.retry) return ask(text, { followUp });
-      previewId = decision.previewId;
-      scopeIds = decision.scopeIds;
+    try {
+      const preview = await previewOf(text, conversationId);
+      previewId = preview.id;
+      sent = preview.message ?? null;
+      scopeIds = scanAttached() && preview.storage_folder ? [state.scan.scopeId] : [];
+    } catch (error) {
+      toast(error.message, "bad");
+      return;
     }
-  } else if (state.scan.status === "done" && state.scan.scopeId && state.attachScan) {
-    scopeIds = [state.scan.scopeId];
   }
   navigate("chat");
-  await sendMessage(text, { followUp, previewId, scopeIds });
+  await sendMessage(text, { followUp, previewId, scopeIds, sent });
 }
 
-/** From a local result or Storage: choose a cloud mode first if needed, then ask. */
+/** From a local result or Storage: switch back to the AI when it is set up, then ask. */
 export async function askWithAi(question, { followUp = true } = {}) {
   if (effectiveMode() === "local") {
-    const settings = await choosePrivacy();
-    if (!settings || settings.mode === "local") return;
+    if (!cloudReady()) {
+      toast(t("mode.cloud.setup"), "bad");
+      navigate("settings");
+      return;
+    }
+    await setPrivacy("complete");
   }
   return ask(question, { followUp });
 }
 
 /** Answers locally once, after a cloud failure, by switching the stored choice to local. */
 export async function askLocally(question, { followUp = true } = {}) {
-  await setPrivacy("local", true);
+  await setPrivacy("local");
   toast(t("privacy.switchedLocal"));
   return ask(question, { followUp });
 }
 
-/** The composer: a growing text area, the sharing choice, and Send or Stop while a run is going. */
+/** One toggle under the composer: pressed when that part leaves with the question. */
+function shareToggle({ iconName, label, title, pressed, onClick, unavailable = false }) {
+  return h(
+    "button",
+    { type: "button", class: ["share-toggle", unavailable ? "unavailable" : ""], "aria-pressed": String(pressed), title, onclick: onClick },
+    icon(iconName),
+    h("span", null, label),
+  );
+}
+
+/** What leaves with a cloud question, each part one click away from being left out. */
+function shareToggles({ followUp, text }) {
+  const names = namesShared();
+  const webKey = Boolean(state.info?.cloud?.search_key_configured);
+  const web = webSearchActive();
+  const attached = scanAttached();
+  const folder = folderName(state.scan.root);
+  const run = (change) => async () => {
+    try {
+      await change();
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  };
+  return [
+    shareToggle({
+      iconName: names ? "cloud" : "shield",
+      label: t("share.names"),
+      title: t(names ? "share.names.on" : "share.names.off"),
+      pressed: names,
+      onClick: run(() => setPrivacy(names ? "anonymized" : "complete")),
+    }),
+    shareToggle({
+      iconName: "globe",
+      label: t("share.web"),
+      title: t(!webKey ? "share.web.noKey" : web ? "share.web.on" : "share.web.off"),
+      pressed: web,
+      unavailable: !webKey,
+      onClick: webKey
+        ? run(() => setWebSearch(!state.privacy.web_search))
+        : () => {
+            toast(t("share.web.noKey"));
+            navigate("settings");
+          },
+    }),
+    state.scan.status === "done" && state.scan.scopeId
+      ? shareToggle({
+          iconName: "folder",
+          label: folder,
+          title: t(attached ? "share.folder.on" : "share.folder.off", { folder }),
+          pressed: attached,
+          onClick: () => {
+            state.scanDetached = attached ? state.scan.scopeId : null;
+            notify("privacy");
+          },
+        })
+      : null,
+    attached && names
+      ? shareToggle({
+          iconName: "file",
+          label: t("share.files"),
+          title: t(state.privacy.file_names !== false ? "share.files.on" : "share.files.off", { folder }),
+          pressed: state.privacy.file_names !== false,
+          onClick: run(() => setFileNames(state.privacy.file_names === false)),
+        })
+      : null,
+    h(
+      "button",
+      { type: "button", class: "icon-btn share-preview", title: t("share.preview"), "aria-label": t("share.preview"), onclick: () => showPreview(text(), { followUp }) },
+      icon("eye"),
+    ),
+  ];
+}
+
+/** Local analysis: nothing leaves. A click goes back to the AI, or to Settings to set it up. */
+function localPill() {
+  const noKey = state.privacy.mode !== "local";
+  return h(
+    "button",
+    {
+      type: "button",
+      class: "mode-pill",
+      title: t(cloudReady() ? "share.local.back" : "mode.cloud.setup"),
+      onclick: async () => {
+        if (!cloudReady()) {
+          navigate("settings");
+          return;
+        }
+        try {
+          await setPrivacy("complete");
+        } catch (error) {
+          toast(error.message, "bad");
+        }
+      },
+    },
+    icon(MODE_ICONS.local),
+    h("span", null, t("mode.pill.local")),
+    noKey ? h("span", { class: "faint" }, `· ${t("mode.pill.noKey")}`) : null,
+  );
+}
+
+/** The composer: a growing text area, the sharing toggles, and Send or Stop while a run is going. */
 export function composer({ autofocus = false, followUp = false, big = false } = {}) {
   const area = h("textarea", {
     rows: big ? 3 : 1,
@@ -396,16 +330,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   };
   const refresh = () => {
     const mode = effectiveMode();
-    fill(
-      modeHost,
-      h(
-        "button",
-        { type: "button", class: "mode-pill", title: t("mode.pill.title"), onclick: () => choosePrivacy() },
-        icon(MODE_ICONS[mode]),
-        h("span", null, t(`mode.pill.${mode}`)),
-        mode === "local" && state.privacy.mode !== "local" ? h("span", { class: "faint" }, `· ${t("mode.pill.noKey")}`) : null,
-      ),
-    );
+    fill(modeHost, mode === "local" ? localPill() : shareToggles({ followUp, text: () => area.value }));
     // The model and its reasoning only matter when the question goes to the AI.
     closePicker();
     fill(pickHost, mode === "local" ? null : modelPicker({ disabled: running() }));
