@@ -200,7 +200,7 @@ export function mount(page) {
           "div",
           { class: "card stat" },
           h("span", { class: "stat-label" }, t("storage.size")),
-          h("span", { class: "stat-value" }, view.scanned_text ?? "—"),
+          h("span", { class: "stat-value" }, view.scanned ? bytes(Math.max(view.scanned.allocated_bytes, view.scanned.logical_bytes)) : "—"),
           h("span", { class: "hint" }, scanned ? t("storage.files", { count: number(scanned.files) }) : ""),
         ),
         h(
