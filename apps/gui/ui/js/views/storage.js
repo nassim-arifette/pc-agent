@@ -166,7 +166,7 @@ export function mount(page) {
       h(
         "div",
         { class: "list-value" },
-        item.size_text,
+        bytes(item.size),
         item.status !== "ok" ? h("span", { class: "partial-mark", title: t("storage.itemPartial"), "aria-label": t("storage.itemPartial") }, icon("info")) : null,
       ),
       h("div", { class: "date" }, item.modified_unix_ms ? date(item.modified_unix_ms) : ""),
@@ -209,7 +209,7 @@ export function mount(page) {
           h("span", { class: "stat-label" }, t("storage.drive")),
           h("span", { class: "stat-value" }, used != null ? percent(used) : "—"),
           used != null ? bar(used, used > 0.95 ? "warn" : "", { animate: !still }) : null,
-          h("span", { class: "hint" }, volume.free_text && volume.total_text ? t("storage.drive.free", { free: volume.free_text, total: volume.total_text }) : ""),
+          h("span", { class: "hint" }, volume.free_bytes != null && volume.total_bytes != null ? t("storage.drive.free", { free: bytes(volume.free_bytes), total: bytes(volume.total_bytes) }) : ""),
         ),
         h(
           "div",

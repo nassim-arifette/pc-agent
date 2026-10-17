@@ -165,7 +165,7 @@ function storageView() {
             "div",
             { class: "proc" },
             h("span", { class: "proc-name", title: d.path || d.name }, d.name),
-            h("span", { class: "proc-value" }, d.size_text),
+            h("span", { class: "proc-value" }, bytes(d.size)),
             h("div", { class: "meter" }, h("span", { style: { width: `${(d.size / max) * 100}%` } })),
           );
         }),
