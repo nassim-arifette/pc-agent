@@ -10,8 +10,9 @@ export function number(value, digits = 0) {
 
 export function bytes(value) {
   if (value == null) return "";
-  const units = ["KiB", "MiB", "GiB", "TiB", "PiB"];
-  if (value < 1024) return `${number(value)} B`;
+  const french = language() === "fr";
+  const units = french ? ["Kio", "Mio", "Gio", "Tio", "Pio"] : ["KiB", "MiB", "GiB", "TiB", "PiB"];
+  if (value < 1024) return `${number(value)} ${french ? "o" : "B"}`;
   let v = value / 1024;
   let unit = 0;
   while (v >= 1024 && unit < units.length - 1) {
