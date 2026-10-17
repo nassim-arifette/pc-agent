@@ -1,6 +1,13 @@
 use super::*;
 use pcagent_shared::{Metric, Window};
 use std::collections::VecDeque;
+
+#[test]
+fn system_prompt_specifies_formal_french_and_byte_units() {
+    assert!(SYSTEM.contains("« vous »"));
+    assert!(SYSTEM.contains("Gio"));
+}
+
 struct Script {
     replies: VecDeque<Result<Reply, AgentError>>,
     calls: usize,
