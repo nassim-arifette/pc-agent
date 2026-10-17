@@ -1274,6 +1274,98 @@ Revue de l'interface et retours du porteur du projet, suivis dans les issues #50
    (C2, C3 ; #58, #59) ; les images jointes sont repoussées après la soumission, sauf si Nebius
    sert un modèle NVIDIA qui accepte à la fois les images et les outils (#55).
 
+## 7 quinquies. Plan de la suite (17 octobre)
+
+Échéance Devpost : **vendredi 30 octobre, 10 h PDT (18 h Paris)** ; soumission visée le 29 pour
+garder une journée de marge. Jury du 1er au 15 décembre : la build soumise doit rester gratuite,
+accessible et stable jusque-là. Le règlement n'impose aucun système : Windows 10/11 x64 est un
+choix produit, annoncé tel quel dans le README.
+
+Règle de conduite jusqu'au 30 : on ne touche pas aux contrats C1–C7 et on ne commence aucun nouveau
+chantier ; tout ce qui n'est pas dans cette section est repoussé.
+
+### Phase 0 — Remise en route (17–18 oct.)
+
+| Tâche | Pourquoi | Fait quand |
+| --- | --- | --- |
+| Réactiver la CI GitHub Actions et la remettre au vert (Ubuntu + Windows) | Derniers runs en échec, CI désactivée depuis le 10 | `main` vert sur les deux OS |
+| Fermer les issues déjà traitées (#50–#54, #57, #68 ; #56 après vérification) | Le suivi #72 reflète l'état réel | issues fermées avec renvoi à la PR |
+| Décider du sort de la branche `wp8-mft-memory` (fusion ou suppression) | Une seule branche durable | branche fusionnée ou supprimée |
+| Scanner tout l'historique git à la recherche de secrets (gitleaks) | Pré-requis avant de rendre le dépôt public | rapport vide, ou secrets révoqués et purgés |
+
+### Phase 1 — Bloquants produit (19–22 oct.)
+
+| Tâche | Issue | Fait quand |
+| --- | --- | --- |
+| L'app lancée en admin affiche un message clair au lieu de se fermer | #64 | testé en admin et sans admin |
+| Onboarding du premier lancement : lien pour créer une clé Nebius, test de la clé, choix du modèle, mode local sans clé | #63 | parcours complet sur un profil vierge |
+| Langue : textes d'interface en français, formats de nombres et unités (Gio) | #65 | aucune chaîne anglaise ni format Rust dans l'UI FR |
+| Vouvoiement fixé dans les réponses en français | #66 | vérifié sur les scénarios d'évaluation |
+| Parcours complet avec une vraie clé dans l'app Windows (question → outils → réponse citée → action validée) | section 8 | enregistré une fois, sans erreur |
+| Registre des capacités : chaque outil et chaque vue déclare s'il est disponible (admin, NVIDIA, MFT…) ; le modèle et l'UI ne voient que ce qui marche | — | outils indisponibles absents du catalogue envoyé, tests synthétiques |
+
+### Phase 2 — Évaluation réelle (en parallèle, 19–24 oct.)
+
+| Tâche | Fait quand |
+| --- | --- |
+| Capturer 8 à 10 vraies situations (mémoire, Chrome, stockage plein, démarrage, plantage, PC sans problème, pilote NVIDIA…) | scénarios anonymisés dans `eval/scenarios/` |
+| Campagne B (Nemotron, C1) contre C (Claude via MCP), notation à l'aveugle par le porteur du projet + juge LLM | `docs/eval.md` daté, scores figés |
+| Choisir le modèle par défaut (chantier 10) et décider si l'escalade Super → Ultra reste manuelle | décision écrite dans ce plan |
+| Si l'escalade est gardée : la rendre visible et afficher le coût des deux modèles | #69 fermé |
+
+Cet ordre est voulu : la vidéo et le README citeront ces résultats (« Technological
+Implementation » est un critère de jugement).
+
+### Phase 3 — Dernières fonctions et second PC (23–26 oct.)
+
+| Tâche | Fait quand |
+| --- | --- |
+| Vue Stockage **minimale** : résultats visibles en premier, liste et inspecteur ; carte et arbre seulement si le temps le permet | #67 partiellement traité, le reste en P2 |
+| Processus msedgewebview2 distingués par application | #61 |
+| Test complet sur un second PC Windows 11 (installation depuis la release, clé, parcours vidéo) | checklist cochée |
+| Mesurer l'empreinte de l'app (RAM, CPU, disque de l'historique) pour le README | chiffres datés |
+
+**Repoussé après la soumission :** Surveillances (C7), vue Historique complète, #58/#59 au-delà du
+premier lot, #60 (navigateurs), #62 (lot UAC unique), #55 (images), ETW, validation des capteurs
+actifs (chantier 9), cache Tavily.
+
+### Phase 4 — Gel et soumission (27–29 oct.)
+
+1. **Gel le 27** : seulement des corrections de bugs.
+2. README en anglais : vision, captures, installation, plateforme annoncée (**Windows 10/11 x64**),
+   confidentialité, usage de Nemotron et de Token Factory, avertissement SmartScreen.
+3. Docs en retard sur le code (#71) : README, `architecture.md`, `validation.md`.
+4. Release GitHub : `pcagent-gui.exe` et `pcagent.exe`, version et commit.
+5. Rendre le dépôt public, licence MIT visible dans « About ».
+6. Vidéo de moins de 3 minutes en anglais, publique sur YouTube : vrai problème → conversation →
+   outils en direct → réponse citée → action validée → avant/après.
+7. Formulaire Devpost : piste, description, instructions de test (chaque juge apporte sa clé
+   Nebius, ou mode local), retours sur Token Factory et Nemotron, ce qui a changé pendant la
+   période de soumission.
+
+### Phase 5 — Après la soumission (novembre)
+
+Ne pas casser la release soumise pendant le jugement (1er–15 déc.) : le travail multi-OS se fait sur
+des branches et de nouvelles versions, dans le même dépôt et le même workspace (trois cibles de
+build, pas trois forks).
+
+1. PR du plan : contrats renommés de façon neutre (commit, startup, services, events, settings
+   pages), registre des capacités étendu par OS.
+2. Refactor `os/{windows,linux,macos}` derrière un trait commun dans `telemetry`, `inspect`,
+   `storage` et `actions` ; les fonctions Windows restent réservées à Windows (MFT, élévation, ETW,
+   Windows Update).
+3. Backend Linux (`/proc`, `/sys`, systemd, journald, XDG autostart) avec la CI Ubuntu.
+4. GUI Tauri sur les trois OS, pilotée par le registre des capacités.
+5. Backend macOS (libproc, host_statistics, IOKit, launchd), testé sur un vrai Mac, avec un job CI
+   macOS.
+6. Reprendre ce qui a été repoussé en phase 3, par ordre de priorité.
+
+### Décisions encore ouvertes
+
+- Piste Devpost : « Best Apps and Agents » (celle de la spec v0.1) ou « Personal AI ».
+- Vue Stockage minimale avant le gel, ou coupée complètement.
+- Dépôt public dès la phase 0, ou seulement le 28 octobre.
+
 ## 8. Suivi
 
 | Chantier | Piste | État | PR |
@@ -1291,7 +1383,7 @@ Revue de l'interface et retours du porteur du projet, suivis dans les issues #50
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
-| 12 — Soumission | D | à faire | |
+| 12 — Soumission | D | planifié le 17 octobre (section 7 quinquies, phases 0 à 4) | |
 | 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider ; en cours : fiabilité de la boucle (Expliquer en une requête, datation des mesures, réparations, coupures) | #33, wp13-agent-reliability |
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
