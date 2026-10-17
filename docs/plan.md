@@ -1370,6 +1370,7 @@ build, pas trois forks).
 
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
+| #64 — Message visible au démarrage en administrateur | B | notice implémentée localement ; validation visuelle en admin et sans admin à faire | |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |
 | 1 — Le LLM rédige | A | logique terminée : réponse, vérification des mesures C4, contexte multi-tour, stockage et identifiants stables, flux et arrêt testés ; comparaison de qualité à faire au chantier 7 | #19, #23, wp1-stream, wp1-phase1-logic |
