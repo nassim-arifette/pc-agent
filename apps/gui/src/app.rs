@@ -2050,6 +2050,7 @@ async fn test_cloud() -> Result<CloudCheck, String> {
 pub fn run() {
     if pcagent_inspect::elevation::ensure_unelevated_host().is_err() {
         eprintln!("Start PC Agent from a standard, unelevated session.");
+        pcagent_inspect::elevation::notify_elevated_host();
         std::process::exit(2);
     }
     let background = std::env::args_os().any(|arg| arg == "--background");

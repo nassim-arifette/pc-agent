@@ -44,6 +44,20 @@ pub fn ensure_unelevated_host() -> Result<(), ElevationError> {
     Ok(())
 }
 
+pub fn elevated_host_notice(french: bool) -> (&'static str, &'static str) {
+    let body = if french {
+        "Pour votre sécurité, PC Agent ne s'exécute pas en tant qu'administrateur.\n\nFermez ce message, puis relancez PC Agent normalement (double-clic, sans « Exécuter en tant qu'administrateur »).\n\nLes analyses qui demandent des droits administrateur se lancent depuis l'application, avec l'invite de Windows."
+    } else {
+        "For your safety, PC Agent does not run as administrator.\n\nClose this message, then start PC Agent normally (double-click, without \"Run as administrator\").\n\nChecks that need administrator rights are started from inside the app, through the Windows prompt."
+    };
+    ("PC Agent", body)
+}
+
+pub fn notify_elevated_host() {
+    #[cfg(windows)]
+    native::show_elevated_host_notice();
+}
+
 /// Convert only validated aggregate measurements to C4. Job paths, identities and nonce stay local.
 pub fn to_inspection(response: &ElevationResponse) -> crate::Inspection {
     use crate::CoverageStatus as C;
@@ -142,4 +156,24 @@ pub fn to_inspection(response: &ElevationResponse) -> crate::Inspection {
         );
     }
     out.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::elevated_host_notice;
+
+    #[test]
+    fn elevated_host_notice_has_localized_bodies() {
+        let (_, french) = elevated_host_notice(true);
+        let (_, english) = elevated_host_notice(false);
+
+        assert!(!french.is_empty());
+        assert!(!english.is_empty());
+        assert_ne!(french, english);
+        assert!(french.contains("Fermez"));
+        assert!(french.contains("relancez"));
+        assert!(!french.contains(" tu "));
+        assert!(!french.contains('\0'));
+        assert!(!english.contains('\0'));
+    }
 }
