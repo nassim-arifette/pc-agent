@@ -11,6 +11,7 @@ import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../st
 import { showSource } from "../panel.js";
 import { health } from "../live.js";
 import { numbering, citationTitle, toolLabel } from "../citations.js";
+import { adminChecksCard } from "../adminchecks.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
 import { bytes, date, duration, labelled, usd } from "../format.js";
@@ -411,7 +412,26 @@ function stepsFold(shown, sent) {
 }
 
 /** One answered turn. `inv` is the live run that produced it, when still known. */
-function turnView(turn, index, { last, inv, cloud }) {
+/**
+ * Under the last answer that lacked administrator readings (report.admin_hints, a local rule):
+ * the deeper checks card limited to those checks, then "ask again" once a result is fresh.
+ */
+function deeperChecks(turn, last, cards) {
+  const kinds = turn.report?.admin_hints || [];
+  if (!last || !kinds.length) return null;
+  const card = adminChecksCard({
+    kinds,
+    title: t("admin.chat.title"),
+    lead: t("admin.chat.lead"),
+    askLabel: t("admin.chat.askAgain"),
+    // Back to the AI when the person answered locally: a local analysis would not read the result.
+    onAsk: () => askWithAi(turn.question, { followUp: true }),
+  });
+  cards.push(card);
+  return h("div", { class: "turn-admin" }, card.el);
+}
+
+function turnView(turn, index, { last, inv, cloud, cards = [] }) {
   const report = turn.report;
   const a = report?.answer;
   const cited = a ? a.citations.length : 0;
@@ -450,7 +470,7 @@ function turnView(turn, index, { last, inv, cloud }) {
     "section",
     { class: "turn" },
     requestView(turn.question, turn.selection ?? inv?.selection),
-    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), followUps, footer),
+    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), deeperChecks(turn, last, cards), followUps, footer),
   );
 }
 
@@ -504,6 +524,11 @@ export function mount(page) {
   let elapsedTimer = null;
   let lastAnnounced = "";
   let enteredId = null; // the run whose turn already slid in
+  let adminCards = []; // deeper checks cards drawn under turns, disposed on each redraw
+  const disposeAdminCards = () => {
+    for (const card of adminCards) card.dispose();
+    adminCards = [];
+  };
 
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
   const toBottom = () => {
@@ -541,6 +566,7 @@ export function mount(page) {
   const renderHome = () => {
     mode = "home";
     turnsKey = "";
+    disposeAdminCards();
     liveKey = "";
     box = composer({ autofocus: true, big: true });
     suggestionsHost = h("div", { class: "suggestions" });
@@ -585,6 +611,7 @@ export function mount(page) {
     const key = `${state.conversation?.id}|${turns.length}|${inv?.report ? "r" : ""}|${state.inv?.status}|${plans}|${JSON.stringify(selections)}`;
     if (key === turnsKey) return;
     turnsKey = key;
+    disposeAdminCards();
     // A saved conversation whose only question never got an answer (the window closed or
     // reloaded while it ran): show the question and offer to ask again, never a blank page.
     if (!turns.length && state.conversation?.id != null && !liveInv()) {
@@ -596,7 +623,7 @@ export function mount(page) {
       turns.map((turn, index) => {
         const own = inv && inv.report === turn.report ? inv : null;
         const cloud = own ? own.cloud : turn.report?.mode === "nebius";
-        return turnView(turn, index, { last: index === turns.length - 1, inv: own, cloud });
+        return turnView(turn, index, { last: index === turns.length - 1, inv: own, cloud, cards: adminCards });
       }),
     );
   };
@@ -730,6 +757,7 @@ export function mount(page) {
   return () => {
     window.clearInterval(elapsedTimer);
     window.removeEventListener("pcagent:mode", renderFootnote);
+    disposeAdminCards();
     unsubscribe();
   };
 }

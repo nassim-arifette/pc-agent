@@ -983,6 +983,10 @@ pub struct Report {
     pub observations: Vec<ObservationView>,
     pub tool_events: Vec<pcagent_agent::ToolEvent>,
     pub limitations: Vec<String>,
+    /// Deeper checks (closed `ElevatedTask` kinds) whose reading this turn lacked, in display
+    /// order. A local rule: the model has no authority here, and nothing runs without the
+    /// person's click and the Windows prompt.
+    pub admin_hints: Vec<String>,
     /// Absent for a local analysis, which makes no provider request.
     pub usage: Option<Usage>,
     pub continuation: Option<ExtensionRequest>,
@@ -1170,6 +1174,50 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
         repairs: a.repairs,
     }
 }
+/// The deeper checks the chat offers under an answer; the Storage view lists the same ones.
+const OFFERED_CHECKS: [&str; 4] = [
+    "system_caches",
+    "shadow_storage",
+    "disk_reliability",
+    "battery_energy",
+];
+/// Cleanup categories the helper's `system_caches` task measures when the user cannot.
+const SYSTEM_CACHE_CATEGORIES: [&str; 3] = [
+    "previous_windows",
+    "windows_update_cache",
+    "delivery_optimization",
+];
+/// Which offered checks a turn lacked: the model asked for an approved helper result that did
+/// not exist, or a local inspection reported `needs_admin` on a scope one of the checks covers.
+fn admin_hints(r: &Investigation) -> Vec<String> {
+    let mut hints: Vec<&str> = Vec::new();
+    for o in &r.observations {
+        let Some(coverage) = o.observation["coverage"].as_array() else {
+            continue;
+        };
+        let denied = |scope: fn(&str) -> bool| {
+            coverage
+                .iter()
+                .any(|c| c["status"] == "needs_admin" && c["scope"].as_str().is_none_or(scope))
+        };
+        let hint = match o.tool.as_str() {
+            "get_approved_elevated_inspection" if denied(|_| true) => {
+                o.observation["task"].as_str()
+            }
+            "get_cleanup_opportunities" if denied(|s| SYSTEM_CACHE_CATEGORIES.contains(&s)) => {
+                Some("system_caches")
+            }
+            _ => None,
+        };
+        if let Some(hint) = hint.filter(|h| OFFERED_CHECKS.contains(h)) {
+            if !hints.contains(&hint) {
+                hints.push(hint);
+            }
+        }
+    }
+    hints.sort_by_key(|h| OFFERED_CHECKS.iter().position(|o| o == h));
+    hints.into_iter().map(str::to_owned).collect()
+}
 pub fn report(r: &Investigation, question: &str) -> Report {
     let processes = &r.local_processes;
     let observations = r
@@ -1206,6 +1254,7 @@ pub fn report(r: &Investigation, question: &str) -> Report {
         observations,
         tool_events: r.tool_events.clone(),
         limitations: r.limitations.clone(),
+        admin_hints: admin_hints(r),
         usage: (r.mode != "local_rules").then(|| usage(&r.stats)),
         continuation: r.continuation.clone(),
     }
@@ -2055,6 +2104,57 @@ mod tests {
                 &inv.local_processes
             ),
             "editor.exe (PID 4242) uses 5 GiB; editor.exe (PID 4242) grew."
+        );
+    }
+
+    fn observed(tool: &str, cloud: Value) -> pcagent_agent::Observation {
+        pcagent_agent::Observation {
+            observation_id: format!("obs-{tool}"),
+            citation: String::new(),
+            tool: tool.into(),
+            measured_at_unix_ms: 0,
+            status: pcagent_shared::Status::Unsupported,
+            citable: false,
+            facts: Vec::new(),
+            limitations: Vec::new(),
+            observation: cloud,
+            storage_items: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn admin_hints_come_only_from_needs_admin_coverage_of_offered_checks() {
+        let mut inv = pcagent_agent::local_report(&fixture());
+        assert!(report(&inv, "q").admin_hints.is_empty());
+        inv.observations.push(observed(
+            "get_approved_elevated_inspection",
+            serde_json::json!({"task":"disk_reliability","coverage":[{"status":"needs_admin"}]}),
+        ));
+        inv.observations.push(observed(
+            "get_approved_elevated_inspection",
+            serde_json::json!({"task":"performance_trace","coverage":[{"status":"needs_admin"}]}),
+        ));
+        inv.observations.push(observed(
+            "get_approved_elevated_inspection",
+            serde_json::json!({"task":"battery_energy","coverage":[{"status":"ok"}]}),
+        ));
+        inv.observations.push(observed(
+            "get_cleanup_opportunities",
+            serde_json::json!({"coverage":[
+                {"scope":"previous_windows","status":"needs_admin"},
+                {"scope":"temporary_files","status":"ok"}]}),
+        ));
+        inv.observations.push(observed(
+            "get_cleanup_opportunities",
+            serde_json::json!({"coverage":[{"scope":"hibernation_file","status":"needs_admin"}]}),
+        ));
+        inv.observations.push(observed(
+            "get_system_state",
+            serde_json::json!({"coverage":[{"scope":"x","status":"needs_admin"}]}),
+        ));
+        assert_eq!(
+            report(&inv, "q").admin_hints,
+            vec!["system_caches".to_owned(), "disk_reliability".to_owned()]
         );
     }
 
