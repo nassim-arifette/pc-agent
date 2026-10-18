@@ -33,6 +33,7 @@ use windows_sys::Win32::{
         GetLastError, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
         STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
+    Globalization::GetUserDefaultUILanguage,
     Security::{
         AclSizeInformation,
         Authorization::{
@@ -64,7 +65,9 @@ use windows_sys::Win32::{
             ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
             SHELLEXECUTEINFOW,
         },
-        WindowsAndMessaging::SW_HIDE,
+        WindowsAndMessaging::{
+            MessageBoxW, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, SW_HIDE,
+        },
     },
 };
 
@@ -381,6 +384,24 @@ fn wait_for_private_cleanup(pending: &std::sync::Mutex<PrivateCleanup>) {
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub(crate) fn show_elevated_host_notice() {
+    // SAFETY: GetUserDefaultUILanguage has no pointer arguments or safety preconditions.
+    let french = unsafe { GetUserDefaultUILanguage() & 0x03ff == 0x0c };
+    let (title, body) = super::elevated_host_notice(french);
+    let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let body: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
+
+    // SAFETY: The null parent is valid; both strings are live, null-terminated UTF-16 buffers.
+    unsafe {
+        MessageBoxW(
+            null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
+        );
     }
 }
 
