@@ -424,7 +424,8 @@ function deeperChecks(turn, last, cards) {
     title: t("admin.chat.title"),
     lead: t("admin.chat.lead"),
     askLabel: t("admin.chat.askAgain"),
-    onAsk: () => ask(turn.question, { followUp: true }),
+    // Back to the AI when the person answered locally: a local analysis would not read the result.
+    onAsk: () => askWithAi(turn.question, { followUp: true }),
   });
   cards.push(card);
   return h("div", { class: "turn-admin" }, card.el);
@@ -565,6 +566,7 @@ export function mount(page) {
   const renderHome = () => {
     mode = "home";
     turnsKey = "";
+    disposeAdminCards();
     liveKey = "";
     box = composer({ autofocus: true, big: true });
     suggestionsHost = h("div", { class: "suggestions" });

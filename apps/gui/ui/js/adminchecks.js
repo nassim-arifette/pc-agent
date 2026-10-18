@@ -33,7 +33,6 @@ const admin = { status: "idle", kind: null, request: null, error: null, startedA
 const listeners = new Set();
 let ticker = null;
 let poller = null;
-let expiry = null;
 
 function changed() {
   for (const listener of [...listeners]) listener();
@@ -443,6 +442,7 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
     fill(host, head, body);
   };
   let drawn = null;
+  let expiry = null;
   const renderAll = () => {
     render();
     // The chat card shows only a result of a check it offered; the Storage card shows any.
