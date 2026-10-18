@@ -265,7 +265,7 @@ function groupCard(group) {
 
 const STATUS_TONE = { ok: "good", partial: "warn", cancelled: "warn", unsupported: "" };
 
-function resultView(kind, entry) {
+function resultView(kind, entry, { onAsk, askLabel } = {}) {
   const { result, startedAt, finishedAt } = entry;
   const title = t(`admin.check.${kind}`);
   const list = groups(result);
@@ -299,8 +299,8 @@ function resultView(kind, entry) {
       h("div", null, h("span", null, t(fresh ? "admin.result.chat" : "admin.result.chatExpired"))),
       fresh
         ? cloudReady()
-          ? button(t("admin.ask"), { iconName: "sparkle", size: "sm", onClick: () => askWithAi(t("admin.askQuestion", { check: title }), { followUp: false }) })
-          : button(t("admin.ask"), { iconName: "sparkle", size: "sm", disabled: true, title: t("mode.cloud.setup") })
+          ? button(askLabel ?? t("admin.ask"), { iconName: "sparkle", size: "sm", onClick: onAsk ?? (() => askWithAi(t("admin.askQuestion", { check: title }), { followUp: false })) })
+          : button(askLabel ?? t("admin.ask"), { iconName: "sparkle", size: "sm", disabled: true, title: t("mode.cloud.setup") })
         : null,
     ),
     list.length
@@ -374,8 +374,14 @@ function checkRow(kind, { busy, blocked }) {
   );
 }
 
-/** The deeper checks card of the Storage view; returns its element and a cleanup. */
-export function adminChecksCard() {
+/**
+ * The deeper checks card of the Storage view; returns its element and a cleanup. The chat shows
+ * the same card under an answer that lacked administrator readings, limited to the checks that
+ * turn lacked (`kinds`), with its own title, lead and "ask again" action. Both cards follow the
+ * same single flow: a check prepared from one is visible, and cancellable, in the other.
+ */
+export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel } = {}) {
+  const offered = CHECKS.filter((kind) => kinds.includes(kind));
   const host = h("section", { class: "card card-pad section admin-card" });
   const resultHost = h("div");
   const render = () => {
@@ -386,7 +392,7 @@ export function adminChecksCard() {
       "div",
       { class: "admin-head" },
       h("span", { class: "metric-icon admin-icon" }, icon("shield")),
-      h("div", { class: "admin-text" }, h("h3", { class: "admin-title" }, t("admin.title")), h("p", { class: "hint" }, t("admin.lead"))),
+      h("div", { class: "admin-text" }, h("h3", { class: "admin-title" }, title ?? t("admin.title")), h("p", { class: "hint" }, lead ?? t("admin.lead"))),
     );
     let body;
     if (admin.status === "review") {
@@ -426,7 +432,7 @@ export function adminChecksCard() {
       body = h(
         "div",
         { class: "admin-list" },
-        h("div", { class: "admin-checks" }, CHECKS.map((kind) => checkRow(kind, { busy, blocked }))),
+        h("div", { class: "admin-checks" }, offered.map((kind) => checkRow(kind, { busy, blocked }))),
         blocked && !busy ? h("p", { class: "hint admin-blocked" }, icon("clock"), t("admin.slotBusy")) : null,
         admin.status === "failed"
           ? h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("admin.failed", { check })), h("span", null, admin.error || "")))
@@ -439,7 +445,8 @@ export function adminChecksCard() {
   let drawn = null;
   const renderAll = () => {
     render();
-    const entry = admin.shown ? admin.results[admin.shown] : null;
+    // The chat card shows only a result of a check it offered; the Storage card shows any.
+    const entry = admin.shown && offered.includes(admin.shown) ? admin.results[admin.shown] : null;
     // Rebuild the result only when what it shows changes: the running check ticks every second,
     // and a rebuild would close the folded groups and limits the person opened.
     const busy = ["preparing", "review", "running", "cancelling", "orphaned"].includes(admin.status) || slotHeldElsewhere("admin");
@@ -447,7 +454,7 @@ export function adminChecksCard() {
     const key = entry ? [admin.shown, entry.finishedAt, busy, fresh, cloudReady()].join("|") : null;
     if (key !== drawn) {
       drawn = key;
-      fill(resultHost, entry ? resultView(admin.shown, entry) : null);
+      fill(resultHost, entry ? resultView(admin.shown, entry, { onAsk, askLabel }) : null);
     }
     // Redraw when the shown result stops being readable by the chat.
     window.clearTimeout(expiry);
