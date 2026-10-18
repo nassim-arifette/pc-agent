@@ -984,7 +984,11 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   l'accueil du Chat et le premier lancement. Les tâches sont expliquées avant l'invite de Windows.
   Il est aussi proposé depuis le chat :
   - par une règle locale : quand un tour a reçu une couverture `needs_admin`, une carte « Lancer
-    l'analyse approfondie » apparaît sous la réponse ; le modèle n'y a aucune autorité ;
+    l'analyse approfondie » apparaît sous la réponse ; le modèle n'y a aucune autorité. Livré le
+    18 octobre : le rapport porte `admin_hints` (vérifications manquantes, calculées dans
+    `view.rs` à partir des couvertures `needs_admin` de `get_approved_elevated_inspection` et des
+    caches système de `get_cleanup_opportunities`) ; la carte « Analyse approfondie disponible »
+    sous la dernière réponse réutilise le flux de Stockage, puis propose de reposer la question ;
   - par le modèle : l'outil fermé `propose_elevated_check(tasks)` crée une proposition citée dans
     `action_refs` (C1) ; sa carte préremplit l'écran de revue, et rien ne se lance sans le clic
     local puis l'invite de Windows.
@@ -1379,7 +1383,7 @@ build, pas trois forks).
 | 5 — Mesurer au bon moment | B, C | logique terminée : historique 7 jours, agrégation, lacunes, pics et enregistrement, démarrage optionnel et empreinte mesurée ; contrôles d'enregistrement, historique et réglage de démarrage à brancher dans le frontend | wp1-phase1-logic |
 | 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) ; #65 : formats localisés sur les champs numériques, résumé scanné désormais couvert | #23, #24, #36 |
 | 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
-| 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; lot sous une seule invite et proposition depuis le chat (9 octobre) à faire | #33, #36, #62 |
+| 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; carte par règle locale sous la réponse du chat livrée le 18 octobre ; lot sous une seule invite et proposition par le modèle (`propose_elevated_check`, 9 octobre) à faire | #33, #36, #62 |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |

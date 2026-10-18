@@ -3801,6 +3801,12 @@ details.more > div {
   gap: 14px;
   margin-bottom: 16px;
 }
+.turn-admin .admin-card {
+  margin: 10px 0 0;
+}
+.turn-admin .admin-result {
+  margin-top: 10px;
+}
 .admin-head {
   display: flex;
   align-items: flex-start;
