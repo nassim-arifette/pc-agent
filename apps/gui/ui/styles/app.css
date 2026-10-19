@@ -2143,6 +2143,10 @@ a {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
+/* WebView2 adds its own reveal button even when the app provides none. */
+[data-key="cloud-key"]::-ms-reveal {
+  display: none;
+}
 .segmented {
   display: inline-flex;
   gap: 2px;

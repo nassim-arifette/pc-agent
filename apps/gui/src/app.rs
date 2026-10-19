@@ -1978,6 +1978,13 @@ struct CloudCheck {
     price: Option<view::PriceView>,
 }
 
+/// A local setup click opens only the official console, never a caller-provided address.
+#[tauri::command]
+fn open_nebius_console() -> Result<(), String> {
+    pcagent_actions::open_web_page("https://tokenfactory.nebius.com/")
+        .map_err(|_| "The browser could not be opened.".to_owned())
+}
+
 /// Lists the saved account's catalog; the page receives metadata, never the local key.
 #[tauri::command]
 async fn cloud_models() -> Result<pcagent_agent::ModelCatalog, String> {
@@ -2123,6 +2130,7 @@ pub fn run() {
             open_web_source,
             test_cloud,
             cloud_models,
+            open_nebius_console,
             elevation_prepare,
             elevation_status,
             elevation_run,
