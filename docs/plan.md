@@ -75,8 +75,23 @@ Toute modification passe d'abord par ce document, dans une PR à part.
 
 ### C1 — Réponse de l'agent
 
-Chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en appelant l'outil
-`submit_answer`, dont le schéma est fermé :
+Par défaut, chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en appelant
+l'outil `submit_answer`.
+
+**Exception limitée approuvée le 19 octobre 2026 (essai #85) :** après une tentative structurée de
+`submit_answer` rejetée, et seulement si une inspection a déjà fourni des mesures utilisables
+(ou si « Expliquer » dispose de sa capture figée utilisable), les requêtes de correction peuvent
+imposer ce seul outil :
+`tool_choice: {"type":"function","function":{"name":"submit_answer"}}`.
+La première requête et les inspections gardent `required` ; un simple message texte, une inspection
+échouée ou une demande d'autorisation administrateur ne suffisent pas à activer l'exception.
+Une sortie inattendue ne donne aucune autorisation : les autres outils demandés pendant cette
+correction ne sont pas exécutés. Les doublons, les lots mixtes et les réponses invalides restent
+refusés, avec les mêmes plafonds de réparations, de temps et de coût. L'exception ne donne aucun droit
+administrateur et ne change pas les vérifications locales. Elle ne force pas la première conclusion
+après une inspection : le modèle peut toujours chercher d'autres mesures avant de tenter sa réponse.
+
+Le schéma de `submit_answer` reste fermé :
 
 ```json
 {
@@ -1371,6 +1386,10 @@ build, pas trois forks).
 - Dépôt public dès la phase 0, ou seulement le 28 octobre.
 
 ## 8. Suivi
+
+**19 octobre 2026 — essai C1 / #85 :** exception de correction finale autorisée par le porteur,
+définie ci-dessus avant l'implémentation dans une PR distincte. À mesurer sur des parcours Nebius
+réels avant adoption ; le choix nommé ne constitue pas une garantie de latence ni de réponse unique.
 
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
