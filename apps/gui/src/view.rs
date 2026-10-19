@@ -917,6 +917,11 @@ pub struct Usage {
     pub model_requests: Vec<pcagent_agent::ModelRequestUsage>,
     pub total_cost_usd: Option<String>,
     pub routing: Option<pcagent_agent::routing::RoutingState>,
+    /// Lower bounds when a request reported no usage (see `Stats`).
+    pub known_prompt_tokens: u64,
+    pub known_completion_tokens: u64,
+    pub unknown_requests: usize,
+    pub cost_lower_bound: Option<CostView>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorView {
@@ -1060,6 +1065,10 @@ pub fn usage(s: &Stats) -> Usage {
         model_requests: s.model_requests.clone(),
         total_cost_usd: s.total_cost_usd.clone(),
         routing: s.routing.clone(),
+        known_prompt_tokens: s.known_prompt_tokens,
+        known_completion_tokens: s.known_completion_tokens,
+        unknown_requests: s.unknown_requests,
+        cost_lower_bound: s.cost_lower_bound.as_ref().map(cost),
     }
 }
 fn answer(r: &Investigation, a: &Answer) -> AnswerView {

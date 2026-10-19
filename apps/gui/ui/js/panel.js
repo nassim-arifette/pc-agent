@@ -70,14 +70,19 @@ function runDetails(report) {
     );
   }
   if (u) {
+    const priced = u.cost || u.cost_lower_bound;
     const facts = [
       labelled(t("usage.requests"), number(u.requests)),
       labelled(t("usage.tools"), number(u.tool_calls)),
       u.prompt_tokens != null ? labelled(t("usage.tokensIn"), number(u.prompt_tokens)) : null,
       u.completion_tokens != null ? labelled(t("usage.tokensOut"), number(u.completion_tokens)) : null,
-      u.cost ? labelled(t("usage.cost"), usd(u.cost.usd)) : t("usage.noCost"),
-      u.cost
-        ? t("usage.price", { input: price(u.cost.price.input_per_million), output: price(u.cost.price.output_per_million), date: date(u.cost.price.read_at_unix_ms, true) })
+      // A reply cut after its tool calls, or a failed request, reports no usage: a lower bound.
+      u.prompt_tokens == null && u.unknown_requests > 0 && u.known_prompt_tokens + u.known_completion_tokens > 0
+        ? labelled(t("usage.tokensAtLeast"), t("usage.tokensKnown", { in: number(u.known_prompt_tokens), out: number(u.known_completion_tokens), count: number(u.unknown_requests) }))
+        : null,
+      u.cost ? labelled(t("usage.cost"), usd(u.cost.usd)) : u.cost_lower_bound ? labelled(t("usage.costAtLeast"), usd(u.cost_lower_bound.usd)) : t("usage.noCost"),
+      priced
+        ? t("usage.price", { input: price(priced.price.input_per_million), output: price(priced.price.output_per_million), date: date(priced.price.read_at_unix_ms, true) })
         : null,
     ].filter(Boolean);
     blocks.push(h("details", { class: "more" }, h("summary", null, icon("chevron"), t("usage.title")), h("div", null, h("ul", { class: "bullets note" }, facts.map((x) => h("li", null, x))))));
