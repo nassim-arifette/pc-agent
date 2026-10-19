@@ -1,5 +1,6 @@
 use super::{
     AgentError, FunctionCall, Model, Pricing, Reply, ToolCall, ToolChoice, MAX_OUTPUT_TOKENS,
+    SUBMIT_ANSWER,
 };
 #[cfg(test)]
 use crate::models::catalog_pricing;
@@ -323,6 +324,16 @@ fn complete_calls(calls: Option<&[ToolCall]>) -> bool {
     })
 }
 
+fn tool_choice_value(choice: ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::SubmitAnswer => {
+            json!({"type":"function","function":{"name":SUBMIT_ANSWER}})
+        }
+    }
+}
+
 /// One server-sent event of a streamed completion.
 #[derive(Deserialize)]
 struct Chunk {
@@ -496,13 +507,9 @@ impl Model for Nebius {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .ok_or(AgentError::Budget)?;
-        let tool_choice = match choice {
-            ToolChoice::Auto => "auto",
-            ToolChoice::Required => "required",
-        };
         // Streamed so the answer can be shown while it is written; usage comes in the last event.
         let mut body = json!({"model":self.config.model_id,"messages":messages,"tools":tools,
-            "tool_choice":tool_choice,"max_tokens":MAX_OUTPUT_TOKENS,
+            "tool_choice":tool_choice_value(choice),"max_tokens":MAX_OUTPUT_TOKENS,
             "stream":true,"stream_options":{"include_usage":true}});
         let (temperature, top_p) = sampling(&self.config.model_id);
         body["temperature"] = json!(temperature);
@@ -527,6 +534,16 @@ impl Model for Nebius {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn final_answer_choice_names_only_the_submission_tool() {
+        assert_eq!(tool_choice_value(ToolChoice::Required), json!("required"));
+        assert_eq!(tool_choice_value(ToolChoice::Auto), json!("auto"));
+        assert_eq!(
+            tool_choice_value(ToolChoice::SubmitAnswer),
+            json!({"type":"function","function":{"name":"submit_answer"}})
+        );
+    }
+
     #[test]
     fn model_selection_has_no_non_nvidia_fallback() {
         // A syntactic fixture, NOT a claim that this ID exists in the live catalog.
