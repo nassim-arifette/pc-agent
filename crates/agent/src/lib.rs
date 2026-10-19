@@ -155,13 +155,15 @@ pub struct Reply {
     /// A billed reply that cannot be used: its usage counts, its content and calls are empty.
     pub rejected: Option<AgentError>,
 }
-/// Whether the model may answer this turn or must call a tool.
+/// Which tools the model may choose for this request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolChoice {
     Auto,
     /// No conclusion before a real inspection: the initial observation already carries candidate
     /// findings, and models otherwise tend to select one without calling any tool.
     Required,
+    /// Repair a rejected final answer using evidence already collected in this turn.
+    SubmitAnswer,
 }
 /// A replaceable transport: unit tests use scripted replies, never a live paid provider.
 pub trait Model {
@@ -539,10 +541,13 @@ impl Stats {
             .filter(|p| {
                 self.cost.is_none()
                     && self.unknown_requests > 0
-                    && self
-                        .model_requests
-                        .iter()
-                        .all(|r| r.cost.as_ref().is_none_or(|c| c.pricing == **p))
+                    && self.model_requests.iter().all(|r| {
+                        r.usage
+                            .prompt_tokens
+                            .zip(r.usage.completion_tokens)
+                            .is_none()
+                            || r.cost.as_ref().is_some_and(|c| c.pricing == **p)
+                    })
             })
             .and_then(|p| {
                 cost::estimate(self.known_prompt_tokens, self.known_completion_tokens, p)
@@ -1102,6 +1107,7 @@ fn converse_inner(
     let mut last_issues: Option<Vec<Issue>> = None;
     // Replies cut off at the output limit in a row.
     let mut cutoffs = 0;
+    let mut next_choice = ToolChoice::Required;
     let mut tool_context = tool_context::ToolContext::default();
     if let Some(selected) = selected {
         // A re-read of the frozen evidence gets a short reply pointing at O0. The seed goes
@@ -1166,10 +1172,11 @@ fn converse_inner(
             }
         }
         tool_context.compact(&mut messages);
+        let choice = std::mem::replace(&mut next_choice, ToolChoice::Required);
         let reply = match model.complete(
             &messages,
             &definitions,
-            ToolChoice::Required,
+            choice,
             budget.remaining().min(REQUEST_TIMEOUT),
         ) {
             Ok(reply) => reply,
@@ -1184,6 +1191,7 @@ fn converse_inner(
                 // the context and offer consent before retrying that unfinished request.
                 if error == AgentError::Timeout && budget.remaining().is_zero() {
                     if budget.ensure(&mut result, Checkpoint::Time, &mut on_extension) {
+                        next_choice = choice;
                         continue;
                     }
                     return result.partial(AgentError::Budget);
@@ -1207,6 +1215,7 @@ fn converse_inner(
                     CUT_OFF_INSPECT
                 };
                 messages.push(json!({"role":"user","content":content}));
+                next_choice = choice;
                 continue;
             }
             return result.finish(fallback, repairs, error);
@@ -1231,6 +1240,7 @@ fn converse_inner(
             let request = answer::repair_request(&issues, &[]);
             messages.push(json!({"role":"assistant","content":reply.content.unwrap_or_default()}));
             messages.push(json!({"role":"user","content":request.to_string()}));
+            next_choice = choice;
             continue;
         }
         for call in &reply.calls {
@@ -1369,14 +1379,19 @@ fn converse_inner(
                     json!({"role":"tool","tool_call_id":call.id,"content":content.to_string()}),
                 );
             }
+            if explain_ready || result.stats.inspection_calls > 0 {
+                next_choice = ToolChoice::SubmitAnswer;
+            }
             continue;
         }
         // Validate the complete batch before performing any inspection.
         let mut planned = Vec::new();
-        for call in &reply.calls {
-            match validate_call(call, toolbox.specs()) {
-                Ok((spec, args)) => planned.push((*spec, args)),
-                Err(_) => break,
+        if choice != ToolChoice::SubmitAnswer {
+            for call in &reply.calls {
+                match validate_call(call, toolbox.specs()) {
+                    Ok((spec, args)) => planned.push((*spec, args)),
+                    Err(_) => break,
+                }
             }
         }
         if planned.len() < reply.calls.len() {
@@ -1389,7 +1404,11 @@ fn converse_inner(
             for (i, call) in reply.calls.iter().enumerate() {
                 let content = if i == planned.len() {
                     json!({"error":"invalid_call","not_run":true,
-                        "fix":"Use only the declared tools, with arguments that follow their schema."})
+                    "fix":if choice == ToolChoice::SubmitAnswer {
+                        "Call submit_answer alone with the complete corrected answer. No other tool was run."
+                    } else {
+                        "Use only the declared tools, with arguments that follow their schema."
+                    }})
                 } else {
                     json!({"not_run":"another call in this turn was invalid; nothing ran"})
                 };
@@ -1397,6 +1416,7 @@ fn converse_inner(
                     json!({"role":"tool","tool_call_id":call.id,"content":content.to_string()}),
                 );
             }
+            next_choice = choice;
             continue;
         }
         if !budget.ensure(
