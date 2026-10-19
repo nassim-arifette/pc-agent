@@ -183,10 +183,10 @@ impl IssueKind {
             Self::UnknownAction => "action_refs may only contain plan_id values returned by prepare_action_plan in this investigation.",
             Self::TooLong => "Shorten the answer to at most 6000 characters.",
             Self::Empty => "Write the answer.",
-            Self::Malformed => "The arguments do not follow the submit_answer schema: answer, confidence and category are required, and no other field is allowed.",
-            Self::NoInspection => "Call at least one inspection tool before answering.",
+            Self::Malformed => "Follow the declared submit_answer schema: answer, confidence and category are required; action_refs and follow_ups are optional arrays of strings. Do not add undeclared fields.",
+            Self::NoInspection => "Call an inspection tool that returns usable measurements before answering. An unsupported or failed inspection, including one awaiting administrator approval, does not count.",
             Self::NotAlone => "Call submit_answer alone, in a turn without other tool calls.",
-            Self::NoToolCall => "Answer by calling submit_answer; do not write the answer as a plain message.",
+            Self::NoToolCall => "Use the declared tool calls, not a plain message. Call submit_answer only after an inspection returned usable measurements.",
         }
     }
     /// Marked in the shown answer without sending it back: an unknown action reference is already
@@ -288,7 +288,7 @@ pub(crate) fn repair_request(
         .collect();
     let kinds = |kind: IssueKind| issues.iter().any(|i| i.kind == kind);
     let next = if kinds(IssueKind::NoInspection) {
-        "Call an inspection tool now; call submit_answer only after its result."
+        "Call an available inspection tool now; call submit_answer alone only after usable measurements are returned, correcting the listed problems."
     } else if kinds(IssueKind::NotAlone) {
         "Call submit_answer alone, with the complete answer."
     } else if kinds(IssueKind::NoToolCall) {
@@ -1822,6 +1822,15 @@ mod tests {
         let request = repair_request(&[Issue::new(IssueKind::NoInspection, "")], &refs());
         assert!(!request["next"].as_str().unwrap().contains("again"));
         assert!(request.get("valid_references").is_none());
+        let request = repair_request(&[Issue::new(IssueKind::Malformed, "")], &refs());
+        let fix = request["problems"][0]["fix"].as_str().unwrap();
+        for field in definition()["function"]["parameters"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+        {
+            assert!(fix.contains(field), "{field}: {fix}");
+        }
     }
 
     #[test]

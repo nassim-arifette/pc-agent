@@ -852,6 +852,17 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
                 thousands(output)
             ),
             (Some(total), _, _) => format!("{} tokens", thousands(total)),
+            _ if s.unknown_requests > 0
+                && s.known_prompt_tokens + s.known_completion_tokens > 0 =>
+            {
+                format!(
+                    "at least {} tokens ({} in, {} out); {} reported no usage",
+                    thousands(s.known_prompt_tokens + s.known_completion_tokens),
+                    thousands(s.known_prompt_tokens),
+                    thousands(s.known_completion_tokens),
+                    plural(s.unknown_requests as u64, "request", "requests")
+                )
+            }
             _ => "tokens unknown".to_owned(),
         };
         writeln!(
@@ -860,7 +871,18 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
             plural(s.inference_calls as u64, "request", "requests"),
             plural(s.tool_calls as u64, "tool call", "tool calls"),
         )?;
-        writeln!(out, "{}", cost_line(s.cost.as_ref()))?;
+        match (s.cost.as_ref(), s.cost_lower_bound.as_ref()) {
+            (None, Some(lower)) => writeln!(
+                out,
+                "{}",
+                cost_line(Some(lower)).replacen(
+                    "Estimated cost: $",
+                    "Estimated cost: at least $",
+                    1
+                )
+            )?,
+            (cost, _) => writeln!(out, "{}", cost_line(cost))?,
+        }
     }
     Ok(())
 }

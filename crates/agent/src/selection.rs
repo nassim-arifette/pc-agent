@@ -1504,17 +1504,19 @@ mod tests {
             replies: VecDeque<Reply>,
             requests: Vec<Vec<Value>>,
             definitions: Vec<Value>,
+            choices: Vec<ToolChoice>,
         }
         impl Model for Script {
             fn complete(
                 &mut self,
                 messages: &[Value],
                 tools: &Value,
-                _: ToolChoice,
+                choice: ToolChoice,
                 _: Duration,
             ) -> Result<Reply, AgentError> {
                 self.requests.push(messages.to_vec());
                 self.definitions.push(tools.clone());
+                self.choices.push(choice);
                 Ok(self.replies.pop_front().expect("script exhausted"))
             }
         }
@@ -1557,6 +1559,7 @@ mod tests {
             ]),
             requests: vec![],
             definitions: vec![],
+            choices: vec![],
         };
         let mut delegate =
             SnapshotTools::new(|_, _| panic!("Explain cannot reach the native collector"));
@@ -1611,6 +1614,7 @@ mod tests {
             )]),
             requests: vec![],
             definitions: vec![],
+            choices: vec![],
         };
         let mut delegate =
             SnapshotTools::new(|_, _| panic!("Explain cannot reach the native collector"));
@@ -1636,6 +1640,37 @@ mod tests {
         assert!(answer.unverified.is_empty(), "{:?}", answer.unverified);
         assert_eq!(answer.citations[0].reference, "O0");
 
+        let mut model = Script {
+            replies: VecDeque::from([
+                reply("malformed", SUBMIT_ANSWER, json!({"answer":false})),
+                reply(
+                    "corrected",
+                    SUBMIT_ANSWER,
+                    json!({"answer":"The selected capture measured CPU usage of 93% [O0]. The present state remains unknown.","confidence":"low","category":"cpu"}),
+                ),
+            ]),
+            requests: vec![],
+            definitions: vec![],
+            choices: vec![],
+        };
+        let report = converse_with_selection(
+            &mut model,
+            &[],
+            "Explain the selected CPU capture.",
+            &selection,
+            &mut tools,
+            &privacy(),
+            |_| {},
+            |_, _| false,
+        );
+        assert_eq!(report.stats.inspection_calls, 0);
+        assert_eq!(report.stats.tool_calls, 0);
+        assert_eq!(report.answer.unwrap().repairs, 1);
+        assert_eq!(
+            model.choices,
+            [ToolChoice::Required, ToolChoice::SubmitAnswer]
+        );
+
         // In Explain, a right value written as current is marked, not sent back.
         let mut model = Script {
             replies: VecDeque::from([reply(
@@ -1645,6 +1680,7 @@ mod tests {
             )]),
             requests: vec![],
             definitions: vec![],
+            choices: vec![],
         };
         let mut delegate =
             SnapshotTools::new(|_, _| panic!("Explain cannot reach the native collector"));
