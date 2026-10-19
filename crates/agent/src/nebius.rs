@@ -323,9 +323,6 @@ fn complete_calls(calls: Option<&[ToolCall]>) -> bool {
     })
 }
 
-/// Text written after complete tool calls, past which the rest of the stream is not read.
-const TEXT_AFTER_CALLS: usize = 2048;
-
 /// One server-sent event of a streamed completion.
 #[derive(Deserialize)]
 struct Chunk {
@@ -381,9 +378,6 @@ fn read_stream(
     let mut usage = None;
     let mut seen = false;
     let mut malformed = false;
-    // Text since the last tool-call delta, and the length at which it is checked next.
-    let mut after_calls = 0usize;
-    let mut check_at = TEXT_AFTER_CALLS;
     loop {
         line.clear();
         let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
@@ -420,16 +414,7 @@ fn read_stream(
             }
             let Some(delta) = choice.delta else { continue };
             if let Some(text) = delta.content {
-                after_calls += text.len();
                 content.get_or_insert_with(String::new).push_str(&text);
-            }
-            if delta
-                .tool_calls
-                .as_ref()
-                .is_some_and(|parts| !parts.is_empty())
-            {
-                after_calls = 0;
-                check_at = TEXT_AFTER_CALLS;
             }
             for part in delta.tool_calls.unwrap_or_default() {
                 if part.index > calls.len() || part.index >= MAX_STREAMED_CALLS {
@@ -452,20 +437,6 @@ fn read_stream(
                         on_call(&call.name, &call.arguments);
                     }
                 }
-            }
-        }
-        // Long text after finished calls is never part of them: stop reading instead of waiting
-        // for the output limit. The provider's usage, sent last, is then unknown.
-        if after_calls >= check_at {
-            check_at = after_calls + TEXT_AFTER_CALLS;
-            let finished = !calls.is_empty()
-                && calls.iter().all(|c| {
-                    serde_json::from_str::<serde_json::Map<String, Value>>(&c.arguments).is_ok()
-                });
-            if finished {
-                finish = Some("tool_calls".into());
-                content = None;
-                break;
             }
         }
     }
@@ -770,22 +741,22 @@ mod tests {
             call.clone(),
             junk("\n</tool_call>\n</function>"),
             long,
-            usage,
+            usage.clone(),
         ]));
         assert_eq!(reply.rejected, None);
         assert_eq!(reply.calls.len(), 1);
         assert!(reply.content.is_none());
         assert_eq!(reply.completion_tokens, Some(8192));
-        // A long run of text after it is not read to the end: the stream stops early.
+        // Even a long tail must not hide the actual finish reason or the final usage event.
         let mut events = vec![call];
         events.extend((0..400).map(|_| junk("\t\t\t\t\t\t\t\t")));
         events.push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}));
+        events.push(usage);
         let reply = replay(&stream(&events));
         assert_eq!(reply.rejected, None);
         assert_eq!(reply.calls[0].function.name, "submit_answer");
         assert!(reply.content.is_none());
-        // The provider's usage comes last and was not read.
-        assert_eq!(reply.completion_tokens, None);
+        assert_eq!(reply.completion_tokens, Some(8192));
         // Text after an unfinished call is read on: it may still be part of the arguments.
         let open = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c2",
             "type":"function","function":{"name":"submit_answer","arguments":"{\"answer\":\"x"}}]}}]});
@@ -796,6 +767,62 @@ mod tests {
             replay(&stream(&events)).rejected,
             Some(AgentError::OutputLimit)
         );
+    }
+
+    #[test]
+    fn text_after_calls_never_overrides_a_rejection_or_invents_a_finish() {
+        let call = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
+            "function":{"name":"get_system_snapshot","arguments":"{}"}}]}}]});
+        let tail = "x".repeat(4096);
+        let usage = json!({"choices":[],
+            "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}});
+        for reason in [None, Some("content_filter"), Some("unknown")] {
+            let reply = replay(&stream(&[
+                call.clone(),
+                json!({"choices":[{"index":0,"delta":{"content":tail},"finish_reason":reason}]}),
+                usage.clone(),
+            ]));
+            assert_eq!(reply.rejected, Some(AgentError::IncompleteResponse));
+            assert!(reply.calls.is_empty());
+            assert_eq!(reply.total_tokens, Some(30));
+        }
+    }
+
+    #[test]
+    fn reasoning_and_content_do_not_create_or_duplicate_tool_calls() {
+        let arguments = r#"{"answer":"Votre réponse [O1]."}"#;
+        let calls = |index, id: &str| {
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                "index":index,"id":id,"function":{"name":"submit_answer","arguments":arguments}
+            }]}}]})
+        };
+        let reply = replay(&stream(&[
+            json!({"choices":[{"index":0,"delta":{
+                "reasoning":"<tool_call>not a structured call</tool_call>",
+                "reasoning_content":"Internal reasoning"
+            }}]}),
+            calls(0, "c1"),
+            json!({"choices":[{"index":0,"delta":{"content":"</function></tool_call>".repeat(200)}}]}),
+            calls(1, "c2"),
+            calls(2, "c3"),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"total_tokens":30}}),
+        ]));
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls.len(), 3);
+        assert_eq!(
+            reply
+                .calls
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c1", "c2", "c3"]
+        );
+        assert!(reply
+            .calls
+            .iter()
+            .all(|c| c.function.arguments == arguments));
+        assert_eq!(reply.total_tokens, Some(30));
     }
 
     #[test]

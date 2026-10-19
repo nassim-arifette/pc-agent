@@ -1388,7 +1388,7 @@ build, pas trois forks).
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
 | 12 — Soumission | D | planifié le 17 octobre (section 7 quinquies, phases 0 à 4) | |
-| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; gains en octets mesurés, qualité/coût à valider ; en cours : fiabilité de la boucle (Expliquer en une requête, datation des mesures, réparations, coupures) | #33, wp13-agent-reliability |
+| 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; #84 : réparations regroupées et lecture SSE jusqu'à la fin réelle, usages complets sur 2 parcours CLI et 1 GUI le 19 octobre ; #85 reste ouvert : réponses multiples fournisseur, GUI à 3 min 30 avec 2 relances, carte admin non systématique ; contrats C1–C7 inchangés | #33, wp13-agent-reliability, #84, #85 |
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |

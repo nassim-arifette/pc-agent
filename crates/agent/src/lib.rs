@@ -1224,7 +1224,11 @@ fn converse_inner(
                 return result.finish(fallback, repairs, AgentError::InvalidFinding);
             }
             repairs += 1;
-            let request = answer::repair_request(&[Issue::new(IssueKind::NoToolCall, "")], &[]);
+            let mut issues = vec![Issue::new(IssueKind::NoToolCall, "")];
+            if result.stats.inspection_calls == 0 && !explain_ready {
+                issues.push(Issue::new(IssueKind::NoInspection, ""));
+            }
+            let request = answer::repair_request(&issues, &[]);
             messages.push(json!({"role":"assistant","content":reply.content.unwrap_or_default()}));
             messages.push(json!({"role":"user","content":request.to_string()}));
             continue;
@@ -1239,21 +1243,31 @@ fn converse_inner(
             .iter()
             .find(|c| c.function.name == SUBMIT_ANSWER)
         {
-            let outcome = if reply.calls.len() > 1 {
-                Err((vec![Issue::new(IssueKind::NotAlone, "")], None))
-            } else if result.stats.inspection_calls == 0 && !explain_ready {
-                Err((vec![Issue::new(IssueKind::NoInspection, "")], None))
+            let mut protocol_issues = Vec::new();
+            if reply.calls.len() > 1 {
+                protocol_issues.push(Issue::new(IssueKind::NotAlone, ""));
+            }
+            if result.stats.inspection_calls == 0 && !explain_ready {
+                protocol_issues.push(Issue::new(IssueKind::NoInspection, ""));
+            }
+            let references = result.references(&mut aliases);
+            let plans = result.plans();
+            let reviewed = answer::review(
+                &submitted.function.arguments,
+                &answer::Context {
+                    received: &received,
+                    references: &references,
+                    plans: &plans,
+                },
+            );
+            let outcome = if protocol_issues.is_empty() {
+                reviewed
             } else {
-                let references = result.references(&mut aliases);
-                let plans = result.plans();
-                answer::review(
-                    &submitted.function.arguments,
-                    &answer::Context {
-                        received: &received,
-                        references: &references,
-                        plans: &plans,
-                    },
-                )
+                if let Err((issues, _)) = reviewed {
+                    protocol_issues.extend(issues);
+                }
+                // A protocol-invalid answer is never a fallback, even if its text is valid.
+                Err((protocol_issues, None))
             };
             // Explain describes one dated capture, shown with its time in the window: an earlier
             // value written as current is marked in the answer, not sent back.

@@ -438,10 +438,98 @@ fn submit_answer_alone_and_only_as_a_tool_call() {
     assert_eq!(executed, 1);
     assert_eq!(r.answer.unwrap().repairs, 2);
     let alone = m.messages[1].last().unwrap();
-    assert!(alone["content"].as_str().unwrap().contains("not_alone"));
+    let repair: Value = serde_json::from_str(alone["content"].as_str().unwrap()).unwrap();
+    let kinds: Vec<_> = repair["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"not_alone"));
+    assert!(kinds.contains(&"no_inspection"));
+    assert!(repair["next"].as_str().unwrap().contains("inspection tool"));
     let plain = m.messages[2].last().unwrap();
     assert_eq!(plain["role"], "user");
     assert!(plain["content"].as_str().unwrap().contains("no_tool_call"));
+    assert!(plain["content"].as_str().unwrap().contains("no_inspection"));
+}
+
+#[test]
+fn protocol_and_text_problems_are_repaired_together_without_running_other_calls() {
+    let mut executed = 0;
+    let mut model = script(vec![
+        tools(vec![
+            call("a", SUBMIT_ANSWER, &answer_args("Run `chkdsk C: /f /r`.")),
+            call("b", "get_system_snapshot", "{}"),
+        ]),
+        tools(vec![call("c", "get_system_snapshot", "{}")]),
+        done("O1"),
+    ]);
+    let result = investigate(
+        &mut model,
+        "test",
+        &fixture(),
+        &mut tb(|| {
+            executed += 1;
+            usable_snapshot()
+        }),
+        |_| {},
+    );
+    let repair: Value = serde_json::from_str(
+        model.messages[1]
+            .iter()
+            .find(|m| m["tool_call_id"] == "a")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let kinds: Vec<_> = repair["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    for expected in ["not_alone", "no_inspection", "command"] {
+        assert!(kinds.contains(&expected), "{repair}");
+    }
+    assert_eq!(executed, 1);
+    assert_eq!(result.answer.unwrap().repairs, 1);
+    assert!(model.choices.iter().all(|c| *c == ToolChoice::Required));
+}
+
+#[test]
+fn a_protocol_invalid_answer_is_never_shown_as_a_fallback() {
+    for inspected in [false, true] {
+        let mut replies = Vec::new();
+        if inspected {
+            replies.push(tools(vec![call("inspect", "get_system_snapshot", "{}")]));
+        }
+        for attempt in 0..=MAX_REPAIRS {
+            replies.push(tools(vec![
+                call(
+                    &format!("{attempt}-a"),
+                    SUBMIT_ANSWER,
+                    &answer_args("See [O0]."),
+                ),
+                call(
+                    &format!("{attempt}-b"),
+                    SUBMIT_ANSWER,
+                    &answer_args("See [O0]."),
+                ),
+            ]));
+        }
+        let mut model = script(replies);
+        let result = investigate(
+            &mut model,
+            "test",
+            &fixture(),
+            &mut tb(usable_snapshot),
+            |_| {},
+        );
+        assert!(result.answer.is_none());
+        assert_eq!(result.error, Some(AgentError::InvalidFinding));
+    }
 }
 #[test]
 fn alternatives_are_existing_findings_ranked_by_the_model() {
