@@ -6,6 +6,8 @@ use std::collections::VecDeque;
 fn system_prompt_specifies_formal_french_and_byte_units() {
     assert!(SYSTEM.contains("« vous »"));
     assert!(SYSTEM.contains("Gio"));
+    assert!(SYSTEM.contains("never Go, Mo, GiB or MiB"));
+    assert!(SYSTEM.contains("call get_approved_elevated_inspection"));
 }
 
 struct Script {

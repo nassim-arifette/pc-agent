@@ -20,7 +20,7 @@ const TASKS: &[&str] = &[
 ];
 pub const GET_APPROVED_INSPECTION: ToolSpec = ToolSpec {
     name: "get_approved_elevated_inspection", class: ToolClass::Inspection,
-    description: "Read already measured results of one locally approved Windows helper task. This never launches UAC, collects fresh data, changes files or grants approval. Cite these historical results as captured measurements, not current state. Missing approval requires the person to review the fixed task locally.",
+    description: "Read the already measured result of one read-only Windows helper task the person approved locally with administrator rights. Tasks: system_caches (sizes of Windows.old, downloaded Windows updates, the Delivery Optimization cache and restore points); mft_inventory (largest folders and files of a whole NTFS volume); shadow_storage (space shadow copies and restore points use and reserve); disk_reliability (each disk's temperature, wear, powered-on hours, read and write errors); process_images (full paths of protected processes); battery_energy (energy each app used on battery); performance_trace (short performance trace). Call it when the question needs one of these. It never launches UAC, collects fresh data, changes files or grants approval. Without an approved result it returns coverage needs_admin: the app then offers that check to the person; do not ask them to run tools themselves. Cite results as captured measurements, not current state.",
     params: &[Param { name: "task", kind: ParamKind::OneOf(TASKS), required: true,
         description: "Fixed read-only inspection whose host-approved cached result is requested." }],
 };

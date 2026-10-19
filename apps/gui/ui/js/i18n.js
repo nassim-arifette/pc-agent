@@ -569,6 +569,9 @@ const en = {
   "usage.tokensOut": "Tokens out",
   "usage.cost": "Estimated cost",
   "usage.noCost": "Not shown",
+  "usage.tokensAtLeast": "Tokens, at least",
+  "usage.tokensKnown": "{in} in, {out} out; {count} request(s) reported no usage",
+  "usage.costAtLeast": "Estimated cost, at least",
   "share.changed": "Your sharing choices or conversation changed. Send again to use the current choices.",
   "usage.price": "Nebius prices: ${input} in / ${output} out per million tokens, read {date}.",
 
@@ -1472,6 +1475,9 @@ const fr = {
   "usage.tokensOut": "Tokens reçus",
   "usage.cost": "Coût estimé",
   "usage.noCost": "Non affiché",
+  "usage.tokensAtLeast": "Tokens, au moins",
+  "usage.tokensKnown": "{in} envoyés, {out} reçus ; {count} requête(s) sans usage rapporté",
+  "usage.costAtLeast": "Coût estimé, au moins",
   "share.changed": "Vos choix de partage ou la conversation ont changé. Renvoyez la question pour utiliser les choix actuels.",
   "usage.price": "Prix Nebius : {input} $ en entrée / {output} $ en sortie par million de tokens, lus le {date}.",
 
