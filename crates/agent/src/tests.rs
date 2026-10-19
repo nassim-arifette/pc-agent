@@ -6,6 +6,8 @@ use std::collections::VecDeque;
 fn system_prompt_specifies_formal_french_and_byte_units() {
     assert!(SYSTEM.contains("« vous »"));
     assert!(SYSTEM.contains("Gio"));
+    assert!(SYSTEM.contains("never Go, Mo, GiB or MiB"));
+    assert!(SYSTEM.contains("call get_approved_elevated_inspection"));
 }
 
 struct Script {
@@ -294,7 +296,133 @@ fn answers_are_checked_and_repaired_before_acceptance() {
     let sent = serde_json::to_string(&m.messages[2]).unwrap();
     assert!(!sent.contains(&r.observations[0].observation_id));
     assert!(sent.contains(r#"\"citable_observation_ids\":[\"O1\"]"#));
+    assert_eq!(
+        m.choices,
+        [
+            ToolChoice::Required,
+            ToolChoice::Required,
+            ToolChoice::SubmitAnswer
+        ]
+    );
 }
+
+#[test]
+fn plain_text_after_inspection_does_not_start_named_repair() {
+    let mut model = script(vec![
+        tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+        Reply {
+            content: Some("A plain answer is not a structured submission.".into()),
+            ..Reply::default()
+        },
+        tools(vec![call("malformed", SUBMIT_ANSWER, "{")]),
+        done("O1"),
+    ]);
+    let result = investigate(
+        &mut model,
+        "test",
+        &fixture(),
+        &mut tb(usable_snapshot),
+        |_| {},
+    );
+    assert_eq!(result.answer.unwrap().repairs, 2);
+    assert_eq!(
+        model.choices,
+        [
+            ToolChoice::Required,
+            ToolChoice::Required,
+            ToolChoice::Required,
+            ToolChoice::SubmitAnswer,
+        ]
+    );
+}
+
+#[test]
+fn named_repair_preserves_validation_and_never_runs_other_tools() {
+    for unexpected in [
+        Reply {
+            content: Some("Plain text is still not a submission.".into()),
+            ..Reply::default()
+        },
+        Reply {
+            rejected: Some(AgentError::OutputLimit),
+            ..Reply::default()
+        },
+        tools(vec![call("extra", "get_system_snapshot", "{}")]),
+        tools(vec![
+            call("extra", "get_system_snapshot", "{}"),
+            call("mixed", SUBMIT_ANSWER, &answer_args("See [O1].")),
+        ]),
+        tools(vec![
+            call("duplicate-a", SUBMIT_ANSWER, &answer_args("See [O1].")),
+            call("duplicate-b", SUBMIT_ANSWER, &answer_args("See [O1].")),
+        ]),
+        submit_with("bad-citation", "See [O9]."),
+        submit_with("bad-command", "Run `chkdsk /f` [O1]."),
+    ] {
+        let mut executed = 0;
+        let mut model = script(vec![
+            tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+            tools(vec![call("malformed", SUBMIT_ANSWER, "{")]),
+            unexpected,
+            done("O1"),
+        ]);
+        let result = investigate(
+            &mut model,
+            "test",
+            &fixture(),
+            &mut tb(|| {
+                executed += 1;
+                usable_snapshot()
+            }),
+            |_| {},
+        );
+        assert_eq!(executed, 1);
+        assert_eq!(result.stats.inspection_calls, 1);
+        assert_eq!(result.answer.unwrap().repairs, 2);
+        assert_eq!(
+            model.choices,
+            [
+                ToolChoice::Required,
+                ToolChoice::Required,
+                ToolChoice::SubmitAnswer,
+                ToolChoice::SubmitAnswer,
+            ]
+        );
+    }
+}
+
+#[test]
+fn named_repair_does_not_leak_into_the_next_investigation() {
+    let mut model = script(vec![
+        tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+        tools(vec![call("malformed", SUBMIT_ANSWER, "{")]),
+        done("O1"),
+        tools(vec![call("inspect", "get_system_snapshot", "{}")]),
+        done("O1"),
+    ]);
+    for _ in 0..2 {
+        let result = investigate(
+            &mut model,
+            "test",
+            &fixture(),
+            &mut tb(usable_snapshot),
+            |_| {},
+        );
+        assert!(result.error.is_none());
+        assert!(result.answer.is_some());
+    }
+    assert_eq!(
+        model.choices,
+        [
+            ToolChoice::Required,
+            ToolChoice::Required,
+            ToolChoice::SubmitAnswer,
+            ToolChoice::Required,
+            ToolChoice::Required,
+        ]
+    );
+}
+
 #[test]
 fn repairs_are_bounded_and_the_last_answer_is_shown_with_its_problems() {
     let mut replies = vec![tools(vec![call("a", "get_system_snapshot", "{}")])];
@@ -436,10 +564,109 @@ fn submit_answer_alone_and_only_as_a_tool_call() {
     assert_eq!(executed, 1);
     assert_eq!(r.answer.unwrap().repairs, 2);
     let alone = m.messages[1].last().unwrap();
-    assert!(alone["content"].as_str().unwrap().contains("not_alone"));
+    let repair: Value = serde_json::from_str(alone["content"].as_str().unwrap()).unwrap();
+    let kinds: Vec<_> = repair["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"not_alone"));
+    assert!(kinds.contains(&"no_inspection"));
+    assert!(repair["next"].as_str().unwrap().contains("inspection tool"));
     let plain = m.messages[2].last().unwrap();
     assert_eq!(plain["role"], "user");
     assert!(plain["content"].as_str().unwrap().contains("no_tool_call"));
+    assert!(plain["content"].as_str().unwrap().contains("no_inspection"));
+}
+
+#[test]
+fn protocol_and_text_problems_are_repaired_together_without_running_other_calls() {
+    let mut executed = 0;
+    let mut model = script(vec![
+        tools(vec![
+            call("a", SUBMIT_ANSWER, &answer_args("Run `chkdsk C: /f /r`.")),
+            call("b", "get_system_snapshot", "{}"),
+        ]),
+        tools(vec![call("c", "get_system_snapshot", "{}")]),
+        done("O1"),
+    ]);
+    let result = investigate(
+        &mut model,
+        "test",
+        &fixture(),
+        &mut tb(|| {
+            executed += 1;
+            usable_snapshot()
+        }),
+        |_| {},
+    );
+    let repair: Value = serde_json::from_str(
+        model.messages[1]
+            .iter()
+            .find(|m| m["tool_call_id"] == "a")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let kinds: Vec<_> = repair["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    for expected in ["not_alone", "no_inspection", "command"] {
+        assert!(kinds.contains(&expected), "{repair}");
+    }
+    assert_eq!(executed, 1);
+    assert_eq!(result.answer.unwrap().repairs, 1);
+    assert!(model.choices.iter().all(|c| *c == ToolChoice::Required));
+}
+
+#[test]
+fn a_protocol_invalid_answer_is_never_shown_as_a_fallback() {
+    for inspected in [false, true] {
+        let mut replies = Vec::new();
+        if inspected {
+            replies.push(tools(vec![call("inspect", "get_system_snapshot", "{}")]));
+        }
+        for attempt in 0..=MAX_REPAIRS {
+            replies.push(tools(vec![
+                call(
+                    &format!("{attempt}-a"),
+                    SUBMIT_ANSWER,
+                    &answer_args("See [O0]."),
+                ),
+                call(
+                    &format!("{attempt}-b"),
+                    SUBMIT_ANSWER,
+                    &answer_args("See [O0]."),
+                ),
+            ]));
+        }
+        let mut model = script(replies);
+        let result = investigate(
+            &mut model,
+            "test",
+            &fixture(),
+            &mut tb(usable_snapshot),
+            |_| {},
+        );
+        assert!(result.answer.is_none());
+        assert_eq!(result.error, Some(AgentError::InvalidFinding));
+        assert_eq!(model.calls, MAX_REPAIRS + 1 + usize::from(inspected));
+        for (index, choice) in model.choices.iter().enumerate() {
+            assert_eq!(
+                *choice,
+                if inspected && index >= 2 {
+                    ToolChoice::SubmitAnswer
+                } else {
+                    ToolChoice::Required
+                }
+            );
+        }
+    }
 }
 #[test]
 fn alternatives_are_existing_findings_ranked_by_the_model() {
@@ -1114,6 +1341,61 @@ fn cost_needs_complete_usage_and_a_verified_catalog_price() {
     );
     assert!(r.stats.cost.is_some());
 }
+#[test]
+fn a_cost_lower_bound_needs_a_verified_price_for_every_counted_request() {
+    let price = fixture_pricing();
+    for earlier_model in [price.model_id.as_str(), "nvidia/unpriced-fixture"] {
+        let mut stats = Stats::none();
+        stats.record(&Reply {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(10),
+            ..Reply::default()
+        });
+        stats.price_for(None, Some(earlier_model));
+        stats.record_failure();
+        stats.price_for(Some(price.clone()), Some(&price.model_id));
+        assert_eq!(stats.known_prompt_tokens, 100);
+        assert_eq!(stats.known_completion_tokens, 10);
+        assert_eq!(stats.unknown_requests, 1);
+        assert!(stats.cost.is_none());
+        assert!(
+            stats.cost_lower_bound.is_none(),
+            "an unpriced request must not inherit a later request's price"
+        );
+    }
+}
+
+#[test]
+fn a_cost_lower_bound_uses_only_one_verified_price_and_complete_known_usage() {
+    let price = fixture_pricing();
+    let mut stats = Stats::none();
+    stats.record(&Reply {
+        prompt_tokens: Some(100),
+        completion_tokens: Some(10),
+        ..Reply::default()
+    });
+    stats.price_for(Some(price.clone()), Some(&price.model_id));
+    stats.record_failure();
+    stats.price_for(Some(price.clone()), Some(&price.model_id));
+    assert!(stats.cost.is_none());
+    assert!(stats.total_cost_usd.is_none());
+    let bound = stats.cost_lower_bound.as_ref().unwrap();
+    assert_eq!((bound.prompt_tokens, bound.completion_tokens), (100, 10));
+    assert_eq!(bound.usd, "0.000039");
+
+    let mut other = price.clone();
+    other.model_id = "nvidia/other-fixture".into();
+    other.prompt_usd_per_token = "0.000003".into();
+    stats.record(&Reply {
+        prompt_tokens: Some(100),
+        completion_tokens: Some(10),
+        ..Reply::default()
+    });
+    stats.price_for(Some(other.clone()), Some(&other.model_id));
+    assert_eq!(stats.known_prompt_tokens, 200);
+    assert!(stats.cost_lower_bound.is_none());
+}
+
 #[test]
 fn first_message_is_compact_and_uses_finding_aliases() {
     let mut s = fixture();

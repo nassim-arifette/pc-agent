@@ -66,6 +66,7 @@ function meta(report, inv) {
   }
   if (inv?.finishedAt && inv.startedAt) parts.push(duration(inv.finishedAt - inv.startedAt));
   if (report?.usage?.cost) parts.push(usd(report.usage.cost.usd));
+  else if (report?.usage?.cost_lower_bound) parts.push(`≥ ${usd(report.usage.cost_lower_bound.usd)}`);
   return parts.join(" · ");
 }
 
