@@ -1,6 +1,6 @@
 // Settings, in one column: the Nebius connection, privacy, web search, history and data,
-// appearance, then about. What the person types survives a redraw (a saved web key, a language
-// change): the AI form keeps its own state until it is saved.
+// appearance, then about. The AI form keeps its draft across in-place refreshes until saved
+// or the view is closed (including a full-shell language redraw).
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
@@ -13,12 +13,22 @@ import { price } from "../format.js";
 import { modelName } from "../models.js";
 import { REASONING, refreshRouting } from "../picker.js";
 import { webSettingsCard } from "../web.js";
+import { createCloudCheck, cloudError, cloudModelSelection } from "../onboarding.js";
+import { navigate } from "../router.js";
+import { keepFocus } from "../actionbar.js";
 
 /** The AI form as typed and not saved yet; null fields follow the saved settings. */
 const typed = { key: "", choice: null, custom: null };
 // Saving before a connection test refreshes app info and replaces the form. Keep the operation
 // and its outcome outside those DOM nodes so redraws cannot hide it or start a duplicate test.
-const connectionTest = { running: false, check: null, error: null };
+const connection = createCloudCheck(call, () => notify("connection-test"));
+const connectionTest = connection.state;
+
+export function clearCloudDraft(page) {
+  forgetTyped();
+  const input = page?.querySelector('[data-key="cloud-key"]');
+  if (input) input.value = "";
+}
 
 function forgetTyped() {
   typed.key = "";
@@ -30,17 +40,17 @@ function settingRow(label, note, control) {
   return h("div", { class: "setting-row" }, h("div", { class: "setting-text" }, h("strong", null, label), note ? h("span", { class: "hint" }, note) : null), control);
 }
 
-function aiCard() {
+export function aiCard() {
   const info = state.info;
   const cloud = info?.cloud || {};
-  const models = info?.models || [];
-  const known = models.some((m) => m.id === cloud.model_id);
-  const savedChoice = cloud.model_id ? (known ? cloud.model_id : "custom") : models[0]?.id || "custom";
-  let choice = typed.choice ?? savedChoice;
-  const clearTestResult = () => {
-    connectionTest.check = null;
-    connectionTest.error = null;
+  const models = connectionTest.catalog?.models || info?.models || [];
+  const selection = cloudModelSelection(cloud.model_id, models, typed);
+  let choice = selection.choice;
+  const clearTestResult = (key = false) => {
+    const hadCatalog = Boolean(connectionTest.catalog);
+    connection.invalidate({ key });
     result.textContent = "";
+    if (key && hadCatalog) notify("connection-test");
   };
 
   const status = cloud.ready
@@ -53,10 +63,12 @@ function aiCard() {
   const custom = h("input", {
     class: "input input-grow",
     placeholder: "nvidia/…",
-    value: typed.custom ?? (known ? "" : cloud.model_id || ""),
+    value: selection.custom,
+    "data-key": "cloud-custom",
     spellcheck: "false",
     oninput: (e) => {
       typed.custom = e.target.value;
+      typed.choice = "custom";
       clearTestResult();
     },
   });
@@ -65,6 +77,7 @@ function aiCard() {
     "select",
     {
       class: "select",
+      "data-key": "cloud-model",
       "aria-label": t("settings.model"),
       onchange: (e) => {
         choice = e.target.value;
@@ -79,7 +92,7 @@ function aiCard() {
   select.value = choice;
   const sync = () => {
     const model = models.find((m) => m.id === choice);
-    note.textContent = model ? `${t(`settings.model.note.${model.note}`)} ${model.id}` : "";
+    note.textContent = model ? `${model.note ? t(`settings.model.note.${model.note}`) : t("onboarding.catalog.available")} ${model.id}` : "";
     customField.style.setProperty("display", choice === "custom" ? "flex" : "none");
   };
   sync();
@@ -101,7 +114,7 @@ function aiCard() {
               state.info.cloud = await call("save_cloud_settings", { apiKey: null, modelId: cloud.model_id, reasoning: value });
               await refreshInfo();
             } catch (error) {
-              toast(error.message, "bad");
+              toast(t(`onboarding.error.${cloudError(error)}`), "bad");
             }
           },
           t("picker.reasoning"),
@@ -117,36 +130,23 @@ function aiCard() {
     value: typed.key,
     placeholder: cloud.key_configured ? (cloud.key_hint ? t("settings.key.saved", { hint: cloud.key_hint }) : t("settings.key.savedNoHint")) : t("settings.key.new"),
     "aria-label": t("settings.key"),
+    "data-key": "cloud-key",
     oninput: (e) => {
       typed.key = e.target.value;
-      clearTestResult();
+      clearTestResult(true);
     },
   });
-  const reveal = h(
-    "button",
-    {
-      type: "button",
-      class: "btn btn-icon btn-ghost",
-      title: t("settings.key.show"),
-      "aria-label": t("settings.key.show"),
-      onclick: () => {
-        const show = key.type === "password";
-        key.type = show ? "text" : "password";
-        reveal.title = t(show ? "settings.key.hide" : "settings.key.show");
-        reveal.setAttribute("aria-label", reveal.title);
-      },
-    },
-    icon("eye"),
-  );
   const testResult = connectionTest.running
     ? t("settings.testing")
     : connectionTest.error
-      ? t("settings.test.fail", { message: connectionTest.error })
+      ? t(`onboarding.error.${connectionTest.error}`)
       : connectionTest.check
         ? connectionTest.check.price
-          ? t("settings.test.ok", { input: price(connectionTest.check.price.input_per_million), output: price(connectionTest.check.price.output_per_million) })
-          : t("settings.test.okNoPrice")
-        : "";
+          ? `${t("onboarding.test.ok")} ${t("settings.test.ok", { input: price(connectionTest.check.price.input_per_million), output: price(connectionTest.check.price.output_per_million) })}`
+          : t("onboarding.test.ok")
+        : connectionTest.catalog
+          ? t(connectionTest.catalog.models.length ? "onboarding.catalog.loaded" : "onboarding.catalog.empty")
+          : "";
   const result = h("p", { class: "hint form-result", role: "status" }, testResult);
   const modelId = () => (choice === "custom" ? custom.value.trim() : choice);
   const changed = () => Boolean(key.value.trim()) || modelId() !== (cloud.model_id || "");
@@ -155,40 +155,35 @@ function aiCard() {
   const save = async () => {
     try {
       const updated = await call("save_cloud_settings", { apiKey: key.value.trim() || null, modelId: modelId() });
+      key.value = "";
       forgetTyped();
       state.info = { ...state.info, cloud: updated };
-      toast(t("settings.saved"));
+      toast(t("onboarding.save.ok"));
       await refreshInfo();
       return true;
     } catch (error) {
-      toast(error.message, "bad");
+      toast(t(`onboarding.error.${cloudError(error)}`), "bad");
       return false;
     }
   };
 
   // The test checks what the form shows: unsaved changes are saved first, never tested silently
   // against the previous settings.
+  const run = (kind) => connection.run(kind, async () => {
+    if (changed() && !(await save())) return false;
+    if (!state.info?.cloud?.key_configured) throw new Error("NEBIUS_API_KEY is missing or empty");
+    return true;
+  });
   const testButton = button(t("settings.test"), {
     iconName: "plug",
     title: t("settings.test.title"),
-    onClick: async () => {
-      if (connectionTest.running) return;
-      const needsSave = changed();
-      connectionTest.running = true;
-      connectionTest.check = null;
-      connectionTest.error = null;
-      notify("connection-test");
-      try {
-        if (needsSave && !(await save())) return;
-        connectionTest.check = await call("test_cloud");
-      } catch (error) {
-        connectionTest.error = error.message;
-      } finally {
-        connectionTest.running = false;
-        notify("connection-test");
-      }
-    },
+    onClick: () => run("test"),
   });
+  const catalogButton = button(t("onboarding.catalog.load"), { iconName: "refresh", onClick: () => run("catalog") });
+  const saveButton = button(t("settings.save"), { variant: "primary", iconName: "check", type: "submit" });
+  saveButton.dataset.key = "cloud-save";
+  testButton.dataset.key = "cloud-test";
+  catalogButton.dataset.key = "cloud-catalog";
 
   // A form, so Enter in the key field saves; nothing is submitted anywhere.
   const form = h(
@@ -198,7 +193,7 @@ function aiCard() {
       autocomplete: "off",
       onsubmit: (e) => {
         e.preventDefault();
-        if (!connectionTest.running) save();
+        connection.run("save", save);
       },
     },
     h("div", { class: "card-head" }, h("div", null, h("h2", { class: "card-title" }, icon("sparkle"), t("settings.ai.title")), h("p", { class: "hint" }, t("settings.ai.sub"))), status),
@@ -207,22 +202,29 @@ function aiCard() {
       "div",
       { class: "field", style: { "margin-top": "14px" } },
       h("span", { class: "label" }, t("settings.key")),
-      h("div", { class: "row" }, key, reveal),
+      key,
       cloud.key_source === "environment" || cloud.model_source === "environment" ? h("p", { class: "hint" }, icon("info"), " ", t("settings.key.env")) : null,
     ),
-    h("div", { class: "row wrap", style: { "margin-top": "16px" } }, button(t("settings.save"), { variant: "primary", iconName: "check", type: "submit" }), testButton),
+    h("p", { class: "hint" }, t("onboarding.catalog.note")),
+    h("div", { class: "row wrap", style: { "margin-top": "16px" } }, saveButton, catalogButton, testButton),
     result,
-    cloud.problem && (cloud.key_configured || cloud.model_id) ? h("p", { class: "hint", style: { color: "var(--warn)" } }, cloud.problem) : null,
+    cloud.problem && (cloud.key_configured || cloud.model_id) ? h("p", { class: "hint", style: { color: "var(--warn)" } }, t(`onboarding.error.${cloudError(cloud.problem)}`)) : null,
     reasoning ? h("div", { class: "card-rows" }, reasoning) : null,
     cloud.file ? h("p", { class: "note", style: { "margin-top": "10px" } }, t("settings.file", { path: cloud.file })) : null,
   );
   if (connectionTest.running) {
-    for (const control of form.querySelectorAll("input, select, button")) control.disabled = true;
+    for (const input of form.querySelectorAll("input")) input.readOnly = true;
+    for (const control of form.querySelectorAll("select, button")) control.disabled = true;
+    // Keep the clicked control focusable while duplicate requests are refused by the controller.
+    for (const control of [saveButton, testButton, catalogButton]) {
+      control.disabled = false;
+      control.setAttribute("aria-disabled", "true");
+    }
   }
   return form;
 }
 
-function privacyCard() {
+export function privacyCard() {
   const cards = h("div");
   const what = h("div");
   const draw = () => {
@@ -416,11 +418,13 @@ export function mount(page) {
   let web = null;
   const render = () => {
     web = webSettingsCard();
-    fill(
+    keepFocus(page, () => fill(
       page,
       h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("settings.title")), h("p", { class: "page-sub" }, t("settings.sub")))),
-      h("div", { class: "stack settings-column" }, aiCard(), privacyCard(), web.el, dataCard(), appearanceCard(render), aboutCard()),
-    );
+      h("div", { class: "stack settings-column" },
+        h("section", { class: "card card-pad" }, h("h2", { class: "card-title" }, t("onboarding.title")), h("p", { class: "hint" }, t("onboarding.resume.note")), button(t("onboarding.resume"), { onClick: () => navigate("setup") })),
+        aiCard(), privacyCard(), web.el, dataCard(), appearanceCard(render), aboutCard()),
+    ));
   };
   render();
   // The composer's routing choice decides the model too: Settings says so when it does. A
@@ -431,5 +435,8 @@ export function mount(page) {
     // Web search exists only with AI analysis: its card follows the sharing choice.
     else if (topic === "privacy") web?.redraw();
   });
-  return unsubscribe;
+  return () => {
+    unsubscribe();
+    clearCloudDraft(page);
+  };
 }

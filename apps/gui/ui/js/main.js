@@ -18,7 +18,8 @@ import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { connect } from "./api.js";
-import { loadPrefs } from "./prefs.js";
+import { loadPrefs, getPrefs, setPref } from "./prefs.js";
+import { shouldOfferOnboarding } from "./onboarding.js";
 import {
   state,
   subscribe,
@@ -51,8 +52,9 @@ import * as history from "./views/history.js";
 import * as live from "./views/live.js";
 import * as storage from "./views/storage.js";
 import * as settings from "./views/settings.js";
+import * as setup from "./views/setup.js";
 
-const VIEWS = { chat, history, live, storage, settings };
+const VIEWS = { chat, history, live, storage, settings, setup };
 const narrow = window.matchMedia("(max-width: 900px)");
 
 let app = null;
@@ -486,6 +488,7 @@ function extensionDialog() {
 }
 
 async function boot() {
+  const initialHash = window.location.hash;
   loadPrefs();
   await connect();
   renderShell();
@@ -527,13 +530,16 @@ async function boot() {
   startLive();
   refreshConversations();
   // A turn still running after a reload is shown again, with Stop and any pending question.
-  refreshPrivacy().finally(async () => {
+  const restored = refreshPrivacy().finally(async () => {
     // A summary may have been running in a data view. After a reload its live inspector is
     // gone, so surface the retained turn in the Chat where Stop and extensions are available.
     if (await resumeTurn()) navigate("chat");
   });
   try {
-    await refreshInfo();
+    await Promise.all([refreshInfo(), restored]);
+    const progress = getPrefs().onboarding;
+    if (!progress && state.info.cloud?.ready) setPref("onboarding", "existing");
+    if (shouldOfferOnboarding(state.info.cloud, progress, { initialHash, hash: window.location.hash, hasTurn: Boolean(state.inv) })) navigate("setup");
   } catch {
     // The status keeps its local default.
   }
