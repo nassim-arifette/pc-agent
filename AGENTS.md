@@ -70,7 +70,10 @@ cargo build --release --locked -p pcagent -p pcagent-gui
   des bouchons.
 - **Interface :**
   - jamais `innerHTML` ; CSP stricte ; capacités Tauri minimales ;
-  - la clé API ne passe jamais par la page.
+  - la saisie d'une clé API dans un champ masqué est autorisée pour son enregistrement local ;
+    la clé sauvegardée n'est jamais renvoyée à la page (seul l'indice existant de quatre caractères
+    est permis), ni incluse dans les journaux ou les aperçus. La saisie est effacée après
+    enregistrement ou fermeture de la vue.
 - **Outils du LLM :** chaque outil a un schéma fermé, un statut de couverture et des tests sur
   données synthétiques. Un outil lit, il ne modifie rien ; les actions passent par
   `prepare_action_plan`.

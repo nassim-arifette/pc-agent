@@ -2,7 +2,8 @@
 // (python -m http.server in apps/gui, then /ui/index.html). Every value is synthetic. The app
 // never loads this file: it is outside the embedded ui folder.
 //
-// URL switches: ?cloud=none|ready|problem, ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
+// URL switches: ?cloud=none|ready|problem, ?connection=key|network|timeout|model|limit|empty,
+// ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
 // (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow,
 // ?recording=short (3-second recordings), ?battery=none|ac|charging|low|relative|two|unavailable
 // (the Live PC battery read: by default one discharging laptop battery; none is a desktop PC, also
@@ -41,6 +42,20 @@ const absent = () => ({ value: null, text: null, status: null, note: null });
 const jitter = (base, spread) => base + (Math.random() - 0.5) * spread;
 
 let cloudMode = params.get("cloud") || "ready";
+let cloudKeyConfigured = cloudMode !== "none";
+async function checkConnection() {
+  await wait(800);
+  if (!cloudKeyConfigured) throw new Error("NEBIUS_API_KEY is missing or empty");
+  const errors = {
+    key: "Provider returned HTTP 401; response body was withheld",
+    network: "Provider request failed; details and response body were withheld",
+    timeout: "Provider did not answer within the time limit",
+    model: "The selected model is absent from the account catalog",
+    limit: "Provider returned HTTP 429; response body was withheld",
+  };
+  const error = errors[params.get("connection")];
+  if (error) throw new Error(error);
+}
 // Web lookups (C6). ?web=on: a Tavily key is saved and web search is allowed, so an AI
 // investigation also reads the graphics driver's notes and its answer cites web pages [W1], [W2];
 // ?web=key: a key is saved but web search is off. Like the Rust side, the page only ever sees
@@ -52,14 +67,14 @@ function searchKeyState() {
 }
 function cloud() {
   if (cloudMode === "none") {
-    return { key_configured: false, key_hint: null, key_source: null, model_id: null, model_source: null, ready: false, problem: "NEBIUS_API_KEY is missing or empty", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
+    return { key_configured: false, key_hint: null, key_source: null, model_id: cloudModel, model_source: null, ready: false, problem: "NEBIUS_API_KEY is missing or empty", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
   }
   if (cloudMode === "problem") {
     return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: "meta/llama", model_source: "file", ready: false, problem: "Select an explicit nvidia/ Nemotron model ID; no fallback model is allowed", file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
   }
   return { key_configured: true, key_hint: "Q7fz", key_source: "file", model_id: cloudModel, model_source: "file", ready: true, reasoning: cloudReasoning, problem: null, file: "C:\\Users\\Alex\\AppData\\Roaming\\pcagent\\.env", file_problem: null, ...searchKeyState() };
 }
-let cloudModel = "nvidia/nemotron-3-super-120b-a12b";
+let cloudModel = cloudMode === "none" ? null : "nvidia/nemotron-3-super-120b-a12b";
 let cloudReasoning = "on";
 let routingSettings = { mode: "configured", super_model_id: null, ultra_model_id: null };
 function routingView() {
@@ -1160,9 +1175,13 @@ export function createMock() {
         elevation.state = "cancelling";
       }
     },
-    save_cloud_settings: ({ modelId, reasoning = null }) => {
-      cloudMode = modelId.startsWith("nvidia/") ? "ready" : "problem";
-      if (cloudMode === "ready") cloudModel = modelId;
+    save_cloud_settings: ({ apiKey = null, modelId, reasoning = null }) => {
+      if (typeof modelId !== "string" || modelId.length > 200
+        || !modelId.toLowerCase().startsWith("nvidia/") || !modelId.toLowerCase().includes("nemotron")
+        || !/^[a-z0-9/._-]+$/i.test(modelId)) throw new Error("Select an explicit nvidia/ Nemotron model ID; no fallback model is allowed");
+      if (apiKey?.trim()) cloudKeyConfigured = true;
+      cloudMode = cloudKeyConfigured ? "ready" : "none";
+      cloudModel = modelId;
       if (reasoning) {
         if (!["on", "low", "off"].includes(reasoning)) throw new Error("unknown reasoning");
         cloudReasoning = reasoning;
@@ -1170,9 +1189,23 @@ export function createMock() {
       return cloud();
     },
     test_cloud: async () => {
-      await wait(800);
-      return { price: { model_id: "nvidia/nemotron-3-super-120b-a12b", input_per_million: "0.30", output_per_million: "0.90", read_at_unix_ms: Date.now() } };
+      await checkConnection();
+      if (!cloudModel) throw new Error("NEBIUS_MODEL_ID is missing or empty");
+      if (params.get("connection") === "empty" || cloudMode === "problem") throw new Error("The selected model is absent from the account catalog");
+      return { price: { model_id: cloudModel, input_per_million: "0.30", output_per_million: "0.90", read_at_unix_ms: Date.now() } };
     },
+    cloud_models: async () => {
+      await checkConnection();
+      return {
+        source: "synthetic-mock", read_at_unix_ms: Date.now(),
+        models: params.get("connection") === "empty" ? [] : [
+          { id: "nvidia/nemotron-3-super-120b-a12b", supports_tools: true },
+          { id: "nvidia/mock-nemotron-account-model", supports_tools: null },
+          { id: "nvidia/mock-nemotron-no-tools", supports_tools: false },
+        ],
+      };
+    },
+    open_nebius_console: () => null,
     save_search_key: ({ apiKey = null }) => {
       const key = (apiKey || "").trim();
       if (key && !key.startsWith("tvly-")) throw new Error("A Tavily key starts with tvly-.");

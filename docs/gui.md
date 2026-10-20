@@ -238,6 +238,58 @@ first one. What leaves is shown and changed under the composer, and remembered b
 - The key is written to `%APPDATA%\pcagent\.env` (the CLI's file) by the Rust side and never sent
   back to the page, which only sees whether a key exists and its last four characters.
 
+## First launch and Nebius setup
+
+An unconfigured profile with no saved setup decision opens `#/setup` on an ordinary launch.
+An explicit hash route, a turn restored after a reload, and a profile whose key/model are already
+configured keep their current destination. Settings always offers **Open setup guide**, including
+after skipping, finishing or choosing local mode. The guide does not reset existing credentials,
+reasoning, routing or privacy choices.
+
+The guide reuses the Settings AI and privacy cards, in English and French and the current theme:
+
+- **Open Nebius Token Factory** calls `open_nebius_console`, a fixed-address browser launch of
+  `https://tokenfactory.nebius.com/`. The command accepts no URL, reads no key and makes no account.
+- The key is typed in a password field and sent once to the existing `save_cloud_settings`
+  command. A saved key is never read back, only its configured flag and existing four-character
+  hint. The draft is cleared after a successful save or closing the view; it is not stored in
+  browser preferences, logs, diagnostics or previews.
+- **Load account models** saves pending form changes, then calls `cloud_models` explicitly.
+  Until then, suggestions are not an assertion of account availability. The account response
+  replaces the suggestions, excluding models that explicitly lack tool support. The current ID
+  remains visible as a custom choice if absent; no fallback model is silently selected or saved.
+- **Test connection** also saves pending changes, then calls the existing `test_cloud`. Both
+  operations read catalog metadata with a 10-second backend timeout. Neither starts an inference,
+  sends a question or PC data, or grants diagnostic/UAC consent. Errors use closed, localized
+  categories, never arbitrary exception/provider text. Checks are serialized and invalidated on
+  edits; changing a key also discards the old catalog. Missing key/model, denied access,
+  unavailable model, network, timeout, rate limits and an empty catalog have explicit messages.
+- **Continue locally without AI** first persists local privacy mode. A failed write leaves the
+  guide open. **Skip for now** and **Finish setup** do not change privacy or delete credentials.
+  Finishing requires a configured key/model, not a mandatory network test. None starts a question.
+- Only the progress marker (`skipped`, `complete`, `local`, or `existing`) is added to
+  `pcagent.prefs.v1`. If localStorage is unavailable, the choice lasts for this window only and
+  a later launch may offer the guide again. Privacy remains owned by Rust, not this marker.
+
+Run the no-dependency logic/IPC-fixture suite from the repository root:
+
+```powershell
+node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs
+```
+
+These are synthetic tests, not browser or live-service validation. For manual browser QA, use a
+fresh browser profile/storage with `?cloud=none`, or explicitly open `#/setup`. The mock supports
+`?connection=key|network|timeout|model|limit|empty` alongside `cloud`; it never contacts Nebius or
+opens its website. Use only dummy keys in the mock. Check keyboard focus, both languages/themes,
+skip/reload/resume, saved profiles, empty/error catalogs and clearing the password on leaving.
+
+Native WebView2 adds its own password-reveal control after typing, even if the app provides no
+reveal button. The Nebius field suppresses it with `::-ms-reveal`. Before entering a real key in
+native QA, verify this with an unsaved dummy value; a Chrome mock alone cannot prove it.
+Also verify that the official-console click actually opens the page, not just that IPC succeeds:
+the existing `explorer.exe URL` transport can fail in an isolated secondary-logon desktop even
+when opening HTTPS normally works. Confirm this in a fully interactive standard-user session.
+
 ## Web search
 
 Typed web lookups through Tavily (contract C6): `lookup_driver_notes`, `lookup_known_issue`,
