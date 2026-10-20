@@ -316,12 +316,11 @@ fn parse_reply(envelope: Envelope) -> Reply {
 /// At least one call, each with arguments that form a whole JSON object.
 fn complete_calls(calls: Option<&[ToolCall]>) -> bool {
     calls.is_some_and(|calls| {
-        !calls.is_empty()
-            && calls.iter().all(|c| {
-                serde_json::from_str::<serde_json::Map<String, Value>>(&c.function.arguments)
-                    .is_ok()
-            })
+        !calls.is_empty() && calls.iter().all(|c| whole_object(&c.function.arguments))
     })
+}
+fn whole_object(arguments: &str) -> bool {
+    serde_json::from_str::<serde_json::Map<String, Value>>(arguments).is_ok()
 }
 
 fn tool_choice_value(choice: ToolChoice) -> Value {
@@ -376,9 +375,15 @@ const MAX_STREAMED_CALLS: usize = 64;
 /// Rebuilds the reply envelope from server-sent events, reporting each tool call's arguments as
 /// they grow. A stream that ends early or carries a malformed event yields an envelope that
 /// `parse_reply` rejects, keeping whatever usage was reported.
+///
+/// When the request named the one tool the model must call (`close_after`), reading stops as
+/// soon as that call's arguments form a whole JSON object: Nemotron then keeps writing closing
+/// tags and a second copy of the answer for a minute or more, until the output limit. The reply
+/// is complete at that point; the usage, sent last, stays unknown for that request.
 fn read_stream(
     reader: impl Read,
     on_call: &mut dyn FnMut(&str, &str),
+    close_after: Option<&str>,
 ) -> Result<Envelope, AgentError> {
     let mut lines = BufReader::new(reader.take((MAX_STREAM_BYTES + 1) as u64));
     let mut read = 0usize;
@@ -389,7 +394,7 @@ fn read_stream(
     let mut usage = None;
     let mut seen = false;
     let mut malformed = false;
-    loop {
+    'events: loop {
         line.clear();
         let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
         if n == 0 {
@@ -446,6 +451,13 @@ fn read_stream(
                     if let Some(arguments) = function.arguments {
                         call.arguments.push_str(&arguments);
                         on_call(&call.name, &call.arguments);
+                        if close_after == Some(call.name.as_str())
+                            && !call.id.is_empty()
+                            && whole_object(&call.arguments)
+                        {
+                            finish = Some("tool_calls".into());
+                            break 'events;
+                        }
                     }
                 }
             }
@@ -521,7 +533,9 @@ impl Model for Nebius {
                 .json(&body),
             remaining,
         )?;
-        Ok(parse_reply(read_stream(response, on_call)?))
+        // Only a request that names the one tool to call is closed at that call's end.
+        let close_after = (choice == ToolChoice::SubmitAnswer).then_some(SUBMIT_ANSWER);
+        Ok(parse_reply(read_stream(response, on_call, close_after)?))
     }
     fn pricing(&self) -> Option<Pricing> {
         self.pricing.clone()
@@ -686,7 +700,7 @@ mod tests {
         out
     }
     fn replay(body: &str) -> Reply {
-        parse_reply(read_stream(body.as_bytes(), &mut |_, _| {}).unwrap())
+        parse_reply(read_stream(body.as_bytes(), &mut |_, _| {}, None).unwrap())
     }
 
     #[test]
@@ -701,9 +715,11 @@ mod tests {
             json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}),
         ]);
         let mut seen = Vec::new();
-        let envelope = read_stream(body.as_bytes(), &mut |name, args| {
-            seen.push(format!("{name}:{args}"))
-        })
+        let envelope = read_stream(
+            body.as_bytes(),
+            &mut |name, args| seen.push(format!("{name}:{args}")),
+            None,
+        )
         .unwrap();
         let reply = parse_reply(envelope);
         assert_eq!(reply.rejected, None);
@@ -782,6 +798,76 @@ mod tests {
         events.push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}));
         assert_eq!(
             replay(&stream(&events)).rejected,
+            Some(AgentError::OutputLimit)
+        );
+    }
+
+    #[test]
+    fn a_named_final_call_closes_the_stream_once_its_arguments_are_whole() {
+        let open = |name: &str, args: &str| {
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
+                "type":"function","function":{"name":name,"arguments":args}}]}}]})
+        };
+        let more = |args: &str| {
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+                "function":{"arguments":args}}]}}]})
+        };
+        // What Nemotron writes after the call: closing tags, then a second copy of the answer.
+        // The last event is malformed, so a reader that goes on is rejected.
+        let mut body = stream(&[
+            open("submit_answer", "{\"answer\":\"Lors de la"),
+            more(" mesure [O0].\"}"),
+            json!({"choices":[{"index":0,"delta":{"content":"</tool_call></function>"}}]}),
+        ]);
+        body.insert_str(body.len() - "data: [DONE]\n\n".len(), "data: {oops\n\n");
+        let mut seen = Vec::new();
+        let closed = read_stream(
+            body.as_bytes(),
+            &mut |name, args| seen.push(format!("{name}:{args}")),
+            Some("submit_answer"),
+        )
+        .unwrap();
+        assert_eq!(closed.usage.as_ref().and_then(|u| u.total_tokens), None);
+        let reply = parse_reply(closed);
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls.len(), 1);
+        assert_eq!(
+            reply.calls[0].function.arguments,
+            "{\"answer\":\"Lors de la mesure [O0].\"}"
+        );
+        assert!(reply.content.is_none());
+        assert_eq!(reply.total_tokens, None);
+        assert_eq!(seen.len(), 2, "the call is still reported as it grows");
+        // Without a named tool, or with another one named, the whole stream is read as before.
+        assert_eq!(replay(&body).rejected, Some(AgentError::InvalidResponse));
+        assert_eq!(
+            parse_reply(
+                read_stream(body.as_bytes(), &mut |_, _| {}, Some("get_processes")).unwrap()
+            )
+            .rejected,
+            Some(AgentError::InvalidResponse)
+        );
+        // A call that is not the named one does not close the stream either.
+        let other = stream(&[
+            open("get_processes", "{}"),
+            json!({"choices":[{"index":0,
+            "delta":{},"finish_reason":"tool_calls"}]}),
+        ]);
+        let reply = parse_reply(
+            read_stream(other.as_bytes(), &mut |_, _| {}, Some("submit_answer")).unwrap(),
+        );
+        assert_eq!(reply.rejected, None);
+        assert_eq!(reply.calls[0].function.name, "get_processes");
+        // Arguments that never close are read to the end and rejected as before.
+        let cut = stream(&[
+            open("submit_answer", "{\"answer\":\"x"),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
+        ]);
+        assert_eq!(
+            parse_reply(
+                read_stream(cut.as_bytes(), &mut |_, _| {}, Some("submit_answer")).unwrap()
+            )
+            .rejected,
             Some(AgentError::OutputLimit)
         );
     }
