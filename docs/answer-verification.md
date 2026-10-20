@@ -31,10 +31,12 @@ category becomes `medium` or `other`. An unknown action reference is dropped and
 repair. In Explain, where the whole turn describes one capture shown with its time, a right value
 written as current is accepted and marked `historical_wording`; elsewhere it is sent back.
 
-Nemotron sometimes keeps writing after complete tool calls (closing tags, then whitespace) until
-the output limit. Calls whose arguments form whole JSON objects are kept when the reply is cut
-off, and after 2 KiB of text following them the rest of the stream is not read. The provider's
-usage, sent last, is then unknown for that request.
+Nemotron sometimes keeps writing after complete tool calls (closing tags, then a second copy of
+the answer or whitespace) until the output limit, for a minute or more. Calls whose arguments form
+whole JSON objects are kept when the reply is cut off. When the request names the one tool to call
+(a repair asking only for `submit_answer`), the stream is closed as soon as that call's arguments
+form a whole JSON object; the provider's usage, sent last, is then unknown for that request and the
+cost shown is a lower bound. Every other request is read to its end so its usage is kept.
 
 - A repair request names each problem, the passage and a fix whose example cites a reference that
   exists in this turn. Number and citation problems also list `valid_references`, each once. A
