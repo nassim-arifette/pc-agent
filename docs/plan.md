@@ -416,6 +416,18 @@ toujours le nom d'exécutable en mode Complet et une référence opaque en mode 
 partir un jour, ce sera en mode Complet seulement, comme un nom d'application, tronqué et nettoyé
 comme les noms d'exécutables et visible dans l'aperçu exact ; ce changement passera par ce plan.
 
+Décision du porteur du projet, 26 octobre (#55, option B, avant le 29) : une image que
+l'utilisateur joint lui-même à sa question peut partir vers Nebius, en mode Complet seulement, avec
+le modèle NVIDIA qui lit les images (`nvidia/Nemotron-3.5-Super-VL`) pour ce tour, sans escalade.
+C'est une exception explicite à la liste « jamais » : l'image peut contenir des informations
+personnelles (nom d'utilisateur, chemin du profil, contenu d'une fenêtre) et aucun masquage local
+n'est exigé. L'aperçu exact montre l'image telle qu'elle part (réduite et ré-encodée localement,
+sans métadonnées). Une image n'est jamais envoyée en mode Anonymisé ou Local, ni renvoyée dans les
+suivis. Côté C1, l'image est un contexte, comme la question, jamais une preuve mesurée : un chiffre
+lu sur l'image doit être mesuré par un outil avant d'être cité, sinon il reste « non vérifié ». Les
+commandes et le stockage de la pièce jointe (C2, C3) sont précisés dans ce plan avec
+l'implémentation.
+
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
 
