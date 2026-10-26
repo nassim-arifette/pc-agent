@@ -122,7 +122,10 @@ function resolve(cards) {
     kind: selected.kind,
     app,
     member,
-    label: selected.kind === "process" ? `${member.name} (PID ${member.pid})` : app.name,
+    // Shown by its readable name when known; the PID stays here, in the inspector, where it tells
+    // same-named processes apart. `name` is the executable name, the only one a question may
+    // carry (C5).
+    label: selected.kind === "process" ? `${member.readable_name || member.name} (PID ${member.pid})` : app.readable_name || app.name,
     name: selected.kind === "process" ? member.name : app.name,
     measuredAt: activity.collected_at_unix_ms,
     reference,
@@ -213,7 +216,7 @@ function appDetails(item) {
             h(
               "button",
               { type: "button", class: "insp-member", "data-key": `process:${m.entity_ref}`, onclick: () => select({ kind: "process", app: app.entity_ref, key: m.entity_ref }) },
-              h("span", { class: "insp-member-name" }, `${m.name} · PID ${m.pid}`),
+              h("span", { class: "insp-member-name", title: m.name }, `${m.readable_name || m.name} · PID ${m.pid}`),
               h("span", null, measureText(m.cpu, "cpu")),
               h("span", null, measureText(m.working_set, "bytes")),
             ),
@@ -368,7 +371,7 @@ function applications(item) {
               "data-actbar-item": Boolean(bar),
               onclick: () => select(pressed && selected.kind === "app" ? null : { kind: "app", app: app.entity_ref }),
             },
-            h("span", { class: "livepage-app-name", title: app.name }, app.name),
+            h("span", { class: "livepage-app-name", title: app.name }, app.readable_name || app.name),
             h("span", { class: "livepage-app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
             h("span", { class: "livepage-app-value" }, measureText(app.cpu, "cpu")),
             h("span", { class: "livepage-app-value" }, measureText(app.working_set, "bytes")),
