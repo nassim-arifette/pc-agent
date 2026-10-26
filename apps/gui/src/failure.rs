@@ -43,6 +43,13 @@ closed_set! {
         PreviewExpired,
         /// Sharing choices, the model or the conversation changed after the preview.
         PreviewChanged,
+        ImageInvalid,
+        ImageUnsupported,
+        ImageTooLarge,
+        ImageExpired,
+        ImageSharingRequired,
+        ImageModelUnavailable,
+        ImagePreparing,
         /// The measured selection source expired or was invalidated.
         SelectionExpired,
         ConversationMissing,

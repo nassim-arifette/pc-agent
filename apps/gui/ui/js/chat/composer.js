@@ -13,6 +13,14 @@ import { navigate } from "../router.js";
 import { closePicker, modelPicker } from "./picker.js";
 import { webConsentNote } from "./web.js";
 import { failureText } from "../failure.js";
+import { createImageDraft, pastedImages } from "./image-draft.js";
+import { imagePreview, showImage } from "./images.js";
+
+const attachment = createImageDraft({
+  prepare: (dataBase64) => call("image_prepare", { dataBase64 }),
+  discard: (imageId) => call("image_discard", { imageId }),
+  changed: () => notify("image"),
+});
 
 export const MODES = ["complete", "anonymized", "local"];
 const MODE_ICONS = { complete: "cloud", anonymized: "shield", local: "pc" };
@@ -99,34 +107,34 @@ function fileNamesShared() {
 }
 
 /** The exact preview of a question as it would leave now, with its single-use ticket. */
-function previewOf(question, conversationId) {
-  return call("cloud_preview", { question, names: namesShared(), conversationId, fileNames: fileNamesShared() });
+function previewOf(question, conversationId, imageId = null) {
+  return call("cloud_preview", { question, names: namesShared(), conversationId, fileNames: fileNamesShared(), imageId });
 }
 
 let shownPreview = null;
 
-function previewKey(question, conversationId) {
+function previewKey(question, conversationId, imageId = null) {
   return JSON.stringify([question, conversationId, state.privacyRevision, state.privacy,
     scanAttached() ? state.scan.scopeId : null, state.info?.cloud?.model_id,
-    state.info?.cloud?.reasoning, state.routing]);
+    state.info?.cloud?.reasoning, state.routing, imageId, state.conversationRevision]);
 }
 
 /**
  * "See what leaves": the exact first message for the text in the composer (or a sample question
  * when it is empty), what it holds and what never leaves. Nothing is sent from here.
  */
-export async function showPreview(text, { followUp = false } = {}) {
-  if (state.preparing) return;
+export async function showPreview(text, { followUp = false, imageId = null } = {}) {
+  if (state.preparing || attachment.pending) return;
   const typed = (text || "").trim();
   const question = typed || t("consent.sample");
   let preview;
   try {
     await waitForPrivacy();
     const conversationId = followUp ? (state.conversation?.id ?? null) : null;
-    const key = previewKey(question, conversationId);
-    preview = await previewOf(question, conversationId);
+    const key = previewKey(question, conversationId, imageId);
+    preview = await previewOf(question, conversationId, imageId);
     // Reuse the reviewed bytes once, only if the typed question and choices are unchanged.
-    shownPreview = typed && key === previewKey(question, conversationId) ? { key, preview } : null;
+    shownPreview = typed && key === previewKey(question, conversationId, imageId) ? { key, preview } : null;
   } catch (error) {
     toast(failureText(error), "bad");
     return;
@@ -145,6 +153,7 @@ export async function showPreview(text, { followUp = false } = {}) {
         sent.trim() !== question.trim() ? h("span", { class: "note" }, icon("shield"), t("consent.question.cleaned")) : null,
       ),
       disclosure(preview),
+      preview.image ? h("div", null, imagePreview(preview.image), h("p", { class: "note" }, t("image.warning"))) : null,
       webConsentNote(),
       files.length
         ? h(
@@ -172,7 +181,7 @@ export async function showPreview(text, { followUp = false } = {}) {
  * question leaves as the composer's toggles say, without a dialog (C5, 9 October): its exact
  * preview is taken just before, bound to a single-use ticket, and kept in the turn's steps.
  */
-export async function ask(question, { followUp = false } = {}) {
+export async function ask(question, { followUp = false, imageId = null } = {}) {
   const text = (question || "").trim();
   if (!text) return false;
   if (state.inv && (state.inv.status === "running" || state.inv.status === "stopping")) {
@@ -182,8 +191,12 @@ export async function ask(question, { followUp = false } = {}) {
   if (!beginTurnPreparation()) return false;
   try {
     await waitForPrivacy();
+    if (imageId && effectiveMode() !== "complete") {
+      toast(t("failure.image_sharing_required"), "bad");
+      return false;
+    }
     const conversationId = followUp ? (state.conversation?.id ?? null) : null;
-    const key = previewKey(text, conversationId);
+    const key = previewKey(text, conversationId, imageId);
     const scopeId = scanAttached() ? state.scan.scopeId : null;
     let previewId = null;
     let scopeIds = [];
@@ -191,17 +204,17 @@ export async function ask(question, { followUp = false } = {}) {
     const reviewed = shownPreview?.key === key ? shownPreview.preview : null;
     shownPreview = null;
     if (effectiveMode() !== "local") {
-      const preview = reviewed ?? await previewOf(text, conversationId);
+      const preview = reviewed ?? await previewOf(text, conversationId, imageId);
       previewId = preview.id;
       sent = preview.message ?? null;
       scopeIds = scopeId && preview.storage_folder ? [scopeId] : [];
     }
-    if (key !== previewKey(text, followUp ? (state.conversation?.id ?? null) : null)) {
+    if (key !== previewKey(text, followUp ? (state.conversation?.id ?? null) : null, imageId)) {
       toast(t("share.changed"));
       return false;
     }
     navigate("chat");
-    return await sendMessage(text, { followUp, previewId, scopeIds, sent });
+    return await sendMessage(text, { followUp, previewId, scopeIds, sent, imageId });
   } catch (error) {
     toast(failureText(error), "bad");
     return false;
@@ -302,7 +315,7 @@ function shareToggles({ followUp, text }) {
       : null,
     h(
       "button",
-      { type: "button", class: "icon-btn share-preview", title: t("share.preview"), "aria-label": t("share.preview"), onclick: () => showPreview(text(), { followUp }) },
+      { type: "button", class: "icon-btn share-preview", title: t("share.preview"), "aria-label": t("share.preview"), onclick: () => showPreview(text(), { followUp, imageId: attachment.image?.id ?? null }) },
       icon("eye"),
     ),
   ];
@@ -337,6 +350,7 @@ function localPill() {
 
 /** The composer: a growing text area, the sharing toggles, and Send or Stop while a run is going. */
 export function composer({ autofocus = false, followUp = false, big = false } = {}) {
+  attachment.bind(state.conversationRevision);
   const area = h("textarea", {
     rows: big ? 3 : 1,
     placeholder: t(followUp ? "ask.followUp" : "ask.placeholder"),
@@ -350,17 +364,31 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   const modeHost = h("span", { class: "mode-host" });
   const pickHost = h("span", { class: "pick-slot" });
   const sendHost = h("span", { class: "send-host" });
+  const imageHost = h("div", { class: "image-draft", "aria-live": "polite" });
   const running = () => Boolean(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"));
-  const submit = async () => {
+  const attach = async (files) => {
     if (running() || state.preparing) return;
+    try { await attachment.attach(Array.from(files)); }
+    catch (error) { toast(failureText(error), "bad"); }
+  };
+  const fileInput = h("input", { type: "file", accept: "image/png,image/jpeg", hidden: true, onchange: () => {
+    if (fileInput.files.length) void attach(fileInput.files);
+    fileInput.value = "";
+  } });
+  const attachButton = h("button", { type: "button", class: "icon-btn", title: t("image.attach"), "aria-label": t("image.attach"), onclick: () => fileInput.click() }, icon("image"));
+  const submit = async () => {
+    if (running() || state.preparing || attachment.pending) return;
     const text = area.value;
     if (!text.trim()) return;
-    if (await ask(text, { followUp }) && area.value === text) {
+    const imageId = attachment.image?.id ?? null;
+    if (await ask(text, { followUp, imageId }) && area.value === text) {
+      if (imageId) attachment.consume(imageId);
       area.value = "";
       grow();
     }
   };
   const refresh = () => {
+    attachment.bind(state.conversationRevision);
     // The welcome composer is replaced by the thread when a send starts. Keep its text stable
     // until that handoff; otherwise edits made while preparing would be lost with the old node.
     area.readOnly = state.preparing;
@@ -371,7 +399,19 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
     if (focusedShare) modeHost.querySelector(`[data-share-key="${CSS.escape(focusedShare)}"]`)?.focus({ preventScroll: true });
     // The model and its reasoning only matter when the question goes to the AI.
     closePicker();
-    fill(pickHost, mode === "local" ? null : modelPicker({ disabled: running() || state.preparing }));
+    fill(pickHost, attachment.image ? h("span", { class: "image-model" }, t("image.model")) : mode === "local" ? null : modelPicker({ disabled: running() || state.preparing }));
+    attachButton.disabled = running() || state.preparing || attachment.pending;
+    const image = attachment.image;
+    fill(imageHost, attachment.pending
+      ? h("p", { class: "note", role: "status" }, t("image.preparing"))
+      : image ? [
+        h("div", { class: "image-draft-row" },
+          h("button", { type: "button", class: "image-thumb", "aria-label": t("image.preview"), onclick: () => showImage(image) }, h("img", { src: image.data_url, alt: t("image.alt") })),
+          h("div", null, h("strong", null, t("image.ready")), h("p", { class: "note" }, t("image.details", { width: image.width, height: image.height, size: bytes(image.bytes) }))),
+          h("button", { type: "button", class: "icon-btn", "aria-label": t("image.remove"), title: t("image.remove"), disabled: state.preparing, onclick: () => { attachment.clear(); area.focus(); } }, icon("x")),
+        ),
+        h("p", { class: "image-warning" }, t(mode === "complete" ? "image.warning" : "failure.image_sharing_required")),
+      ] : null);
     fill(
       sendHost,
       running()
@@ -380,10 +420,16 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
             { type: "button", class: "send stop", title: t("inv.stop"), "aria-label": t("inv.stop"), disabled: state.inv.status === "stopping", onclick: () => stopInvestigation() },
             icon("stop"),
           )
-        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), disabled: state.preparing, onclick: submit }, icon("send")),
+        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), disabled: state.preparing || attachment.pending || Boolean(image && mode !== "complete"), onclick: submit }, icon("send")),
     );
   };
   area.addEventListener("input", grow);
+  area.addEventListener("paste", (event) => {
+    const files = pastedImages(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void attach(files);
+  });
   area.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
@@ -394,10 +440,13 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   const el = h(
     "div",
     { class: ["ask", big ? "big" : ""] },
+    fileInput,
+    imageHost,
     area,
     h(
       "div",
       { class: "ask-bar" },
+      attachButton,
       h("button", { type: "button", class: "icon-btn", title: t("ask.folder"), "aria-label": t("ask.folder"), onclick: () => navigate("storage") }, icon("folder")),
       modeHost,
       h("span", { class: "spacer" }),

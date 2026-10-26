@@ -1,9 +1,11 @@
 //! The Tauri shell: commands the page may call and the events it listens to. The page is
 //! untrusted input: every argument is validated here, paths and item references are resolved on
 //! this side, and the Nebius key never reaches the page.
+mod image_commands;
 use crate::{
     actions, elevation,
     failure::{self, Code, Failure},
+    images::{self, ImageSlot, ImageView},
     model_routing::{ModelRouting, RoutingReview, RoutingView},
     preview::{self, PreparedTurn, Reviewed},
     protocol,
@@ -12,9 +14,10 @@ use crate::{
     settings::{self, PrivacyMode, PrivacySettings},
     shell, view,
 };
+use pcagent_agent::image_input::{ImageInput, MODEL_ID as IMAGE_MODEL_ID};
 use pcagent_agent::{
     capabilities::Probes,
-    converse_with_privacy, converse_with_selection,
+    converse_with_image, converse_with_privacy, converse_with_selection,
     credentials::{self, Credentials},
     local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius, PastTurn,
     PrivacyContext, Sharing, StorageContext, Workstation,
@@ -104,6 +107,8 @@ struct AppState {
     history: Arc<Mutex<Option<Store>>>,
     sampler: Option<Sampler>,
     preview: Mutex<Option<PreparedTurn>>,
+    images: Mutex<ImageSlot>,
+    image_decoding: Arc<AtomicBool>,
     preview_revision: AtomicU64,
     /// Changes of consent/model policy, independent of ordinary dashboard/preview refreshes.
     selection_context_revision: AtomicU64,
@@ -280,12 +285,18 @@ fn conversation_get(state: State<'_, AppState>, id: String) -> Result<Option<Val
                     value["turns"] = serde_json::json!(conversation
                         .turns
                         .iter()
-                        .map(|turn| protocol::turn(
-                            &turn.id,
-                            &turn.question,
-                            turn.asked_at_unix_ms,
-                            &turn.report
-                        ))
+                        .map(|turn| {
+                            let mut shown = protocol::turn(
+                                &turn.id,
+                                &turn.question,
+                                turn.asked_at_unix_ms,
+                                &turn.report,
+                            );
+                            if let Some(image) = &turn.image {
+                                shown["image"] = serde_json::json!(image);
+                            }
+                            shown
+                        })
                         .collect::<Vec<_>>());
                     value
                 })
@@ -300,6 +311,7 @@ fn conversation_delete(state: State<'_, AppState>, id: String) -> Result<bool, S
     // Use the same history -> ticket order as preview publication and consumption. Delete
     // only while both ticket stores are held, so a completed deletion cannot resend its past.
     let history = lock(&state.history);
+    let mut images = lock(&state.images);
     let mut preview = lock(&state.preview);
     let mut selections = lock(&state.selections);
     let deleted = match history.as_ref() {
@@ -307,6 +319,7 @@ fn conversation_delete(state: State<'_, AppState>, id: String) -> Result<bool, S
         None => false,
     };
     preview::invalidate_conversation(&mut preview, &id);
+    images.invalidate_conversation(&id);
     selections.invalidate_conversation(&id);
     Ok(deleted)
 }
@@ -314,6 +327,7 @@ fn conversation_delete(state: State<'_, AppState>, id: String) -> Result<bool, S
 #[tauri::command]
 fn conversations_clear(state: State<'_, AppState>) -> Result<usize, String> {
     let history = lock(&state.history);
+    let mut images = lock(&state.images);
     let mut preview = lock(&state.preview);
     let mut selections = lock(&state.selections);
     let deleted = match history.as_ref() {
@@ -322,6 +336,7 @@ fn conversations_clear(state: State<'_, AppState>) -> Result<usize, String> {
     };
     state.preview_revision.fetch_add(1, Ordering::SeqCst);
     *preview = None;
+    images.begin();
     selections.invalidate_tickets();
     Ok(deleted)
 }
@@ -536,6 +551,7 @@ fn selection_send(
             conversation_id,
             preview_id: Some(preview_id.clone()),
             file_names,
+            image_id: None,
         },
         Some(SelectionStart {
             reference,
@@ -744,6 +760,7 @@ struct Preview {
     file_name_sharing: Value,
     model_routing: RoutingView,
     configured_model_id: Option<String>,
+    image: Option<ImageView>,
 }
 
 /// The person's choice in the interface: program names or opaque references (contract C5).
@@ -763,10 +780,44 @@ async fn cloud_preview(
     names: bool,
     conversation_id: Option<String>,
     file_names: Option<bool>,
+    image_id: Option<String>,
 ) -> Result<Preview, Failure> {
     let revision = state.preview_revision.fetch_add(1, Ordering::SeqCst) + 1;
     let question = checked_question(&question)?;
     let sharing = sharing_of(names);
+    if image_id.is_some()
+        && (sharing != Sharing::Complete || lock(&state.privacy).mode != PrivacyMode::Complete)
+    {
+        return Err(Failure::new(
+            Code::ImageSharingRequired,
+            "Images require Complete sharing.",
+        ));
+    }
+    let image = image_id
+        .as_deref()
+        .map(|id| lock(&state.images).bind(id, conversation_id.as_deref()))
+        .transpose()?;
+    if image.is_some() {
+        tauri::async_runtime::spawn_blocking(|| {
+            let credentials = Credentials::load();
+            let config = Config::from_lookup(|name| credentials.get(name))?;
+            Nebius::new(config.for_model(IMAGE_MODEL_ID)?)?
+                .check_image_catalog(Duration::from_secs(10))
+        })
+        .await
+        .map_err(|_| {
+            Failure::new(
+                Code::ImageModelUnavailable,
+                "The vision model could not be checked.",
+            )
+        })?
+        .map_err(|_| {
+            Failure::new(
+                Code::ImageModelUnavailable,
+                "The approved vision model is unavailable for this account.",
+            )
+        })?;
+    }
     let file_names = file_names.unwrap_or(false);
     if file_names && sharing != Sharing::Complete {
         return Err("File names require complete sharing.".into());
@@ -794,6 +845,7 @@ async fn cloud_preview(
     );
     let routing = lock(&state.model_routing).review(configured_model_id());
     prepared.routing = Some(routing.clone());
+    prepared.image = image;
     if let Some(secret) = Credentials::load().get("NEBIUS_API_KEY") {
         prepared.protect_secret(&secret);
     }
@@ -827,6 +879,10 @@ async fn cloud_preview(
                 .sum()
         });
     let id = prepared.id.clone();
+    let image_view = prepared.image.as_ref().map(|image| image.view());
+    let bytes = prepared.image.as_ref().map_or(text.len(), |image| {
+        image.image.message_content(&message).to_string().len()
+    });
     // The collector wait above cannot retain a mutex guard. Re-read under the history
     // lock and keep it through publication, rejecting a deleted or changed conversation.
     let history = lock(&state.history);
@@ -835,6 +891,14 @@ async fn cloud_preview(
             Code::PreviewChanged,
             "Conversation history changed. Open the sharing preview again.",
         ));
+    }
+    let images = lock(&state.images);
+    if prepared
+        .image
+        .as_ref()
+        .is_some_and(|image| !images.matches(image))
+    {
+        return Err(images::changed());
     }
     let mut slot = lock(&state.preview);
     if revision != state.preview_revision.load(Ordering::SeqCst) {
@@ -852,15 +916,31 @@ async fn cloud_preview(
     *slot = Some(prepared);
     Ok(Preview {
         id,
-        bytes: text.len(),
+        bytes,
         measured,
         findings: message["findings"].as_array().map_or(0, Vec::len),
         names: message["process_names"].as_object().map_or(0, |n| n.len()),
         storage_folder,
         file_name_sharing,
         message,
-        model_routing: lock(&state.model_routing).view(),
-        configured_model_id: routing.configured_model_id,
+        model_routing: if image_view.is_some() {
+            RoutingView {
+                settings: RoutingSettings::default(),
+                revision: routing.revision,
+                automatic_available: false,
+                calibration_reviewed_at_unix_ms: None,
+                calibrated_rules: Vec::new(),
+                limitation: None,
+            }
+        } else {
+            lock(&state.model_routing).view()
+        },
+        configured_model_id: if image_view.is_some() {
+            Some(IMAGE_MODEL_ID.into())
+        } else {
+            routing.configured_model_id
+        },
+        image: image_view,
     })
 }
 
@@ -931,6 +1011,7 @@ fn send_message(
     text: String,
     scope_ids: Vec<String>,
     preview_id: Option<String>,
+    image_id: Option<String>,
 ) -> Result<Started, Failure> {
     if scope_ids.len() > 1 {
         return Err("Attach one scanned folder to a message.".into());
@@ -950,6 +1031,18 @@ fn send_message(
         let creds = Credentials::load();
         Config::from_lookup(|name| creds.get(name)).is_ok()
     });
+    if image_id.is_some() && privacy.mode != PrivacyMode::Complete {
+        return Err(Failure::new(
+            Code::ImageSharingRequired,
+            "Images require Complete sharing.",
+        ));
+    }
+    if image_id.is_some() && sharing.is_none() {
+        return Err(Failure::new(
+            Code::ImageModelUnavailable,
+            "Configure Nebius before sending an image.",
+        ));
+    }
     // No confirmation dialog stands before a send (C5, 9 October): a cloud send still needs the
     // single-use ticket of its exact preview, checked when the turn starts.
     let file_names = sharing.is_some()
@@ -968,6 +1061,7 @@ fn send_message(
             conversation_id,
             preview_id,
             file_names,
+            image_id,
         },
     )
 }
@@ -1010,6 +1104,7 @@ struct Ask<'a> {
     scope_ids: Vec<String>,
     selected: Option<&'a FrozenSelection>,
     routing: Option<&'a RoutingReview>,
+    image: Option<&'a ImageInput>,
     elevated_evidence: Vec<pcagent_agent::elevated_tools::ApprovedInspection>,
     /// The person consented to web lookups (C6); a key is still required.
     web_search: bool,
@@ -1022,6 +1117,12 @@ enum ApprovedCapture {
     Selected(Box<PreparedSelection>),
 }
 impl ApprovedCapture {
+    fn image(&self) -> Option<&ImageInput> {
+        match self {
+            Self::Snapshot(prepared) => prepared.image.as_ref().map(|image| &image.image),
+            Self::Selected(_) => None,
+        }
+    }
     fn snapshot(&self) -> &Snapshot {
         match self {
             Self::Snapshot(prepared) => &prepared.snapshot,
@@ -1093,6 +1194,7 @@ struct StartRequest {
     preview_id: Option<String>,
     #[serde(default)]
     file_names: bool,
+    image_id: Option<String>,
 }
 
 #[tauri::command]
@@ -1118,8 +1220,20 @@ fn launch_investigation(
         conversation_id,
         preview_id,
         file_names,
+        image_id,
     } = request;
     let question = checked_question(&question)?;
+    if image_id.is_some()
+        && (!cloud
+            || !names
+            || selected_start.is_some()
+            || lock(&state.privacy).mode != PrivacyMode::Complete)
+    {
+        return Err(Failure::new(
+            Code::ImageSharingRequired,
+            "Images require a Complete-sharing chat turn.",
+        ));
+    }
     if file_names && ((!cloud && selected_start.is_none()) || !use_storage || !names) {
         return Err(
             "File names require cloud sharing, complete mode and the approved folder.".into(),
@@ -1202,7 +1316,15 @@ fn launch_investigation(
         } else {
             None
         };
+        let images = lock(&state.images);
         let mut preview = lock(&state.preview);
+        if preview
+            .as_ref()
+            .and_then(|p| p.image.as_ref())
+            .is_some_and(|image| !images.matches(image))
+        {
+            return Err(images::changed());
+        }
         let routing = preview
             .as_ref()
             .and_then(|prepared| prepared.routing.clone())
@@ -1226,6 +1348,7 @@ fn launch_investigation(
                 sharing: sharing_of(names),
                 storage_scope: scope,
                 file_names,
+                image_id: image_id.as_deref(),
             },
         )?)))
     } else {
@@ -1331,6 +1454,7 @@ fn launch_investigation(
                 scope_ids: if use_storage { prepared.as_ref().and_then(ApprovedCapture::scope).map(str::to_owned).into_iter().collect() } else { Vec::new() },
                 selected: prepared.as_ref().and_then(ApprovedCapture::selected),
                 routing: prepared.as_ref().and_then(ApprovedCapture::routing),
+                image: prepared.as_ref().and_then(ApprovedCapture::image),
                 elevated_evidence,
                 web_search,
                 probes,
@@ -1348,7 +1472,10 @@ fn launch_investigation(
             };
             let mut value = serde_json::to_value(&stored_report).unwrap_or_default();
             value["schema_version"] = serde_json::json!(1);
-            let completed_turn = protocol::turn(&worker_turn_id, &question, asked_at, &value);
+            let mut completed_turn = protocol::turn(&worker_turn_id, &question, asked_at, &value);
+            if let Some(image) = ask.image {
+                completed_turn["image"] = serde_json::json!(image.info());
+            }
             // Every finished turn is kept, unless the conversation was deleted meanwhile.
             let conversation_id = match &saved_in {
                 Some(conversation) => {
@@ -1356,7 +1483,7 @@ fn launch_investigation(
                         .as_mut()
                         .and_then(|store| {
                             store
-                                .add_turn_with_id(conversation, &worker_turn_id, &question, asked_at, &value)
+                                .add_turn_with_image(conversation, &worker_turn_id, &question, asked_at, &value, ask.image.map(ImageInput::record))
                                 .ok()
                                 .flatten()
                         })
@@ -1386,6 +1513,9 @@ fn launch_investigation(
         })
         .map_err(|e| format!("Cannot start the investigation: {e}"))?;
     *slot = Some(running);
+    if let Some(image_id) = image_id {
+        lock(&state.images).discard(&image_id);
+    }
     Ok(Started {
         id,
         conversation_id,
@@ -1476,7 +1606,7 @@ fn investigation(
                 "Open the model sharing preview before sending.".into(),
             )
         })?;
-        let model = match build_routed_model(routing) {
+        let model = match build_routed_model(routing, ask.image.is_some()) {
             Ok(model) => model,
             Err(e) => {
                 let message = match &e {
@@ -1614,34 +1744,50 @@ fn investigation(
                 |tool: &str| emit(Step::ToolStarted { tool: tool.into() }),
                 record,
             );
-            let report = converse_with_privacy(
-                &mut model,
-                ask.past,
-                question,
-                &initial,
-                &mut tools,
-                privacy,
-                |event| {
-                    emit(Step::ToolFinished {
-                        tool: event.tool.clone(),
-                        status: event.status,
-                        duration_ms: event.duration_ms,
-                        query: event.query.clone(),
-                    })
-                },
-                |partial, request| {
-                    ask_extension(
-                        app,
-                        id,
-                        ask.turn_id,
-                        partial,
-                        request,
-                        stop,
-                        answer,
-                        extension,
-                    )
-                },
-            );
+            let on_event = |event: &pcagent_agent::ToolEvent| {
+                emit(Step::ToolFinished {
+                    tool: event.tool.clone(),
+                    status: event.status,
+                    duration_ms: event.duration_ms,
+                    query: event.query.clone(),
+                })
+            };
+            let on_extension = |partial: &Investigation, request: &ExtensionRequest| {
+                ask_extension(
+                    app,
+                    id,
+                    ask.turn_id,
+                    partial,
+                    request,
+                    stop,
+                    answer,
+                    extension,
+                )
+            };
+            let report = if let Some(image) = ask.image {
+                converse_with_image(
+                    &mut model,
+                    ask.past,
+                    question,
+                    &initial,
+                    &mut tools,
+                    privacy,
+                    image,
+                    on_event,
+                    on_extension,
+                )
+            } else {
+                converse_with_privacy(
+                    &mut model,
+                    ask.past,
+                    question,
+                    &initial,
+                    &mut tools,
+                    privacy,
+                    on_event,
+                    on_extension,
+                )
+            };
             (report, tools.into_inner())
         };
         if let Some((_, pending)) = workstation.take_actions() {
@@ -1667,11 +1813,25 @@ fn investigation(
     Ok(view::report(&report, question, &readable))
 }
 
-fn build_routed_model(review: &RoutingReview) -> Result<RoutedModel<Nebius>, AgentError> {
+fn build_routed_model(
+    review: &RoutingReview,
+    image: bool,
+) -> Result<RoutedModel<Nebius>, AgentError> {
     let credentials = Credentials::load();
     let config = Config::from_lookup(|name| credentials.get(name))?;
-    if review.configured_model_id.as_deref() != Some(config.model_id()) {
+    if review.configured_model_id.as_deref() != Some(config.model_id())
+        || review.reasoning != Some(config.reasoning())
+    {
         return Err(AgentError::InvalidModel);
+    }
+    if image {
+        return RoutedModel::new(
+            Nebius::new(config.for_model(IMAGE_MODEL_ID)?)?,
+            None,
+            &RoutingSettings::default(),
+            None,
+        )
+        .map_err(|_| AgentError::ImageNotAllowed);
     }
     let primary =
         Nebius::new(config.for_model(review.settings.initial_model(config.model_id())?)?)?;
@@ -2256,6 +2416,8 @@ pub fn run() {
             actions: Arc::new(Mutex::new(None)),
             elevation: Arc::new(elevation::Slot::default()),
             preview: Mutex::new(None),
+            images: Mutex::new(ImageSlot::default()),
+            image_decoding: Arc::new(AtomicBool::new(false)),
             preview_revision: AtomicU64::new(0),
             selection_context_revision: AtomicU64::new(0),
             selections,
@@ -2273,6 +2435,9 @@ pub fn run() {
             action_decline,
             action_run,
             cloud_preview,
+            image_commands::image_prepare,
+            image_commands::image_discard,
+            image_commands::conversation_image_get,
             selection_sources,
             selection_preview,
             selection_send,

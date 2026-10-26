@@ -7,6 +7,7 @@ import { startFailure } from "./failure.js";
 import { rememberSelection, selectionForTurn, selectionForConversation, forgetSelections } from "./selection/meta.js";
 import { startModelId } from "./chat/models.js";
 import { recordedSwitch } from "./chat/usage.js";
+import { IMAGE_MODEL_ID } from "./chat/image-draft.js";
 
 const listeners = new Set();
 
@@ -275,7 +276,7 @@ export async function openConversation(id) {
     id: saved.id,
     title: selection ? t(`select.label.${selection.intent}`, { what: selection.label }) : saved.title,
     // The turn ID lets the Rust side find a cited web page again (open_web_source).
-    turns: saved.turns.map((turn) => ({ id: turn.id, question: turn.question, report: turn.report, at: turn.asked_at_unix_ms, selection: selectionForTurn(turn.id) })),
+    turns: saved.turns.map((turn) => ({ id: turn.id, question: turn.question, report: turn.report, at: turn.asked_at_unix_ms, image: turn.image ?? null, selection: selectionForTurn(turn.id) })),
   };
   // A running turn keeps going; it shows only in its own conversation.
   if (!running()) state.inv = null;
@@ -369,9 +370,9 @@ function current(turnId) {
  * Sends a question in the open conversation when `followUp` is true, otherwise in a new one.
  * The sharing mode is the stored privacy choice; a cloud mode needs the reviewed preview ticket.
  */
-export async function sendMessage(question, { followUp = false, previewId = null, scopeIds = [], sent = null } = {}) {
+export async function sendMessage(question, { followUp = false, previewId = null, scopeIds = [], sent = null, imageId = null } = {}) {
   const conversationId = followUp ? (state.conversation?.id ?? null) : null;
-  return startTurn(question, conversationId, followUp, sent, () => call("send_message", { conversationId, text: question, scopeIds, previewId }));
+  return startTurn(question, conversationId, followUp, sent, () => call("send_message", { conversationId, text: question, scopeIds, previewId, imageId }), null, null, imageId ? IMAGE_MODEL_ID : null);
 }
 
 /**
@@ -385,7 +386,7 @@ export async function sendSelection(question, { reference, intent, previewId, co
 }
 
 /** `sent` is the exact first message of a cloud turn, from its preview: shown in its steps. */
-async function startTurn(question, conversationId, followUp, sent, start, selection = null, summary = null) {
+async function startTurn(question, conversationId, followUp, sent, start, selection = null, summary = null, modelId = null) {
   if (running()) return false;
   const createdConversation = !followUp || !state.conversation;
   if (createdConversation) state.conversation = { id: null, title: selection ? t(`select.label.${selection.intent}`, { what: selection.label }) : question, turns: [] };
@@ -407,7 +408,7 @@ async function startTurn(question, conversationId, followUp, sent, start, select
     checking: false,
     switchedTo: null,
     // The model the turn starts with under the routing policy, and the change once one happens.
-    model: state.privacy.mode !== "local" && state.info?.cloud?.ready ? startModelId(state.info, state.routing) : null,
+    model: state.privacy.mode !== "local" && state.info?.cloud?.ready ? modelId ?? startModelId(state.info, state.routing) : null,
     change: null,
     partial: null,
     sent,
@@ -610,7 +611,7 @@ function finish(inv, turn, conversationId, failure) {
     inv.report = report;
     if (conversation && (conversation.id == null || conversation.id === (conversationId ?? inv.conversationId))) {
       conversation.id = conversationId ?? conversation.id;
-      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial, sent: inv.sent ?? null, selection: inv.selection ?? null };
+      const saved = { id: turn.id, question: inv.question, report, at: inv.finishedAt, plans: [], partial, sent: inv.sent ?? null, image: turn.image ?? null, selection: inv.selection ?? null };
       // A reopened thread may already contain the persisted turn before its event reaches us.
       const existing = turn.id ? conversation.turns.find((item) => item.id === turn.id) : null;
       if (existing) Object.assign(existing, saved, { plans: existing.plans ?? [] });

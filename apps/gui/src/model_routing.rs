@@ -3,6 +3,7 @@ use crate::failure::{self, Code, Failure};
 use pcagent_agent::{
     credentials,
     routing::{CalibratedRule, Calibration, RoutingMode, RoutingSettings, MAX_CALIBRATION_BYTES},
+    Config, Reasoning,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +19,7 @@ pub struct RoutingReview {
     pub settings: RoutingSettings,
     pub revision: u64,
     pub configured_model_id: Option<String>,
+    pub reasoning: Option<Reasoning>,
     pub calibration: Option<Calibration>,
 }
 
@@ -140,6 +142,7 @@ impl ModelRouting {
             settings: self.settings.clone(),
             revision: self.revision,
             configured_model_id,
+            reasoning: configured_reasoning(),
             calibration: self.calibration.clone(),
         }
     }
@@ -149,6 +152,7 @@ impl ModelRouting {
             && self.settings == review.settings
             && self.calibration == review.calibration
             && review.configured_model_id.as_deref() == configured_model_id
+            && review.reasoning == configured_reasoning()
     }
 
     pub fn set(&mut self, settings: RoutingSettings) -> Result<RoutingView, Failure> {
@@ -180,6 +184,13 @@ impl ModelRouting {
         self.refresh();
         Ok(self.view())
     }
+}
+
+fn configured_reasoning() -> Option<Reasoning> {
+    let credentials = credentials::Credentials::load();
+    Config::from_lookup(|name| credentials.get(name))
+        .ok()
+        .map(|config| config.reasoning())
 }
 
 fn load_calibration(

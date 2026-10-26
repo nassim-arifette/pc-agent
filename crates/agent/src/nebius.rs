@@ -4,7 +4,9 @@ use super::{
 };
 #[cfg(test)]
 use crate::models::catalog_pricing;
-use crate::models::{validate_model_id, Catalog, CATALOG_URL};
+use crate::models::{
+    published_vision_support, validate_model_id, Catalog, CATALOG_URL, PUBLIC_CATALOG_URL,
+};
 use crate::ModelCatalog;
 use reqwest::{
     blocking::{Client, RequestBuilder, Response},
@@ -146,6 +148,7 @@ pub struct Nebius {
     config: Config,
     client: Client,
     catalog_checked: bool,
+    image_catalog_checked: bool,
     pricing: Option<Pricing>,
 }
 impl Nebius {
@@ -161,6 +164,7 @@ impl Nebius {
             config,
             client,
             catalog_checked: false,
+            image_catalog_checked: false,
             pricing: None,
         })
     }
@@ -185,6 +189,9 @@ impl Nebius {
         timeout: Duration,
     ) -> Result<T, AgentError> {
         let response = self.send(request, timeout)?;
+        Self::decode_json(response)
+    }
+    fn decode_json<T: DeserializeOwned>(response: Response) -> Result<T, AgentError> {
         if response
             .content_length()
             .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
@@ -204,17 +211,54 @@ impl Nebius {
     /// Explicit preflight: checks the exact configured ID and reads its published prices,
     /// without sending telemetry.
     pub fn check_catalog(&mut self, timeout: Duration) -> Result<(), AgentError> {
+        self.check_catalog_for(timeout, false)
+    }
+
+    pub fn check_image_catalog(&mut self, timeout: Duration) -> Result<(), AgentError> {
+        if self.config.model_id != crate::image_input::MODEL_ID {
+            return Err(AgentError::ImageNotAllowed);
+        }
+        self.check_catalog_for(timeout, true)
+    }
+
+    fn check_catalog_for(&mut self, timeout: Duration, image: bool) -> Result<(), AgentError> {
+        let started = Instant::now();
         let catalog = self.available_models(timeout)?;
         let entry = catalog
             .models
             .into_iter()
             .find(|entry| entry.id == self.config.model_id)
             .ok_or(AgentError::ModelUnavailable)?;
-        if entry.supports_tools == Some(false) {
+        if entry.supports_tools == Some(false)
+            || (image && entry.supports_image_input == Some(false))
+        {
             return Err(AgentError::ModelUnavailable);
+        }
+        if image && (entry.supports_image_input != Some(true) || entry.supports_tools != Some(true))
+        {
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(AgentError::Budget);
+            }
+            // Modalities omitted by the account endpoint are published here. This request
+            // carries no authorization header, telemetry, question or image.
+            let response = self
+                .client
+                .get(PUBLIC_CATALOG_URL)
+                .timeout(remaining)
+                .send()
+                .map_err(|e| transport_error(&e))?;
+            if !response.status().is_success() {
+                return Err(AgentError::ModelUnavailable);
+            }
+            let public: Value = Self::decode_json(response)?;
+            if !published_vision_support(&public, &self.config.model_id) {
+                return Err(AgentError::ModelUnavailable);
+            }
         }
         self.pricing = entry.pricing;
         self.catalog_checked = true;
+        self.image_catalog_checked |= image;
         Ok(())
     }
     /// Prices read by the last successful catalog check, if the catalog published them.
@@ -513,7 +557,18 @@ impl Model for Nebius {
         on_call: &mut dyn FnMut(&str, &str),
     ) -> Result<Reply, AgentError> {
         let started = Instant::now();
-        if !self.catalog_checked {
+        let images = messages
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .filter(|part| part["type"] == "image_url")
+            .count();
+        if images > 1 {
+            return Err(AgentError::ImageNotAllowed);
+        }
+        if images == 1 && !self.image_catalog_checked {
+            self.check_image_catalog(timeout.min(Duration::from_secs(10)))?;
+        } else if !self.catalog_checked {
             self.check_catalog(timeout.min(Duration::from_secs(10)))?;
         }
         let remaining = timeout

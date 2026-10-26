@@ -6,6 +6,33 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub const CATALOG_URL: &str = "https://api.tokenfactory.nebius.com/v1/models?verbose=true";
+pub(crate) const PUBLIC_CATALOG_URL: &str =
+    "https://tokenfactory.nebius.com/api/public/models_info";
+
+pub(crate) fn published_vision_support(catalog: &Value, model_id: &str) -> bool {
+    let Some(entries) = catalog.as_array().filter(|entries| entries.len() <= 2048) else {
+        return false;
+    };
+    let matches: Vec<_> = entries
+        .iter()
+        .flat_map(|entry| {
+            entry["flavors"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(move |flavor| flavor["model_id"].as_str() == Some(model_id))
+                .map(move |flavor| (entry, flavor))
+        })
+        .collect();
+    matches.len() == 1
+        && matches.iter().all(|(entry, flavor)| {
+            entry["status"] == "active"
+                && flavor["model_type"] == "image2text"
+                && flavor["use_cases"]
+                    .as_array()
+                    .is_some_and(|cases| cases.iter().any(|value| value == "function_calling"))
+        })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelInfo {
@@ -14,6 +41,7 @@ pub struct ModelInfo {
     pub context_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub supports_tools: Option<bool>,
+    pub supports_image_input: Option<bool>,
     pub supports_reasoning: Option<bool>,
     /// Feature vocabulary published by the account API, without inferring absent capabilities.
     pub supported_features: Option<Vec<String>>,
@@ -102,6 +130,11 @@ impl Catalog {
                 supports_tools: entry.capabilities["tools"]
                     .as_bool()
                     .or_else(|| published_feature("tools")),
+                supports_image_input: entry.capabilities["image_input"]
+                    .as_bool()
+                    .or_else(|| entry.capabilities["vision"].as_bool())
+                    .or_else(|| published_feature("image_input"))
+                    .or_else(|| published_feature("vision")),
                 supports_reasoning: entry.capabilities["reasoning"]
                     .as_bool()
                     .or_else(|| published_feature("reasoning")),
@@ -137,6 +170,69 @@ impl Catalog {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn public_vision_support_requires_one_active_exact_multimodal_tool_flavor() {
+        let id = crate::image_input::MODEL_ID;
+        let entry = json!({"status":"active","flavors":[{
+            "model_id":id,"model_type":"image2text","use_cases":["function_calling"]
+        }]});
+        assert!(published_vision_support(&json!([entry.clone()]), id));
+        assert!(!published_vision_support(
+            &json!([entry.clone()]),
+            "nvidia/Other"
+        ));
+        assert!(!published_vision_support(
+            &json!([entry.clone(), entry.clone()]),
+            id
+        ));
+        for (path, value) in [
+            ("/status", json!("inactive")),
+            ("/flavors/0/model_type", json!("text2text")),
+            ("/flavors/0/use_cases", json!([])),
+        ] {
+            let mut changed = entry.clone();
+            *changed.pointer_mut(path).unwrap() = value;
+            assert!(!published_vision_support(&json!([changed]), id));
+        }
+        assert!(!published_vision_support(&json!([{"name":id}]), id));
+    }
+
+    #[test]
+    fn image_capability_is_published_not_inferred_from_the_model_name() {
+        let catalog: Catalog = serde_json::from_value(json!({"data":[
+            {"id":"nvidia/Nemotron-VL-unknown"},
+            {"id":"nvidia/Nemotron-explicit","capabilities":{"image_input":false},
+                "supported_features":["vision"]},
+            {"id":"nvidia/Nemotron-published","supported_features":["vision"]}
+        ]}))
+        .unwrap();
+        let models = catalog.project(42).unwrap().models;
+        assert_eq!(
+            models
+                .iter()
+                .find(|m| m.id.ends_with("unknown"))
+                .unwrap()
+                .supports_image_input,
+            None
+        );
+        assert_eq!(
+            models
+                .iter()
+                .find(|m| m.id.ends_with("explicit"))
+                .unwrap()
+                .supports_image_input,
+            Some(false)
+        );
+        assert_eq!(
+            models
+                .iter()
+                .find(|m| m.id.ends_with("published"))
+                .unwrap()
+                .supports_image_input,
+            Some(true)
+        );
+    }
 
     #[test]
     fn the_account_controls_availability_and_unknown_metadata_stays_unknown() {

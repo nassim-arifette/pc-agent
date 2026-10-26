@@ -1,3 +1,5 @@
+import { createImageFixture } from "./images.js";
+
 // Design-time stand-in for the Rust side, used when ui/index.html is opened in a plain browser
 // (python -m http.server in apps/gui, then /ui/index.html). Every value is synthetic. The app
 // never loads this file: it is outside the embedded ui folder.
@@ -655,18 +657,19 @@ if (params.get("conversation") === "empty") {
   const at = Date.now() - 3600000;
   conversations.push({ id: `conv-${nextConversation++}`, title: "Why is my battery stuck at 6%?", created_at_unix_ms: at, updated_at_unix_ms: at, turns: [] });
 }
-function saveTurn(conversationId, turnId, question, report) {
+function saveTurn(conversationId, turnId, question, report, image = null) {
   const c = conversations.find((x) => x.id === conversationId);
   if (!c) return null;
-  c.turns.push({ id: turnId, question, asked_at_unix_ms: Date.now(), report, tool_events: report.tool_events || [] });
+  c.turns.push({ id: turnId, question, asked_at_unix_ms: Date.now(), report, image: image ? imageFixture.metadata(image) : null, tool_events: report.tool_events || [] });
+  imageFixture.save(image, turnId, conversationId);
   c.updated_at_unix_ms = Date.now();
   return c.id;
 }
 function done(id, report) {
   const own = running && running.id === id;
-  const conversationId = own ? saveTurn(running.conversationId, running.turnId, running.question, report) : null;
+  const conversationId = own ? saveTurn(running.conversationId, running.turnId, running.question, report, running.image) : null;
   if (own) {
-    const turn = { id: running.turnId, question: running.question, asked_at_unix_ms: running.askedAt, answer: report.answer, tool_events: report.tool_events || [], report };
+    const turn = { id: running.turnId, question: running.question, asked_at_unix_ms: running.askedAt, answer: report.answer, tool_events: report.tool_events || [], report, image: running.image ? imageFixture.metadata(running.image) : null };
     if (report.error) emit("turn:failed", { turn_id: running.turnId, conversation_id: conversationId, code: report.error.code, message: report.error.message, turn });
     else emit("turn:done", { turn_id: running.turnId, conversation_id: conversationId, turn });
   }
@@ -704,6 +707,7 @@ function fileNameSharing(root) {
 }
 let pendingPreview = null;
 let previewSequence = 0;
+const imageFixture = createImageFixture(fail, () => { pendingPreview = null; previewSequence += 1; });
 
 async function investigate(id, question, cloudRun) {
   const slow = /slow|lent/i.test(question) ? 1.6 : 1;
@@ -1021,6 +1025,9 @@ const CHECK_RESULTS = { system_caches: systemCachesResult, shadow_storage: shado
 
 export function createMock() {
   const commands = {
+    image_prepare: ({ dataBase64 }) => imageFixture.prepare(dataBase64),
+    image_discard: ({ imageId }) => imageFixture.discard(imageId),
+    conversation_image_get: ({ conversationId, turnId }) => imageFixture.get(turnId, conversationId),
     app_info: () => ({ version: "0.1.0", cloud: cloud(), models: [
       { id: "nvidia/nemotron-3-super-120b-a12b", note: "recommended" },
       { id: "nvidia/Nemotron-3-Ultra-550b-a55b", note: "most_capable" },
@@ -1147,8 +1154,10 @@ export function createMock() {
       privacy = { mode: settings.mode, confirmed: Boolean(settings.confirmed), web_search: settings.web_search ?? true, file_names: settings.file_names ?? true };
       return { ...privacy };
     },
-    cloud_preview: async ({ question, names, conversationId = null, fileNames = false }) => {
+    cloud_preview: async ({ question, names, conversationId = null, fileNames = false, imageId = null }) => {
       const sequence = ++previewSequence;
+      const image = imageId ? imageFixture.read(imageId) : null;
+      if (image && (privacy.mode !== "complete" || !names)) fail("image_sharing_required", "Images require Complete sharing.");
       await wait(300);
       if (fileNames && !names) throw new Error("File names require complete sharing.");
       if (fileNames && !lastScanRoot) fail("scan_unavailable", "Scan and authorize a folder before previewing its names.");
@@ -1158,8 +1167,8 @@ export function createMock() {
       if (conversation?.turns.length) message.previous_turns = conversation.turns.map((turn) => ({ question: turn.question, answer: "Earlier synthetic observation.", observations: [] }));
       if (sequence !== previewSequence) fail("preview_changed", "A newer sharing preview was requested.");
       const id = `preview-${sequence}`;
-      pendingPreview = { id, question, names, conversationId, fileNames };
-      return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot, file_name_sharing: fileNames ? fileNameSharing(lastScanRoot) : { names: [], scope: null } };
+      pendingPreview = { id, question, names, conversationId, fileNames, imageId };
+      return { id, message, image, bytes: JSON.stringify(message).length + (image?.data_url.length || 0), measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot, file_name_sharing: fileNames ? fileNameSharing(lastScanRoot) : { names: [], scope: null } };
     },
     selection_sources: () => {
       const now = Date.now();
@@ -1224,10 +1233,12 @@ export function createMock() {
       pendingPreview = { id: previewId, question: ticket.asked, names: privacy.mode === "complete", conversationId };
       return commands.start_investigation({ request: { question: ticket.asked, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
     },
-    send_message: async ({ conversationId = null, text, scopeIds = [], previewId = null }) => {
+    send_message: async ({ conversationId = null, text, scopeIds = [], previewId = null, imageId = null }) => {
       const cloudRun = privacy.mode !== "local";
       if (scopeIds.length > 1) throw new Error("Attach one scanned folder to a message.");
-      return commands.start_investigation({ request: { question: text, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId } });
+      const image = imageId ? imageFixture.read(imageId) : null;
+      if (image && privacy.mode !== "complete") fail("image_sharing_required", "Images require Complete sharing.");
+      return commands.start_investigation({ request: { question: text, cloud: cloudRun, names: privacy.mode === "complete", conversationId, previewId, image } });
     },
     // ?turn=orphan: a turn the engine still runs after the window reloaded (current_turn).
     current_turn: () =>
@@ -1242,10 +1253,11 @@ export function createMock() {
       running.stop = true;
       running.answer?.(false);
     },
-    start_investigation: async ({ request: { question, cloud: cloudRun, names, conversationId = null, previewId } }) => {
+    start_investigation: async ({ request: { question, cloud: cloudRun, names, conversationId = null, previewId, image = null } }) => {
       if (running && !running.done) fail("turn_running", "An investigation is already running.");
       if (cloudRun) {
         if (!pendingPreview || pendingPreview.id !== previewId || pendingPreview.question !== question || pendingPreview.names !== names || pendingPreview.conversationId !== conversationId) fail("preview_changed", "The question, conversation or sharing choice changed. Open the preview again.");
+        if ((pendingPreview.imageId ?? null) !== (image?.id ?? null)) fail("preview_changed", "The image changed.");
         pendingPreview = null;
         // ?preview=expired: the ticket outlived its five minutes, so nothing leaves.
         if (params.get("preview") === "expired") fail("preview_expired", "The preview expired. Open it again for a fresh measurement.");
@@ -1257,7 +1269,8 @@ export function createMock() {
         conversation = { id: `conv-${nextConversation++}`, title: question.split("\n")[0].slice(0, 80), created_at_unix_ms: now, updated_at_unix_ms: now, turns: [] };
         conversations.unshift(conversation);
       }
-      running = { id, turnId: `turn-${nextTurn++}`, askedAt: Date.now(), stop: false, answer: null, done: false, conversationId: conversation.id, question };
+      running = { id, turnId: `turn-${nextTurn++}`, askedAt: Date.now(), stop: false, answer: null, done: false, conversationId: conversation.id, question, image };
+      if (image) imageFixture.discard(image.id);
       if (cloudRun) proposePlans(running.turnId, question);
       investigate(id, question, cloudRun).finally(() => {
         running.done = true;
@@ -1277,11 +1290,13 @@ export function createMock() {
       const i = conversations.findIndex((x) => x.id === id);
       if (i < 0) return false;
       conversations.splice(i, 1);
+      imageFixture.delete(id);
       return true;
     },
     conversations_clear: async () => {
       const n = conversations.length;
       conversations.length = 0;
+      imageFixture.clear();
       return n;
     },
     answer_extension: ({ accept }) => {

@@ -1424,7 +1424,7 @@ mod tests {
                 .conn
                 .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
                 .unwrap(),
-            5
+            crate::SCHEMA_VERSION
         );
         assert!(store.battery_recording("unknown").unwrap().is_none());
         let mut store = Store::open_in_memory().unwrap();
