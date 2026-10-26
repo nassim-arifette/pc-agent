@@ -2,7 +2,8 @@
 // (pcagent-elevated: no network, no AI). The page shows the exact task and budget and asks for a
 // local click; only then does Windows ask for administrator consent. The helper reads the file
 // system's index (names and sizes, never contents) and changes nothing; the result stays on this
-// PC. One elevated task can be prepared or run at a time (elevation_status).
+// PC. Only fixed NTFS drives are offered. One elevated task can be prepared or run at a time
+// (elevation_status).
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -12,6 +13,8 @@ import { badge, bar, button, toast } from "./ui.js";
 import { bytes, clock, duration, number, percent } from "./format.js";
 import { driveName } from "./live.js";
 import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
+import { capable } from "./capabilities.js";
+import { subscribe } from "./store.js";
 
 /** Collection budget asked for: the helper's maximum; most drives finish well before. */
 export const BUDGET_MS = 120000;
@@ -57,10 +60,19 @@ function waitForFreeSlot(then) {
   publishSlot();
 }
 
-/** Fixed drive letters from the live measurements, C: first. */
+/**
+ * Drive letters the helper can read, C: first: the fixed NTFS volumes of the live measurements,
+ * and fixed ones whose file system could not be read (the helper checks again). C: before the
+ * first measurement; none when this PC has no fixed NTFS drive.
+ */
 function volumes() {
-  const letters = (state.live.dash?.volumes || []).map((v) => driveName(v.root).replace(":", "")).filter((l) => /^[A-Z]$/i.test(l));
-  return letters.length ? letters.sort() : ["C"];
+  const shown = state.live.dash?.volumes || [];
+  if (!shown.length) return capable("ntfs_volumes") ? ["C"] : [];
+  return shown
+    .filter((v) => (v.kind ?? "fixed") === "fixed" && (v.filesystem == null || /^ntfs$/i.test(v.filesystem)))
+    .map((v) => driveName(v.root).replace(":", ""))
+    .filter((l) => /^[A-Z]$/i.test(l))
+    .sort();
 }
 
 async function prepare(volume) {
@@ -250,6 +262,8 @@ export function quickScanCard() {
         h("div", { class: "indeterminate", style: { margin: "10px 0" } }),
         h("span", { class: "hint" }, quick.status === "running" && Date.now() - quick.startedAt >= 1000 ? t("quick.elapsed", { time: duration(Math.floor((Date.now() - quick.startedAt) / 1000) * 1000) }) : t("quick.consentHint")),
       );
+    } else if (!volumes().length) {
+      body = h("p", { class: "hint" }, t("quick.noDrive"));
     } else {
       const letters = volumes();
       if (!letters.includes(volume)) volume = letters[0];
@@ -283,6 +297,15 @@ export function quickScanCard() {
   };
   listeners.add(renderAll);
   const stopSlot = onSlotChange(renderAll);
+  // The drive list arrives with the first measurements; redraw only when it changes, so an open
+  // drive menu is not rebuilt every five seconds.
+  let letters = volumes().join();
+  const stopLive = subscribe((topic) => {
+    if (topic !== "live" && topic !== "info") return;
+    if (volumes().join() === letters) return;
+    letters = volumes().join();
+    render();
+  });
   renderAll();
   recoverQuickScan();
   return {
@@ -290,6 +313,7 @@ export function quickScanCard() {
     dispose: () => {
       listeners.delete(renderAll);
       stopSlot();
+      stopLive();
     },
   };
 }

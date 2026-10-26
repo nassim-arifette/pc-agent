@@ -246,7 +246,19 @@ pub(crate) struct Context<'a> {
     pub plans: &'a [String],
 }
 
+/// The canonical definition, part of the global registry identity (`routing`).
 pub(crate) fn definition() -> Value {
+    definition_for(true)
+}
+
+/// The definition a turn declares: `action_refs` names `prepare_action_plan` only when the turn
+/// offers it. The schema itself never changes (C1).
+pub(crate) fn definition_for(proposals: bool) -> Value {
+    let action_refs = if proposals {
+        "plan_id values returned by prepare_action_plan in this investigation that the answer recommends."
+    } else {
+        "No action can be proposed in this investigation: leave it empty."
+    };
     json!({"type":"function","function":{"name":SUBMIT_ANSWER,
         "description":"Finish the investigation with your answer. Call it alone, after at least one inspection; selected evidence in the first message counts as one.",
         "parameters":{"type":"object","additionalProperties":false,
@@ -259,7 +271,7 @@ pub(crate) fn definition() -> Value {
                 "category":{"type":"string","enum":CATEGORIES,
                     "description":"Main topic of the answer."},
                 "action_refs":{"type":"array","maxItems":MAX_ACTION_REFS,"items":{"type":"string"},
-                    "description":"plan_id values returned by prepare_action_plan in this investigation that the answer recommends."},
+                    "description":action_refs},
                 "follow_ups":{"type":"array","maxItems":MAX_FOLLOW_UPS,
                     "items":{"type":"string","maxLength":MAX_FOLLOW_UP_CHARS},
                     "description":"Up to three short follow-up questions or checks the user could ask next, in the language of the question."}}}}})

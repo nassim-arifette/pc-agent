@@ -12,6 +12,7 @@ import { showSource } from "../panel.js";
 import { health } from "../live.js";
 import { numbering, citationTitle, toolLabel } from "../citations.js";
 import { adminChecksCard } from "../adminchecks.js";
+import { capable } from "../capabilities.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
 import { bytes, date, duration, labelled, usd } from "../format.js";
@@ -419,7 +420,8 @@ function stepsFold(shown, sent) {
  */
 function deeperChecks(turn, last, cards) {
   const kinds = turn.report?.admin_hints || [];
-  if (!last || !kinds.length) return null;
+  // Without pcagent-elevated next to the app no check can start (capabilities.js).
+  if (!last || !kinds.length || !capable("elevated_helper")) return null;
   const card = adminChecksCard({
     kinds,
     title: t("admin.chat.title"),

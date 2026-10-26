@@ -2,6 +2,7 @@
 //! raw value next to the text the core formats; a missing measurement carries its status and
 //! reason and is never shown as zero. This is a local window, so local names (process names,
 //! full paths) may appear here; nothing in this module is sent to a provider.
+use pcagent_agent::capabilities::{Capability, Probes};
 use pcagent_agent::selection::is_battery_ref;
 use pcagent_agent::{
     credentials::{Credentials, Source},
@@ -21,7 +22,7 @@ use pcagent_storage::{
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -170,14 +171,22 @@ pub struct Dashboard {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VolumeView {
     pub root: String,
+    /// `fixed` or `ram_disk`.
+    pub kind: VolumeKind,
+    /// The file system Windows names for the volume (`NTFS`, `ReFS`, `exFAT`...); `None` when it
+    /// could not be read. The quick drive analysis reads fixed NTFS volumes only.
+    pub filesystem: Option<String>,
     pub total_bytes: u64,
     pub free_bytes: u64,
     pub free_ratio: f64,
 }
 
 /// Fixed and RAM volumes whose size and free space were both read; others are left out rather
-/// than shown as empty.
-pub fn volumes(inventory: &HardwareInventory) -> Vec<VolumeView> {
+/// than shown as empty. `filesystem` names a shown volume's file system from its root.
+pub fn volumes(
+    inventory: &HardwareInventory,
+    filesystem: impl Fn(&str) -> Option<String>,
+) -> Vec<VolumeView> {
     let Some(list) = inventory.volumes.value.as_ref() else {
         return Vec::new();
     };
@@ -187,12 +196,32 @@ pub fn volumes(inventory: &HardwareInventory) -> Vec<VolumeView> {
             let (total, free) = (v.total_bytes?, v.free_bytes?);
             (total > 0).then(|| VolumeView {
                 root: v.root.clone(),
+                kind: v.kind,
+                filesystem: filesystem(&v.root),
                 total_bytes: total,
                 free_bytes: free.min(total),
                 free_ratio: free.min(total) as f64 / total as f64,
             })
         })
         .collect()
+}
+
+/// `Capability::NtfsVolumes` from the shown volumes: a fixed NTFS volume, the only kind the
+/// helper's `mft_inventory` reads. Unknown (`None`) while a fixed volume's file system could not
+/// be read and no other one is NTFS.
+pub fn ntfs_volumes(volumes: &[VolumeView]) -> Option<bool> {
+    let fixed = || volumes.iter().filter(|v| v.kind == VolumeKind::Fixed);
+    if fixed().any(|v| {
+        v.filesystem
+            .as_deref()
+            .is_some_and(|fs| fs.eq_ignore_ascii_case("NTFS"))
+    }) {
+        Some(true)
+    } else if fixed().any(|v| v.filesystem.is_none()) {
+        None
+    } else {
+        Some(false)
+    }
 }
 
 /// One system battery of a live battery read, as the window shows it. Every value is this
@@ -388,6 +417,13 @@ pub struct BatteryRead {
     /// Selection source for resource `battery`: only the shown batteries and the metrics the
     /// window displays, with the read's own window and coverage. `None` when nothing is shown.
     pub source: Option<Inspection>,
+}
+impl BatteryRead {
+    /// `Capability::Battery`: Windows lists a system battery, readable or not. `None` for a busy
+    /// read, which says nothing about the PC.
+    pub fn battery_listed(&self) -> Option<bool> {
+        (!self.busy).then_some(!self.batteries.is_empty() || self.unavailable)
+    }
 }
 
 pub fn battery_read(mut read: Inspection) -> BatteryRead {
@@ -1473,8 +1509,13 @@ pub struct AppInfo {
     pub version: &'static str,
     pub cloud: Cloud,
     pub models: Vec<ModelChoice>,
+    /// What this PC and installation offer (`pcagent_agent::capabilities`), see [`capabilities`].
+    pub capabilities: BTreeMap<&'static str, Option<bool>>,
 }
-pub fn app_info(creds: &Credentials) -> AppInfo {
+pub fn app_info(
+    creds: &Credentials,
+    capabilities: BTreeMap<&'static str, Option<bool>>,
+) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION"),
         cloud: cloud(creds),
@@ -1482,7 +1523,25 @@ pub fn app_info(creds: &Credentials) -> AppInfo {
             .iter()
             .map(|&(id, note)| ModelChoice { id, note })
             .collect(),
+        capabilities,
     }
+}
+/// The capabilities of this PC and installation by their stable names: `true` or `false` once
+/// known, `None` while a hardware probe has not answered yet (the window's first measurements);
+/// like the model's catalog, the page counts an unknown capability as present. The capabilities
+/// of a turn (approved storage scopes, web lookups, action proposals) are decided when it starts.
+pub fn capabilities(history_sampler: bool, probes: Probes) -> BTreeMap<&'static str, Option<bool>> {
+    BTreeMap::from([
+        (Capability::Windows.name(), Some(cfg!(windows))),
+        (Capability::HistorySampler.name(), Some(history_sampler)),
+        (
+            Capability::ElevatedHelper.name(),
+            Some(probes.elevated_helper),
+        ),
+        (Capability::NvidiaGpu.name(), probes.nvidia_gpu),
+        (Capability::Battery.name(), probes.battery),
+        (Capability::NtfsVolumes.name(), probes.ntfs_volumes),
+    ])
 }
 
 #[cfg(test)]
@@ -1794,6 +1853,18 @@ mod tests {
         silent.retain(|o| o.metric == "battery_kind" || o.metric == "battery_voltage_mv");
         let silent = battery_read(inspection(silent, "battery_devices", CoverageStatus::Ok));
         assert!(silent.unavailable && silent.batteries.is_empty() && silent.source.is_none());
+        // The battery capability: listed even when unreadable, unknown after a busy read.
+        assert_eq!(desktop.battery_listed(), Some(false));
+        assert_eq!(other.battery_listed(), Some(false));
+        assert_eq!(busy.battery_listed(), None);
+        assert_eq!(unreadable.battery_listed(), Some(true));
+        assert_eq!(silent.battery_listed(), Some(true));
+        let laptop = battery_read(inspection(
+            plugged_in(B1),
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        assert_eq!(laptop.battery_listed(), Some(true));
     }
 
     #[test]
@@ -1855,6 +1926,20 @@ mod tests {
         // The registry accepts it as the battery resource.
         let source = pcagent_agent::selection::SelectionSource::Battery(source);
         assert_eq!(source.targets().len(), 1);
+        // A desktop with only a UPS has no system battery: no battery energy to check.
+        let ups_only = battery_read(inspection(
+            cells(
+                UPS,
+                &[
+                    ("battery_kind", json!("short_term")),
+                    ("battery_charge_percent", json!(100.0)),
+                    ("battery_on_ac", json!(true)),
+                ],
+            ),
+            "battery_devices",
+            CoverageStatus::Ok,
+        ));
+        assert_eq!(ups_only.battery_listed(), Some(false));
     }
 
     #[test]
@@ -2071,16 +2156,81 @@ mod tests {
             gpu_adapters: missing(),
             limitations: Vec::new(),
         };
-        let list = volumes(&inventory);
+        let list = volumes(&inventory, |root| (root == "C:\\").then(|| "NTFS".into()));
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].root, "C:\\");
         assert_eq!(list[0].free_ratio, 0.25);
+        assert_eq!(list[0].kind, VolumeKind::Fixed);
+        assert_eq!(list[0].filesystem.as_deref(), Some("NTFS"));
+        let shown = serde_json::to_value(&list[0]).unwrap();
+        assert_eq!(shown["kind"], "fixed");
+        assert_eq!(shown["filesystem"], "NTFS");
         // No inventory at all: nothing, never an empty drive.
         let unknown = HardwareInventory {
             volumes: missing(),
             ..inventory
         };
-        assert!(volumes(&unknown).is_empty());
+        assert!(volumes(&unknown, |_| None).is_empty());
+    }
+
+    #[test]
+    fn ntfs_volumes_need_a_fixed_ntfs_drive_and_stay_unknown_while_one_is_unread() {
+        let volume = |root: &str, kind, filesystem: Option<&str>| VolumeView {
+            root: root.into(),
+            kind,
+            filesystem: filesystem.map(str::to_owned),
+            total_bytes: 1000,
+            free_bytes: 500,
+            free_ratio: 0.5,
+        };
+        let ntfs = volume("C:\\", VolumeKind::Fixed, Some("NTFS"));
+        let refs = volume("D:\\", VolumeKind::Fixed, Some("ReFS"));
+        let unread = volume("E:\\", VolumeKind::Fixed, None);
+        // A RAM disk is never read by the helper, whatever its file system.
+        let ram = volume("R:\\", VolumeKind::RamDisk, Some("NTFS"));
+        assert_eq!(ntfs_volumes(&[refs.clone(), ntfs.clone()]), Some(true));
+        assert_eq!(ntfs_volumes(&[unread.clone(), ntfs]), Some(true));
+        assert_eq!(ntfs_volumes(&[refs.clone(), ram.clone()]), Some(false));
+        assert_eq!(ntfs_volumes(&[refs, unread]), None);
+        assert_eq!(ntfs_volumes(&[ram]), Some(false));
+        assert_eq!(ntfs_volumes(&[]), Some(false));
+    }
+
+    #[test]
+    fn app_info_lists_the_capabilities_of_this_pc_with_unknown_probes_as_null() {
+        let probes = Probes {
+            elevated_helper: true,
+            nvidia_gpu: Some(false),
+            battery: None,
+            ntfs_volumes: Some(true),
+        };
+        let nowhere = std::env::temp_dir()
+            .join(pcagent_shared::new_id("pcagent-no-settings"))
+            .join(".env");
+        let info = app_info(
+            &Credentials::load_file(&nowhere),
+            capabilities(false, probes),
+        );
+        let shown = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            shown["capabilities"],
+            serde_json::json!({"windows": cfg!(windows), "history_sampler": false,
+                "elevated_helper": true, "nvidia_gpu": false, "battery": null, "ntfs_volumes": true})
+        );
+        // The existing fields keep their shape.
+        assert!(shown["version"].is_string() && shown["cloud"].is_object());
+        assert_eq!(shown["models"].as_array().map(Vec::len), Some(MODELS.len()));
+        // Every name is a capability the agent knows; per-turn flows are not listed.
+        for name in info.capabilities.keys() {
+            assert!(Capability::ALL.iter().any(|c| c.name() == *name), "{name}");
+        }
+        for per_turn in ["storage_scopes", "web_search", "action_proposals"] {
+            assert!(!info.capabilities.contains_key(per_turn));
+        }
+        let fresh = capabilities(true, Probes::default());
+        assert_eq!(fresh["history_sampler"], Some(true));
+        assert_eq!(fresh["elevated_helper"], Some(false));
+        assert!(fresh["nvidia_gpu"].is_none() && fresh["battery"].is_none());
     }
 
     #[test]

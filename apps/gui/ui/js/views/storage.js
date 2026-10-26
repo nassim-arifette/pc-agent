@@ -14,6 +14,7 @@ import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
 import { quickScanCard } from "../quickscan.js";
 import { adminChecksCard } from "../adminchecks.js";
+import { capable } from "../capabilities.js";
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];
@@ -348,13 +349,23 @@ export function mount(page) {
     );
   };
 
-  // The elevated helper exists on Windows only; elsewhere the backend reports unsupported.
+  // The two administrator cards need pcagent-elevated next to the app (capabilities.js); without
+  // it the page says so instead of offering checks that cannot start.
   const quickCard = quickScanCard();
   const adminCard = adminChecksCard();
+  const helperNote = h("div", { class: "callout info section" }, icon("shield"), h("div", null, h("strong", null, t("storage.helper.title")), h("span", null, t("storage.helper.missing"))));
+  const showHelper = () => {
+    const helper = capable("elevated_helper");
+    quickCard.el.hidden = !helper;
+    adminCard.el.hidden = !helper;
+    helperNote.hidden = helper;
+  };
+  showHelper();
   fill(
     page,
     h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("storage.title")), h("p", { class: "page-sub" }, t("storage.sub")))),
     picker,
+    helperNote,
     quickCard.el,
     adminCard.el,
     body,
@@ -371,6 +382,7 @@ export function mount(page) {
   let lastStatus = state.scan.status;
   const unsubscribe = subscribe((topic) => {
     if (topic !== "scan" && topic !== "info") return;
+    if (topic === "info") showHelper();
     const active = (status) => status === "starting" || status === "scanning";
     const started = active(state.scan.status) && !active(lastStatus);
     if (state.scan.status !== lastStatus) {

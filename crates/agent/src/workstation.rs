@@ -161,6 +161,13 @@ pub const WORKSTATION_TOOLS: &[ToolSpec] = &[
         params: &[],
     },
 ];
+/// `get_system_snapshot` on a PC where NVML lists no NVIDIA GPU (`capabilities::VARIANTS`).
+pub(crate) const SNAPSHOT_WITHOUT_NVIDIA: ToolSpec = ToolSpec {
+    name: "get_system_snapshot",
+    class: crate::tools::ToolClass::Inspection,
+    description: "Collect fresh system memory, aggregate and busiest-core CPU, disk latency, hard-fault and GPU engine-type observations. NVML reads no NVIDIA GPU on this PC, so no GPU temperature, memory, clock or slowdown reason is measured. No changes to the computer.",
+    params: &[],
+};
 
 /// Local toolbox over the real collectors. Scopes must already be authorized by the user.
 pub struct Workstation<'a> {
@@ -180,6 +187,8 @@ pub struct Workstation<'a> {
     allowed_scopes: Option<Vec<String>>,
     elevated: Vec<crate::elevated_tools::ApprovedInspection>,
     external: Option<crate::external_tools::ExternalTools>,
+    /// The host's probes once it restricted the turn to what works; `None` declares every tool.
+    probes: Option<crate::capabilities::Probes>,
 }
 impl<'a> Workstation<'a> {
     pub fn new(
@@ -205,7 +214,51 @@ impl<'a> Workstation<'a> {
             allowed_scopes: None,
             elevated: Vec::new(),
             external: None,
+            probes: None,
         }
+    }
+    /// Declare only what works in this turn (`capabilities`): the platform, the optional flows
+    /// this toolbox was given (history, approved scopes, web lookups, proposals) and the host's
+    /// probes of this PC. Absent tools are not declared; the others may take a variant whose text
+    /// names nothing absent. The order of this and the other setters does not matter.
+    pub fn offer_available(&mut self, probes: crate::capabilities::Probes) {
+        self.probes = Some(probes);
+        self.declare();
+    }
+    /// The capabilities this turn's tools follow, or `None` while every tool is declared.
+    pub fn capabilities(&self) -> Option<crate::capabilities::Capabilities> {
+        self.capabilities_on(cfg!(windows))
+    }
+    fn capabilities_on(&self, windows: bool) -> Option<crate::capabilities::Capabilities> {
+        let probes = self.probes?;
+        let flows = crate::capabilities::Flows {
+            history_sampler: self.history.is_some(),
+            storage_scopes: self.storage.scopes().iter().any(|scope| {
+                self.allowed_scopes
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(&scope.scope_id))
+            }),
+            web_search: self.external.is_some(),
+            action_proposals: self.actions.is_some(),
+        };
+        Some(crate::capabilities::Capabilities::of_turn(
+            windows, flows, probes,
+        ))
+    }
+    /// The fixed catalog, then the enabled web lookups and proposals, restricted to this turn's
+    /// capabilities once the host passed its probes.
+    fn declare(&mut self) {
+        let mut specs = Self::tool_specs();
+        if self.external.is_some() {
+            specs.extend(crate::external_tools::TOOLS);
+        }
+        if self.actions.is_some() {
+            specs.push(PREPARE_ACTION_PLAN);
+        }
+        self.specs = match self.capabilities() {
+            Some(capabilities) => crate::capabilities::catalog(&specs, &capabilities),
+            None => specs,
+        };
     }
     /// Declares the typed web lookups (C6), only after the user's web search consent and with a
     /// key. Their queries are composed locally from this turn's measurements.
@@ -214,10 +267,8 @@ impl<'a> Workstation<'a> {
         searcher: Box<dyn crate::tavily::WebSearcher + Send>,
         country: Option<String>,
     ) {
-        if self.external.is_none() {
-            self.specs.extend(crate::external_tools::TOOLS);
-        }
         self.external = Some(crate::external_tools::ExternalTools::new(searcher, country));
+        self.declare();
     }
     /// Tavily credits used by this turn's web lookups.
     pub fn web_credits(&self) -> f64 {
@@ -228,10 +279,8 @@ impl<'a> Workstation<'a> {
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
     /// here; the caller reviews [`Workstation::take_actions`] locally.
     pub fn enable_action_proposals(&mut self, desk: ActionDesk) {
-        if self.actions.is_none() {
-            self.specs.push(PREPARE_ACTION_PLAN);
-        }
         self.actions = Some(desk);
+        self.declare();
     }
     /// The action desk and the plans proposed during the investigation, for local review.
     pub fn take_actions(&mut self) -> Option<(ActionDesk, Vec<PendingPlan>)> {
@@ -266,6 +315,7 @@ impl<'a> Workstation<'a> {
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) {
         self.history = Some(crate::history_tools::HistoryTools { sampler, stop });
+        self.declare();
     }
     /// Host-owned results of locally approved helper jobs; tools cannot acquire elevation.
     pub fn set_elevated_evidence(
@@ -283,6 +333,7 @@ impl<'a> Workstation<'a> {
     /// Restrict a turn to the scopes approved in its exact local preview.
     pub fn set_allowed_scopes(&mut self, scopes: Vec<String>) {
         self.allowed_scopes = Some(scopes);
+        self.declare();
     }
 }
 
@@ -1062,6 +1113,89 @@ mod tests {
                 .execute(&mut plan, &token, &session, &AtomicBool::new(false), None)
                 .is_err());
             assert_eq!(calls.get(), 1);
+        }
+
+        #[test]
+        fn a_turn_declares_only_what_its_flows_and_probes_support_in_any_order() {
+            use crate::capabilities::{Capability, Probes};
+            let declared = |ws: &Workstation<'_>, name: &str| {
+                ws.specs().iter().filter(|s| s.name == name).count()
+            };
+            let dir = std::env::temp_dir().join(pcagent_shared::new_id("capability-scope"));
+            fs::create_dir_all(&dir).unwrap();
+            let storage = Arc::new(StorageService::new());
+            let scope = storage.authorize(&dir).unwrap().scope_id;
+            let (mut collector, policy, prefs) =
+                (Collector::new(), Policy::default(), Preferences::default());
+            let mut ws = Workstation::new(&mut collector, storage, &policy, &prefs);
+            // Without probes every tool stays declared, as replays and captures expect.
+            assert_eq!(ws.specs().len(), Workstation::tool_specs().len());
+            assert!(ws.capabilities().is_none());
+            let calls = Rc::new(Cell::new(0));
+            // Proposals before the probes, scopes after: the order does not matter.
+            ws.enable_action_proposals(desk("capabilities", &calls));
+            ws.offer_available(Probes {
+                elevated_helper: true,
+                battery: Some(false),
+                ..Probes::default()
+            });
+            ws.set_allowed_scopes(Vec::new());
+            let flows = ws.capabilities_on(true).unwrap();
+            assert!(flows.contains(Capability::ActionProposals));
+            assert!(flows.contains(Capability::ElevatedHelper));
+            assert!(
+                flows.contains(Capability::NvidiaGpu),
+                "not probed counts as present"
+            );
+            for absent in [
+                Capability::StorageScopes,
+                Capability::HistorySampler,
+                Capability::WebSearch,
+                Capability::Battery,
+            ] {
+                assert!(!flows.contains(absent), "{absent:?}");
+            }
+            assert_eq!(declared(&ws, "list_storage_scopes"), 0);
+            ws.set_allowed_scopes(vec![scope.clone()]);
+            assert!(ws
+                .capabilities_on(true)
+                .unwrap()
+                .contains(Capability::StorageScopes));
+            assert_eq!(declared(&ws, "list_storage_scopes"), 1);
+            assert_eq!(declared(&ws, "get_user_preferences"), 1);
+            // Windows-only tools follow the platform; history tools need a sampler too.
+            let windows = usize::from(cfg!(windows));
+            for name in [
+                "get_system_snapshot",
+                "get_process_activity",
+                "get_approved_elevated_inspection",
+                "prepare_action_plan",
+            ] {
+                assert_eq!(declared(&ws, name), windows, "{name}");
+            }
+            assert_eq!(declared(&ws, "get_metric_history"), 0);
+            if cfg!(windows) {
+                let elevated = ws
+                    .specs()
+                    .iter()
+                    .find(|s| s.name == "get_approved_elevated_inspection")
+                    .unwrap();
+                assert!(!elevated.description.contains("battery_energy"));
+            }
+            // A tool that is not declared cannot be called: the controller validates the call
+            // against the declared specs only.
+            let call = crate::ToolCall {
+                id: "undeclared".into(),
+                kind: "function".into(),
+                function: crate::FunctionCall {
+                    name: "get_metric_history".into(),
+                    arguments: r#"{"metric":"cpu_busy_basis_points","window_seconds":60}"#.into(),
+                },
+            };
+            assert!(crate::validate_call(&call, ws.specs()).is_err());
+            assert_eq!(calls.get(), 0);
+            drop(ws);
+            fs::remove_dir_all(dir).unwrap();
         }
 
         #[test]

@@ -128,7 +128,11 @@ bar disabled with *scan the folder again*.
 
 ## Quick drive analysis
 
-The Storage view also offers a *Quick drive analysis* of a fixed NTFS drive. It runs the closed
+The Storage view also offers a *Quick drive analysis* of a fixed NTFS drive. Its drive menu lists
+the fixed volumes of the live measurements whose file system is NTFS (`volumes[].kind` and
+`filesystem` of `dashboard`; a volume whose file system could not be read stays listed, the helper
+checks again), C: before the first measurement; on a PC without one the card says so and offers
+nothing to start. It runs the closed
 `mft_inventory` task of the separate elevated helper (`pcagent-elevated`, no network, no model): the
 page calls `elevation_prepare` with the drive letter and the 120 s budget, shows exactly what will
 happen, and only the local *Allow and start* click calls `elevation_run`, after which Windows asks
@@ -157,7 +161,24 @@ minutes after it completes, the chat's AI answers can read the result through
 `get_approved_elevated_inspection`, with the sharing choice applied; the card says so and offers to
 ask about it. The two cards share the helper's single slot: while one holds it (prepared, running
 or cleaning up), the other's buttons are disabled with a hint. Process images and the performance
-trace are not offered here.
+trace are not offered here. On a PC where Windows lists no system battery, *Battery use by app*
+stays listed with its *Prepare* button disabled and the reason in place of its description.
+
+## What this PC offers
+
+`app_info` carries `capabilities`, the part of the agent's capability registry
+([tool-context.md](tool-context.md#declared-tools-the-capability-registry)) that describes this
+PC and installation: `windows`, `history_sampler`, `elevated_helper` (`pcagent-elevated.exe` is
+next to the app, checked once at start), `nvidia_gpu`, `battery` (a system battery, from the
+live battery read) and `ntfs_volumes` (a fixed NTFS volume, from the live volumes). Each is
+`true`, `false` or `null` while its probe has not answered yet; the hardware probes answer with
+the first live measurements, so `ui/js/capabilities.js` reads `app_info` again after a live
+measurement while one is `null` (at most twelve times) and notifies `info` when they change. Like
+the model's catalog, the page counts an unknown capability as present. The capabilities of a turn
+(an approved folder, web lookups, action proposals) are decided when it starts and are not listed.
+The same probes restrict the tools of every turn. Without the helper, the Storage view shows a
+note instead of the quick drive analysis and the deeper checks, and the chat offers no deeper-check
+card under an answer.
 
 ## History, recording and startup
 
@@ -405,7 +426,9 @@ cargo run --release --locked -p pcagent-gui
 ```
 
 The first build compiles Tauri and needs about 3 GB for `target\`. On other platforms the binary
-only prints a message; the portable view and session code is still built and tested in CI.
+only prints a message; the portable view and session code is still built and tested in CI. The
+quick drive analysis and the deeper checks also need the helper next to the app
+(`cargo build --release --locked -p pcagent-elevated`); without it the Storage view says so.
 The CI keeps a `pcagent-gui-windows-x64` artifact: an unsigned prototype, not an installer.
 
 Keyboard: `Ctrl+1` to `Ctrl+5` open Chat, History, Live PC, Storage and Settings, `Ctrl+N` starts a
@@ -426,12 +449,14 @@ python -m http.server 5173 --bind 127.0.0.1
 # ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
 # ?recording=short, ?battery=none|ac|charging|low|relative|two|unavailable for the live battery
 # (none is a desktop PC, also without a battery in recordings), ?sources=short for selection
-# sources that expire after 5 s)
+# sources that expire after 5 s, ?pc=desktop for a desktop without an NVIDIA GPU or a battery whose
+# D: drive is exFAT, ?ntfs=none for no fixed NTFS drive, ?helper=missing for no pcagent-elevated)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run; `space` or `clean` proposes cleanup actions and `startup` a start-up entry
-to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
+to turn off and restore; `health` (or `santé`) ends with the deeper checks card under the answer.
+`dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with the action bar under an
 application (`10a`) and under memory, Explain and its answer, the action bar under a History

@@ -8,10 +8,14 @@
 // ?recording=short (3-second recordings), ?battery=none|ac|charging|low|relative|two|unavailable
 // (the Live PC battery read: by default one discharging laptop battery; none is a desktop PC, also
 // without a battery in recordings), ?sources=short (selection sources expire after 5 s instead of
-// five minutes, to exercise a scan page read again on Explain or Investigate). Questions containing
+// five minutes, to exercise a scan page read again on Explain or Investigate), ?pc=desktop (a
+// desktop without an NVIDIA GPU or a battery, whose D: drive is exFAT: app_info's capabilities say
+// so once the first dashboard is measured), ?ntfs=none (no fixed NTFS drive for the quick drive
+// analysis), ?helper=missing (no pcagent-elevated.exe next to the app). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
 // stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
-// off. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// off; "health" or "santé" lacks administrator readings, so the deeper checks card follows the
+// answer. Both event families are emitted, like the Rust side: turn:* and inv:*.
 // Live captures, history reads and scan pages publish selection sources; Explain and Investigate
 // use selection_preview/send.
 
@@ -82,8 +86,28 @@ function routingView() {
   return { settings: { ...routingSettings }, revision: 0, automatic_available: calibrated, calibration_reviewed_at_unix_ms: calibrated ? Date.now() - 86400000 : null, calibrated_rules: [], limitation: null };
 }
 
-function volume(root, totalGiB, freeGiB) {
-  return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
+function volume(root, totalGiB, freeGiB, filesystem = "NTFS") {
+  return { root, kind: "fixed", filesystem, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
+}
+
+// ---------- Capabilities ----------
+// What this PC offers (view::capabilities): ?pc=desktop is a desktop without an NVIDIA GPU or a
+// battery, whose D: drive is exFAT; ?ntfs=none leaves no fixed NTFS drive; ?helper=missing has no
+// pcagent-elevated.exe next to the app. Like the Rust side, the hardware probes answer with the
+// first dashboard: app_info reports them as null until then.
+const DESKTOP = params.get("pc") === "desktop";
+const NO_NTFS = params.get("ntfs") === "none";
+let probed = false;
+function capabilities() {
+  const known = (value) => (probed ? value : null);
+  return {
+    windows: true,
+    history_sampler: true,
+    elevated_helper: params.get("helper") !== "missing",
+    nvidia_gpu: known(params.get("gpu") !== "none" && !DESKTOP),
+    battery: known(BATTERY_MODE !== "none"),
+    ntfs_volumes: known(!NO_NTFS),
+  };
 }
 
 // ---------- Selection sources ----------
@@ -120,7 +144,7 @@ function dashboard() {
     ["steamwebhelper.exe", 0.18, 0.11],
   ];
   const gpus =
-    params.get("gpu") === "none"
+    params.get("gpu") === "none" || DESKTOP
       ? []
       : [
           {
@@ -173,8 +197,8 @@ function dashboard() {
     process_coverage: { status: "partial", enumerated: 231, readable: 214, permission_denied: 17, unavailable: 0, returned: 7, enumeration_truncated: false },
     // ?disk=ok gives C: room to breathe; by default it is almost full, like the development PC.
     volumes: [
-      volume("C:\\", 255, params.get("disk") === "ok" ? 61 : 0.3),
-      volume("D:\\", 476, 135),
+      volume("C:\\", 255, params.get("disk") === "ok" ? 61 : 0.3, NO_NTFS ? "ReFS" : "NTFS"),
+      volume("D:\\", 476, 135, NO_NTFS || DESKTOP ? "exFAT" : "NTFS"),
     ],
     ...liveBatteries(),
     limitations: ["Working sets can share pages; they do not add up to physical memory in use."],
@@ -186,7 +210,7 @@ function dashboard() {
 // read again about every 10 s (every second dashboard), off the dashboard itself, and each read
 // publishes its own selection source for the resource `battery`. Setting
 // window.__pcagentMock.holdBattery keeps the last read, like a stalled driver, so its age shows.
-const BATTERY_MODE = params.get("battery") || "discharging";
+const BATTERY_MODE = params.get("battery") || (DESKTOP ? "none" : "discharging");
 const BATTERY_REF = "battery-00000000-0000-4000-8000-00000000b001";
 const BATTERY_REF_2 = "battery-00000000-0000-4000-8000-00000000b002";
 let batteryRead = null;
@@ -376,6 +400,8 @@ function report(question, cloudRun, error = null, { web = false, toolEvents = []
       : [],
     tool_events: toolEvents,
     limitations: ["Short observations cannot prove a cause, a leak or a hardware purchase need."],
+    // view::admin_hints: the checks a turn lacked, when the model met needs_admin.
+    admin_hints: cloudRun && !error && /health|santé/i.test(question) ? ["disk_reliability", "battery_energy"] : [],
     usage: cloudRun
       ? {
           requests: error === "output_limit" ? 1 : 3,
@@ -472,7 +498,7 @@ function batteryRecording(rec) {
   const o = (at, metric, value, unit) => ({ observation_id: `${ref}-measurement-${at}-${metric}`, measured_at_unix_ms: at, window: window(at), entity_ref: ref, metric, value, unit, status: "ok", source, origin: "synthetic_fixture" });
   const startCapacity = 41250;
   const rate = -8400;
-  const points = params.get("battery") === "none" ? [] : Array.from({ length: ticks }, (_, i) => {
+  const points = BATTERY_MODE === "none" ? [] : Array.from({ length: ticks }, (_, i) => {
     const at = rec.started_at_unix_ms + (i + 1) * 1000;
     const capacity = Math.round(startCapacity + (rate * (i + 1)) / 3600);
     return {
@@ -844,9 +870,10 @@ export function createMock() {
       { id: "nvidia/Nemotron-3-Ultra-550b-a55b", note: "most_capable" },
       { id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", note: "cheaper_slower" },
       { id: "nvidia/Nemotron-3_5-Lightning", note: "not_recommended" },
-    ] }),
+    ], capabilities: capabilities() }),
     dashboard: async () => {
       await wait(tick === 0 ? 700 : 120);
+      probed = true;
       return dashboard();
     },
     process_activity: async () => {
