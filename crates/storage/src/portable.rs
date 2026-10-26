@@ -58,7 +58,7 @@ impl Directory {
     }
     pub fn identity(&self) -> io::Result<(u64, u128)> {
         let stat = self.reader.stat()?;
-        Ok((stat.st_dev, u128::from(stat.st_ino)))
+        Ok((device_id(&stat), u128::from(stat.st_ino)))
     }
     pub fn next(&mut self) -> Option<io::Result<OsString>> {
         loop {
@@ -93,26 +93,26 @@ impl Directory {
             FileType::Symlink => AttributeClass::Reparse,
             _ => AttributeClass::Special,
         };
-        let logical = u64::try_from(stat.st_size).unwrap_or(0);
+        let logical = u64::try_from(stat.st_size).map_err(|_| io::ErrorKind::InvalidData)?;
         let modified_ms = modified_ms(&stat);
         let facts = (class == AttributeClass::File).then(|| FileFacts {
             logical,
             allocated: u64::try_from(stat.st_blocks)
                 .ok()
                 .and_then(|n| n.checked_mul(512)),
-            key: Some((stat.st_dev, u128::from(stat.st_ino))),
-            links: u32::try_from(stat.st_nlink).ok(),
+            key: Some((device_id(&stat), u128::from(stat.st_ino))),
+            links: link_count(&stat),
             modified_ms,
             sparse: false,
             compressed: false,
-            other_volume: stat.st_dev != volume.0,
+            other_volume: device_id(&stat) != volume.0,
         });
         Ok(EntryFacts {
             class,
             logical,
             modified_ms,
             facts,
-            other_volume: stat.st_dev != volume.0,
+            other_volume: device_id(&stat) != volume.0,
         })
     }
     pub fn open_content(
@@ -142,12 +142,12 @@ impl ContentFile {
         Ok(FileFacts {
             logical: u64::try_from(stat.st_size).map_err(|_| io::ErrorKind::InvalidData)?,
             allocated: None,
-            key: Some((stat.st_dev, u128::from(stat.st_ino))),
-            links: u32::try_from(stat.st_nlink).ok(),
+            key: Some((device_id(&stat), u128::from(stat.st_ino))),
+            links: link_count(&stat),
             modified_ms: modified_ms(&stat),
             sparse: false,
             compressed: false,
-            other_volume: stat.st_dev != volume.0,
+            other_volume: device_id(&stat) != volume.0,
         })
     }
 }
@@ -175,7 +175,7 @@ fn authorize_after_capture(
         }
     })?;
     let stat = fs::fstat(&fd).map_err(io::Error::from)?;
-    let identity = (stat.st_dev, u128::from(stat.st_ino));
+    let identity = (device_id(&stat), u128::from(stat.st_ino));
     after_capture();
     let canonical = std::fs::canonicalize(root)?;
     let pinned = Directory::open_root(&canonical, Some(identity))?;
@@ -198,6 +198,17 @@ fn replacement_during_authorization_cannot_grant_the_new_target() {
     );
     std::fs::remove_file(&root).unwrap();
     std::fs::remove_dir_all(base).unwrap();
+}
+// Device identifiers are opaque. Darwin's dev_t is a signed 32-bit value while Linux uses an
+// unsigned 64-bit one; reinterpreting the bits keeps distinct devices distinct on every target.
+#[allow(clippy::unnecessary_cast)]
+fn device_id(stat: &Stat) -> u64 {
+    stat.st_dev as u64
+}
+// st_nlink is u16 on Darwin and u32 or u64 on Linux targets.
+#[allow(clippy::unnecessary_fallible_conversions)]
+fn link_count(stat: &Stat) -> Option<u32> {
+    u32::try_from(stat.st_nlink).ok()
 }
 // rustix stat fields have different signedness across Unix targets; keep checked conversions.
 #[allow(clippy::useless_conversion)]

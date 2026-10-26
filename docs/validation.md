@@ -30,8 +30,24 @@ node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs 
   `crates/tools/src/tavily.rs`) are `#[ignore]`d: they make paid requests and run only when
   someone asks for them explicitly with `--ignored`.
 - On Linux, the same `cargo test --workspace --locked` runs the portable tests; native collectors
-  return `unsupported` there and are not substitutes for Windows measurements. The last Linux run
-  recorded in these docs dates from 4 October ([backend-delivery.md](backend-delivery.md#validation-status)).
+  return `unsupported` there and are not substitutes for Windows measurements. Last Linux run:
+  26 October 2026 on Ubuntu 22.04.5 x86_64 (Rust 1.90.0, Node 22, Python 3.10) as a non-root
+  user: formatting, Clippy with `-D warnings`, 741 tests passed (0 failed, 3 ignored live
+  tests, doctests included), the four release binaries, 3 Python and 56 Node tests, and the
+  44-module link check. The Linux release binaries were then probed read-only: `doctor`,
+  `snapshot` and `processes` report `unsupported` evidence with `null` values and exit 3,
+  `diagnose --offline` answers from local rules without a provider call, `storage` scans a
+  synthetic folder without reading content, `pcagent-gui` prints its Windows-only notice and
+  exits 2, and `pcagent-elevated` answers `InvalidArguments` or `Unsupported` without
+  touching the system. No credentials were present. Linux still has no native collector, no
+  window and no elevated helper: these are stubs, not a port.
+- On macOS (26 October 2026: macOS 26.6.2 on Apple silicon, Rust 1.90.0, branch
+  `fix/macos-build`) the same commands pass: formatting, Clippy, 741 tests in 30 test executables
+  (3 ignored: the paid live tests; no doctests), the four release binaries, 3 Python and 56 Node
+  checks. Node 24 rejects `--experimental-default-type`; use Node 22. `pcagent-gui` prints its
+  Windows-only notice and exits with code 2, `pcagent-elevated` answers `Unsupported`, native
+  collectors return `unsupported` and `pcagent storage` runs on the portable scanner. These are
+  compilation and portable-logic checks, not a macOS product target.
 - What the tests cover, by area: the closed tool schemas and batch validation, the C1 verifier
   (wrong source, wrong process or metric, uncited quantity, question used as evidence,
   historical wording, web prices and versions), repairs, budgets and extensions, streaming and
@@ -215,8 +231,11 @@ Never put a key, a user name or personal measurements in screenshots, issues or 
   campaign against Claude or ChatGPT has been run, so the choice of default model is not yet
   backed by scores. Scripted tests validate the controller, not the model's diagnoses.
 - **Windows 10.** Announced as supported; not tested yet.
-- **Linux.** No Linux test run is recorded since 4 October; the CI's Ubuntu job has been disabled
-  since 10 October.
+- **Linux.** Only the portable core is validated (26 October, see above); collectors, the window
+  and the elevated helper are intentional `unsupported` stubs. The CI's Ubuntu job has been
+  disabled since 10 October, so the Linux commands are replayed by hand.
+- **macOS.** Only the compilation and portable-logic checks above; there is no native collector,
+  window or elevated helper for it, and no acceptance run.
 - **Administrator helper.** Windows' consent prompt (accept, decline, cancel) has not been through
   an acceptance run; MFT totals have not been compared with a controlled NTFS volume, so every
   result keeps `native_accuracy_unvalidated`; the ETW performance trace stays unavailable on
@@ -237,6 +256,13 @@ Short dated pointers; the details stay where they were recorded.
 - **Since 26 October 2026.** Each branch merged into `main` before the submission passes the
   commands above locally, with the tests run under a standard account; the plan's
   [section 8](plan.md#8-suivi) records each merge and its test count.
+- **26 October 2026.** Linux replay of the full command list on Ubuntu 22.04.5 x86_64
+  (`fix/linux-build`): 741 Rust tests, 56 Node tests, release binaries and read-only probes of
+  the Linux stubs; the same patch replayed on the agent-boundaries refactor tree gave 760 Rust
+  and 100 Node tests.
+- **26 October 2026.** First macOS run (Apple silicon): the portable scanner's device and link
+  counts are converted from Darwin's `dev_t` and `nlink_t` types; formatting, Clippy, 741 tests,
+  release builds, Python and Node checks pass (`fix/macos-build`).
 - **10 October 2026.** Review corrections and the history performance work: formatting, Clippy,
   715 then 732 tests, browser and native checks ([gui.md](gui.md#validation-status),
   [history-performance.md](history-performance.md)). GitHub Actions has been disabled since then.
