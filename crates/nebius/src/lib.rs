@@ -20,6 +20,10 @@ use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use std::{
     io::{self, BufRead, BufReader, Read},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -55,6 +59,7 @@ pub struct Nebius {
     catalog_checked: bool,
     image_catalog_checked: bool,
     pricing: Option<Pricing>,
+    interrupt: Option<Arc<AtomicBool>>,
 }
 impl Nebius {
     /// Builds a client without making a network request. No custom endpoint or redirects.
@@ -71,6 +76,7 @@ impl Nebius {
             catalog_checked: false,
             image_catalog_checked: false,
             pricing: None,
+            interrupt: None,
         })
     }
     /// Sends with the key and a deadline that covers reading the whole body.
@@ -325,14 +331,18 @@ const MAX_STREAMED_CALLS: usize = 64;
 /// they grow. A stream that ends early or carries a malformed event yields an envelope that
 /// `parse_reply` rejects, keeping whatever usage was reported.
 ///
-/// When the request named the one tool the model must call (`close_after`), reading stops as
-/// soon as that call's arguments form a whole JSON object: Nemotron then keeps writing closing
-/// tags and a second copy of the answer for a minute or more, until the output limit. The reply
-/// is complete at that point; the usage, sent last, stays unknown for that request.
+/// Reading stops as soon as the reply's only call is `submit_answer` with arguments that form a
+/// whole JSON object, whatever the request's tool choice (plan C1, 26 October): Nemotron then
+/// keeps writing closing tags and a second copy of the answer for a minute or more, until the
+/// output limit. The reply is complete at that point; the usage, sent last, stays unknown for
+/// that request. A batch that starts with other calls is read to its end as before.
+///
+/// The `interrupt` flag is the person's Stop: once set, reading ends with `Cancelled` instead of
+/// waiting for the model to finish its step.
 fn read_stream(
     reader: impl Read,
     on_call: &mut dyn FnMut(&str, &str),
-    close_after: Option<&str>,
+    interrupt: Option<&AtomicBool>,
 ) -> Result<Envelope, AgentError> {
     let mut lines = BufReader::new(reader.take((MAX_STREAM_BYTES + 1) as u64));
     let mut read = 0usize;
@@ -346,6 +356,9 @@ fn read_stream(
     'events: loop {
         line.clear();
         let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
+        if interrupt.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err(AgentError::Cancelled);
+        }
         if n == 0 {
             break;
         }
@@ -389,6 +402,7 @@ fn read_stream(
                 if part.index == calls.len() {
                     calls.push(PartialCall::default());
                 }
+                let lone = calls.len() == 1;
                 let call = &mut calls[part.index];
                 if let Some(id) = part.id {
                     call.id.push_str(&id);
@@ -400,7 +414,8 @@ fn read_stream(
                     if let Some(arguments) = function.arguments {
                         call.arguments.push_str(&arguments);
                         on_call(&call.name, &call.arguments);
-                        if close_after == Some(call.name.as_str())
+                        if call.name == SUBMIT_ANSWER
+                            && lone
                             && !call.id.is_empty()
                             && whole_object(&call.arguments)
                         {
@@ -493,9 +508,14 @@ impl Model for Nebius {
                 .json(&body),
             remaining,
         )?;
-        // Only a request that names the one tool to call is closed at that call's end.
-        let close_after = (choice == ToolChoice::SubmitAnswer).then_some(SUBMIT_ANSWER);
-        Ok(parse_reply(read_stream(response, on_call, close_after)?))
+        Ok(parse_reply(read_stream(
+            response,
+            on_call,
+            self.interrupt.as_deref(),
+        )?))
+    }
+    fn interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt = Some(flag);
     }
     fn pricing(&self) -> Option<Pricing> {
         self.pricing.clone()
@@ -687,7 +707,8 @@ mod tests {
         assert_eq!(reply.calls.len(), 1);
         assert_eq!(reply.calls[0].id, "c1");
         assert_eq!(reply.calls[0].function.arguments, "{\"text\":\"Votre PC\"}");
-        assert_eq!(reply.total_tokens, Some(15));
+        // The lone complete submit_answer closes the stream: the usage event after it is not read.
+        assert_eq!(reply.total_tokens, None);
         assert_eq!(seen.len(), 3);
         assert_eq!(seen[2], "submit_answer:{\"text\":\"Votre PC\"}");
     }
@@ -723,8 +744,9 @@ mod tests {
 
     #[test]
     fn complete_calls_survive_text_written_after_them() {
+        // An inspection call: a lone complete submit_answer would close the stream instead.
         let call = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
-            "type":"function","function":{"name":"submit_answer",
+            "type":"function","function":{"name":"get_processes",
             "arguments":"{\"answer\":\"Lors de la mesure [O0].\"}"}}]}}]});
         let junk = |text: &str| json!({"choices":[{"index":0,"delta":{"content":text}}]});
         let usage = json!({"choices":[],
@@ -748,7 +770,7 @@ mod tests {
         events.push(usage);
         let reply = replay(&stream(&events));
         assert_eq!(reply.rejected, None);
-        assert_eq!(reply.calls[0].function.name, "submit_answer");
+        assert_eq!(reply.calls[0].function.name, "get_processes");
         assert!(reply.content.is_none());
         assert_eq!(reply.completion_tokens, Some(8192));
         // Text after an unfinished call is read on: it may still be part of the arguments.
@@ -764,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn a_named_final_call_closes_the_stream_once_its_arguments_are_whole() {
+    fn a_lone_complete_submit_answer_closes_the_stream_whatever_the_request_asked() {
         let open = |name: &str, args: &str| {
             json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
                 "type":"function","function":{"name":name,"arguments":args}}]}}]})
@@ -785,7 +807,7 @@ mod tests {
         let closed = read_stream(
             body.as_bytes(),
             &mut |name, args| seen.push(format!("{name}:{args}")),
-            Some("submit_answer"),
+            None,
         )
         .unwrap();
         assert_eq!(closed.usage.as_ref().and_then(|u| u.total_tokens), None);
@@ -799,38 +821,57 @@ mod tests {
         assert!(reply.content.is_none());
         assert_eq!(reply.total_tokens, None);
         assert_eq!(seen.len(), 2, "the call is still reported as it grows");
-        // Without a named tool, or with another one named, the whole stream is read as before.
-        assert_eq!(replay(&body).rejected, Some(AgentError::InvalidResponse));
-        assert_eq!(
-            parse_reply(
-                read_stream(body.as_bytes(), &mut |_, _| {}, Some("get_processes")).unwrap()
-            )
-            .rejected,
-            Some(AgentError::InvalidResponse)
-        );
-        // A call that is not the named one does not close the stream either.
-        let other = stream(&[
+        // Another call does not close the stream: the tail is read and rejected as before.
+        let mut other = stream(&[
             open("get_processes", "{}"),
-            json!({"choices":[{"index":0,
-            "delta":{},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"</tool_call>"}}]}),
         ]);
-        let reply = parse_reply(
-            read_stream(other.as_bytes(), &mut |_, _| {}, Some("submit_answer")).unwrap(),
-        );
-        assert_eq!(reply.rejected, None);
-        assert_eq!(reply.calls[0].function.name, "get_processes");
+        other.insert_str(other.len() - "data: [DONE]\n\n".len(), "data: {oops\n\n");
+        assert_eq!(replay(&other).rejected, Some(AgentError::InvalidResponse));
+        // A submit_answer that follows another call is a mixed batch: read to the end too.
+        let mixed = stream(&[
+            open("get_processes", "{}"),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"c2",
+                "type":"function","function":{"name":"submit_answer","arguments":"{}"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+            json!({"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}),
+        ]);
+        let reply = replay(&mixed);
+        assert_eq!(reply.calls.len(), 2);
+        assert_eq!(reply.total_tokens, Some(15));
         // Arguments that never close are read to the end and rejected as before.
         let cut = stream(&[
             open("submit_answer", "{\"answer\":\"x"),
             json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
         ]);
-        assert_eq!(
-            parse_reply(
-                read_stream(cut.as_bytes(), &mut |_, _| {}, Some("submit_answer")).unwrap()
-            )
-            .rejected,
-            Some(AgentError::OutputLimit)
+        assert_eq!(replay(&cut).rejected, Some(AgentError::OutputLimit));
+    }
+
+    #[test]
+    fn a_set_interrupt_flag_ends_the_stream_with_cancelled() {
+        let body = stream(&[
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",
+                "type":"function","function":{"name":"submit_answer","arguments":"{\"a"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+                "function":{"arguments":"\":1}"}}]},"finish_reason":"tool_calls"}]}),
+        ]);
+        let flag = AtomicBool::new(false);
+        let mut events = 0;
+        let result = read_stream(
+            body.as_bytes(),
+            &mut |_, _| {
+                events += 1;
+                flag.store(true, Ordering::SeqCst);
+            },
+            Some(&flag),
         );
+        assert_eq!(result.err(), Some(AgentError::Cancelled));
+        assert_eq!(events, 1, "reading stops at the next event after Stop");
+        // An unset flag changes nothing.
+        let unset = AtomicBool::new(false);
+        let reply =
+            parse_reply(read_stream(body.as_bytes(), &mut |_, _| {}, Some(&unset)).unwrap());
+        assert_eq!(reply.rejected, None);
     }
 
     #[test]
@@ -857,7 +898,7 @@ mod tests {
         let arguments = r#"{"answer":"Votre réponse [O1]."}"#;
         let calls = |index, id: &str| {
             json!({"choices":[{"index":0,"delta":{"tool_calls":[{
-                "index":index,"id":id,"function":{"name":"submit_answer","arguments":arguments}
+                "index":index,"id":id,"function":{"name":"get_processes","arguments":arguments}
             }]}}]})
         };
         let reply = replay(&stream(&[

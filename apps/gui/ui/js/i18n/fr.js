@@ -479,6 +479,7 @@ export const fr = {
   "procs.hidden": "{count} programmes ne peuvent pas être lus sans droits administrateur.",
 
   "inv.stop": "Arrêter",
+  "inv.stopping": "Arrêt en cours…",
   "inv.failed.title": "L'enquête n'a pas démarré",
   "inv.stopped.title": "Analyse arrêtée",
 

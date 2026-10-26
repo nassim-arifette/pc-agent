@@ -481,6 +481,7 @@ export const en = {
   "procs.hidden": "{count} programs could not be read without administrator rights.",
 
   "inv.stop": "Stop",
+  "inv.stopping": "Stopping…",
   "inv.failed.title": "The investigation didn't start",
   "inv.stopped.title": "Analysis stopped",
 

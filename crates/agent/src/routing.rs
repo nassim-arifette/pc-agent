@@ -433,6 +433,12 @@ impl<M: Model> Model for RoutedModel<M> {
         };
         reply
     }
+    fn interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.primary.interrupt(flag.clone());
+        if let Some(ultra) = self.ultra.as_mut() {
+            ultra.interrupt(flag);
+        }
+    }
     fn pricing(&self) -> Option<Pricing> {
         self.active().pricing()
     }

@@ -182,6 +182,11 @@ pub trait Model {
         let _ = on_call;
         self.complete(messages, tools, choice, timeout)
     }
+    /// A flag the person sets to stop: a streaming transport stops reading its reply as soon
+    /// as it sees the flag and answers `Cancelled`. Transports that cannot check it ignore it.
+    fn interrupt(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let _ = flag;
+    }
     /// Catalog prices of the model in use, when the provider published verifiable ones.
     fn pricing(&self) -> Option<Pricing> {
         None
