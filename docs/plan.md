@@ -407,6 +407,15 @@ mode Local. Le lien « Voir ce qui part » ouvre l'aperçu exact de la prochaine
 octet pour octet à ce qui sera envoyé ; après le tour, ses étapes montrent ce qui est parti. La
 liste « jamais » ci-dessus ne change pas.
 
+Note du 26 octobre (#70), demandée par le porteur du projet : le nom lisible d'un programme (la
+description ou le nom de produit de la ressource de version de son exécutable, par exemple
+« Google Chrome ») n'est pas un chemin. Dans cette version, il reste local : la fenêtre l'affiche
+(listes, inspecteur, réponses, avec le nom d'exécutable en info-bulle et le PID seulement dans
+l'inspecteur ou pour distinguer deux instances), mais il ne part pas vers le modèle, qui reçoit
+toujours le nom d'exécutable en mode Complet et une référence opaque en mode Anonymisé. S'il doit
+partir un jour, ce sera en mode Complet seulement, comme un nom d'application, tronqué et nettoyé
+comme les noms d'exécutables et visible dans l'aperçu exact ; ce changement passera par ce plan.
+
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
 
