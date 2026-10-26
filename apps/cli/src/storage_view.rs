@@ -145,7 +145,8 @@ impl PreparedStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pcagent_agent::{Toolbox, Workstation, WORKSTATION_TOOLS};
+    use pcagent_agent::{Toolbox, WORKSTATION_TOOLS};
+    use pcagent_tools::Workstation;
     use std::{fs, sync::Arc};
     #[test]
     fn preview_and_dispatched_tool_use_the_same_name_allowlist_and_projection() {
