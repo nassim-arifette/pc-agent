@@ -11,6 +11,7 @@ import { state, notify } from "./store.js";
 import { toast } from "./ui.js";
 import { failureText } from "./failure.js";
 import { modelName } from "./models.js";
+import { modelName, familyId as listedFamily, startModelId } from "./models.js";
 
 export const REASONING = ["on", "low", "off"];
 
@@ -46,15 +47,12 @@ function closeMenu() {
 }
 
 function familyId(family) {
-  return (state.info?.models || []).map((m) => m.id).find((id) => id.toLowerCase().includes(family)) || null;
+  return listedFamily(state.info, family);
 }
 
-/** The model a question uses now, under the routing policy. */
+/** The model a question uses now, under the routing policy (Super first with Auto). */
 function activeModel() {
-  const mode = state.routing?.settings?.mode;
-  if (mode === "always_super") return state.routing.settings.super_model_id || familyId("super");
-  if (mode === "always_ultra") return state.routing.settings.ultra_model_id || familyId("ultra");
-  return state.info?.cloud?.model_id;
+  return startModelId(state.info, state.routing);
 }
 
 async function chooseModel(modelId) {
@@ -114,7 +112,8 @@ function modelItems() {
     h("div", { class: "pick-section" }, t("picker.model")),
     item({
       label: t("picker.auto"),
-      note: routing?.automatic_available ? t("picker.auto.note") : t("picker.auto.unavailable"),
+      // A saved routing choice the engine could not apply at start-up says so (see Settings).
+      note: routing?.automatic_available ? t("picker.auto.note") : routing?.limitation ? t("picker.auto.limited") : t("picker.auto.unavailable"),
       checked: automatic,
       disabled: !routing?.automatic_available && !automatic,
       onPick: chooseAuto,

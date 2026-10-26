@@ -5,6 +5,7 @@ pub mod counters;
 pub mod gpu;
 pub mod history;
 mod identity;
+mod program_names;
 pub mod services;
 pub mod tree;
 #[cfg(windows)]
@@ -19,8 +20,9 @@ pub use history::{HistoryConfig, MetricHistory, Reading, RecordError, SystemSamp
 use identity::{Lookup, Registry};
 use pcagent_shared::{
     new_id, unix_ms, HardwareInventory, InstanceState, Metric, MetricSeries, Origin,
-    ProcessDetails, ProcessTree, Snapshot, Status, SCHEMA_VERSION,
+    ProcessDetails, ProcessInstance, ProcessTree, Snapshot, Status, SCHEMA_VERSION,
 };
+pub use program_names::ProgramNames;
 pub use services::{service_processes, ServiceProcess, ServiceProcesses};
 use std::time::{Duration, Instant};
 
@@ -350,6 +352,15 @@ impl Collector {
             observed_at_unix_ms: tracked.observed_unix_ms,
             age_ms,
             limitations,
+        }
+    }
+    /// The instance behind a reference this collector issued, live or retired, straight from
+    /// its registry: no system call and no revalidation. For local display lookups only.
+    pub fn instance(&self, entity_ref: &str) -> Option<&ProcessInstance> {
+        match self.registry.lookup(entity_ref) {
+            Lookup::Live(_, tracked) => Some(&tracked.instance),
+            Lookup::Retired(retired) => Some(&retired.tracked.instance),
+            Lookup::NotFound => None,
         }
     }
     /// Local capability inventory without serial numbers or machine identifiers.

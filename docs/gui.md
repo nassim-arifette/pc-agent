@@ -128,7 +128,11 @@ bar disabled with *scan the folder again*.
 
 ## Quick drive analysis
 
-The Storage view also offers a *Quick drive analysis* of a fixed NTFS drive. It runs the closed
+The Storage view also offers a *Quick drive analysis* of a fixed NTFS drive. Its drive menu lists
+the fixed volumes of the live measurements whose file system is NTFS (`volumes[].kind` and
+`filesystem` of `dashboard`; a volume whose file system could not be read stays listed, the helper
+checks again), C: before the first measurement; on a PC without one the card says so and offers
+nothing to start. It runs the closed
 `mft_inventory` task of the separate elevated helper (`pcagent-elevated`, no network, no model): the
 page calls `elevation_prepare` with the drive letter and the 120 s budget, shows exactly what will
 happen, and only the local *Allow and start* click calls `elevation_run`, after which Windows asks
@@ -157,7 +161,24 @@ minutes after it completes, the chat's AI answers can read the result through
 `get_approved_elevated_inspection`, with the sharing choice applied; the card says so and offers to
 ask about it. The two cards share the helper's single slot: while one holds it (prepared, running
 or cleaning up), the other's buttons are disabled with a hint. Process images and the performance
-trace are not offered here.
+trace are not offered here. On a PC where Windows lists no system battery, *Battery use by app*
+stays listed with its *Prepare* button disabled and the reason in place of its description.
+
+## What this PC offers
+
+`app_info` carries `capabilities`, the part of the agent's capability registry
+([tool-context.md](tool-context.md#declared-tools-the-capability-registry)) that describes this
+PC and installation: `windows`, `history_sampler`, `elevated_helper` (`pcagent-elevated.exe` is
+next to the app, checked once at start), `nvidia_gpu`, `battery` (a system battery, from the
+live battery read) and `ntfs_volumes` (a fixed NTFS volume, from the live volumes). Each is
+`true`, `false` or `null` while its probe has not answered yet; the hardware probes answer with
+the first live measurements, so `ui/js/capabilities.js` reads `app_info` again after a live
+measurement while one is `null` (at most twelve times) and notifies `info` when they change. Like
+the model's catalog, the page counts an unknown capability as present. The capabilities of a turn
+(an approved folder, web lookups, action proposals) are decided when it starts and are not listed.
+The same probes restrict the tools of every turn. Without the helper, the Storage view shows a
+note instead of the quick drive analysis and the deeper checks, and the chat offers no deeper-check
+card under an answer.
 
 ## History, recording and startup
 
@@ -274,7 +295,7 @@ The guide reuses the Settings AI and privacy cards, in English and French and th
 Run the no-dependency logic/IPC-fixture suite from the repository root:
 
 ```powershell
-node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs
+node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs apps/gui/dev/storage.test.mjs
 ```
 
 These are synthetic tests, not browser or live-service validation. For manual browser QA, use a
@@ -356,6 +377,56 @@ Mock switches: `?elevation=fail` (the administrator prompt is declined), `?scan=
 folder cannot be read), `?scan=fail` (the scan stops midway), `?action=refuse` (*Run now* finds the
 target changed), `?preview=expired` (nothing is sent), `?history=unavailable` and `?live=fail`.
 `dev/failure.test.mjs` checks the shapes, every sentence in both languages and these switches.
+## Model routing: Super, then Ultra
+
+Chantier 14 and the routing complement of C3 (4 October). The routing mechanism and its
+calibrated triggers belong to the engine ([selection.md](selection.md#local-routing-configuration));
+the window only shows what happened and what it cost.
+
+- **Choosing.** The composer's model menu offers *Auto*, then the models. *Auto* can be picked only
+  when `model_routing_get` reports `automatic_available`: Auto is on with a valid calibration, or a
+  reviewed calibration in the fixed local file matches the listed Super and Ultra models, which is
+  exactly when `model_routing_set` accepts it (the file is read again each time the menu or Settings
+  opens). Otherwise its note says it becomes available once the evaluation is reviewed. An Auto
+  choice saved earlier and rejected at start-up (outdated calibration, malformed file) leaves the
+  configured model in use: Settings says so under the model (the engine's reason, which exists in
+  English only, is added on the English page) and the menu's *Auto* note points there. *Always
+  Super* and *always Ultra* are not separate choices: picking *Nemotron 3 Super* or *Nemotron 3
+  Ultra* in the menu gives exactly that behaviour (one model, no escalation). The `always_super` and
+  `always_ultra` modes still work from a hand-written `model-routing.json`, and Settings says when
+  one applies.
+- **While a turn runs**, its header names the model in use (the configured model, or Super with
+  Auto). On `model_changed` a step says that Ultra takes the question over with the measurements
+  already taken, the header becomes *Nemotron 3 Super → Nemotron 3 Ultra*, and a draft already on
+  screen stays, dimmed, until Ultra's text catches up. A window reloaded during an Auto turn cannot
+  know whether the change already happened: the header says *Auto* until a step or the end of the
+  turn tells.
+- **Under the answer** a lasting line says that Ultra took the question over and why (Super's answer
+  had low confidence, Super found too little evidence, Super's answer still had unverified passages
+  after its corrections, or Super used its share of requests without answering). When Ultra wrote
+  nothing it says so truthfully: its only request failed and the answer shown is Super's, its last
+  request failed and the answer shown is the best one kept before the failure, the turn ended before
+  it answered, or the person stopped the analysis (then no answer falls back to Super's). The header
+  names the models that worked, in order, then the duration and the cost: the total of both models,
+  or *≥* the priced requests when a request has no cost. A two-model cost is never one model's price
+  applied to every token.
+- **Sources** (*Requests and cost*) gives, after a change, one line per model: requests, tokens, cost
+  and its dated Nebius price, then the total only when every request is priced (else *at least*).
+  A turn of one model keeps the single cost and price lines.
+- **Copy** adds the models, the change and the cost, with each model's own when there are two.
+- **Reopened conversations** rebuild the switch from the saved report (*Nemotron 3 Ultra took the
+  question over after 2 requests*), since the saved tool steps carry no request numbers; a run that
+  reattached after a reload gets the switch back the same way when it ends.
+
+The report's `usage` (`view::Usage`) keeps every earlier field and adds `models` (each model's
+requests, tokens, exact cost only when all its requests are priced, and dated price),
+`total_cost` (the display form of `total_cost_usd`, absent exactly when it is) and
+`priced_cost_lower_bound` (what the priced requests cost at least, only without a total). Turns
+saved before them keep their single cost. In the mock, `?routing=calibrated` offers Auto,
+`?routing=escalated` turns Auto on and hands every AI answer from Super to Ultra,
+`?routing=escalation_failed` makes Ultra's request time out (Super's answer stays, no total) and
+`?routing=stale` shows an Auto choice rejected at start-up. The logic and these mock scenarios are
+covered by `node --experimental-default-type=module --test apps/gui/dev/usage.test.mjs`.
 
 ## Architecture
 
@@ -422,7 +493,9 @@ cargo run --release --locked -p pcagent-gui
 ```
 
 The first build compiles Tauri and needs about 3 GB for `target\`. On other platforms the binary
-only prints a message; the portable view and session code is still built and tested in CI.
+only prints a message; the portable view and session code is still built and tested in CI. The
+quick drive analysis and the deeper checks also need the helper next to the app
+(`cargo build --release --locked -p pcagent-elevated`); without it the Storage view says so.
 The CI keeps a `pcagent-gui-windows-x64` artifact: an unsigned prototype, not an installer.
 
 Keyboard: `Ctrl+1` to `Ctrl+5` open Chat, History, Live PC, Storage and Settings, `Ctrl+N` starts a
@@ -443,15 +516,20 @@ python -m http.server 5173 --bind 127.0.0.1
 # ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
 # ?recording=short, ?battery=none|ac|charging|low|relative|two|unavailable for the live battery
 # (none is a desktop PC, also without a battery in recordings), ?sources=short for selection
-# sources that expire after 5 s)
+# sources that expire after 5 s, ?pc=desktop for a desktop without an NVIDIA GPU or a battery whose
+# D: drive is exFAT, ?ntfs=none for no fixed NTFS drive, ?helper=missing for no pcagent-elevated)
+# sources that expire after 5 s, ?routing=calibrated|escalated|escalation_failed|stale for model
+# routing, see "Model routing" above)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
 answer and a long run; `space` or `clean` proposes cleanup actions and `startup` a start-up entry
-to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
+to turn off and restore; `health` (or `santé`) ends with the deeper checks card under the answer.
+`dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with the action bar under an
-application (`10a`) and under memory, Explain and its answer, the action bar under a History
+application (`10a`) and under memory, Explain and its answer, an answer Ultra took over and its
+costs in Sources (`16a`, `16b`), the action bar under a History
 event (`17`) and a Storage folder (`18`), the battery card with its inspector discharging (`19`)
 and plugged in (`20`), and the pill of a critically low battery (`21`)) in light and dark themes
 (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and
@@ -554,6 +632,32 @@ It lives outside `ui/`, so the app never embeds it.
   with zero conversations or provider requests. Its app process and debug port were closed.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
+- Storage results first on 2026-10-26 (#67), with the mock: the scanned folder's totals and its
+  largest folders and files now come right after the drop zone, beside an inspector of the
+  selected item (sizes, shares, dates, location, Explorer, Explain and Investigate), and the two
+  administrator cards follow under their own heading. 11 Node checks cover `storage-item.js`
+  (shares, coverage, facts and notes); the tour in English and French, light and dark, adds the
+  folder and file inspectors, the summary in the panel, the inspector under the row at 860 px
+  and the administrator section (steps 22 to 26), with no page errors.
+- Readable program names on 2026-10-26 (#70): Live PC, its inspector, answers, findings, sources
+  and action reviews name a process as Task Manager does (*Google Chrome* for `chrome.exe`), the
+  executable name as tooltip and the PID only in the inspector or when two cited processes would
+  read the same. 74 telemetry tests (version-resource parsing on synthetic blocks, caches, the own
+  process) and 68 app tests (labels, one-pass replacement, drafts named like the answer, the
+  selection source unchanged); the tour in English, light and dark, against the mock's readable
+  names, with no page errors.
+- Escalation made visible on 2026-10-26 (#69), with the mock (`?routing=escalated`): the step when
+  Ultra takes the question over, the header *Nemotron 3 Super → Nemotron 3 Ultra* with the total of
+  both models (or a lower bound), the lasting note under the answer with the reason, and one line
+  per model in Sources › Requests and cost; the CLI prints the same breakdown. 11 Node checks on
+  `usage.js`, 73 app tests and the CLI's routed-turn tests; the tour in English, light and dark
+  (steps 16a and 16b), with no page errors.
+- Capability registry on 2026-10-26 (phase 1), with the mock (`?pc=desktop`, `?ntfs=none`,
+  `?helper=missing`): `app_info.capabilities` drives the Storage view (helper note instead of the
+  administrator cards, battery check disabled without a battery, quick drive analysis only with a
+  fixed NTFS drive) and the deeper-checks card of the chat; 224 agent tests cover the per-turn
+  toolbox, the variants and the system prompt; the tour in English, light and dark, with no page
+  errors.
 
 ## Known gaps
 
