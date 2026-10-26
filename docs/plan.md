@@ -1312,6 +1312,19 @@ choix produit, annoncé tel quel dans le README.
 Règle de conduite jusqu'au 30 : on ne touche pas aux contrats C1–C7 et on ne commence aucun nouveau
 chantier ; tout ce qui n'est pas dans cette section est repoussé.
 
+**Décision du porteur du projet, 26 octobre (remplace la règle ci-dessus et le gel du 27) :** tout
+terminer avant l'échéance, y compris les listes « Repoussé après la soumission » et la phase 5.
+Chaque élément entre dans `main` dès qu'il est entièrement validé (formatage, Clippy
+`-D warnings`, tests sous un compte standard, build release) et sans déstabiliser la build
+soumise, jusqu'au 29 octobre ; les éléments de la soumission passent en premier. Les contrats
+C1–C7 ne changent toujours que sur décision du porteur, dans une PR du plan à part. Le code est
+nettoyé et refactorisé au passage, sans changer son comportement ; la restructuration du dépôt est
+proposée au porteur avant tout déplacement de fichiers. Le 29 octobre (Paris) : gel, tag annoté
+`v0.1.0` sur `main` et release GitHub avec les quatre exécutables (Devpost renvoie au tag). Du
+30 octobre 10 h PDT au 15 décembre, `main` est gelée (règlement Devpost : aucune modification de la
+soumission après la période de soumission) ; ce qui n'est pas terminé va sur une branche `next`,
+fusionnée dans `main` après le 15 décembre.
+
 ### Phase 0 — Remise en route (17–18 oct.)
 
 | Tâche | Pourquoi | Fait quand |
@@ -1359,11 +1372,13 @@ actifs (chantier 9), cache Tavily.
 
 ### Phase 4 — Gel et soumission (27–29 oct.)
 
-1. **Gel le 27** : seulement des corrections de bugs.
+1. **Gel le 29** (décision du 26 octobre, qui lève le gel du 27) : tag annoté `v0.1.0` sur `main`
+   et release ; ensuite, seulement des corrections de bugs jusqu'à la soumission.
 2. README en anglais : vision, captures, installation, plateforme annoncée (**Windows 10/11 x64**),
    confidentialité, usage de Nemotron et de Token Factory, avertissement SmartScreen.
 3. Docs en retard sur le code (#71) : README, `architecture.md`, `validation.md`.
-4. Release GitHub : `pcagent-gui.exe` et `pcagent.exe`, version et commit.
+4. Release GitHub sur le tag `v0.1.0` : `pcagent-gui.exe`, `pcagent-elevated.exe` (à placer à côté
+   de la fenêtre), `pcagent.exe` et `pcagent-eval.exe`, version et commit.
 5. Rendre le dépôt public, licence MIT visible dans « About ».
 6. Vidéo de moins de 3 minutes en anglais, publique sur YouTube : vrai problème → conversation →
    outils en direct → réponse citée → action validée → avant/après.
@@ -1371,11 +1386,13 @@ actifs (chantier 9), cache Tavily.
    Nebius, ou mode local), retours sur Token Factory et Nemotron, ce qui a changé pendant la
    période de soumission.
 
-### Phase 5 — Après la soumission (novembre)
+### Phase 5 — Multi-OS (avancée avant l'échéance, décision du 26 octobre)
 
 Ne pas casser la release soumise pendant le jugement (1er–15 déc.) : le travail multi-OS se fait sur
 des branches et de nouvelles versions, dans le même dépôt et le même workspace (trois cibles de
-build, pas trois forks).
+build, pas trois forks). Décision du 26 octobre : ces étapes sont menées avant le 29 octobre, chacune
+fusionnée dans `main` une fois validée et sans déstabiliser la build soumise ; ce qui reste au
+30 octobre va sur `next`.
 
 1. PR du plan : contrats renommés de façon neutre (commit, startup, services, events, settings
    pages), registre des capacités étendu par OS.
