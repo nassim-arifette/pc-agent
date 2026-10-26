@@ -1,5 +1,6 @@
 // Screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, history,
-// storage with the deeper checks, settings, the Live PC view with Explain, web search, the action
+// storage with the deeper checks, settings, the Live PC view with Explain, web search, an answer
+// Ultra took over with each model's cost, the action
 // bar under a selected item in Live PC, History and Storage, and the battery: its card and
 // inspector discharging and plugged in, then the status pill of a critically low battery) in light
 // and dark themes, against the mock (dev/mock.js).
@@ -124,6 +125,19 @@ try {
     // "Open in browser" asks the Rust side (open_web_source); the mock records it, never navigates.
     await page.click(".panel.open .web-source.focused .web-actions .btn");
     await page.waitFor("window.__pcagentMock.openedWebSources.length === 1");
+    // A calibrated escalation (chantier 14): the answer says Ultra took the question over, its
+    // header names both models with the total, and Sources gives each model's share and price.
+    await page.goto(`${base}?cloud=ready&privacy=complete&routing=escalated#/chat`);
+    await page.waitFor("document.querySelector('.welcome .suggestion')");
+    await page.click(".suggestion", 0);
+    await page.waitFor("document.querySelector('.answer-foot') && document.querySelector('.routing-note')", 30000);
+    await page.sleep(300);
+    await shot(`16a-escalated-answer-${theme}`);
+    await page.click(".answer-text .cite", 0);
+    await page.waitFor("document.querySelector('.panel.open .source-card.focused')");
+    await page.eval("(() => { const usage = [...document.querySelectorAll('.panel details.more')].at(-1); usage.open = true; usage.scrollIntoView({ block: 'start' }); })()");
+    await page.sleep(300);
+    await shot(`16b-escalated-sources-${theme}`);
     // The action bar under a selected history event, then under a folder of a scan.
     await page.goto(`${base}?cloud=ready&privacy=complete#/history`);
     await page.waitFor("document.querySelector('.event-main')", 10000);

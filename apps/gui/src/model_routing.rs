@@ -24,7 +24,10 @@ pub struct RoutingReview {
 pub struct RoutingView {
     pub settings: RoutingSettings,
     pub revision: u64,
+    /// Automatic routing is on with a valid calibration, or, in another mode, the window's Auto
+    /// choice would be accepted now: the same reviewed calibration `model_routing_set` requires.
     pub automatic_available: bool,
+    /// The calibration behind `automatic_available` and `calibrated_rules`.
     pub calibration_reviewed_at_unix_ms: Option<u64>,
     pub calibrated_rules: Vec<CalibratedRule>,
     pub limitation: Option<String>,
@@ -43,10 +46,31 @@ pub struct ModelRouting {
     revision: u64,
     calibration: Option<Calibration>,
     limitation: Option<String>,
+    /// Where the policy and its calibration are read; unknown for a policy built in memory.
+    directory: Option<PathBuf>,
+    /// Outside automatic mode: the window's Auto choice and the reviewed calibration that
+    /// would let it be saved. Display only; a turn never uses it.
+    offered: Option<(RoutingSettings, Calibration)>,
 }
 
 fn directory() -> Option<PathBuf> {
     Some(credentials::file_path()?.parent()?.to_path_buf())
+}
+
+/// What the window's Auto choice saves: the Super and Ultra models it lists, in that order.
+fn offered_automatic() -> Option<RoutingSettings> {
+    let family = |name: &str| {
+        crate::view::MODELS
+            .iter()
+            .map(|&(id, _)| id)
+            .find(|id| id.to_ascii_lowercase().contains(name))
+            .map(str::to_owned)
+    };
+    Some(RoutingSettings {
+        mode: RoutingMode::Automatic,
+        super_model_id: Some(family("super")?),
+        ultra_model_id: Some(family("ultra")?),
+    })
 }
 
 impl ModelRouting {
@@ -55,37 +79,55 @@ impl ModelRouting {
     }
 
     fn load_from(directory: &Path) -> Self {
-        let mut state = Self::default();
+        let mut state = Self {
+            directory: Some(directory.to_path_buf()),
+            ..Self::default()
+        };
         let path = directory.join("model-routing.json");
-        if !path.exists() {
-            return state;
-        }
-        match read_settings(&path).and_then(|settings| {
-            let calibration = load_calibration(directory, &settings)?;
-            Ok((settings, calibration))
-        }) {
-            Ok((settings, calibration)) => {
-                state.settings = settings;
-                state.calibration = calibration;
+        if path.exists() {
+            match read_settings(&path).and_then(|settings| {
+                let calibration = load_calibration(directory, &settings)?;
+                Ok((settings, calibration))
+            }) {
+                Ok((settings, calibration)) => {
+                    state.settings = settings;
+                    state.calibration = calibration;
+                }
+                Err(error) => state.limitation = Some(error),
             }
-            Err(error) => state.limitation = Some(error),
         }
+        state.refresh();
         state
     }
 
+    /// Reads the calibration file again for the Auto choice, so a campaign reviewed while the
+    /// window is open makes Auto available. The policy in use and its revision do not change.
+    pub fn refresh(&mut self) {
+        self.offered = None;
+        if self.settings.mode == RoutingMode::Automatic {
+            return;
+        }
+        let (Some(directory), Some(settings)) = (&self.directory, offered_automatic()) else {
+            return;
+        };
+        if let Ok(Some(calibration)) = load_calibration(directory, &settings) {
+            self.offered = Some((settings, calibration));
+        }
+    }
+
     pub fn view(&self) -> RoutingView {
-        let rules = self
-            .calibration
-            .as_ref()
-            .and_then(|calibration| calibration.rules(&self.settings).ok())
+        let (settings, calibration) = match &self.offered {
+            Some((settings, calibration)) => (settings, Some(calibration)),
+            None => (&self.settings, self.calibration.as_ref()),
+        };
+        let rules = calibration
+            .and_then(|calibration| calibration.rules(settings).ok())
             .unwrap_or_default();
         RoutingView {
             settings: self.settings.clone(),
             revision: self.revision,
             automatic_available: !rules.is_empty(),
-            calibration_reviewed_at_unix_ms: self
-                .calibration
-                .as_ref()
+            calibration_reviewed_at_unix_ms: calibration
                 .map(|calibration| calibration.reviewed_at_unix_ms),
             calibrated_rules: rules,
             limitation: self.limitation.clone(),
@@ -131,6 +173,8 @@ impl ModelRouting {
         self.settings = settings;
         self.calibration = calibration;
         self.limitation = None;
+        self.directory = Some(directory.to_path_buf());
+        self.refresh();
         Ok(self.view())
     }
 }
@@ -360,6 +404,49 @@ mod tests {
             .runtime
             .harness_version = "old-harness".into();
         assert!(!loaded.matches(&changed, Some("nvidia/nemotron-fixture")));
+    }
+
+    #[test]
+    fn a_reviewed_calibration_for_the_listed_models_offers_auto_before_it_is_chosen() {
+        let folder = Folder::new();
+        let offered = offered_automatic().unwrap();
+        let (_, mut calibration) = calibration_fixture();
+        calibration.super_model_id = offered.super_model_id.clone().unwrap();
+        calibration.ultra_model_id = offered.ultra_model_id.clone().unwrap();
+        let mut policy = ModelRouting::load_from(&folder.0);
+        assert!(!policy.view().automatic_available);
+        fs::create_dir_all(&folder.0).unwrap();
+        let path = folder.0.join("nemotron-routing-calibration.json");
+        fs::write(&path, serde_json::to_vec(&calibration).unwrap()).unwrap();
+        // Read again when the window asks; the policy in use and its previews are unchanged.
+        let review = policy.review(None);
+        policy.refresh();
+        let view = policy.view();
+        assert_eq!(view.settings.mode, RoutingMode::Configured);
+        assert!(view.automatic_available);
+        assert_eq!(view.calibrated_rules.len(), 1);
+        assert_eq!(view.calibration_reviewed_at_unix_ms, Some(42));
+        assert!(policy.matches(&review, None));
+        assert!(policy.review(None).calibration.is_none());
+        // Without the file, or with one for other models, Auto is not offered.
+        fs::remove_file(&path).unwrap();
+        policy.refresh();
+        assert!(!policy.view().automatic_available);
+        let (_, unlisted) = calibration_fixture();
+        fs::write(&path, serde_json::to_vec(&unlisted).unwrap()).unwrap();
+        assert!(
+            !ModelRouting::load_from(&folder.0)
+                .view()
+                .automatic_available
+        );
+        // The window's Auto choice saves exactly the offered models, which the file must match.
+        fs::write(&path, serde_json::to_vec(&calibration).unwrap()).unwrap();
+        policy.refresh();
+        assert!(policy.view().automatic_available);
+        let automatic = policy.set_in(&folder.0, offered).unwrap();
+        assert_eq!(automatic.settings.mode, RoutingMode::Automatic);
+        assert!(automatic.automatic_available);
+        assert!(policy.review(None).calibration.is_some());
     }
 
     #[test]

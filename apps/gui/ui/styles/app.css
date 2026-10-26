@@ -947,6 +947,30 @@ a {
   font-size: 12.5px;
   color: var(--text-3);
 }
+/* Under an answer a stronger model took over, or tried to (chantier 14). It stays with the answer. */
+.routing-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+.routing-note .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.routing-note.warn .icon {
+  color: var(--warn);
+}
+/* A model's dated price under its share of the turn, in Sources. */
+.usage-price {
+  display: block;
+}
 
 /* The model's written answer: reading text, lists and numbered citation chips. */
 .answer-text {

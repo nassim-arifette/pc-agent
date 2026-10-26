@@ -412,7 +412,10 @@ fn retain_storage_page(
 
 #[tauri::command]
 fn model_routing_get(state: State<'_, AppState>) -> RoutingView {
-    lock(&state.model_routing).view()
+    let mut routing = lock(&state.model_routing);
+    // A campaign reviewed while the window is open makes Auto available without a restart.
+    routing.refresh();
+    routing.view()
 }
 
 #[tauri::command]

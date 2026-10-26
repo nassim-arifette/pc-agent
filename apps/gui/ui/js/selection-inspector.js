@@ -8,8 +8,8 @@ import { continueSummary, retrySummary } from "./select.js";
 import { markdown } from "./markdown.js";
 import { numbering, citationTitle, isWeb } from "./citations.js";
 import { webSourceCard, webDescriber } from "./web.js";
-import { date, duration, usd } from "./format.js";
-import { modelName } from "./models.js";
+import { date, duration } from "./format.js";
+import { costText, modelsLabel, routingNote, usedModelIds } from "./usage.js";
 import { keepFocus } from "./actionbar.js";
 
 function failureText(error) {
@@ -86,12 +86,12 @@ export function mountSelectionInspector(host) {
       source?.scrollIntoView({ block: "nearest" });
       source?.focus({ preventScroll: true });
     };
-    const model = report?.usage?.cost?.price?.model_id;
-    const cost = report?.usage?.cost?.usd;
+    // The models that worked on it ("Super → Ultra" after an escalation) and the total or a lower bound.
+    const models = usedModelIds(report?.usage);
     const meta = [
-      ["local_rules", "local_evidence"].includes(report?.mode) ? t("chat.local") : model ? modelName(model) : null,
+      ["local_rules", "local_evidence"].includes(report?.mode) ? t("chat.local") : models.length ? modelsLabel(models) : null,
       inv?.finishedAt && inv?.startedAt ? duration(inv.finishedAt - inv.startedAt) : null,
-      cost != null ? usd(String(cost)) : null,
+      costText(report?.usage),
     ].filter(Boolean);
     const statusText = preparing ? t("summary.preparing") : status === "stopping" ? t("inv.stopping") : inv?.checking ? t("chat.draft.checking") : t("summary.running");
     const statusNode = preparing || running
@@ -121,6 +121,7 @@ export function mountSelectionInspector(host) {
           h("summary", { "data-key": "summary:sources" }, icon("chevron"), t("summary.sources"), ` · ${answer.citations.length}`),
           h("div", { class: "summary-source-list" }, answer.citations.map((citation) => sourceCard(citation, numbers.get(citation.reference), focusedReference === citation.reference, inv)))) : null,
         meta.length ? h("p", { class: "summary-meta" }, meta.join(" · ")) : null,
+        routingNote(report),
         sent ? h("details", { class: "more sent-message", "data-fold": "sent" }, h("summary", { "data-key": "summary:sent" }, icon("chevron"), t("chat.sent")), h("pre", { class: "code" }, JSON.stringify(sent, null, 2))) : null,
         state.privacy?.mode !== "local" && state.info?.cloud?.ready ? h("p", { class: "note" }, t("select.cost.note")) : null,
         h("div", { class: "summary-actions" },

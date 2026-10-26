@@ -6,7 +6,8 @@ use pcagent_agent::selection::is_battery_ref;
 use pcagent_agent::{
     credentials::{Credentials, Source},
     AgentError, Answer, Category, CitationKind, Confidence, Config, Cost, ExecutionStatus,
-    ExtensionRequest, Investigation, IssueKind, Pricing, SensorCoverage, Stats,
+    ExtensionRequest, Investigation, IssueKind, ModelRequestUsage, Pricing, RequestUsage,
+    SensorCoverage, Stats,
 };
 use pcagent_diagnostics::{Classification, Finding, Support};
 use pcagent_inspect::{CoverageStatus, Inspection, Observation};
@@ -905,6 +906,30 @@ pub struct CostView {
     pub exact_usd: String,
     pub price: PriceView,
 }
+/// An exact sum of request costs, which may span several prices, and its display form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AmountView {
+    /// Rounded to four decimals, or exact when that would show zero, like [`CostView::usd`].
+    pub usd: String,
+    pub exact_usd: String,
+}
+/// One model's share of a turn (C3 complement of 4 October): after an escalation, Super's and
+/// Ultra's requests, tokens and costs stay apart. A sum is given only when all of it is known.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelUsageView {
+    pub model_id: Option<String>,
+    pub requests: usize,
+    /// Sums over this model's requests; unknown as soon as one of them did not report the count.
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    /// This model's requests without a cost: no reported usage, or no verified price.
+    pub unpriced_requests: usize,
+    /// The exact sum of this model's request costs; absent unless every one of them is priced.
+    pub cost: Option<AmountView>,
+    /// The verified, dated price of its priced requests, when they all used the same one.
+    pub price: Option<PriceView>,
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Usage {
     pub requests: usize,
@@ -917,6 +942,14 @@ pub struct Usage {
     pub model_requests: Vec<pcagent_agent::ModelRequestUsage>,
     pub total_cost_usd: Option<String>,
     pub routing: Option<pcagent_agent::routing::RoutingState>,
+    /// `model_requests` grouped by model, in the order the models were first used.
+    pub models: Vec<ModelUsageView>,
+    /// `total_cost_usd` for display: absent exactly when it is, so never one model's price
+    /// applied to another model's tokens.
+    pub total_cost: Option<AmountView>,
+    /// Without a total, the sum of the requests that have a cost, each at its own model's
+    /// price: the turn cost at least this much. Never shown as a total.
+    pub priced_cost_lower_bound: Option<AmountView>,
     /// Lower bounds when a request reported no usage (see `Stats`).
     pub known_prompt_tokens: u64,
     pub known_completion_tokens: u64,
@@ -1041,19 +1074,113 @@ pub fn price(p: &Pricing) -> PriceView {
         read_at_unix_ms: p.read_at_unix_ms,
     }
 }
+/// What the window shows of an exact amount: four decimals rounded half-up, or the exact amount
+/// when that would read zero.
+fn shown_usd(rounded: String, exact: &str) -> String {
+    if rounded == "0.0000" && exact != "0" {
+        exact.to_owned()
+    } else {
+        rounded
+    }
+}
 fn cost(c: &Cost) -> CostView {
-    let rounded = c.rounded_usd(4);
     CostView {
-        usd: if rounded == "0.0000" && c.usd != "0" {
-            c.usd.clone()
-        } else {
-            rounded
-        },
+        usd: shown_usd(c.rounded_usd(4), &c.usd),
         exact_usd: c.usd.clone(),
         price: price(&c.pricing),
     }
 }
+const PICO_PER_USD: u128 = 1_000_000_000_000;
+/// Picodollars of an exact amount from the core ("0.0000432"); `None` for anything else.
+fn pico(usd: &str) -> Option<u128> {
+    let (whole, fraction) = usd.split_once('.').unwrap_or((usd, ""));
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(whole) || (usd.contains('.') && !digits(fraction)) || fraction.len() > 12 {
+        return None;
+    }
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        format!("{fraction:0<12}").parse::<u128>().ok()?
+    };
+    whole
+        .parse::<u128>()
+        .ok()?
+        .checked_mul(PICO_PER_USD)?
+        .checked_add(fraction)
+}
+/// The exact amount and its display form, rounded half-up to four decimals like a single cost.
+fn amount(pico: u128) -> AmountView {
+    let (whole, fraction) = (pico / PICO_PER_USD, pico % PICO_PER_USD);
+    let exact_usd = if fraction == 0 {
+        whole.to_string()
+    } else {
+        format!(
+            "{whole}.{}",
+            format!("{fraction:012}").trim_end_matches('0')
+        )
+    };
+    // Picodollars per unit of the fourth decimal.
+    const STEP: u128 = 100_000_000;
+    let rounded = pico / STEP + u128::from(pico % STEP >= STEP / 2);
+    AmountView {
+        usd: shown_usd(
+            format!("{}.{:04}", rounded / 10_000, rounded % 10_000),
+            &exact_usd,
+        ),
+        exact_usd,
+    }
+}
+/// The exact sum of these costs, each at its own price; `None` if one does not parse.
+fn sum_costs<'a>(costs: impl IntoIterator<Item = &'a Cost>) -> Option<u128> {
+    costs
+        .into_iter()
+        .try_fold(0u128, |sum, c| sum.checked_add(pico(&c.usd)?))
+}
+/// Requests grouped by model, in the order the models were first used.
+fn models(requests: &[ModelRequestUsage]) -> Vec<ModelUsageView> {
+    let mut groups: Vec<(Option<&str>, Vec<&ModelRequestUsage>)> = Vec::new();
+    for request in requests {
+        let id = request.model_id.as_deref();
+        match groups.iter_mut().find(|(model, _)| *model == id) {
+            Some((_, group)) => group.push(request),
+            None => groups.push((id, vec![request])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(model_id, group)| {
+            let tokens = |count: fn(&RequestUsage) -> Option<u64>| {
+                group
+                    .iter()
+                    .try_fold(0u64, |sum, r| sum.checked_add(count(&r.usage)?))
+            };
+            let priced: Vec<&Cost> = group.iter().filter_map(|r| r.cost.as_ref()).collect();
+            ModelUsageView {
+                model_id: model_id.map(str::to_owned),
+                requests: group.len(),
+                prompt_tokens: tokens(|u| u.prompt_tokens),
+                completion_tokens: tokens(|u| u.completion_tokens),
+                reasoning_tokens: tokens(|u| u.reasoning_tokens),
+                unpriced_requests: group.len() - priced.len(),
+                cost: (priced.len() == group.len())
+                    .then(|| sum_costs(priced.iter().copied()))
+                    .flatten()
+                    .map(amount),
+                price: priced
+                    .first()
+                    .filter(|first| priced.iter().all(|c| c.pricing == first.pricing))
+                    .map(|c| price(&c.pricing)),
+            }
+        })
+        .collect()
+}
 pub fn usage(s: &Stats) -> Usage {
+    let priced: Vec<&Cost> = s
+        .model_requests
+        .iter()
+        .filter_map(|r| r.cost.as_ref())
+        .collect();
     Usage {
         requests: s.inference_calls,
         tool_calls: s.tool_calls,
@@ -1065,6 +1192,12 @@ pub fn usage(s: &Stats) -> Usage {
         model_requests: s.model_requests.clone(),
         total_cost_usd: s.total_cost_usd.clone(),
         routing: s.routing.clone(),
+        models: models(&s.model_requests),
+        total_cost: s.total_cost_usd.as_deref().and_then(pico).map(amount),
+        priced_cost_lower_bound: (s.total_cost_usd.is_none() && !priced.is_empty())
+            .then(|| sum_costs(priced.iter().copied()))
+            .flatten()
+            .map(amount),
         known_prompt_tokens: s.known_prompt_tokens,
         known_completion_tokens: s.known_completion_tokens,
         unknown_requests: s.unknown_requests,
@@ -2114,6 +2247,291 @@ mod tests {
             ),
             "editor.exe (PID 4242) uses 5 GiB; editor.exe (PID 4242) grew."
         );
+    }
+
+    /// Per-model usage through the real engine, with scripted transports, synthetic prices and an
+    /// in-memory calibration only: no network, no saved file, no claim about model quality.
+    mod model_usage {
+        use super::*;
+        use pcagent_agent::routing::{
+            Calibration, CalibrationCase, CalibrationOrigin, CalibrationRuntime, EscalationReason,
+            RoutedModel, RoutingMode, RoutingSettings, CALIBRATION_SCHEMA_VERSION,
+        };
+        use pcagent_agent::{FunctionCall, Model, Reply, SnapshotTools, ToolCall, ToolChoice};
+        use pcagent_shared::Origin;
+        use std::collections::VecDeque;
+
+        const SUPER: &str = "nvidia/nemotron-super-fixture";
+        const ULTRA: &str = "nvidia/nemotron-ultra-fixture";
+        type Replies = Vec<Result<Reply, AgentError>>;
+
+        struct Scripted {
+            id: &'static str,
+            price: Pricing,
+            replies: VecDeque<Result<Reply, AgentError>>,
+        }
+        impl Model for Scripted {
+            fn complete(
+                &mut self,
+                _: &[Value],
+                _: &Value,
+                _: ToolChoice,
+                _: Duration,
+            ) -> Result<Reply, AgentError> {
+                self.replies
+                    .pop_front()
+                    .expect("unexpected inference request")
+            }
+            fn model_id(&self) -> Option<&str> {
+                Some(self.id)
+            }
+            fn pricing(&self) -> Option<Pricing> {
+                Some(self.price.clone())
+            }
+        }
+        fn scripted(id: &'static str, replies: Replies) -> Scripted {
+            // Ultra's synthetic price is ten times Super's.
+            let (prompt, completion) = if id == SUPER {
+                ("0.0000003", "0.0000009")
+            } else {
+                ("0.000003", "0.000009")
+            };
+            Scripted {
+                id,
+                price: Pricing {
+                    model_id: id.into(),
+                    prompt_usd_per_token: prompt.into(),
+                    completion_usd_per_token: completion.into(),
+                    source: "synthetic fixture".into(),
+                    read_at_unix_ms: 1_000,
+                },
+                replies: replies.into(),
+            }
+        }
+        fn call(name: &str, arguments: Value, prompt: u64, completion: u64) -> Reply {
+            Reply {
+                calls: vec![ToolCall {
+                    id: format!("call-{prompt}"),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: name.into(),
+                        arguments: arguments.to_string(),
+                    },
+                }],
+                prompt_tokens: Some(prompt),
+                completion_tokens: Some(completion),
+                total_tokens: Some(prompt + completion),
+                ..Reply::default()
+            }
+        }
+        fn inspect() -> Result<Reply, AgentError> {
+            Ok(call(
+                "get_system_snapshot",
+                serde_json::json!({}),
+                4_700,
+                80,
+            ))
+        }
+        fn answer(confidence: &str, prompt: u64, completion: u64) -> Result<Reply, AgentError> {
+            let arguments = serde_json::json!({
+                "answer": "See [O1].", "confidence": confidence, "category": "other"
+            });
+            Ok(call(
+                pcagent_agent::SUBMIT_ANSWER,
+                arguments,
+                prompt,
+                completion,
+            ))
+        }
+        fn snapshot() -> Snapshot {
+            let mut s = Snapshot::empty("synthetic-model-usage");
+            s.origin = Origin::SyntheticFixture;
+            s.evidence.push(Evidence::measured(
+                Metric::CpuBusyBasisPoints,
+                "system",
+                500,
+                "synthetic fixture",
+                Window::instant(),
+            ));
+            s
+        }
+        fn run(model: &mut impl Model) -> Report {
+            let inv = pcagent_agent::investigate(
+                model,
+                "Inspect",
+                &snapshot(),
+                &mut SnapshotTools::new(|_, _| snapshot()),
+                |_| {},
+            );
+            report(&inv, "Inspect")
+        }
+        /// Super's low-confidence answer hands the question to Ultra.
+        fn escalated(ultra: Replies) -> Report {
+            let settings = RoutingSettings {
+                mode: RoutingMode::Automatic,
+                super_model_id: Some(SUPER.into()),
+                ultra_model_id: Some(ULTRA.into()),
+            };
+            let calibration = Calibration {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                runtime: CalibrationRuntime::current(),
+                super_model_id: SUPER.into(),
+                ultra_model_id: ULTRA.into(),
+                reviewed_at_unix_ms: 1,
+                maximum_extra_cost_usd: "0.1".into(),
+                cases: (1..=3)
+                    .map(|i| CalibrationCase {
+                        capture_sha256: format!("{i:064x}"),
+                        primary_trace_sha256: format!("{:064x}", i + 10),
+                        ultra_trace_sha256: format!("{:064x}", i + 20),
+                        origin: CalibrationOrigin::Live,
+                        human_reviewed: true,
+                        trigger: EscalationReason::LowConfidence,
+                        primary_requests: 2,
+                        primary_quality: 1,
+                        ultra_quality: 3,
+                        primary_critical_error: false,
+                        ultra_critical_error: false,
+                        primary_cost_usd: "0.01".into(),
+                        ultra_cost_usd: "0.02".into(),
+                        primary_duration_ms: 10,
+                        ultra_duration_ms: 20,
+                    })
+                    .collect(),
+            };
+            let primary = scripted(SUPER, vec![inspect(), answer("low", 5_000, 20)]);
+            let mut model = RoutedModel::new(
+                primary,
+                Some(scripted(ULTRA, ultra)),
+                &settings,
+                Some(&calibration),
+            )
+            .unwrap();
+            run(&mut model)
+        }
+
+        #[test]
+        fn one_model_gets_one_priced_line_equal_to_the_legacy_cost() {
+            let mut model = scripted(SUPER, vec![inspect(), answer("medium", 5_000, 20)]);
+            let usage = run(&mut model).usage.unwrap();
+            assert_eq!(usage.models.len(), 1);
+            let only = &usage.models[0];
+            assert_eq!(only.model_id.as_deref(), Some(SUPER));
+            assert_eq!(only.requests, 2);
+            assert_eq!(
+                (only.prompt_tokens, only.completion_tokens),
+                (Some(9_700), Some(100))
+            );
+            assert_eq!(only.unpriced_requests, 0);
+            // 9,700 tokens in at $0.30 and 100 out at $0.90 per million: exactly $0.003.
+            let cost = only.cost.clone().unwrap();
+            assert_eq!(
+                (cost.usd.as_str(), cost.exact_usd.as_str()),
+                ("0.0030", "0.003")
+            );
+            let price = only.price.as_ref().unwrap();
+            assert_eq!(price.model_id, SUPER);
+            assert_eq!(price.input_per_million.as_deref(), Some("0.30"));
+            assert_eq!(price.output_per_million.as_deref(), Some("0.90"));
+            assert_eq!(price.read_at_unix_ms, 1_000);
+            assert_eq!(usage.total_cost, Some(cost.clone()));
+            assert_eq!(usage.total_cost_usd.as_deref(), Some("0.003"));
+            assert_eq!(usage.cost.unwrap().exact_usd, cost.exact_usd);
+            assert!(usage.priced_cost_lower_bound.is_none());
+        }
+
+        #[test]
+        fn an_escalation_keeps_each_models_share_and_a_total_only_from_both_prices() {
+            let r = escalated(vec![answer("medium", 6_000, 50)]);
+            assert_eq!(r.answer.as_ref().unwrap().confidence, Confidence::Medium);
+            let usage = r.usage.unwrap();
+            let change = usage.routing.as_ref().unwrap().change.clone().unwrap();
+            assert_eq!(
+                (change.from_model_id.as_str(), change.to_model_id.as_str()),
+                (SUPER, ULTRA)
+            );
+            assert_eq!(change.after_requests, 2);
+            let ids: Vec<_> = usage.models.iter().map(|m| m.model_id.as_deref()).collect();
+            assert_eq!(ids, [Some(SUPER), Some(ULTRA)]);
+            let [first, second] = &usage.models[..] else {
+                panic!("two models")
+            };
+            assert_eq!((first.requests, second.requests), (2, 1));
+            assert_eq!(
+                (second.prompt_tokens, second.completion_tokens),
+                (Some(6_000), Some(50))
+            );
+            assert_eq!(first.cost.as_ref().unwrap().exact_usd, "0.003");
+            // 6,000 in at $3 and 50 out at $9 per million: $0.01845, shown rounded half-up.
+            let ultra = second.cost.clone().unwrap();
+            assert_eq!(
+                (ultra.usd.as_str(), ultra.exact_usd.as_str()),
+                ("0.0185", "0.01845")
+            );
+            assert_eq!(
+                second.price.as_ref().unwrap().input_per_million.as_deref(),
+                Some("3.00")
+            );
+            let total = usage.total_cost.clone().unwrap();
+            assert_eq!(
+                (total.usd.as_str(), total.exact_usd.as_str()),
+                ("0.0215", "0.02145")
+            );
+            assert_eq!(usage.total_cost_usd.as_deref(), Some("0.02145"));
+            // Never both models' tokens at the last model's price.
+            assert!(usage.cost.is_none() && usage.cost_lower_bound.is_none());
+            assert!(usage.priced_cost_lower_bound.is_none());
+        }
+
+        #[test]
+        fn an_unpriced_request_leaves_its_model_without_cost_and_the_turn_without_total() {
+            let r = escalated(vec![Err(AgentError::Timeout)]);
+            // Ultra's only request failed: the answer kept is Super's.
+            assert_eq!(r.answer.as_ref().unwrap().confidence, Confidence::Low);
+            let usage = r.usage.unwrap();
+            let routing = usage.routing.as_ref().unwrap();
+            assert_eq!(routing.last_request_error, Some(AgentError::Timeout));
+            let ultra = &usage.models[1];
+            assert_eq!(ultra.model_id.as_deref(), Some(ULTRA));
+            assert_eq!((ultra.requests, ultra.unpriced_requests), (1, 1));
+            assert!(ultra.prompt_tokens.is_none() && ultra.completion_tokens.is_none());
+            assert!(ultra.cost.is_none() && ultra.price.is_none());
+            assert!(usage.models[0].cost.is_some());
+            assert!(usage.total_cost.is_none() && usage.total_cost_usd.is_none());
+            // At least Super's priced requests, never presented as the total.
+            let lower = usage.priced_cost_lower_bound.unwrap();
+            assert_eq!(
+                (lower.usd.as_str(), lower.exact_usd.as_str()),
+                ("0.0030", "0.003")
+            );
+        }
+
+        #[test]
+        fn exact_amounts_parse_strictly_and_round_half_up() {
+            assert_eq!(pico("0.0223698"), Some(22_369_800_000));
+            assert_eq!(pico("2"), Some(2 * PICO_PER_USD));
+            assert_eq!(pico("0.000000000001"), Some(1));
+            for bad in [
+                "",
+                ".3",
+                "3.",
+                "-1",
+                "1e-7",
+                "0,3",
+                " 1",
+                "0.0000000000001",
+                "NaN",
+            ] {
+                assert_eq!(pico(bad), None, "{bad:?}");
+            }
+            let shown = |usd: &str| amount(pico(usd).unwrap());
+            assert_eq!(shown("0.0223698").usd, "0.0224");
+            assert_eq!(shown("0.00005").usd, "0.0001");
+            assert_eq!(shown("0.0000432").usd, "0.0000432");
+            assert_eq!(shown("0").usd, "0.0000");
+            assert_eq!(shown("12.5").usd, "12.5000");
+            assert_eq!(shown("0.0000432").exact_usd, "0.0000432");
+        }
     }
 
     fn observed(tool: &str, cloud: Value) -> pcagent_agent::Observation {

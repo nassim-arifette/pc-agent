@@ -340,6 +340,57 @@ every new question. A saved conversation whose only question never got an answer
 closed mid-run) shows the question, *This question has no answer* and *Ask again*, never a blank
 page. Mock switches: `?turn=orphan` and `?conversation=empty`.
 
+## Model routing: Super, then Ultra
+
+Chantier 14 and the routing complement of C3 (4 October). The routing mechanism and its
+calibrated triggers belong to the engine ([selection.md](selection.md#local-routing-configuration));
+the window only shows what happened and what it cost.
+
+- **Choosing.** The composer's model menu offers *Auto*, then the models. *Auto* can be picked only
+  when `model_routing_get` reports `automatic_available`: Auto is on with a valid calibration, or a
+  reviewed calibration in the fixed local file matches the listed Super and Ultra models, which is
+  exactly when `model_routing_set` accepts it (the file is read again each time the menu or Settings
+  opens). Otherwise its note says it becomes available once the evaluation is reviewed. An Auto
+  choice saved earlier and rejected at start-up (outdated calibration, malformed file) leaves the
+  configured model in use: Settings says so under the model (the engine's reason, which exists in
+  English only, is added on the English page) and the menu's *Auto* note points there. *Always
+  Super* and *always Ultra* are not separate choices: picking *Nemotron 3 Super* or *Nemotron 3
+  Ultra* in the menu gives exactly that behaviour (one model, no escalation). The `always_super` and
+  `always_ultra` modes still work from a hand-written `model-routing.json`, and Settings says when
+  one applies.
+- **While a turn runs**, its header names the model in use (the configured model, or Super with
+  Auto). On `model_changed` a step says that Ultra takes the question over with the measurements
+  already taken, the header becomes *Nemotron 3 Super → Nemotron 3 Ultra*, and a draft already on
+  screen stays, dimmed, until Ultra's text catches up. A window reloaded during an Auto turn cannot
+  know whether the change already happened: the header says *Auto* until a step or the end of the
+  turn tells.
+- **Under the answer** a lasting line says that Ultra took the question over and why (Super's answer
+  had low confidence, Super found too little evidence, Super's answer still had unverified passages
+  after its corrections, or Super used its share of requests without answering). When Ultra wrote
+  nothing it says so truthfully: its only request failed and the answer shown is Super's, its last
+  request failed and the answer shown is the best one kept before the failure, the turn ended before
+  it answered, or the person stopped the analysis (then no answer falls back to Super's). The header
+  names the models that worked, in order, then the duration and the cost: the total of both models,
+  or *≥* the priced requests when a request has no cost. A two-model cost is never one model's price
+  applied to every token.
+- **Sources** (*Requests and cost*) gives, after a change, one line per model: requests, tokens, cost
+  and its dated Nebius price, then the total only when every request is priced (else *at least*).
+  A turn of one model keeps the single cost and price lines.
+- **Copy** adds the models, the change and the cost, with each model's own when there are two.
+- **Reopened conversations** rebuild the switch from the saved report (*Nemotron 3 Ultra took the
+  question over after 2 requests*), since the saved tool steps carry no request numbers; a run that
+  reattached after a reload gets the switch back the same way when it ends.
+
+The report's `usage` (`view::Usage`) keeps every earlier field and adds `models` (each model's
+requests, tokens, exact cost only when all its requests are priced, and dated price),
+`total_cost` (the display form of `total_cost_usd`, absent exactly when it is) and
+`priced_cost_lower_bound` (what the priced requests cost at least, only without a total). Turns
+saved before them keep their single cost. In the mock, `?routing=calibrated` offers Auto,
+`?routing=escalated` turns Auto on and hands every AI answer from Super to Ultra,
+`?routing=escalation_failed` makes Ultra's request time out (Super's answer stays, no total) and
+`?routing=stale` shows an Auto choice rejected at start-up. The logic and these mock scenarios are
+covered by `node --experimental-default-type=module --test apps/gui/dev/usage.test.mjs`.
+
 ## Architecture
 
 ```text
@@ -426,7 +477,8 @@ python -m http.server 5173 --bind 127.0.0.1
 # ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
 # ?recording=short, ?battery=none|ac|charging|low|relative|two|unavailable for the live battery
 # (none is a desktop PC, also without a battery in recordings), ?sources=short for selection
-# sources that expire after 5 s)
+# sources that expire after 5 s, ?routing=calibrated|escalated|escalation_failed|stale for model
+# routing, see "Model routing" above)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
@@ -434,7 +486,8 @@ answer and a long run; `space` or `clean` proposes cleanup actions and `startup`
 to turn off and restore. `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with the action bar under an
-application (`10a`) and under memory, Explain and its answer, the action bar under a History
+application (`10a`) and under memory, Explain and its answer, an answer Ultra took over and its
+costs in Sources (`16a`, `16b`), the action bar under a History
 event (`17`) and a Storage folder (`18`), the battery card with its inspector discharging (`19`)
 and plugged in (`20`), and the pill of a critically low battery (`21`)) in light and dark themes
 (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and

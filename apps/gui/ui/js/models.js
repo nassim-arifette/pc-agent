@@ -9,3 +9,16 @@ const NAMES = {
 export function modelName(id) {
   return NAMES[id] || (id || "").replace(/^nvidia\//, "");
 }
+
+/** The first listed model of a family ("super", "ultra"): what the picker's choices save. */
+export function familyId(info, family) {
+  return (info?.models || []).map((m) => m.id).find((id) => id.toLowerCase().includes(family)) || null;
+}
+
+/** The model a question starts with under the routing policy: Auto starts with Super. */
+export function startModelId(info, routing) {
+  const settings = routing?.settings;
+  if (settings?.mode === "always_super" || settings?.mode === "automatic") return settings.super_model_id || familyId(info, "super");
+  if (settings?.mode === "always_ultra") return settings.ultra_model_id || familyId(info, "ultra");
+  return info?.cloud?.model_id ?? null;
+}

@@ -3,7 +3,7 @@
 // or the view is closed (including a full-shell language redraw).
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
-import { t } from "../i18n.js";
+import { language, t } from "../i18n.js";
 import { call } from "../api.js";
 import { disclosure, modeCards, cloudReady } from "../ask.js";
 import { getPrefs, setPref } from "../prefs.js";
@@ -100,6 +100,11 @@ export function aiCard() {
   // The model a question uses can come from the composer's routing choice instead.
   const mode = state.routing?.settings?.mode;
   const routing = mode && mode !== "configured" ? h("p", { class: "hint" }, icon("info"), " ", t(`settings.routing.${mode}`)) : null;
+  // A saved routing choice rejected at start-up (stale calibration, malformed file): questions use
+  // the model above. The engine gives its reason in English, so only the English page adds it.
+  const limitation = state.routing?.limitation
+    ? h("p", { class: "hint" }, icon("alert"), " ", t("settings.routing.limitation"), language() === "en" ? ` ${state.routing.limitation}` : null)
+    : null;
 
   const reasoning = cloud.model_id
     ? settingRow(
@@ -197,7 +202,7 @@ export function aiCard() {
       },
     },
     h("div", { class: "card-head" }, h("div", null, h("h2", { class: "card-title" }, icon("sparkle"), t("settings.ai.title")), h("p", { class: "hint" }, t("settings.ai.sub"))), status),
-    h("div", { class: "field" }, h("span", { class: "label" }, t("settings.model")), select, customField, note, routing),
+    h("div", { class: "field" }, h("span", { class: "label" }, t("settings.model")), select, customField, note, routing, limitation),
     h(
       "div",
       { class: "field", style: { "margin-top": "14px" } },
