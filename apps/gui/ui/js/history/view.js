@@ -11,7 +11,7 @@ import { actionBar, keepFocus, selectionKeys } from "../actionbar.js";
 import { subscribe } from "../store.js";
 import { button, segmented, toast, toggle, dialog } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
-import { hoursMinutes, watts } from "../battery.js";
+import { hoursMinutes, watts } from "../live/battery.js";
 import { failureDetail, failureText } from "../failure.js";
 
 const PERIODS = [

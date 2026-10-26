@@ -38,7 +38,7 @@ import {
   togglePanel,
 } from "./store.js";
 import { mountPanel } from "./panel.js";
-import { health } from "./live.js";
+import { health } from "./live/model.js";
 import { dialog, button, dialogOpen } from "./ui.js";
 import { costText } from "./usage.js";
 import { modelName } from "./models.js";
@@ -49,9 +49,9 @@ import { refreshRouting } from "./picker.js";
 import { watchCapabilities } from "./capabilities.js";
 import { keepFocus } from "./actionbar.js";
 import * as chat from "./views/chat.js";
-import * as history from "./views/history.js";
-import * as live from "./views/live.js";
-import * as storage from "./views/storage.js";
+import * as history from "./history/view.js";
+import * as live from "./live/view.js";
+import * as storage from "./storage/view.js";
 import * as settings from "./views/settings.js";
 import * as setup from "./views/setup.js";
 

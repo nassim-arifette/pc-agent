@@ -4,18 +4,17 @@
 // system's index (names and sizes, never contents) and changes nothing; the result stays on this
 // PC. Only fixed NTFS drives are offered. One elevated task can be prepared or run at a time
 // (elevation_status).
-import { h, fill } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { call } from "./api.js";
-import { state } from "./store.js";
-import { badge, bar, button, toast } from "./ui.js";
-import { bytes, clock, duration, number, percent } from "./format.js";
-import { driveName } from "./live.js";
-import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
-import { failureDetail, failureText } from "./failure.js";
-import { capable } from "./capabilities.js";
-import { subscribe } from "./store.js";
+import { h, fill } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { call } from "../api.js";
+import { state, subscribe } from "../store.js";
+import { badge, bar, button, toast } from "../ui.js";
+import { bytes, clock, duration, number, percent } from "../format.js";
+import { driveName } from "../live/model.js";
+import { holdSlot, onSlotChange, slotHeldElsewhere } from "../elevation/slot.js";
+import { failureDetail, failureText } from "../failure.js";
+import { capable } from "../capabilities.js";
 
 /** Collection budget asked for: the helper's maximum; most drives finish well before. */
 export const BUDGET_MS = 120000;

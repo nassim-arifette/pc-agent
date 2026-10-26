@@ -2,7 +2,7 @@
 // totals and its largest folders and files, beside the inspector of the selected one, which can be
 // explained or investigated (action bar under the row, inspector). After them, under their own
 // heading, two cards ask for administrator consent: a quick analysis of a whole drive from its file
-// system index (quickscan.js) and the deeper read-only checks (adminchecks.js).
+// system index (quickscan.js) and the deeper read-only checks (elevation/checks.js).
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
@@ -13,11 +13,11 @@ import { actionBar, keepFocus, once, selectionKeys } from "../actionbar.js";
 import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
-import { quickScanCard } from "../quickscan.js";
-import { adminChecksCard } from "../adminchecks.js";
+import { quickScanCard } from "./quickscan.js";
+import { adminChecksCard } from "../elevation/checks.js";
 import { failureDetail, failureText } from "../failure.js";
 import { capable } from "../capabilities.js";
-import { folderName, isDriveRoot, itemCoverage, itemFacts, itemNotes, shareShown } from "../storage-item.js";
+import { folderName, isDriveRoot, itemCoverage, itemFacts, itemNotes, shareShown } from "./items.js";
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];

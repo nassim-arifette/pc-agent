@@ -6,7 +6,8 @@ import { icon } from "./icons.js";
 import { t, language } from "./i18n.js";
 import { citationFacts, limitationLines, targetLabel } from "./phrases.js";
 import { state, subscribe, openPanel, closePanel, setLivePaused, watchActivity, pokeActivity } from "./store.js";
-import { liveView, driveName } from "./live.js";
+import { liveView } from "./live/panel.js";
+import { driveName } from "./live/model.js";
 import { numbering, citationTitle, isWeb } from "./citations.js";
 import { webSourceCard } from "./web.js";
 import { bytes, clock, date, labelled, number, price, usd } from "./format.js";
@@ -362,4 +363,3 @@ export function mountPanel(host) {
 export function showSource(turn, reference) {
   openPanel("sources", { turn, reference });
 }
-
