@@ -544,6 +544,13 @@ It lives outside `ui/`, so the app never embeds it.
   (shares, coverage, facts and notes); the tour in English and French, light and dark, adds the
   folder and file inspectors, the summary in the panel, the inspector under the row at 860 px
   and the administrator section (steps 22 to 26), with no page errors.
+- Readable program names on 2026-10-26 (#70): Live PC, its inspector, answers, findings, sources
+  and action reviews name a process as Task Manager does (*Google Chrome* for `chrome.exe`), the
+  executable name as tooltip and the PID only in the inspector or when two cited processes would
+  read the same. 74 telemetry tests (version-resource parsing on synthetic blocks, caches, the own
+  process) and 68 app tests (labels, one-pass replacement, drafts named like the answer, the
+  selection source unchanged); the tour in English, light and dark, against the mock's readable
+  names, with no page errors.
 
 ## Known gaps
 
