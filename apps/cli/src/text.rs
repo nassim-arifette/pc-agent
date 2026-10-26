@@ -1,8 +1,8 @@
 //! Human-readable terminal output. Machine-readable output is `--json` and is not produced here.
 use pcagent_actions::Recovery;
 use pcagent_agent::{
-    ActionVerification, Answer, CitationKind, Cost, Investigation, IssueKind, Pricing, ToolEvent,
-    VERIFY_SAMPLES,
+    ActionVerification, Answer, CitationKind, Cost, Investigation, IssueKind, ModelRequestUsage,
+    Pricing, RequestUsage, Stats, ToolEvent, VERIFY_SAMPLES,
 };
 use pcagent_shared::{
     format_bytes, format_utc_minute, Evidence, Metric, Origin, ProcessInstance, Snapshot, Status,
@@ -871,20 +871,187 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
             plural(s.inference_calls as u64, "request", "requests"),
             plural(s.tool_calls as u64, "tool call", "tool calls"),
         )?;
-        match (s.cost.as_ref(), s.cost_lower_bound.as_ref()) {
-            (None, Some(lower)) => writeln!(
-                out,
-                "{}",
-                cost_line(Some(lower)).replacen(
-                    "Estimated cost: $",
-                    "Estimated cost: at least $",
-                    1
-                )
-            )?,
-            (cost, _) => writeln!(out, "{}", cost_line(cost))?,
+        if let Some(change) = model_change(r) {
+            writeln!(out, "{change}")?;
+        }
+        let models = by_model(s);
+        if models.len() > 1 {
+            // Each model at its own price: never both models' tokens at the last one's.
+            for (model_id, requests) in &models {
+                writeln!(out, "  {}", model_line(*model_id, requests))?;
+            }
+            writeln!(out, "{}", total_cost_line(s))?;
+        } else {
+            match (s.cost.as_ref(), s.cost_lower_bound.as_ref()) {
+                (None, Some(lower)) => writeln!(
+                    out,
+                    "{}",
+                    cost_line(Some(lower)).replacen(
+                        "Estimated cost: $",
+                        "Estimated cost: at least $",
+                        1
+                    )
+                )?,
+                (cost, _) => writeln!(out, "{}", cost_line(cost))?,
+            }
         }
     }
     Ok(())
+}
+
+/// The model change of a routed turn (chantier 14), and whose answer is printed above when the
+/// stronger model did not write one.
+fn model_change(r: &Investigation) -> Option<String> {
+    let routing = r.stats.routing.as_ref()?;
+    let change = routing.change.as_ref()?;
+    let (from, to) = (clean(&change.from_model_id), clean(&change.to_model_id));
+    let after = plural(change.after_requests as u64, "request", "requests");
+    let reason = words(&change.reason);
+    // Requests numbered after the change were sent to the new model.
+    let taken = r
+        .stats
+        .model_requests
+        .iter()
+        .filter(|m| m.request > change.after_requests)
+        .count();
+    let shown = |text: &str| {
+        if r.answer.is_some() {
+            format!(" {text}")
+        } else {
+            String::new()
+        }
+    };
+    let from_answer = shown(&format!("The answer above was written by {from}."));
+    Some(match (taken, routing.last_request_error.as_ref()) {
+        (0, _) => format!(
+            "Model change: {to} was to take over from {from} after {after} ({reason}), but the investigation ended before it answered.{from_answer}"
+        ),
+        (1, Some(error)) => format!(
+            "Model change: {to} was asked to take over from {from} after {after} ({reason}), but its request failed ({error}).{from_answer}"
+        ),
+        (_, Some(error)) => format!(
+            "Model change: {to} took over from {from} after {after} ({reason}), but its last request failed ({error}).{}",
+            shown("The answer above is the best one written before the failure.")
+        ),
+        (_, None) => {
+            format!("Model change: {to} took over from {from} after {after} ({reason}).")
+        }
+    })
+}
+
+/// Requests grouped by model, in the order the models were first used.
+fn by_model(s: &Stats) -> Vec<(Option<&str>, Vec<&ModelRequestUsage>)> {
+    let mut groups: Vec<(Option<&str>, Vec<&ModelRequestUsage>)> = Vec::new();
+    for request in &s.model_requests {
+        let id = request.model_id.as_deref();
+        match groups.iter_mut().find(|(model, _)| *model == id) {
+            Some((_, group)) => group.push(request),
+            None => groups.push((id, vec![request])),
+        }
+    }
+    groups
+}
+
+/// One model's requests, tokens and cost; a sum only when all of it is known.
+fn model_line(model_id: Option<&str>, requests: &[&ModelRequestUsage]) -> String {
+    let tokens = |count: fn(&RequestUsage) -> Option<u64>| {
+        requests
+            .iter()
+            .try_fold(0u64, |sum, r| sum.checked_add(count(&r.usage)?))
+    };
+    let usage = match (tokens(|u| u.prompt_tokens), tokens(|u| u.completion_tokens)) {
+        (Some(input), Some(output)) => format!(
+            "{} tokens ({} in, {} out)",
+            thousands(input.saturating_add(output)),
+            thousands(input),
+            thousands(output)
+        ),
+        _ => "tokens unknown".to_owned(),
+    };
+    let priced: Vec<&Cost> = requests.iter().filter_map(|r| r.cost.as_ref()).collect();
+    let price = priced
+        .first()
+        .filter(|first| priced.iter().all(|c| c.pricing == first.pricing))
+        .map(|c| format!(" at {}", price_text(&c.pricing)))
+        .unwrap_or_default();
+    let cost = match (priced.len() == requests.len())
+        .then(|| sum_pico(&priced))
+        .flatten()
+    {
+        Some(pico) => format!("estimated cost ${}{price}", usd_text(pico)),
+        None => format!(
+            "estimated cost not shown ({} without usage or verified price)",
+            plural(
+                (requests.len() - priced.len()) as u64,
+                "request",
+                "requests"
+            )
+        ),
+    };
+    format!(
+        "{}: {}; {usage}; {cost}",
+        model_id.map_or_else(|| "unknown model".to_owned(), clean),
+        plural(requests.len() as u64, "request", "requests")
+    )
+}
+
+/// The total of a turn served by several models, only when every request is priced.
+fn total_cost_line(s: &Stats) -> String {
+    if let Some(total) = s.total_cost_usd.as_deref().and_then(pico) {
+        return format!(
+            "Estimated cost: ${} in total, each model at its own catalog price",
+            usd_text(total)
+        );
+    }
+    let priced: Vec<&Cost> = s
+        .model_requests
+        .iter()
+        .filter_map(|r| r.cost.as_ref())
+        .collect();
+    match sum_pico(&priced).filter(|_| !priced.is_empty()) {
+        Some(lower) => format!(
+            "Estimated cost: at least ${} (requests without usage or verified price are not counted)",
+            usd_text(lower)
+        ),
+        None => cost_line(None),
+    }
+}
+
+const PICO_PER_USD: u128 = 1_000_000_000_000;
+/// Picodollars of an exact amount from the core ("0.0000432"); `None` for anything else.
+fn pico(usd: &str) -> Option<u128> {
+    let (whole, fraction) = usd.split_once('.').unwrap_or((usd, ""));
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(whole) || (usd.contains('.') && !digits(fraction)) || fraction.len() > 12 {
+        return None;
+    }
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        format!("{fraction:0<12}").parse::<u128>().ok()?
+    };
+    whole
+        .parse::<u128>()
+        .ok()?
+        .checked_mul(PICO_PER_USD)?
+        .checked_add(fraction)
+}
+fn sum_pico(costs: &[&Cost]) -> Option<u128> {
+    costs
+        .iter()
+        .try_fold(0u128, |sum, c| sum.checked_add(pico(&c.usd)?))
+}
+/// As [`cost_line`] shows an amount: four decimals rounded half-up, or exact when that would
+/// show zero.
+fn usd_text(pico: u128) -> String {
+    const STEP: u128 = 100_000_000;
+    let rounded = pico / STEP + u128::from(pico % STEP >= STEP / 2);
+    let shown = format!("{}.{:04}", rounded / 10_000, rounded % 10_000);
+    if shown != "0.0000" || pico == 0 {
+        return shown;
+    }
+    let digits = format!("{:012}", pico % PICO_PER_USD);
+    format!("{}.{}", pico / PICO_PER_USD, digits.trim_end_matches('0'))
 }
 
 /// Spec 13: a cost is shown only from a verified, dated price; otherwise usage alone.
@@ -979,6 +1146,183 @@ mod tests {
         assert_eq!(words(&Status::PermissionDenied), "permission denied");
         assert_eq!(plural(1_u64, "file", "files"), "1 file");
         assert_eq!(plural(2_u64, "file", "files"), "2 files");
+    }
+
+    /// A Super → Ultra turn as the engine reports it, with synthetic prices (Ultra ten times
+    /// Super) and no provider: Super's two requests, then Ultra's, each priced unless it failed.
+    mod routed {
+        use super::*;
+        use pcagent_agent::routing::{EscalationReason, ModelChange, RoutingMode, RoutingState};
+        use pcagent_agent::{estimate_cost, local_report, AgentError, Category, Confidence};
+
+        const SUPER: &str = "nvidia/nemotron-super-fixture";
+        const ULTRA: &str = "nvidia/nemotron-ultra-fixture";
+
+        /// `ultra` lists Ultra's requests: their tokens, or `None` for one that failed.
+        fn turn(ultra: &[Option<(u64, u64)>], answered: bool) -> Investigation {
+            let pricing = |model_id: &str, prompt: &str, completion: &str| Pricing {
+                model_id: model_id.into(),
+                prompt_usd_per_token: prompt.into(),
+                completion_usd_per_token: completion.into(),
+                source: "synthetic fixture".into(),
+                read_at_unix_ms: 0,
+            };
+            let prices = [
+                pricing(SUPER, "0.0000003", "0.0000009"),
+                pricing(ULTRA, "0.000003", "0.000009"),
+            ];
+            let sent: Vec<_> = [(SUPER, Some((4_700, 80))), (SUPER, Some((5_000, 20)))]
+                .into_iter()
+                .chain(ultra.iter().map(|&tokens| (ULTRA, tokens)))
+                .collect();
+            let model_requests: Vec<ModelRequestUsage> = sent
+                .iter()
+                .enumerate()
+                .map(|(i, &(id, tokens))| ModelRequestUsage {
+                    request: i + 1,
+                    model_id: Some(id.into()),
+                    usage: RequestUsage {
+                        prompt_tokens: tokens.map(|t| t.0),
+                        completion_tokens: tokens.map(|t| t.1),
+                        reasoning_tokens: None,
+                    },
+                    cost: tokens
+                        .and_then(|(p, c)| estimate_cost(p, c, &prices[usize::from(id == ULTRA)])),
+                })
+                .collect();
+            let known = |count: fn((u64, u64)) -> u64| sent.iter().filter_map(|s| s.1).map(count);
+            let complete = sent.iter().all(|s| s.1.is_some());
+            let mut r = local_report(&Snapshot::empty("fixture"));
+            r.mode = "nebius".into();
+            let s = &mut r.stats;
+            s.inference_calls = sent.len();
+            s.tool_calls = 1;
+            s.requests = model_requests.iter().map(|m| m.usage.clone()).collect();
+            (s.known_prompt_tokens, s.known_completion_tokens) =
+                (known(|t| t.0).sum(), known(|t| t.1).sum());
+            s.prompt_tokens = complete.then_some(s.known_prompt_tokens);
+            s.completion_tokens = complete.then_some(s.known_completion_tokens);
+            s.total_tokens = complete.then_some(s.known_prompt_tokens + s.known_completion_tokens);
+            s.unknown_requests = sent.iter().filter(|s| s.1.is_none()).count();
+            // As the core sums them: exact, and only when every request is priced.
+            s.total_cost_usd = model_requests
+                .iter()
+                .map(|m| pico(&m.cost.as_ref()?.usd))
+                .sum::<Option<u128>>()
+                .map(|total| {
+                    let fraction = format!("{:012}", total % PICO_PER_USD);
+                    format!(
+                        "{}.{}",
+                        total / PICO_PER_USD,
+                        fraction.trim_end_matches('0')
+                    )
+                });
+            s.model_requests = model_requests;
+            s.routing = Some(RoutingState {
+                mode: RoutingMode::Automatic,
+                current_model_id: Some(ULTRA.into()),
+                calibration_reviewed_at_unix_ms: Some(1),
+                change: Some(ModelChange {
+                    from_model_id: SUPER.into(),
+                    to_model_id: ULTRA.into(),
+                    reason: EscalationReason::LowConfidence,
+                    after_requests: 2,
+                }),
+                last_request_error: ultra
+                    .last()
+                    .is_some_and(Option::is_none)
+                    .then_some(AgentError::Timeout),
+            });
+            r.answer = answered.then(|| Answer {
+                text: "See the measurements.".into(),
+                confidence: Confidence::Low,
+                category: Category::Other,
+                citations: Vec::new(),
+                action_refs: Vec::new(),
+                follow_ups: Vec::new(),
+                unverified: Vec::new(),
+                repairs: 0,
+            });
+            r
+        }
+        fn routed(ultra: &[Option<(u64, u64)>], answered: bool) -> String {
+            let mut out = Vec::new();
+            report(&mut out, &turn(ultra, answered), false).unwrap();
+            String::from_utf8(out).unwrap()
+        }
+
+        #[test]
+        fn the_model_change_and_each_models_cost_are_printed_with_their_total() {
+            let text = routed(&[Some((6_000, 50))], true);
+            assert!(text.contains(&format!(
+                "Model change: {ULTRA} took over from {SUPER} after 2 requests (low confidence).\n"
+            )));
+            assert!(text.contains(&format!(
+                "  {SUPER}: 2 requests; 9,800 tokens (9,700 in, 100 out); estimated cost $0.0030 at Nebius catalog prices ($0.30 in / $0.90 out per million tokens, read "
+            )));
+            assert!(text.contains(&format!(
+                "  {ULTRA}: 1 request; 6,050 tokens (6,000 in, 50 out); estimated cost $0.0185 at Nebius catalog prices ($3.00 in / $9.00 out per million tokens, read "
+            )));
+            assert!(text.contains(
+                "Estimated cost: $0.0215 in total, each model at its own catalog price\n"
+            ));
+            assert!(!text.contains("not shown"), "{text}");
+        }
+
+        #[test]
+        fn a_failed_ultra_request_says_whose_answer_is_shown_and_gives_no_total() {
+            let text = routed(&[None], true);
+            assert!(text.contains(&format!(
+                "Model change: {ULTRA} was asked to take over from {SUPER} after 2 requests (low confidence), but its request failed ({}). The answer above was written by {SUPER}.\n",
+                AgentError::Timeout
+            )));
+            assert!(text.contains(&format!(
+                "  {ULTRA}: 1 request; tokens unknown; estimated cost not shown (1 request without usage or verified price)\n"
+            )));
+            assert!(text.contains("Estimated cost: at least $0.0030 (requests without usage or verified price are not counted)\n"));
+            assert!(!text.contains("in total"), "{text}");
+            // Without an answer, nothing is said about whose answer is shown.
+            let text = routed(&[None], false);
+            assert!(text.contains("but its request failed"));
+            assert!(!text.contains("The answer above"), "{text}");
+        }
+
+        #[test]
+        fn a_change_without_an_ultra_answer_never_credits_ultra() {
+            // The investigation ended before Ultra's first request: Super's costs only.
+            let text = routed(&[], true);
+            assert!(text.contains(&format!(
+                "Model change: {ULTRA} was to take over from {SUPER} after 2 requests (low confidence), but the investigation ended before it answered. The answer above was written by {SUPER}.\n"
+            )));
+            assert!(!text.contains(&format!("  {ULTRA}:")), "{text}");
+            // Ultra answered once, then its last request failed: whose answer is kept is unknown.
+            let text = routed(&[Some((6_000, 50)), None], true);
+            assert!(text.contains(&format!(
+                "Model change: {ULTRA} took over from {SUPER} after 2 requests (low confidence), but its last request failed ({}). The answer above is the best one written before the failure.\n",
+                AgentError::Timeout
+            )));
+            assert!(text.contains(&format!(
+                "  {ULTRA}: 2 requests; tokens unknown; estimated cost not shown (1 request without usage or verified price)\n"
+            )));
+            // Super's $0.0030 and Ultra's priced $0.01845, each at its own price.
+            assert!(
+                text.contains("Estimated cost: at least $0.0215 (requests"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn exact_amounts_are_shown_like_a_single_cost() {
+            assert_eq!(pico("0.0223698").map(usd_text).as_deref(), Some("0.0224"));
+            assert_eq!(
+                pico("0.0000432").map(usd_text).as_deref(),
+                Some("0.0000432")
+            );
+            assert_eq!(pico("0").map(usd_text).as_deref(), Some("0.0000"));
+            for bad in ["", ".3", "3.", "-1", "1e-7", "0.0000000000001"] {
+                assert_eq!(pico(bad), None, "{bad:?}");
+            }
+        }
     }
     #[test]
     fn opaque_process_references_become_local_names() {

@@ -15,7 +15,8 @@ import { adminChecksCard } from "../adminchecks.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
 import { bytes, date, duration, labelled, usd } from "../format.js";
-import { modelName } from "../models.js";
+import { modelName, startModelId } from "../models.js";
+import { costFigure, costText, modelChange, modelsLabel, recordedSwitch, routingNote, shareName, turnModels, usedModelIds } from "../usage.js";
 import { navigate } from "../router.js";
 import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "../web.js";
 
@@ -57,16 +58,31 @@ function requestView(question, selection) {
   );
 }
 
+/**
+ * The model a running turn uses: the one it started with, then "Super → Ultra" once Ultra takes
+ * the question over (model_changed). A turn reattached after a reload has lost its earlier steps:
+ * with Auto, Ultra may already have taken over, so it says Auto.
+ */
+function liveModels(inv) {
+  if (inv?.change) return modelsLabel([inv.change.from_model_id, inv.change.to_model_id]);
+  if (inv?.model) return modelName(inv.model);
+  if (state.routing?.settings?.mode === "automatic") return t("picker.auto");
+  const id = startModelId(state.info, state.routing);
+  return id ? modelName(id) : t("mode.cloud");
+}
+
+/** Under an answer: the models that worked on it, the duration, then the total or a lower bound. */
 function meta(report, inv) {
   const parts = [];
   if (["local_rules", "local_evidence"].includes(report?.mode)) parts.push(t("chat.local"));
+  else if (!report && inv) parts.push(inv.cloud ? liveModels(inv) : t("chat.local"));
   else {
-    const model = report?.usage?.cost?.price?.model_id || state.info?.cloud?.model_id;
-    parts.push(model ? modelName(model) : t("mode.cloud"));
+    const ids = usedModelIds(report?.usage, inv?.model || state.info?.cloud?.model_id);
+    parts.push(ids.length ? modelsLabel(ids) : t("mode.cloud"));
   }
   if (inv?.finishedAt && inv.startedAt) parts.push(duration(inv.finishedAt - inv.startedAt));
-  if (report?.usage?.cost) parts.push(usd(report.usage.cost.usd));
-  else if (report?.usage?.cost_lower_bound) parts.push(`≥ ${usd(report.usage.cost_lower_bound.usd)}`);
+  const cost = costText(report?.usage);
+  if (cost) parts.push(cost);
   return parts.join(" · ");
 }
 
@@ -81,6 +97,8 @@ function head(text) {
  */
 function stepLabel(step, steps = [], index = -1) {
   if (step.type === "snapshot") return t("step.snapshot");
+  // A saved turn's switch says when it happened: its tool steps carry no request numbers.
+  if (step.type === "switch" && step.after != null) return t(step.after === 1 ? "step.switch.after.one" : "step.switch.after", { model: modelName(step.to), count: step.after });
   if (step.type === "switch") return t("step.switch", { model: modelName(step.to) });
   if (step.type === "model") {
     if (step.state === "failed") {
@@ -142,10 +160,11 @@ function statusText(status) {
 
 /**
  * The tool steps a saved turn recorded (`tool_events`), for an answer whose live run is no longer
- * on screen: what was checked, how it went, and the exact query of each web lookup.
+ * on screen: what was checked, how it went, the exact query of each web lookup, and the model
+ * change rebuilt from the report.
  */
 function recordedSteps(report) {
-  return (report?.tool_events || []).map((event, i) => ({
+  const steps = (report?.tool_events || []).map((event, i) => ({
     key: `recorded-${i}`,
     type: "tool",
     tool: event.tool,
@@ -154,6 +173,8 @@ function recordedSteps(report) {
     duration: event.duration_ms,
     query: event.query ?? null,
   }));
+  const change = recordedSwitch(report);
+  return change ? [...steps, change] : steps;
 }
 
 function stepList(steps) {
@@ -190,8 +211,29 @@ function answerText(question, report) {
     lines.push("", "---", "", `**${t("copy.sources")}**`, "");
     a.citations.forEach((c) => lines.push(...sourceLines(numbers.get(c.reference), c)));
   }
-  if (report.usage?.cost) lines.push("", `_${labelled(t("usage.cost"), usd(report.usage.cost.usd))}_`);
+  lines.push(...usageLines(report));
   return lines.join("\n");
+}
+
+/**
+ * Under a copied answer: the models (and the change), then the cost, each model's own when
+ * several worked on it. Saved turns without a model or cost add nothing.
+ */
+function usageLines(report) {
+  const usage = report.usage;
+  if (!usage) return [];
+  const ids = usedModelIds(usage);
+  const figure = costFigure(usage);
+  const shares = turnModels(usage);
+  const lines = [];
+  const models = [ids.length ? modelsLabel(ids) : null, modelChange(report)?.text].filter(Boolean).map(mdText).join(" · ");
+  if (models) lines.push(models);
+  if (figure || shares.length > 1) {
+    const amount = labelled(t(figure?.atLeast ? "usage.costAtLeast" : "usage.cost"), figure ? usd(figure.usd) : t("usage.noCost"));
+    const each = shares.map((share) => labelled(mdText(shareName(share)), share.cost ? usd(share.cost.usd) : t("usage.model.noCost")));
+    lines.push(shares.length > 1 ? `${amount} (${each.join(", ")})` : amount);
+  }
+  return lines.flatMap((line) => ["", `_${line}_`]);
 }
 
 function findingText(question, report) {
@@ -471,7 +513,7 @@ function turnView(turn, index, { last, inv, cloud, cards = [] }) {
     "section",
     { class: "turn" },
     requestView(turn.question, turn.selection ?? inv?.selection),
-    h("div", { class: "assistant" }, head(meta(report, inv)), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), deeperChecks(turn, last, cards), followUps, footer),
+    h("div", { class: "assistant" }, head(meta(report, inv)), routingNote(report), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), deeperChecks(turn, last, cards), followUps, footer),
   );
 }
 
@@ -712,7 +754,7 @@ export function mount(page) {
           "section",
           { class: ["turn", enter ? "enter" : ""] },
           requestView(inv.question, inv.selection),
-          h("div", { class: "assistant" }, head(running ? `${inv.cloud ? meta(null, null) : t("chat.local")} · ${t("chat.running")}` : meta(null, inv)), ...content),
+          h("div", { class: "assistant" }, head(running ? `${inv.cloud ? liveModels(inv) : t("chat.local")} · ${t("chat.running")}` : meta(null, inv)), ...content),
         ),
       );
       renderDraft();
