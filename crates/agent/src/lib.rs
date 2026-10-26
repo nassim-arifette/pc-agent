@@ -2,16 +2,13 @@
 //! the controller checks every citation, number and name of that answer against what the tools
 //! returned. The model never supplies permissions, commands or executed actions.
 #![forbid(unsafe_code)]
-mod action_targets;
-pub mod activity_tools;
 mod answer;
 pub mod capabilities;
-pub mod elevated_tools;
-pub mod external_tools;
 pub use answer::{
     Answer, Category, Citation, CitationKind, Confidence, Issue, IssueKind, SUBMIT_ANSWER,
 };
 mod budget;
+pub mod catalog;
 mod conversation;
 mod privacy;
 pub use privacy::PrivacyContext;
@@ -23,39 +20,32 @@ pub use conversation::{
     conversation_message, conversation_message_with_privacy, PastTurn, MAX_PAST_CHARS,
 };
 pub mod credentials;
-pub mod history_tools;
 pub mod image_input;
-mod models;
-mod nebius;
+mod model_policy;
 mod payload;
-mod proposals;
+pub mod projections;
 mod report;
 pub mod routing;
 pub mod selection;
 mod storage_context;
-pub mod system_tools;
-pub mod tavily;
 pub use storage_context::{
     ContentContext, LocalStorageItem, SharedName, StorageContext, MAX_SHARED_NAMES,
 };
 mod tool_context;
 mod tools;
 mod verify;
-mod workstation;
 use budget::{Budget, Checkpoint};
 pub use budget::{BudgetLimit, ExtensionRequest, MAX_EXTENSIONS};
+pub use catalog::history::METRICS as HISTORY_TOOL_METRICS;
+pub use catalog::proposals::PREPARE_ACTION_PLAN;
+pub use catalog::{HISTORY_METRICS, WORKSTATION_TOOLS};
 pub use cost::{estimate as estimate_cost, Cost, Pricing};
-pub use history_tools::METRICS as HISTORY_TOOL_METRICS;
-pub use models::{validate_model_id, ModelCatalog, ModelInfo};
-pub use nebius::{Config, Nebius, Reasoning};
+pub use model_policy::validate_model_id;
 pub use payload::{measurements, FindingAliases, Measurements, ModelFinding, NotMeasured};
 use pcagent_diagnostics::{analyze, Classification, Finding, Support};
 pub use pcagent_inspect::QUERY_NAMES as SYSTEM_QUERY_NAMES;
 use pcagent_shared::{
     Evidence, Origin, ProcessCoverage, ProcessInstance, Snapshot, Status, SCHEMA_VERSION,
-};
-pub use proposals::{
-    ActionDesk, FixedTargets, PendingPlan, PolicyProtection, MAX_PENDING_PLANS, PREPARE_ACTION_PLAN,
 };
 pub use report::{
     CoverageStatus, Domain, DomainCoverage, ExecutionStatus, Observation, SensorCoverage,
@@ -69,13 +59,12 @@ use std::{
 use thiserror::Error;
 pub use tools::{
     validate_call, ArgValue, Args, Param, ParamKind, SnapshotTools, ToolClass, ToolOutput,
-    ToolSpec, Toolbox,
+    ToolSpec, Toolbox, MAX_PROCESSES,
 };
 pub use verify::{
     reported_removed_bytes, verify as verify_action, ActionVerification, VolumeChange,
     VERIFIED_METRICS, VERIFY_SAMPLES,
 };
-pub use workstation::{Workstation, HISTORY_METRICS, WORKSTATION_TOOLS};
 
 pub const MAX_ROUNDS: usize = 10;
 pub const MAX_TOOLS: usize = 20;
@@ -192,6 +181,11 @@ pub trait Model {
     ) -> Result<Reply, AgentError> {
         let _ = on_call;
         self.complete(messages, tools, choice, timeout)
+    }
+    /// A flag the person sets to stop: a streaming transport stops reading its reply as soon
+    /// as it sees the flag and answers `Cancelled`. Transports that cannot check it ignore it.
+    fn interrupt(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let _ = flag;
     }
     /// Catalog prices of the model in use, when the provider published verifiable ones.
     fn pricing(&self) -> Option<Pricing> {
@@ -640,7 +634,7 @@ impl Investigation {
         for observation in self
             .observations
             .iter()
-            .filter(|o| external_tools::is_external(&o.tool))
+            .filter(|o| catalog::external::is_external(&o.tool))
         {
             for source in observation.observation["sources"]
                 .as_array()
@@ -903,7 +897,7 @@ fn system_prompt(
     let web = specs.iter().any(|s| matches!(s.class, ToolClass::External));
     let elevated = specs
         .iter()
-        .find(|s| s.name == elevated_tools::GET_APPROVED_INSPECTION.name)
+        .find(|s| s.name == catalog::elevated::GET_APPROVED_INSPECTION.name)
         .map(|spec| {
             let battery = spec.params.iter().any(
                 |p| matches!(p.kind, ParamKind::OneOf(tasks) if tasks.contains(&"battery_energy")),

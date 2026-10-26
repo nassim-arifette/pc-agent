@@ -321,7 +321,10 @@ mod tests {
 
     #[test]
     fn every_code_and_reason_has_an_english_and_a_french_sentence() {
-        let dictionaries = include_str!("../ui/js/i18n.js");
+        let dictionaries = concat!(
+            include_str!("../ui/js/i18n/en.js"),
+            include_str!("../ui/js/i18n/fr.js"),
+        );
         let count = |key: &str| dictionaries.matches(&format!("\n  \"{key}\": \"")).count();
         let mut keys: Vec<String> = Code::ALL
             .iter()

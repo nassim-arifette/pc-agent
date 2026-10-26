@@ -72,8 +72,9 @@ pub struct ObservedModel<M, F> {
     on_step: F,
     requests: usize,
 }
-impl<M, F> ObservedModel<M, F> {
-    pub fn new(inner: M, stop: Arc<AtomicBool>, on_step: F) -> Self {
+impl<M: Model, F> ObservedModel<M, F> {
+    pub fn new(mut inner: M, stop: Arc<AtomicBool>, on_step: F) -> Self {
+        inner.interrupt(stop.clone());
         Self {
             inner,
             stop,
@@ -152,6 +153,9 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
             outcome,
         });
         result
+    }
+    fn interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.inner.interrupt(flag);
     }
     fn pricing(&self) -> Option<Pricing> {
         self.inner.pricing()

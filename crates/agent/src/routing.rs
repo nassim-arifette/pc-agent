@@ -5,6 +5,7 @@ use crate::{cost, validate_model_id, AgentError, Model, Pricing, Reply, ToolChoi
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::sync::{atomic::AtomicBool, Arc};
 use std::{collections::BTreeSet, time::Duration};
 
 pub const MAX_CALIBRATION_BYTES: usize = 64 * 1024;
@@ -30,7 +31,7 @@ impl CalibrationRuntime {
     }
     fn compute() -> Self {
         // The fixed canonical catalog: a turn's capability filtering never reaches it.
-        let mut specs = crate::Workstation::tool_specs();
+        let mut specs = crate::catalog::inspection_tools();
         specs.extend([
             crate::PREPARE_ACTION_PLAN,
             crate::selection::GET_SELECTED_EVIDENCE,
@@ -44,21 +45,44 @@ impl CalibrationRuntime {
             include_str!("routing.rs"),
             include_str!("answer.rs"),
             include_str!("answer/grounding.rs"),
+            include_str!("answer/quantities.rs"),
+            include_str!("answer/review.rs"),
+            include_str!("answer/submission.rs"),
+            include_str!("answer/text.rs"),
             include_str!("budget.rs"),
             include_str!("conversation.rs"),
             include_str!("tool_context.rs"),
-            include_str!("nebius.rs"),
+            include_str!("../../nebius/src/lib.rs"),
+            include_str!("../../nebius/src/config.rs"),
             include_str!("privacy.rs"),
             include_str!("tools.rs"),
+            include_str!("catalog.rs"),
+            include_str!("catalog/activity.rs"),
+            include_str!("catalog/history.rs"),
+            include_str!("catalog/elevated.rs"),
+            include_str!("catalog/external.rs"),
+            include_str!("catalog/proposals.rs"),
+            include_str!("catalog/system.rs"),
             include_str!("report.rs"),
             include_str!("replay.rs"),
             include_str!("cost.rs"),
-            include_str!("workstation.rs"),
-            include_str!("system_tools.rs"),
-            include_str!("activity_tools.rs"),
-            include_str!("history_tools.rs"),
-            include_str!("elevated_tools.rs"),
+            include_str!("../../tools/src/workstation.rs"),
+            include_str!("projections/system.rs"),
+            include_str!("../../tools/src/system_tools.rs"),
+            include_str!("../../tools/src/activity_tools.rs"),
+            include_str!("projections/activity.rs"),
+            include_str!("projections/history.rs"),
+            include_str!("../../tools/src/history_tools.rs"),
+            include_str!("../../tools/src/elevated_tools.rs"),
+            include_str!("../../tools/src/proposals.rs"),
+            include_str!("../../tools/src/action_targets.rs"),
+            include_str!("../../tools/src/external_tools.rs"),
+            include_str!("../../tools/src/tavily.rs"),
             include_str!("selection.rs"),
+            include_str!("selection/projection.rs"),
+            include_str!("selection/reference.rs"),
+            include_str!("selection/source.rs"),
+            include_str!("selection/toolbox.rs"),
         ] {
             let normalized = source.replace("\r\n", "\n");
             analyst.update((normalized.len() as u64).to_le_bytes());
@@ -408,6 +432,12 @@ impl<M: Model> Model for RoutedModel<M> {
             Err(error) => Some(error.clone()),
         };
         reply
+    }
+    fn interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.primary.interrupt(flag.clone());
+        if let Some(ultra) = self.ultra.as_mut() {
+            ultra.interrupt(flag);
+        }
     }
     fn pricing(&self) -> Option<Pricing> {
         self.active().pricing()

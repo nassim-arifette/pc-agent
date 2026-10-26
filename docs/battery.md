@@ -183,7 +183,7 @@ a separate `battery` thread, which calls `live_battery()` and records the result
 dashboards copy it. A read is requested about every 10 s (the request time is stamped, so the
 cadence does not drift with the read's duration), about every five minutes after a complete read
 that shows no system battery (a desktop, or only a UPS), and again after 5 s when the read was
-busy. The view model (`apps/gui/src/view.rs`, `battery_read` and `LiveBattery`) then applies
+busy. The view model (`apps/gui/src/view/battery.rs`, `battery_read` and `LiveBattery`) then applies
 these rules:
 
 - Only system batteries are shown, or batteries whose kind Windows did not report. UPS

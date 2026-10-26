@@ -61,7 +61,7 @@ Principes de la spec v0.1 qui restent valables :
 | --- | --- |
 | Le modèle ne renvoie que des identifiants (`{"finding_ids":…,"observation_ids":…}`) et n'a pas le droit d'écrire ; le texte affiché vient de modèles de phrases locaux. | [`SYSTEM`](../crates/agent/src/lib.rs) |
 | Les réponses possibles se limitent à 12 catégories locales. | [`Classification`](../crates/diagnostics/src/lib.rs) |
-| Noms d'exécutables et chemins ne partent jamais : le modèle voit `proc-00000001`, `file-3`. | [`workstation.rs`](../crates/agent/src/workstation.rs) |
+| Noms d'exécutables et chemins ne partent jamais : le modèle voit `proc-00000001`, `file-3`. | [`workstation.rs`](../crates/tools/src/workstation.rs) |
 | Sans admin, 155 processus sur 332 refusent `OpenProcess` : mesures « partielles » presque toujours, et Defender, Memory Compression ou dwm invisibles. | [`windows/mod.rs`](../crates/telemetry/src/windows/mod.rs) |
 | Une mesure d'une seconde au moment de la question ; l'historique de métriques n'existe qu'en mémoire. | [`history.rs`](../crates/telemetry/src/history.rs) |
 | Une question donne un rapport : ni suivi ni historique. L'interface s'ouvre sur un tableau de bord, en mode local par défaut. | [`investigate`](../crates/agent/src/lib.rs), [`prefs.js`](../apps/gui/ui/js/prefs.js) |
@@ -90,6 +90,14 @@ correction ne sont pas exécutés. Les doublons, les lots mixtes et les réponse
 refusés, avec les mêmes plafonds de réparations, de temps et de coût. L'exception ne donne aucun droit
 administrateur et ne change pas les vérifications locales. Elle ne force pas la première conclusion
 après une inspection : le modèle peut toujours chercher d'autres mesures avant de tenter sa réponse.
+
+**Fermeture du flux (26 octobre 2026, décision du porteur) :** quelle que soit la requête, dès que
+la réponse en flux contient un seul appel `submit_answer` dont les arguments forment un objet JSON
+complet, l'app cesse de lire : Nemotron continue sinon d'écrire des balises et une seconde copie de
+la réponse pendant une à trois minutes, jusqu'au plafond de sortie. Le décompte de jetons de cette
+requête, envoyé en fin de flux, reste alors inconnu : son coût s'affiche en borne basse. Un lot qui
+commence par d'autres appels est lu jusqu'au bout et traité comme avant. Le bouton Arrêter interrompt
+la lecture du flux en cours au lieu d'attendre la fin de l'étape.
 
 Le schéma de `submit_answer` reste fermé :
 
@@ -749,9 +757,9 @@ illisible sans admin) :
 - Les interfaces COM (Planificateur de tâches, WMI) passent par le crate `windows`, déjà présent
   dans `Cargo.lock` via Tauri, épinglé à sa version exacte. `windows-sys` ne fournit pas les
   interfaces COM.
-- Les nouveaux outils s'enregistrent dans `crates/agent/src/system_tools.rs`, branché par une ligne
-  dans `workstation.rs`, pour éviter les conflits avec le chantier 1. Leur collecte vit dans un
-  nouveau crate `crates/inspect`.
+- Les nouveaux outils se déclarent dans `crates/agent/src/catalog/system.rs` ; leur exécution
+  passe par `crates/tools/src/system_tools.rs`, appelé depuis `workstation.rs`. Leur collecte
+  native vit dans `crates/inspect`.
 - **Fait quand :** chaque outil a :
   - son schéma fermé, son statut de couverture et ses tests d'analyse sur données synthétiques ;
   - une trace réelle sur le PC de dev ;
@@ -1144,7 +1152,7 @@ sortie). Les quatre annoncent les outils et le raisonnement.
   la sortie passe à 8 192 tokens, et une réponse coupée est redemandée une fois. À faire : ne pas
   renvoyer au modèle un résultat identique à un appel récent, puis laisser l'évaluation trancher le
   modèle par défaut.
-- La garde qui refuse les modèles non NVIDIA ([`nebius.rs`](../crates/agent/src/nebius.rs)) reste en
+- La garde qui refuse les modèles non NVIDIA ([politique du cœur](../crates/agent/src/model_policy.rs)) reste en
   place pour la soumission. Ensuite : fournisseur compatible OpenAI configurable (Kimi, DeepSeek,
   Qwen…) et API Anthropic ou OpenAI.
 
@@ -1221,7 +1229,7 @@ garde sa marque et sa propre clé API.
   localement à partir des références émises par le lot 3 du chantier 4 :
   - nouvelle classe `ToolClass::External`, pour appliquer à part le consentement, le budget et
     l'affichage de la requête ;
-  - nouveau fichier `crates/agent/src/external_tools.rs`, branché comme `system_tools.rs`.
+  - fichier `crates/tools/src/external_tools.rs`, branché comme `system_tools.rs`.
 
 | Outil | Contenu | Domaines |
 | --- | --- | --- |
@@ -1230,7 +1238,7 @@ garde sa marque et sa propre clé API.
 | `lookup_upgrade_price(component)` | `memory` d'abord : fourchette de prix datée pour une barrette compatible (type, format, vitesse, capacité), dans le pays de la région Windows | sites de vente et comparateurs du pays, liste à fixer |
 | `lookup_pc_specs()` | en dernier : fiche constructeur du modèle (RAM maximale, soudée ou non, emplacements M.2) | site du fabricant du PC |
 
-- Client `crates/agent/src/tavily.rs`, sur le modèle de `nebius.rs` (https seulement, délais,
+- Client `crates/tools/src/tavily.rs`, sur le modèle du client Nebius (https seulement, délais,
   aucune donnée personnelle dans les en-têtes) :
   - `search_depth: basic`, `include_domains` en mode `restrict`, 5 résultats au plus ;
   - dates de publication demandées, `include_usage` pour le coût ;
@@ -1323,7 +1331,7 @@ Les pistes touchent des fichiers différents pour limiter les conflits.
 | Piste | Chantiers | Fichiers principaux |
 | --- | --- | --- |
 | A — moteur | 1, 3 (envois), 10, 11 (moteur), 15 | `crates/agent`, `crates/store`, `apps/cli` |
-| B — collecte et outils | 2, 4, 5 (collecte), 8, 9 | `crates/telemetry`, `crates/inspect`, `crates/agent/src/system_tools.rs`, `apps/elevated` |
+| B — collecte et outils | 2, 4, 5 (collecte), 8, 9 | `crates/telemetry`, `crates/inspect`, `crates/tools`, `apps/elevated` |
 | C — interface | 6, 3 (écrans), 5 (bouton), 11 (cartes), 15 (sources et réglages) | `apps/gui` |
 | D — évaluation et soumission | 7, 12 | `apps/eval`, `eval/`, `scripts/`, `docs/eval.md`, README |
 
@@ -1521,6 +1529,15 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
+| Réorganisation C — cœur / outils / Nebius | A, B | client Nebius, catalogue déclaratif, projections pures et implémentations `pcagent-tools` séparés ; apps raccordées ; validation locale : 828 tests Rust réussis, 3 ignorés, sur 22 exécutables sous compte standard (intégrité moyenne, hors groupe administrateurs), fmt, Clippy, doctests et quatre builds release ; 46 constantes de catalogue comparées à leur définition avant refactor sans changement de valeur ; aucun parcours GUI natif ni test Linux rejoué ; découpage des gros fichiers détaillé ci-dessous ; derniers refactors non committés, non fusionnés | refactor/agent-boundaries |
+| Réorganisation C — gros fichiers du cœur | A | réponse et sélections figées séparées en modules par responsabilité, API conservées et sources ajoutées à l'identité de calibration ; 41 tests déplacés et 68 corps de fonctions comparés sans changement de comportement (l'adaptateur de sélection utilise ses accesseurs existants) ; 828 tests Rust réussis sous compte standard, 3 ignorés, Clippy et quatre builds release validés ; 51 tests d'orchestration ensuite regroupés par comportement sans modifier leurs corps, 184 tests du cœur et Clippy repassés ; aucun changement visuel, non fusionné | refactor/agent-boundaries |
+| Réorganisation C — données de l'interface | C | dix modules par responsabilité derrière une façade de 39 lignes, 29 tests regroupés par fonctionnalité ; 113 éléments de production comparés sans changement fonctionnel, contrôles des sources ancrés sur le manifeste plutôt que sur le fichier déplacé ; 828 tests Rust réussis sous compte standard, 3 ignorés, fmt/Clippy/doctests et quatre builds release validés ; pas de parcours GUI natif rejoué, aucun changement d'apparence, non fusionné | refactor/agent-boundaries |
+| Réorganisation C — commandes et workers de l'interface | C | façade de composition de 246 lignes, état partagé, commandes par fonctionnalité, collecte et worker d'investigation séparés ; 94 éléments comparés sans changement des corps, attributs, chaînes et champs sérialisés, 52 commandes Tauri conservées dans le même ordre ; 828 tests Rust réussis et 3 ignorés sous compte standard sur 22 exécutables, 62 tests JavaScript réussis, fmt/Clippy/doctests et quatre builds release validés ; pas de parcours GUI natif ni test Linux rejoué, aucun changement d'apparence ; non committé, non fusionné, Claude non relancé | refactor/agent-boundaries |
+| Réorganisation C — CLI | A | arguments Clap, dispatch et commandes séparés par domaine, point d'entrée de 37 lignes ; 15 aides et codes de sortie comparés à l'identique, 14 schémas d'arguments et corps de commandes/helpers audités ; 828 tests Rust réussis et 3 ignorés sur 22 exécutables sous compte standard (intégrité moyenne, hors administrateurs), fmt/Clippy/doctests et quatre builds release validés ; tests CLI des sorties JSON, consentements et nettoyage conservés ; non committé, non fusionné | refactor/agent-boundaries |
+| Réorganisation C — traductions | C | dictionnaires anglais/français séparés du runtime locale ; corps des dictionnaires et logique de langue comparés à l'identique, tests important désormais les dictionnaires plutôt que parsant leur fichier ; 68 tests JavaScript réussis (dont six nouveaux sur les clés, paramètres, langue et replis), 44 modules liés, fmt/Clippy et build GUI release validés ; aucun changement d'apparence, non committé, non fusionné | refactor/agent-boundaries |
+| Réorganisation C — données simulées | C | fixtures et handlers IPC séparés en 16 modules par fonctionnalité, 52 commandes conservées et états privés aux domaines ; 100 tests JavaScript réussis, dont 31 scénarios de contrats ; comparaison avant/après à horloge et mesures déterministes : 3 157 appels et 28 194 événements identiques ; mock toujours exclu des ressources embarquées, aucun changement visuel ; non committé, non fusionné | refactor/agent-boundaries |
+| Réorganisation C — validation multiplateforme | toutes | snapshot des 434 fichiers source transmis aux sessions Linux et macOS : Linux (Ubuntu 22.04) `main` déjà vert, 3 défauts du refactor corrigés (imports de tests CLI conditionnés, test des codes d'erreur lisant `i18n/en.js`+`fr.js`, ré-exports de `view.rs` tolérés hors Windows) et scanner Unix rendu honnête dans [#95](https://github.com/nassim-arifette/pc-agent/pull/95) ; macOS (Apple Silicon) : compilation du scanner Unix corrigée (`st_dev`/`st_nlink`) dans [#96](https://github.com/nassim-arifette/pc-agent/pull/96), 741 tests ; les deux PR ouvertes, non fusionnées, CI suspendue ; collecteurs, fenêtre et helper restent Windows. Windows : après ces correctifs, 828 tests réussis et 3 ignorés sur 22 exécutables sous compte standard ; parcours GUI natif réel sous compte standard (intégrité 8192, non élevé) avec Nebius et une image synthétique : préparation, aperçu exact, gardes local/anonymisé, Super VL imposé, navigation FR/EN validés ; **constat** : Super VL a transcrit l'image en ~21 s puis la requête `required` a continué au-delà de 180 s (comportement #85, la fermeture anticipée ne couvre que la correction nommée), Arrêt coopératif après l'étape ; sources, coût et réouverture de l'image non vérifiés | refactor/agent-boundaries |
+| 13 — Fin de flux et Arrêt immédiat (26 octobre) | A, C | codé : le flux se ferme dès qu'un `submit_answer` complet est le seul appel de la réponse, quelle que soit la requête (C1 mis à jour) ; Arrêter pose un drapeau lu à chaque événement du flux, la lecture s'interrompt en `Cancelled` au lieu d'attendre la fin de l'étape ; textes « Arrêt en cours… » ; 22 tests du client Nebius dont deux nouveaux, 184 tests du cœur, 91 de l'app, 100 tests JavaScript, Clippy ; plafonds revus (10 tours, 20 outils, 600 s, 8 192 jetons, 3 réparations, 3 prolongations à la demande) : inchangés, la gêne venait de la queue de flux ; validé en GUI native sous compte standard avec Nebius (26 octobre) : question image Super VL finalisée 12,5 s après l'envoi (2,5 s après le dernier texte), image rouvrable depuis l'historique ; question texte Super finalisée en 71 s avec une correction visible, réponse complète citée, coût en borne basse ; Arrêter rend la main en ~0,2 s, réponse partielle signalée non vérifiée | refactor/agent-boundaries |
 | 6 — Inspiration Orb (26 octobre) | C | fusionné : [note et deux captures](orb-ui-reference.md), dossiers, connecteurs à définir, barre de choix sous la saisie ; exploration future uniquement, aucun changement de l'interface actuelle | [#92](https://github.com/nassim-arifette/pc-agent/pull/92) |
 | 6, 10 — Image jointe (#55) | A, C | fusionné (26 oct., `0fa4db2`) : préparation PNG/JPEG bornée, orientation et retrait des métadonnées, aperçu exact, collage/sélection/retrait, Complet et Super VL sans escalade, stockage atomique et suppression ; validation locale du merge sous compte standard : 827 tests Rust (0 échec, 3 ignorés), 62 tests Node, 3 Python, fmt/Clippy/release ; parcours Windows natif avec Nebius validé par le porteur (lecture correcte de l'image) ; le tour qui reste en rédaction après la réponse complète relève de #85 | [#94](https://github.com/nassim-arifette/pc-agent/pull/94) ; contrat [#93](https://github.com/nassim-arifette/pc-agent/pull/93) fusionné (`87423f2`) |
 | Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |

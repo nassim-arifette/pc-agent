@@ -1,8 +1,8 @@
 //! Explicit CLI routing with a bounded local calibration. Credential storage is unchanged.
-use pcagent_agent::{
-    routing::{Calibration, RoutedModel, RoutingMode, RoutingSettings, MAX_CALIBRATION_BYTES},
-    Config, Nebius,
+use pcagent_agent::routing::{
+    Calibration, RoutedModel, RoutingMode, RoutingSettings, MAX_CALIBRATION_BYTES,
 };
+use pcagent_nebius::{Config, Nebius};
 use serde_json::{json, Value};
 use std::{fs::File, io::Read, path::Path};
 

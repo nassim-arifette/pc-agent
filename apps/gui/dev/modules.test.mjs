@@ -15,6 +15,12 @@ test("every UI module parses and all static imports resolve to real exports", ()
   assert.match(result.stdout, /Linked \d+ modules/);
 });
 
+test("every mock feature module links without loading a browser", () => {
+  const result = check(fileURLToPath(new URL("./mock/", import.meta.url)));
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+  assert.match(result.stdout, /Linked \d+ modules/);
+});
+
 function fixture(files, verify) {
   const root = mkdtempSync(join(tmpdir(), "pcagent-module-check-"));
   try {

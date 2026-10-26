@@ -10,7 +10,7 @@
 //! makes the app offer the check to the person.
 //!
 //! The global registry identity (`routing::CalibrationRuntime`) and replays keep the fixed full
-//! catalog of `Workstation::tool_specs`; only the per-turn toolbox is narrowed.
+//! catalog of `crate::catalog::inspection_tools`; only the per-turn toolbox is narrowed.
 use crate::tools::ToolSpec;
 use pcagent_shared::Snapshot;
 use std::collections::BTreeSet;
@@ -218,31 +218,31 @@ pub struct Variant {
 pub const VARIANTS: &[Variant] = &[
     Variant {
         missing: &[NvidiaGpu],
-        spec: crate::workstation::SNAPSHOT_WITHOUT_NVIDIA,
+        spec: crate::catalog::SNAPSHOT_WITHOUT_NVIDIA,
     },
     Variant {
         missing: &[Battery],
-        spec: crate::system_tools::POWER_WITHOUT_BATTERY,
+        spec: crate::catalog::system::POWER_WITHOUT_BATTERY,
     },
     Variant {
         missing: &[Battery, NtfsVolumes],
-        spec: crate::elevated_tools::CORE_TASKS,
+        spec: crate::catalog::elevated::CORE_TASKS,
     },
     Variant {
         missing: &[Battery],
-        spec: crate::elevated_tools::TASKS_WITHOUT_BATTERY,
+        spec: crate::catalog::elevated::TASKS_WITHOUT_BATTERY,
     },
     Variant {
         missing: &[NtfsVolumes],
-        spec: crate::elevated_tools::TASKS_WITHOUT_NTFS,
+        spec: crate::catalog::elevated::TASKS_WITHOUT_NTFS,
     },
     Variant {
         missing: &[],
-        spec: crate::elevated_tools::OFFERED_TASKS,
+        spec: crate::catalog::elevated::OFFERED_TASKS,
     },
     Variant {
         missing: &[StorageScopes],
-        spec: crate::proposals::PREPARE_WITHOUT_STORAGE,
+        spec: crate::catalog::proposals::PREPARE_WITHOUT_STORAGE,
     },
 ];
 
@@ -294,8 +294,8 @@ pub fn catalog(specs: &[ToolSpec], capabilities: &Capabilities) -> Vec<ToolSpec>
 /// Every tool any host can declare, canonical.
 #[cfg(test)]
 pub(crate) fn registry() -> Vec<ToolSpec> {
-    let mut specs = crate::Workstation::tool_specs();
-    specs.extend(crate::external_tools::TOOLS);
+    let mut specs = crate::catalog::inspection_tools();
+    specs.extend(crate::catalog::external::TOOLS);
     specs.extend([
         crate::PREPARE_ACTION_PLAN,
         crate::selection::GET_SELECTED_EVIDENCE,
@@ -327,8 +327,8 @@ pub(crate) fn every_combination() -> impl Iterator<Item = Capabilities> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{ParamKind, Toolbox};
-    use crate::{external_tools, Workstation, PREPARE_ACTION_PLAN, SUBMIT_ANSWER};
+    use crate::tools::ParamKind;
+    use crate::{catalog::external, PREPARE_ACTION_PLAN, SUBMIT_ANSWER};
     fn names(specs: &[ToolSpec]) -> Vec<&'static str> {
         specs.iter().map(|s| s.name).collect()
     }
@@ -415,7 +415,7 @@ mod tests {
                 }
             }
         }
-        let tasks = enum_values(&crate::elevated_tools::GET_APPROVED_INSPECTION, "task");
+        let tasks = enum_values(&crate::catalog::elevated::GET_APPROVED_INSPECTION, "task");
         assert!(ELEVATED_TASKS.iter().all(|(task, _)| tasks.contains(task)));
     }
 
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn web_lookups_and_proposals_keep_their_canonical_definitions() {
         let offered = catalog(&registry(), &Capabilities::all());
-        for canonical in external_tools::TOOLS.iter().chain([&PREPARE_ACTION_PLAN]) {
+        for canonical in external::TOOLS.iter().chain([&PREPARE_ACTION_PLAN]) {
             let spec = offered.iter().find(|s| s.name == canonical.name).unwrap();
             assert_eq!(spec.definition(), canonical.definition());
         }
@@ -604,7 +604,7 @@ mod tests {
                 assert!(!names_tool(spec.description, never));
             }
             // Each listed task keeps its canonical explanation.
-            let canonical = crate::elevated_tools::GET_APPROVED_INSPECTION.description;
+            let canonical = crate::catalog::elevated::GET_APPROVED_INSPECTION.description;
             for clause in spec
                 .description
                 .split_once("Tasks: ")
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn the_global_registry_identity_ignores_per_turn_filtering() {
         use crate::routing::{registry_sha256, CalibrationRuntime};
-        let mut canonical = Workstation::tool_specs();
+        let mut canonical = crate::catalog::inspection_tools();
         canonical.extend([PREPARE_ACTION_PLAN, crate::selection::GET_SELECTED_EVIDENCE]);
         let global = CalibrationRuntime::current().registered_tool_registry_sha256;
         assert_eq!(
@@ -654,10 +654,6 @@ mod tests {
             registry_sha256(&canonical, crate::answer::definition())
         );
         // Turns restricted in any way keep that identity: hosts narrow their own toolbox only.
-        let (policy, prefs) = (
-            pcagent_policy::Policy::default(),
-            pcagent_policy::Preferences::default(),
-        );
         for probes in [
             Probes::default(),
             Probes {
@@ -667,11 +663,10 @@ mod tests {
                 ntfs_volumes: Some(false),
             },
         ] {
-            let mut collector = pcagent_telemetry::Collector::new();
-            let storage = std::sync::Arc::new(pcagent_storage::StorageService::new());
-            let mut tools = Workstation::new(&mut collector, storage, &policy, &prefs);
-            tools.offer_available(probes);
-            let declared = tools.specs().to_vec();
+            let declared = catalog(
+                &canonical,
+                &Capabilities::of_turn(true, Flows::default(), probes),
+            );
             assert_ne!(declared.len(), canonical.len());
             assert_ne!(
                 registry_sha256(&declared, crate::answer::definition_for(false)),

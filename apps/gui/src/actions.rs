@@ -7,10 +7,11 @@ use crate::view;
 use pcagent_actions::{
     approve_locally, recover, ActionKind, Journal, LocalSession, ResolvedTarget,
 };
-use pcagent_agent::{verify_action, ActionDesk, PendingPlan, PolicyProtection, VERIFY_SAMPLES};
+use pcagent_agent::{verify_action, VERIFY_SAMPLES};
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::Snapshot;
 use pcagent_telemetry::Collector;
+use pcagent_tools::{ActionDesk, PendingPlan, PolicyProtection};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

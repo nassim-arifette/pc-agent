@@ -4,6 +4,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { en } from "../ui/js/i18n/en.js";
+import { fr } from "../ui/js/i18n/fr.js";
 
 // i18n.js reads the browser language only when asked; the mock reads its URL switches on load.
 Object.defineProperty(globalThis, "navigator", { value: { language: "fr-FR" }, configurable: true });
@@ -14,11 +16,10 @@ const { call, commandError, connect } = await import("../ui/js/api.js");
 const { language, setLanguage, t } = await import("../ui/js/i18n.js");
 const { failureDetail, failureText, pageFailure, refusalText, startFailure, turnFailureText } = await import("../ui/js/failure.js");
 
-const source = await readFile(new URL("../ui/js/i18n.js", import.meta.url), "utf8");
 /** The `failure.*` entries and the two turn codes this change added, per dictionary. */
-const tables = Object.fromEntries([...source.matchAll(/const (en|fr) = \{([\s\S]*?)\n\};/g)].map((match) => {
-  const lines = match[2].split("\n").filter((line) => /^\s*"(failure\.|error\.start"|error\.preview_required")/.test(line));
-  return [match[1], JSON.parse(`{${lines.join("\n").trim().replace(/,$/, "")}}`)];
+const tables = Object.fromEntries(Object.entries({ en, fr }).map(([locale, dictionary]) => {
+  return [locale, Object.fromEntries(Object.entries(dictionary).filter(([key]) =>
+    key.startsWith("failure.") || key === "error.start" || key === "error.preview_required"))];
 }));
 
 test("a failed command keeps one shape, whatever the host sent", () => {

@@ -1,0 +1,161 @@
+// Synthetic IPC contracts only: no browser, Windows calls, network or real credentials.
+import assert from "node:assert/strict";
+
+export async function exerciseMock(bridge, clock, search) {
+  const params = new URLSearchParams(search);
+  const transcript = [];
+  const seen = new Set();
+  const call = async (command, args = {}) => {
+    seen.add(command);
+    const result = await clock.settle(bridge.invoke(command, args));
+    transcript.push({ command, args, ...result });
+    if (result.error?.name === "ReferenceError") assert.fail(result.error.message);
+    return result;
+  };
+  const ok = async (command, args) => {
+    const result = await call(command, args);
+    assert.equal(result.error, undefined, `${command}: ${JSON.stringify(result.error)}`);
+    return result.value;
+  };
+  const reject = async (command, args, code) => {
+    const result = await call(command, args);
+    assert.ok(result.error, `${command} should reject`);
+    if (code) assert.equal(result.error.code, code, command);
+  };
+  const events = [];
+  const names = ["scan:progress", "scan:done", "scan:failed", "turn:step", "turn:done", "turn:failed", "turn:delta", "turn:extension", "inv:step", "inv:done", "inv:extension"];
+  const off = await Promise.all(names.map(name => bridge.listen(name, payload => {
+    events.push({ name, payload });
+    if (name === "turn:extension") bridge.invoke("answer_extension", { accept: false });
+  })));
+  assert.equal(bridge.mock, true);
+  assert.equal(typeof bridge.onDrop(() => {}), "function");
+  await reject("nonexistent");
+  const before = await ok("app_info");
+  assert.equal(before.capabilities.nvidia_gpu, null);
+  const live = await call("dashboard");
+  if (params.get("live") === "fail") assert.equal(live.error.code, "live_unavailable");
+  else {
+    assert.equal((await ok("app_info")).capabilities.nvidia_gpu, params.get("gpu") !== "none" && params.get("pc") !== "desktop");
+    assert.equal(live.value.cpu.busy.status, "partial");
+    assert.equal((await ok("dashboard")).cpu.busy.status, "ok");
+  }
+  await ok("process_activity");
+  const sources = await ok("selection_sources");
+  assert.ok(sources.length);
+  const selected = sources[0].reference;
+  const preview = await ok("selection_preview", { reference: selected, intent: "explain", names: true });
+  assert.equal(preview.selected_evidence.selection.fresh_collection, false);
+  const sendSelection = { reference: selected, intent: "explain", previewId: preview.preview_id };
+  if (params.get("preview") === "expired") await reject("selection_send", sendSelection, "preview_expired");
+  else await ok("selection_send", sendSelection);
+  await clock.drain();
+  await reject("selection_send", { reference: selected, intent: "explain", previewId: preview.preview_id }, "preview_required");
+
+  await ok("history_status");
+  const rec = await call("record_activity_start", { durationSeconds: 30 });
+  if (params.get("history") === "unavailable") assert.equal(rec.error.code, "history_unavailable");
+  else {
+    await reject("record_activity_start", { durationSeconds: 30 });
+    await ok("battery_recording", { recordingId: rec.value.id });
+    await ok("record_activity_cancel", { recordingId: rec.value.id });
+  }
+  await call("metric_history", { metric: "cpu_busy_basis_points", fromUnixMs: clock.now() - 86400000, toUnixMs: clock.now() });
+  await ok("history_clear");
+  await ok("startup_get");
+  assert.equal(await ok("startup_set", { enabled: true }), true);
+  await ok("privacy_get");
+  await reject("privacy_set", { settings: { extra: true } });
+  await ok("privacy_set", { settings: { mode: "complete", confirmed: true, web_search: true } });
+
+  await ok("quick_folders");
+  const root = await ok("pick_folder");
+  const scan = await call("start_scan", { path: root });
+  if (params.get("scan") === "denied") assert.equal(scan.error.code, "folder_unreadable");
+  else {
+    await clock.drain();
+    if (params.get("scan") === "fail") {
+      assert.ok(events.some(e => e.name === "scan:failed"));
+      await reject("scan_page", { scopeId: scan.value.scope_id, kind: "files", offset: 0 }, "scan_unavailable");
+    } else {
+      const page = await ok("scan_page", { scopeId: scan.value.scope_id, kind: "files", offset: 0 });
+      const reference = { source_id: page.selection_source_id, target: { kind: "storage", scope_id: scan.value.scope_id, item_ref: page.items[0].item_ref } };
+      const shown = await ok("selection_preview", { reference, intent: "explain", names: false });
+      assert.equal(shown.selected_evidence.selection.target.alias, "file-1");
+      assert.ok(!JSON.stringify(shown.message).includes(root));
+      await ok("start_scan", { path: root });
+      await ok("cancel_scan");
+      await clock.drain();
+      await reject("selection_preview", { reference, intent: "explain", names: false }, "selection_expired");
+    }
+  }
+  await ok("reveal");
+  await ok("model_routing_get");
+  await call("model_routing_set", { settings: { mode: "automatic" } });
+  await ok("model_routing_set", { settings: { mode: "configured" } });
+  await call("test_cloud");
+  await call("cloud_models");
+  await ok("save_cloud_settings", { apiKey: "synthetic-fixture-key", modelId: "nvidia/nemotron-3-super-120b-a12b", reasoning: "low" });
+  await ok("save_search_key", { apiKey: "tvly-synthetic-fixture-key" });
+  await ok("open_nebius_console");
+
+  await ok("elevation_status");
+  await reject("elevation_prepare", { task: { kind: "other" }, budgetMs: 1 }, "unsupported");
+  const pending = await ok("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 10000 });
+  await reject("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 10000 }, "helper_busy");
+  await ok("elevation_cancel", { requestId: pending.request_id });
+  for (const task of [{ kind: "mft_inventory", volume: "C" }, ...["system_caches", "shadow_storage", "disk_reliability", "battery_energy"].map(kind => ({ kind }))]) {
+    const request = await ok("elevation_prepare", { task, budgetMs: 120000 });
+    const result = await call("elevation_run", { requestId: request.request_id });
+    if (params.get("elevation") === "fail") assert.equal(result.error.code, "uac_declined");
+    else assert.ok(result.value.observations.length);
+    assert.equal(await ok("elevation_status"), null);
+  }
+
+  await reject("image_prepare", { dataBase64: "invalid" }, "image_unsupported");
+  await ok("image_discard", { imageId: "unknown" });
+  assert.equal(await ok("conversation_image_get", { conversationId: "unknown", turnId: "unknown" }), null);
+  await ok("current_turn");
+  await call("stop_turn", { turnId: "turn-orphan" });
+  await clock.drain();
+  await reject("send_message", { text: "No preview", scopeIds: ["one", "two"] });
+  await reject("start_investigation", { request: { question: "No preview", cloud: true, names: true } }, "preview_changed");
+  for (const question of ["Why is my PC hot?", "startup", "clean space", "fail", "extend"]) {
+    const shown = await ok("cloud_preview", { question, names: true });
+    const started = await call("send_message", { text: question, previewId: shown.id });
+    if (params.get("preview") === "expired") {
+      assert.equal(started.error.code, "preview_expired");
+      continue;
+    }
+    assert.equal(started.error, undefined);
+    await clock.drain();
+    const { turn_id: turnId, conversation_id: conversationId } = started.value;
+    const plans = await ok("action_plans", { turnId });
+    if (plans.length) {
+      const run = await call("action_run", { turnId, planId: plans[0].plan_id });
+      if (params.get("action") === "refuse") assert.equal(run.error.reason, "changed");
+      else assert.equal(run.value.overall, "completed");
+      await reject("action_run", { turnId, planId: plans[0].plan_id }, "action_refused");
+      if (plans[0].kind === "disable_user_startup") {
+        const restore = await call("startup_restore_prepare", { sourcePlanId: plans[0].plan_id, itemIndex: 0 });
+        if (!run.error) assert.equal(restore.value.plan.kind, "restore_user_startup");
+      }
+      if (plans[1]) await ok("action_decline", { turnId, planId: plans[1].plan_id });
+    }
+    await ok("conversation_get", { id: conversationId });
+    await call("open_web_source", { conversationId, turnId, reference: "W1" });
+  }
+  await ok("answer_extension", { accept: false });
+  await ok("stop_investigation");
+  const saved = await ok("conversations_list");
+  if (params.get("preview") === "expired") assert.equal(saved.length, 0);
+  else {
+    assert.ok(saved.length);
+    assert.equal(await ok("conversation_delete", { id: saved[0].id }), true);
+  }
+  await ok("conversations_clear");
+  assert.equal((await ok("conversations_list")).length, 0);
+  off.forEach(unlisten => unlisten());
+  transcript.push({ events });
+  return { transcript: JSON.parse(JSON.stringify(transcript)), commands: [...seen].sort() };
+}
