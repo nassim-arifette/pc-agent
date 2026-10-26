@@ -2,13 +2,13 @@
 // a host-issued reference; the Rust side freezes that capture, builds the exact first message and
 // returns a single-use preview ticket. As for a typed question, no dialog stands before a cloud
 // send (C5, 9 October): the message leaves as the composer's toggles say and stays in the steps.
-import { t } from "./i18n.js";
-import { call } from "./api.js";
-import { state, notify, sendSelection, waitForPrivacy, beginTurnPreparation, endTurnPreparation, openPanel, closePanel, openConversation } from "./store.js";
-import { toast } from "./ui.js";
-import { failureText, pageFailure, startFailure } from "./failure.js";
-import { effectiveMode, namesShared } from "./ask.js";
-import { navigate } from "./router.js";
+import { t } from "../i18n.js";
+import { call } from "../api.js";
+import { state, notify, sendSelection, waitForPrivacy, beginTurnPreparation, endTurnPreparation, openPanel, closePanel, openConversation } from "../store.js";
+import { toast } from "../ui.js";
+import { failureText, pageFailure, startFailure } from "../failure.js";
+import { effectiveMode, namesShared } from "../chat/composer.js";
+import { navigate } from "../router.js";
 
 export const INTENTS = ["explain", "investigate"];
 

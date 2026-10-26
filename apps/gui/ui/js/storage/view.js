@@ -7,8 +7,8 @@ import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call, onDrop } from "../api.js";
-import { askWithAi, cloudReady } from "../ask.js";
-import { findReference, runSelection } from "../select.js";
+import { askWithAi, cloudReady } from "../chat/composer.js";
+import { findReference, runSelection } from "../selection/actions.js";
 import { actionBar, keepFocus, once, selectionKeys } from "../actionbar.js";
 import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
@@ -225,7 +225,7 @@ export function mount(page) {
 
   /**
    * The inspector of the selected result, or its empty state. Everything it shows comes from the
-   * scan already on the page (storage-item.js); the location is shown here only. `under` draws it
+   * scan already on the page (items.js); the location is shown here only. `under` draws it
    * under the selected row instead of in the column beside the results.
    */
   const inspector = (entry, under = false) => {

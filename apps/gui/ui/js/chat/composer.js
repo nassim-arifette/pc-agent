@@ -2,17 +2,17 @@
 // Nebius (program names, web lookups, an attached folder and its file names), on by default and
 // remembered; "See what leaves" shows the exact first message. No dialog stands before a send:
 // each cloud question still takes its exact preview just before, bound to a single-use ticket.
-import { h, fill } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { call } from "./api.js";
-import { state, notify, sendMessage, stopInvestigation, setPrivacy, setWebSearch, setFileNames, webSearchActive, waitForPrivacy, beginTurnPreparation, endTurnPreparation } from "./store.js";
-import { button, dialog, toast } from "./ui.js";
-import { bytes } from "./format.js";
-import { navigate } from "./router.js";
+import { h, fill } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { call } from "../api.js";
+import { state, notify, sendMessage, stopInvestigation, setPrivacy, setWebSearch, setFileNames, webSearchActive, waitForPrivacy, beginTurnPreparation, endTurnPreparation } from "../store.js";
+import { button, dialog, toast } from "../ui.js";
+import { bytes } from "../format.js";
+import { navigate } from "../router.js";
 import { closePicker, modelPicker } from "./picker.js";
 import { webConsentNote } from "./web.js";
-import { failureText } from "./failure.js";
+import { failureText } from "../failure.js";
 
 export const MODES = ["complete", "anonymized", "local"];
 const MODE_ICONS = { complete: "cloud", anonymized: "shield", local: "pc" };

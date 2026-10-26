@@ -10,7 +10,7 @@ import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
-import { askWithAi, cloudReady } from "../ask.js";
+import { askWithAi, cloudReady } from "../chat/composer.js";
 import { badge, button, toast } from "../ui.js";
 import { bytes, clock, duration, number, percent } from "../format.js";
 import { holdSlot, onSlotChange, slotHeldElsewhere } from "./slot.js";

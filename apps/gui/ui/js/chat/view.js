@@ -7,20 +7,20 @@ import { t, classificationLabel } from "../i18n.js";
 import { citationFacts, findingFacts, findingNextStep, findingSummary, targetText } from "../phrases.js";
 import { markdown, labelCitations } from "../markdown.js";
 import { mark } from "../brand.js";
-import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "../ask.js";
+import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "./composer.js";
 import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
 import { showSource } from "../panel.js";
 import { health } from "../live/model.js";
-import { numbering, citationTitle, toolLabel } from "../citations.js";
+import { numbering, citationTitle, toolLabel } from "./citations.js";
 import { adminChecksCard } from "../elevation/checks.js";
 import { capable } from "../capabilities.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
 import { bytes, date, duration, labelled, number, usd } from "../format.js";
-import { modelName, startModelId } from "../models.js";
-import { costFigure, costText, modelChange, modelsLabel, recordedSwitch, routingNote, shareName, turnModels, usedModelIds } from "../usage.js";
+import { modelName, startModelId } from "./models.js";
+import { costFigure, costText, modelChange, modelsLabel, recordedSwitch, routingNote, shareName, turnModels, usedModelIds } from "./usage.js";
 import { navigate } from "../router.js";
-import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "../web.js";
+import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "./web.js";
 import { failureDetail, refusalText, turnFailureText } from "../failure.js";
 
 // ---------- Small pieces ----------

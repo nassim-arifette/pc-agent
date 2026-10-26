@@ -12,7 +12,7 @@ import { batteryInspector, measureText, notReported, sparkline } from "./panel.j
 import { almostFull, driveName, gpuName } from "./model.js";
 import { batteryItems } from "./battery.js";
 import { ago, basisPoints, bytes, number, percent } from "../format.js";
-import { runSelection } from "../select.js";
+import { runSelection } from "../selection/actions.js";
 import { actionBar, selectionKeys } from "../actionbar.js";
 import { currentRoute } from "../router.js";
 import { failureDetail, failureText } from "../failure.js";
@@ -229,7 +229,7 @@ function appDetails(item) {
 }
 
 /**
- * Explain or Investigate on the resolved item, through the exact preview (select.js). `sent` and
+ * Explain or Investigate on the resolved item, through the exact preview. `sent` and
  * `subject` say when the item leaves with others (one battery target covers every shown battery).
  */
 function act(item, intent) {

@@ -4,9 +4,9 @@
 import { call, commandError, on } from "./api.js";
 import { t } from "./i18n.js";
 import { startFailure } from "./failure.js";
-import { rememberSelection, selectionForTurn, selectionForConversation, forgetSelections } from "./selection-meta.js";
-import { startModelId } from "./models.js";
-import { recordedSwitch } from "./usage.js";
+import { rememberSelection, selectionForTurn, selectionForConversation, forgetSelections } from "./selection/meta.js";
+import { startModelId } from "./chat/models.js";
+import { recordedSwitch } from "./chat/usage.js";
 
 const listeners = new Set();
 

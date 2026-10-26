@@ -8,12 +8,12 @@ import { citationFacts, limitationLines, targetLabel } from "./phrases.js";
 import { state, subscribe, openPanel, closePanel, setLivePaused, watchActivity, pokeActivity } from "./store.js";
 import { liveView } from "./live/panel.js";
 import { driveName } from "./live/model.js";
-import { numbering, citationTitle, isWeb } from "./citations.js";
-import { webSourceCard } from "./web.js";
+import { numbering, citationTitle, isWeb } from "./chat/citations.js";
+import { webSourceCard } from "./chat/web.js";
 import { bytes, clock, date, labelled, number, price, usd } from "./format.js";
-import { modelShareText, turnModels } from "./usage.js";
+import { modelShareText, turnModels } from "./chat/usage.js";
 import { navigate } from "./router.js";
-import { mountSelectionInspector } from "./selection-inspector.js";
+import { mountSelectionInspector } from "./selection/inspector.js";
 import { keepFocus } from "./actionbar.js";
 
 const TABS = [

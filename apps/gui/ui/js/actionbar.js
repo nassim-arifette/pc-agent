@@ -2,7 +2,7 @@
 // Monitor (not available yet). Views own their selection and draw the bar inside the selected
 // item's `.actbar-anchor`; this module draws it, keeps it in view, gives it one tab stop with the
 // arrow keys between its buttons, and handles E (Explain) and Enter (Investigate) while an item is
-// selected. Explain and Investigate go through runSelection (select.js) and its exact preview.
+// selected. Explain and Investigate go through runSelection and its exact preview.
 import { h } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";

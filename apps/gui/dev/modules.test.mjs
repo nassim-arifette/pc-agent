@@ -32,6 +32,13 @@ test("the module check rejects imports of missing exports", () => {
   });
 });
 
+test("the module check rejects imports of missing files", () => {
+  fixture({ "main.js": 'import "./missing.js";' }, (result) => {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ENOENT/);
+  });
+});
+
 test("the module check rejects duplicate bindings after a merge", () => {
   fixture({ "main.js": "const name = 1; const name = 2;" }, (result) => {
     assert.notEqual(result.status, 0);

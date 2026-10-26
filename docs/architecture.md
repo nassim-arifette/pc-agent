@@ -295,8 +295,11 @@ ui/ (HTML, CSS, JavaScript modules, no build step) --invoke--> src/app.rs (Tauri
   These modules are portable and unit-tested on every platform. `src/app.rs`,
   `src/elevation.rs` (the helper slot, tested with fake tasks) and `src/actions.rs` (the waiting
   proposals) are Windows-only.
-- `ui/js/main.js` mounts one view at a time (`views/chat.js`, `history.js`, `live.js`,
-  `storage.js`, `settings.js`, `setup.js`); `api.js` is the only bridge to Tauri; `markdown.js`
+- `ui/js/main.js` mounts one feature view at a time (`chat/view.js`, `history/view.js`,
+  `live/view.js`, `storage/view.js`, `settings/view.js`, `settings/setup.js`). Related UI and
+  presentation helpers live beside their feature; `selection/` owns selected-item interactions,
+  and `elevation/` owns the read-only helper cards. Shared shell, state, localization and DOM
+  utilities stay at the root. `api.js` is the only bridge to Tauri; `markdown.js`
   renders the model's restricted Markdown as DOM nodes; `dom.js` never uses `innerHTML`.
 - The design mock (`dev/mock.js`) answers every command with synthetic data so the interface can
   be reviewed in a browser; it lives outside `ui/` and is never embedded. Layout, views and the

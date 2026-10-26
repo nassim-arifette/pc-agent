@@ -19,7 +19,7 @@ import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { connect } from "./api.js";
 import { loadPrefs, getPrefs, setPref } from "./prefs.js";
-import { shouldOfferOnboarding } from "./onboarding.js";
+import { shouldOfferOnboarding } from "./settings/onboarding.js";
 import {
   state,
   subscribe,
@@ -40,20 +40,20 @@ import {
 import { mountPanel } from "./panel.js";
 import { health } from "./live/model.js";
 import { dialog, button, dialogOpen } from "./ui.js";
-import { costText } from "./usage.js";
-import { modelName } from "./models.js";
-import { namesShared } from "./ask.js";
+import { costText } from "./chat/usage.js";
+import { modelName } from "./chat/models.js";
+import { namesShared } from "./chat/composer.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import { mark } from "./brand.js";
-import { refreshRouting } from "./picker.js";
+import { refreshRouting } from "./chat/picker.js";
 import { watchCapabilities } from "./capabilities.js";
 import { keepFocus } from "./actionbar.js";
-import * as chat from "./views/chat.js";
+import * as chat from "./chat/view.js";
 import * as history from "./history/view.js";
 import * as live from "./live/view.js";
 import * as storage from "./storage/view.js";
-import * as settings from "./views/settings.js";
-import * as setup from "./views/setup.js";
+import * as settings from "./settings/view.js";
+import * as setup from "./settings/setup.js";
 
 const VIEWS = { chat, history, live, storage, settings, setup };
 const narrow = window.matchMedia("(max-width: 900px)");

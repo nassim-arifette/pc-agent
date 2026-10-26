@@ -1,14 +1,14 @@
 // Web sources (C6): typed lookups through Tavily. The page shows where a cited page comes from,
 // when it was read and the exact query that found it. It never opens or links an address itself:
 // "Open in browser" asks the Rust side, which reads the address from the stored turn.
-import { h, fill } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { state, setWebSearch, saveSearchKey, openWebSource, webSearchActive } from "./store.js";
+import { h, fill } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { state, setWebSearch, saveSearchKey, openWebSource, webSearchActive } from "../store.js";
 import { citationTitle, isWeb, publishedDate, sourceCounts } from "./citations.js";
-import { badge, button, toast, toggle } from "./ui.js";
-import { clock } from "./format.js";
-import { failureText } from "./failure.js";
+import { badge, button, toast, toggle } from "../ui.js";
+import { clock } from "../format.js";
+import { failureText } from "../failure.js";
 
 // ---------- In the conversation ----------
 

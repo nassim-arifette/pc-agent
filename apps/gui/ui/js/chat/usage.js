@@ -3,10 +3,10 @@
 // view.rs), a total exists only when every request is priced, and `usage.routing.change` says
 // when and why Ultra took the question over. A two-model cost is never one model's price applied
 // to every token. Turns saved before the breakdown keep their single cost.
-import { h } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { labelled, number, usd } from "./format.js";
+import { h } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { labelled, number, usd } from "../format.js";
 import { modelName } from "./models.js";
 
 /** Each model's share of the turn, in the order the models were first used. */

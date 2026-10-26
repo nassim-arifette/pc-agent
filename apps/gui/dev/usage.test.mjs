@@ -9,7 +9,7 @@ globalThis.document = { documentElement: { dataset: {}, classList: { toggle() {}
 globalThis.window = { location: { search: "", hash: "" }, setTimeout: (callback) => setTimeout(callback, 0) };
 
 const { setLanguage } = await import("../ui/js/i18n.js");
-const { costFigure, costText, modelChange, modelShareText, modelsLabel, recordedSwitch, usedModelIds } = await import("../ui/js/usage.js");
+const { costFigure, costText, modelChange, modelShareText, modelsLabel, recordedSwitch, usedModelIds } = await import("../ui/js/chat/usage.js");
 
 const SUPER = "nvidia/nemotron-3-super-120b-a12b";
 const ULTRA = "nvidia/Nemotron-3-Ultra-550b-a55b";
