@@ -130,7 +130,7 @@ struct SlotState {
     job: Option<Job>,
     closing: bool,
     shutdown_waiter: bool,
-    completed: Vec<pcagent_agent::elevated_tools::ApprovedInspection>,
+    completed: Vec<pcagent_tools::elevated_tools::ApprovedInspection>,
 }
 
 #[derive(Default)]
@@ -401,7 +401,7 @@ impl Slot {
         self.release_after_completion(request_id, completion);
     }
     /// Read only already approved evidence. This grants no access to the approval/run slot.
-    pub fn completed_evidence(&self) -> Vec<pcagent_agent::elevated_tools::ApprovedInspection> {
+    pub fn completed_evidence(&self) -> Vec<pcagent_tools::elevated_tools::ApprovedInspection> {
         self.state
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -568,7 +568,7 @@ impl Run {
         let result = approved.execute(&self.cancel);
         if !self.cancel.is_cancelled() {
             if let (Some(slot), Ok(inspection)) = (self.slot.upgrade(), &result) {
-                if let Ok(captured) = pcagent_agent::elevated_tools::ApprovedInspection::new(
+                if let Ok(captured) = pcagent_tools::elevated_tools::ApprovedInspection::new(
                     &self.task,
                     inspection.inspection.clone(),
                 ) {
@@ -579,7 +579,7 @@ impl Run {
                             .retain(|r| r.available() && r.task_name() != captured.task_name());
                         state.completed.push(captured);
                         if state.completed.len()
-                            > pcagent_agent::elevated_tools::MAX_APPROVED_INSPECTIONS
+                            > pcagent_tools::elevated_tools::MAX_APPROVED_INSPECTIONS
                         {
                             state.completed.remove(0);
                         }

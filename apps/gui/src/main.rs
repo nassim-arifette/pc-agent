@@ -22,7 +22,7 @@ mod session;
 mod settings;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod shell;
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code, unused_imports))]
 mod view;
 
 #[cfg(windows)]
