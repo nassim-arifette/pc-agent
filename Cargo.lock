@@ -2435,7 +2435,21 @@ dependencies = [
 name = "pcagent-elevated"
 version = "0.1.0"
 dependencies = [
- "pcagent-inspect",
+ "pcagent-elevation",
+]
+
+[[package]]
+name = "pcagent-elevation"
+version = "0.1.0"
+dependencies = [
+ "pcagent-mft",
+ "pcagent-shared",
+ "pcagent-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2479,15 +2493,23 @@ dependencies = [
 name = "pcagent-inspect"
 version = "0.1.0"
 dependencies = [
+ "pcagent-elevation",
  "pcagent-shared",
- "pcagent-storage",
  "pcagent-telemetry",
  "serde",
  "serde_json",
- "sha2",
  "windows",
  "windows-core",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pcagent-mft"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

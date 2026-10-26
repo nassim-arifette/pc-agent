@@ -1337,6 +1337,15 @@ proposée au porteur avant tout déplacement de fichiers. Le 29 octobre (Paris) 
 soumission après la période de soumission) ; ce qui n'est pas terminé va sur une branche `next`,
 fusionnée dans `main` après le 15 décembre.
 
+**Q3, décision complémentaire du 26 octobre :** le porteur valide l'option C
+(réorganisation complète). Première étape : séparer le parseur/collecteur MFT pur
+(`crates/mft`), le protocole et le worker élevé (`crates/elevation`) et les inspections
+standard (`crates/inspect`, qui conserve la projection des résultats vers C4).
+Les réexportations maintiennent les chemins publics pendant la transition ; les données
+sérialisées, permissions, actions et contrats ne changent pas. Les étapes suivantes
+organisent l'interface par fonctionnalité puis séparent cœur agent, outils et client Nebius,
+sans conflit avec #55. Chaque étape reste validée avant fusion.
+
 ### Phase 0 — Remise en route (17–18 oct.)
 
 | Tâche | Pourquoi | Fait quand |
@@ -1466,6 +1475,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 14 — Escalade visible et coût des deux modèles (#69) | C | fait (26 oct.) : étape « Ultra reprend la question », en-tête « Super → Ultra · total », note durable sous la réponse avec la raison (et la vérité quand Ultra n'a rien écrit), une ligne par modèle dans Sources › Requêtes et coût, même détail dans la CLI ; jamais le prix d'un modèle appliqué aux jetons de l'autre ; Auto proposé dès qu'une calibration relue existe ; fmt, Clippy, tests, tour | wp14-escalation-visible |
 | 6 — Interface en français (#65) | A, C | fait (26 oct.) : phrases du cœur envoyées comme clés fermées à valeurs typées (`Phrase`, `phrases.js` : constats, étapes suivantes, limites, faits des sources, réponse locale, GPU, couverture admin, processus sans nom) et erreurs des commandes avec code fermé traduit (`failure.rs`, `failure.js`), le texte anglais restant la référence pour le modèle, la CLI et le vérificateur ; menu de la barre d'état et dialogue de dossier dans la langue de Windows ; tests, tour FR | wp6-french-ui, wp6-french-errors |
 | Registre des capacités (phase 1) | A, B, C | fait (26 oct.) : `crates/agent/src/capabilities.rs` (9 capacités, table REQUIREMENTS, variantes constantes), outils indisponibles absents du catalogue envoyé et du prompt système, `app_info.capabilities` pilote la vue Stockage et la carte des vérifications ; 224 tests agent, tour ; identité de calibration et replays inchangés | wp4-capability-registry |
+| Q3 — Séparation inspections / worker élevé / MFT | A, B | implémenté et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; aucun test existant supprimé, 18 exécutables de test sous compte standard sans échec, fmt/Clippy/release/doctests, 46 tests Node et 3 Python | wp8-inspection-crate-split |
 | 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) | wp12-docs |
 
 Arrêt demandé le 10 octobre après la validation de ce lot, avant la nouvelle vue Stockage et sans

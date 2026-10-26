@@ -29,7 +29,9 @@ describes the code, not the plan.
 | --- | --- | --- | --- |
 | `crates/shared` | `pcagent-shared` | Versioned evidence types: metrics, units, windows, statuses, process identities, snapshots | forbidden |
 | `crates/telemetry` | `pcagent-telemetry` | Live collection: memory, CPU, per-process activity from one system process list, applications grouped by validated parent chains, PDH disk and GPU counters, NVML, services, process tree, in-memory history ([telemetry.md](telemetry.md)) | `windows` module only |
-| `crates/inspect` | `pcagent-inspect` | Read-only system inspections (startup, services, events, system state, power and thermal, battery, installed apps, hardware and SMBIOS, drivers and Windows Update offers, cleanup categories, fixed WMI/registry/event-log queries) and the elevated helper's tasks and protocol ([system-inspection.md](system-inspection.md), [elevation.md](elevation.md)) | `windows` module and native `elevation` submodules only |
+| `crates/inspect` | `pcagent-inspect` | Standard-user system inspections and the C4 projection of privileged results ([system-inspection.md](system-inspection.md)) | `windows` module only |
+| `crates/elevation` | `pcagent-elevation` | Fixed-task UAC protocol, local approval, worker lifetime and privileged native readings ([elevation.md](elevation.md)) | native modules only |
+| `crates/mft` | `pcagent-mft` | Pure bounded NTFS parser, tree accounting and collection over an abstract read-only source ([mft.md](mft.md)) | forbidden |
 | `crates/diagnostics` | `pcagent-diagnostics` | Conservative local findings with a support level, and the before/after comparison of an action | forbidden |
 | `crates/storage` | `pcagent-storage` | Bounded metadata scans of an authorized folder, optional local content comparison ([storage.md](storage.md)) | `windows` module only |
 | `crates/policy` | `pcagent-policy` | Protected paths, preferences, cleanup classification and plans; pure, no filesystem access ([policy.md](policy.md)) | forbidden |
@@ -38,7 +40,7 @@ describes the code, not the plan.
 | `crates/store` | `pcagent-store` | SQLite storage of conversations, the five-second history, recordings and detected events; the background sampler ([history-performance.md](history-performance.md)) | forbidden |
 | `apps/cli` | `pcagent` | Command-line interface | forbidden |
 | `apps/gui` | `pcagent-gui` | Tauri 2 desktop app: Rust commands in `src/`, plain JavaScript modules in `ui/` ([gui.md](gui.md)) | forbidden |
-| `apps/elevated` | `pcagent-elevated` | The elevated helper executable: a thin `main` over `pcagent_inspect::elevation::worker_main` | forbidden |
+| `apps/elevated` | `pcagent-elevated` | The elevated helper executable: a thin `main` over `pcagent_elevation::worker_main` | forbidden |
 | `apps/eval` | `pcagent-eval` | Capture, replay, MCP stdio server, grading and calibration tooling ([eval.md](eval.md)) | forbidden |
 
 Unsafe code is confined to those native modules, with a `// SAFETY:` comment per block as a
@@ -49,6 +51,23 @@ Windows, and the helper refuses to run.
 
 The CLI and the window call the same crates for measurements, verification and actions; the
 window adds only display rules, such as the words of its PC status pill.
+
+The inspection boundary is split without changing the worker protocol:
+
+```text
+apps/elevated ──> crates/elevation ──> crates/mft
+                        ^
+                        |
+                 crates/inspect ──> C4 observations and localized coverage notes
+```
+
+`crates/mft` has no Windows dependency, file access, network or elevation authority; its caller
+supplies the read-only source. Raw Windows volume handles stay in
+`crates/elevation/src/mft_native.rs`. `crates/elevation` depends on neither inspections,
+telemetry nor the model engine. `crates/inspect::elevation` re-exports the host APIs and MFT
+types for existing callers, while keeping `to_inspection`, coverage notes and their privacy
+tests on the standard-user side. The privileged executable no longer links the standard
+inspection collectors. Serialization, task names, approval and cancellation semantics are unchanged.
 
 ## Trust boundaries
 
@@ -308,7 +327,7 @@ ui/ (HTML, CSS, JavaScript modules, no build step) --invoke--> src/app.rs (Tauri
 It has no model client, no HTTP client, no shell and no arbitrary query; the battery check runs
 Windows' own `powercfg.exe` from the system directory with fixed arguments.
 
-- **Closed tasks** (`crates/inspect/src/elevation/protocol.rs`, protocol version 2):
+- **Closed tasks** (`crates/elevation/src/protocol.rs`, protocol version 2):
   `system_caches`, `mft_inventory` (one drive letter), `shadow_storage`, `disk_reliability`,
   `process_images`, `battery_energy` and `performance_trace`. The window offers the quick drive
   analysis (`mft_inventory`) and four deeper checks (`system_caches`, `shadow_storage`,

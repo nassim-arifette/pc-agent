@@ -483,7 +483,7 @@ struct Aggregate {
 }
 
 /// Parse a fixed private powercfg export. No SID, path or raw application identifier is returned.
-pub(crate) fn parse_export(bytes: &[u8], owner_sid: &str) -> EnergySummary {
+pub fn parse_export(bytes: &[u8], owner_sid: &str) -> EnergySummary {
     match parse(bytes, owner_sid) {
         Ok(value) => value,
         Err(limit) => EnergySummary::unavailable(ElevationStatus::Unsupported, limit),
