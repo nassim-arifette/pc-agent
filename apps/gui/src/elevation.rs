@@ -16,12 +16,17 @@ pub struct InspectionResult {
     pub inspection: pcagent_inspect::Inspection,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_mft_tree: Option<pcagent_inspect::elevation::mft::TreeSummary>,
+    /// Closed reasons behind each coverage entry, which the window words in its own language;
+    /// the coverage `detail` stays the English C4 text, never shown in the window.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub coverage_notes: Vec<pcagent_inspect::elevation::CoverageNote>,
 }
 impl From<pcagent_inspect::Inspection> for InspectionResult {
     fn from(inspection: pcagent_inspect::Inspection) -> Self {
         Self {
             inspection,
             local_mft_tree: None,
+            coverage_notes: Vec::new(),
         }
     }
 }
@@ -80,6 +85,7 @@ impl ApprovedTask for NativeApproved {
             .map_err(|error| failure::elevation(&error))?;
         Ok(InspectionResult {
             inspection: pcagent_inspect::elevation::to_inspection(&response),
+            coverage_notes: pcagent_inspect::elevation::coverage_notes(&response),
             local_mft_tree: response.mft.map(|collection| collection.tree),
         })
     }

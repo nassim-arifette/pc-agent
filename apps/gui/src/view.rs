@@ -13,8 +13,8 @@ use pcagent_agent::{
 use pcagent_diagnostics::{Classification, Finding, Support};
 use pcagent_inspect::{CoverageStatus, Inspection, Observation};
 use pcagent_shared::{
-    format_bytes, gpu_slowdown_reasons, unix_ms, Evidence, HardwareInventory, Metric,
-    ProcessCoverage, ProcessInstance, Snapshot, Status, VolumeKind,
+    format_bytes, gpu_slowdown_codes, gpu_slowdown_reasons, unix_ms, Evidence, HardwareInventory,
+    Metric, Phrase, ProcessCoverage, ProcessInstance, Quantity, Snapshot, Status, VolumeKind,
 };
 use pcagent_storage::{
     Coverage, ItemKind, ItemView, LargestItemsPage, ScanProgress, ScanSummary, StorageOverview,
@@ -46,6 +46,9 @@ pub struct Measure {
     pub status: Option<Status>,
     /// Why the value is missing, when it is.
     pub note: Option<String>,
+    /// The same reason as a closed code ([`MISSING_REASONS`]) the window words in its own
+    /// language; `None` for any other reason, which the window names by `status`.
+    pub note_code: Option<&'static str>,
 }
 impl Measure {
     fn of(evidence: Option<&Evidence>) -> Self {
@@ -55,6 +58,7 @@ impl Measure {
                 text: None,
                 status: None,
                 note: None,
+                note_code: None,
             };
         };
         match e.usable_value() {
@@ -63,15 +67,43 @@ impl Measure {
                 text: Some(e.metric.format_value(v)),
                 status: Some(e.status),
                 note: None,
+                note_code: None,
             },
             None => Self {
                 value: None,
                 text: None,
                 status: Some(e.status),
                 note: e.limitations.first().cloned(),
+                note_code: e.limitations.first().and_then(|note| missing_reason(note)),
             },
         }
     }
+}
+/// Why a live value is missing, as the telemetry words it (`crates/telemetry`), with the closed
+/// code the window words it by. A reason starting with one of these texts gets its code: NVML
+/// errors end with their own number. `missing_reasons_match_their_producers` checks the texts.
+const MISSING_REASONS: [(&str, &str); 15] = [
+    ("No earlier reading of this instance in this window; a rate needs two readings of the same instance.", "first_reading"),
+    ("Counter query failed.", "query_failed"),
+    ("CPU counter query failed.", "query_failed"),
+    ("System memory query failed.", "query_failed"),
+    ("Process memory query failed.", "query_failed"),
+    ("Counter regression, zero interval or inconsistent timing.", "inconsistent"),
+    ("Counter reset, inconsistent values or zero elapsed counter interval.", "inconsistent"),
+    ("Counter returned a negative, non-finite or out-of-range value.", "inconsistent"),
+    ("No valid GPU engine was attributed to this unchanged process instance; absence is unknown, not zero.", "gpu_unattributed"),
+    ("Application GPU is unknown when no valid physical engine can be attributed to its unchanged members.", "gpu_unattributed"),
+    ("No full-window GPU measurement for this retained, unchanged and revalidated process; absence is unknown, not zero.", "gpu_unattributed"),
+    ("No GPU engine instances were reported (no WDDM GPU counters, e.g. basic display adapter or VM).", "no_gpu_counters"),
+    ("GPU engine instances were reported but none had a usable value.", "gpu_counters_unusable"),
+    ("Not exported by this NVML version.", "nvml_unsupported"),
+    ("NVML returned ", "nvml_error"),
+];
+fn missing_reason(note: &str) -> Option<&'static str> {
+    MISSING_REASONS
+        .iter()
+        .find(|(text, _)| note.starts_with(text))
+        .map(|(_, code)| *code)
 }
 fn find<'a>(s: &'a Snapshot, entity: &str, metric: Metric) -> Option<&'a Evidence> {
     s.evidence
@@ -126,6 +158,8 @@ pub struct Gpu {
     pub power: Measure,
     pub slowdown: Measure,
     pub slowdown_reasons: Vec<String>,
+    /// The same reasons as closed codes (`thermal_driver`…), for the window's language.
+    pub slowdown_codes: Vec<&'static str>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Engine {
@@ -560,6 +594,10 @@ pub struct TargetView {
     pub executable_name: Option<String>,
     pub files: Option<u64>,
     pub bytes: Option<u64>,
+    /// A process target's PID, so the window can name an unnamed process in its own language.
+    pub pid: Option<u32>,
+    /// A process target without an executable name: `label` holds the English fallback.
+    pub unnamed: bool,
 }
 /// A proposal awaiting a decision in the window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -604,6 +642,8 @@ pub fn plan(
         executable_name: None,
         files,
         bytes,
+        pid: None,
+        unnamed: false,
     };
     // Each process target's readable and executable names, read once.
     let named: Vec<(Option<String>, Option<String>)> = plan
@@ -663,6 +703,8 @@ pub fn plan(
                 };
                 let (readable, executable) = &named[index];
                 TargetView {
+                    pid: Some(t.identity.pid),
+                    unnamed: t.executable_name.is_none(),
                     executable_name: readable.as_ref().and(executable.clone()),
                     ..target("process", label, None, None)
                 }
@@ -719,6 +761,8 @@ pub struct MemberView {
     pub cpu: Measure,
     pub working_set: Measure,
     pub services: Vec<ServiceView>,
+    /// No executable name was read: `name` is the English fallback the window replaces.
+    pub unnamed: bool,
 }
 /// An application group: its measurements are sums over its members during the window.
 #[derive(Debug, Clone, Serialize)]
@@ -740,6 +784,8 @@ pub struct ApplicationView {
     pub services: Vec<ServiceView>,
     /// Members among the returned processes; others were ranked lower and are counted only.
     pub members: Vec<MemberView>,
+    /// No application name was read: `name` is the English fallback the window replaces.
+    pub unnamed: bool,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityView {
@@ -812,14 +858,17 @@ pub fn activity(
                     cpu: m(&p.instance.entity_ref, Metric::ProcessCpuBasisPoints),
                     working_set: m(&p.instance.entity_ref, Metric::ProcessWorkingSetBytes),
                     services: services(&p.services),
+                    unnamed: read_name(&p.instance).is_none(),
                 })
                 .collect();
             let mut all_services: Vec<ServiceView> =
                 members.iter().flat_map(|p| p.services.clone()).collect();
             all_services.sort_by(|x, y| x.name.cmp(&y.name));
             all_services.dedup_by(|x, y| x.name == y.name);
+            let named = app.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
             ApplicationView {
                 entity_ref: app.entity_ref.clone(),
+                unnamed: named.is_none(),
                 name: app
                     .name
                     .as_deref()
@@ -857,13 +906,15 @@ pub fn activity(
     }
 }
 
-pub fn process_name(p: &ProcessInstance) -> String {
+/// The executable name read for this process, if one was.
+fn read_name(p: &ProcessInstance) -> Option<&str> {
     p.executable_name
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty())
-        .unwrap_or("Unnamed process")
-        .to_owned()
+}
+pub fn process_name(p: &ProcessInstance) -> String {
+    read_name(p).unwrap_or("Unnamed process").to_owned()
 }
 
 /// Readable program names by process instance (PID, creation time): the description or product
@@ -933,6 +984,7 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
                             .collect()
                     })
                     .unwrap_or_default(),
+                slowdown_codes: slowdown.value.map(gpu_slowdown_codes).unwrap_or_default(),
                 temperature: m(Metric::GpuTemperatureCelsius),
                 utilization: m(Metric::GpuUtilizationBasisPoints),
                 sm_clock: m(Metric::GpuSmClockMegahertz),
@@ -1021,6 +1073,13 @@ pub struct FindingView {
     pub missing: Vec<String>,
     pub next_step: String,
     pub limitations: Vec<String>,
+    /// The displayed sentences as closed keys with their measured values, for the window's
+    /// language: the summary, each fact and each limitation in the same order, the next step.
+    /// `None` where only the English text exists; reports saved before have none at all.
+    pub summary_phrase: Option<Phrase>,
+    pub fact_phrases: Vec<Option<Phrase>>,
+    pub next_step_phrase: Option<Phrase>,
+    pub limitation_phrases: Vec<Option<Phrase>>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservationView {
@@ -1105,7 +1164,14 @@ pub struct CitationView {
     pub kind: CitationKind,
     /// The tool that made the observation, or the finding's label.
     pub title: String,
+    /// A finding's classification, so the window can name it in its own language.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<Classification>,
     pub facts: Vec<String>,
+    /// Each fact as a closed key with its values, in the same order (see `FindingView`); empty
+    /// for web sources and for sources cited from an earlier turn, which keep their stored text
+    /// (the window finds their wording among that turn's sources).
+    pub fact_phrases: Vec<Option<Phrase>>,
     /// A finding a fresher measurement has since replaced: it describes an earlier moment.
     pub earlier: bool,
     pub measured_at_unix_ms: Option<u64>,
@@ -1158,6 +1224,9 @@ pub struct Report {
     pub observations: Vec<ObservationView>,
     pub tool_events: Vec<pcagent_agent::ToolEvent>,
     pub limitations: Vec<String>,
+    /// Each limitation as a closed key when the window knows its wording ([`note_phrase`]), in
+    /// the same order; `None` keeps the English text.
+    pub limitation_phrases: Vec<Option<Phrase>>,
     /// Deeper checks (closed `ElevatedTask` kinds) whose reading this turn lacked, in display
     /// order. A local rule: the model has no authority here, and nothing runs without the
     /// person's click and the Windows prompt.
@@ -1178,6 +1247,30 @@ fn reference_at(text: &str, at: usize, reference: &str) -> bool {
             .chars()
             .next()
             .is_none_or(|c| !c.is_alphanumeric())
+}
+/// A phrase as this window shows it: a process reference among its values becomes that process,
+/// named locally like `localize` names it in the English text beside it.
+fn local_phrase(phrase: &Phrase, processes: &[ProcessInstance]) -> Phrase {
+    let mut phrase = phrase.clone();
+    for value in phrase.values.values_mut() {
+        let Quantity::Entity(reference) = value else {
+            continue;
+        };
+        if let Some(p) = processes.iter().find(|p| p.entity_ref == *reference) {
+            *value = Quantity::Process {
+                name: read_name(p).map(str::to_owned),
+                pid: p.pid,
+            };
+        }
+    }
+    phrase
+}
+/// The phrases of a finding's facts, in their order.
+fn fact_phrases(f: &Finding, processes: &[ProcessInstance]) -> Vec<Option<Phrase>> {
+    f.facts
+        .iter()
+        .map(|fact| fact.phrase.as_ref().map(|p| local_phrase(p, processes)))
+        .collect()
 }
 
 fn cites(text: &str, reference: &str) -> bool {
@@ -1316,6 +1409,14 @@ pub fn finding(f: &Finding, processes: &[ProcessInstance], readable: Readable<'_
         missing: labels.all(&f.missing),
         next_step: labels.apply(&f.next_step),
         limitations: labels.all(&f.limitations),
+        summary_phrase: pcagent_diagnostics::phrase(&f.summary),
+        fact_phrases: fact_phrases(f, processes),
+        next_step_phrase: pcagent_diagnostics::phrase(&f.next_step),
+        limitation_phrases: f
+            .limitations
+            .iter()
+            .map(|l| pcagent_diagnostics::phrase(l))
+            .collect(),
     }
 }
 pub fn error_code(e: &AgentError) -> String {
@@ -1482,7 +1583,12 @@ fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
                     reference: c.reference.clone(),
                     kind: c.kind,
                     title: old.tool.clone(),
+                    // An earlier turn stored a finding under its English heading.
+                    classification: Classification::ALL
+                        .into_iter()
+                        .find(|f| old.kind == CitationKind::Finding && f.label() == old.tool),
                     facts: old.facts.clone(),
+                    fact_phrases: Vec::new(),
                     earlier: true,
                     measured_at_unix_ms: (old.measured_at_unix_ms > 0)
                         .then_some(old.measured_at_unix_ms),
@@ -1504,7 +1610,9 @@ fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
                     reference: c.reference.clone(),
                     kind: c.kind,
                     title: text("title").unwrap_or_default(),
+                    classification: None,
                     facts: text("snippet").into_iter().collect(),
+                    fact_phrases: Vec::new(),
                     earlier: false,
                     measured_at_unix_ms: None,
                     web: Some(WebSourceView {
@@ -1516,8 +1624,7 @@ fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
                     }),
                 });
             }
-            // Each source reads as one block, labelled on its own.
-            let (title, facts, earlier) = match c.kind {
+            let (title, classification, facts, phrases, earlier) = match c.kind {
                 CitationKind::Observation => {
                     let o = r
                         .observations
@@ -1526,7 +1633,12 @@ fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
                         .find(|o| o.observation_id == c.target)?;
                     (
                         o.tool.clone(),
+                        None,
                         local_block(&o.facts, processes, readable),
+                        o.fact_phrases
+                            .iter()
+                            .map(|p| p.as_ref().map(|p| local_phrase(p, processes)))
+                            .collect(),
                         false,
                     )
                 }
@@ -1540,9 +1652,14 @@ fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
                     let facts: Vec<String> = std::iter::once(f.summary.clone())
                         .chain(f.facts.iter().map(|fact| fact.text.clone()))
                         .collect();
+                    let phrases = std::iter::once(pcagent_diagnostics::phrase(&f.summary))
+                        .chain(fact_phrases(f, processes))
+                        .collect();
                     (
                         f.classification.label().to_owned(),
+                        Some(f.classification),
                         local_block(&facts, processes, readable),
+                        phrases,
                         earlier,
                     )
                 }
@@ -1552,7 +1669,9 @@ fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
                 reference: c.reference.clone(),
                 kind: c.kind,
                 title,
+                classification,
                 facts,
+                fact_phrases: phrases,
                 earlier,
                 measured_at_unix_ms: r
                     .observations
@@ -1637,6 +1756,70 @@ fn admin_hints(r: &Investigation) -> Vec<String> {
     hints.sort_by_key(|h| OFFERED_CHECKS.iter().position(|o| o == h));
     hints.into_iter().map(str::to_owned).collect()
 }
+/// What a local Explain adds to the turn's limitations: no model was asked.
+pub const LOCAL_EVIDENCE_NOTE: &str = "Local evidence only: no model explanation was requested.";
+/// The limitations most turns carry, as their producers word them (the initial snapshot and the
+/// live activity in `crates/telemetry`, the local history in `crates/store` and
+/// `crates/agent/src/history_tools.rs`), and the local Explain note, with the closed key the window
+/// words them by. Any other limitation keeps its English text; `notes_match_their_producers`
+/// checks these texts against their sources.
+const NOTES: [(&str, &str); 27] = [
+    ("note.processes_system_list", "Every process comes from one system list (NtQuerySystemInformation) without opening any, so services and other users' processes are measured without administrator rights."),
+    ("note.processes_unknown", "Process enumeration failed; coverage is unknown."),
+    ("note.processes_one_by_one", "The system process list was unavailable: processes were opened one by one, and those of services or other users may be missing."),
+    ("note.working_sets", "Working sets include shared pages and must not be summed as exclusive physical RAM."),
+    ("note.process_identities", "Process identities are session-scoped (PID plus creation time)."),
+    ("note.process_rates", "Process CPU and I/O are rates over the measurement window (about one second), or since this collector's previous reading of the same instance."),
+    ("note.boot_id", "boot_id is an estimate (GetSystemTimeAsFileTime minus GetTickCount64, rounded to one minute), fixed per collector; clock changes can shift it between sessions."),
+    ("note.short_sample", "Short sample: no sustained contention, memory leak or causal diagnosis can be established."),
+    ("note.recording_gpu", "Recorded process GPU uses the existing PDH window for the retained process list. First windows, missing engines and identities that cannot be revalidated remain unknown; occupancy is not per-application energy."),
+    ("note.activity_window", "CPU and I/O are window averages; memory is measured at the end. Rates and memory changes use PID plus creation time, never a PID alone."),
+    ("note.activity_groups", "Application groups are an image-and-parent heuristic within one Windows session, not verified product identities. Executable basenames can coincide. Generic shells and service hosts form separate boundaries; all members are aggregated before the returned lists are capped."),
+    ("note.activity_references", "Application references are scoped to this observation; process references remain stable for PID plus creation time in the collector session."),
+    ("note.activity_working_sets", "Working-set sums include shared pages; they are not exclusive physical RAM. Memory increase/decrease is observed net change, not evidence of a leak."),
+    ("note.activity_gpu", "GPU is the busiest observed physical engine. Application GPU sums members on each physical engine before taking the maximum; missing or newly created counter instances are counted in coverage. No GPU instance means unknown, never zero."),
+    ("note.activity_exited", "Exited processes are missing from end-of-window attribution, and newly started or reused instances have no full-window rate. Short windows cannot establish sustained contention."),
+    ("note.activity_ranking", "Rows are ranked by CPU, then I/O throughput, then working set; service and raw process metadata remain local until privacy projection."),
+    ("note.activity_no_baseline", "The initial process list was unavailable; memory is measured but rates and changes are unknown."),
+    ("note.activity_no_final_list", "The final system process list could not be read."),
+    ("note.services_visible", "SCM enumeration covers Win32 services visible to this account; services with a denied SERVICE_QUERY_STATUS right may be omitted by Windows. Kernel drivers are excluded."),
+    ("note.services_pids", "Service PIDs are observations, not execution authority; starting and stopping services have no reliable PID attribution."),
+    ("note.services_stalled", "SCM pagination made no progress; remaining services are unavailable."),
+    ("note.services_bound", "Service enumeration reached the page bound."),
+    ("note.history_samples", "Persisted local samples; values are not interpolated. After 24 hours, values are duration-weighted minute averages with measured minima and maxima. Instantaneous gauges use the sampling interval as averaging weight, not as a measured window."),
+    ("note.history_top_processes", "Only the top 20 processes at each sample are retained; absence of a process is unknown, not zero."),
+    ("note.history_timestamps", "Observation timestamps and accumulated measured duration are preserved separately from the nominal sampling cadence. A recording's first rate may cover the preceding background interval. Minute buckets overlapping the requested range are returned in full."),
+    ("note.history_events", "Event boundaries are the first and last anomalous samples, not a measured continuous duration. Peak and contributor observations retain their own measured windows; derived values identify their original operands. A contributor is observed resource use, not a proven cause."),
+    ("note.local_evidence", LOCAL_EVIDENCE_NOTE),
+];
+/// "Process list is ranked by {sort}; unknown values sort last.", one key per process sort.
+const RANKED: (&str, &str) = ("Process list is ranked by ", "; unknown values sort last.");
+const RANKED_KEYS: [(&str, &str); 5] = [
+    ("working_set", "note.ranked_working_set"),
+    ("private_commit", "note.ranked_private_commit"),
+    ("cpu", "note.ranked_cpu"),
+    ("io_read", "note.ranked_io_read"),
+    ("io_write", "note.ranked_io_write"),
+];
+/// A limitation of a turn as a closed key, when the window knows how to word it: the notes
+/// above, a finding's fixed sentences ([`pcagent_diagnostics::phrase`]), or `None`.
+fn note_phrase(text: &str) -> Option<Phrase> {
+    if let Some((key, _)) = NOTES.iter().find(|(_, note)| *note == text) {
+        return Some(Phrase::new(key));
+    }
+    if let Some(label) = text
+        .strip_prefix(RANKED.0)
+        .and_then(|rest| rest.strip_suffix(RANKED.1))
+    {
+        return RANKED_KEYS
+            .iter()
+            .find(|(code, _)| {
+                pcagent_telemetry::ProcessSort::parse(code).is_some_and(|s| s.label() == label)
+            })
+            .map(|(_, key)| Phrase::new(key));
+    }
+    pcagent_diagnostics::phrase(text)
+}
 /// The finished turn as the window shows it. Process references in its texts become readable
 /// names (`ProcessLabels`); `context` keeps the model's own text for the next turns.
 pub fn report(r: &Investigation, question: &str, readable: Readable<'_>) -> Report {
@@ -1675,6 +1858,7 @@ pub fn report(r: &Investigation, question: &str, readable: Readable<'_>) -> Repo
         observations,
         tool_events: r.tool_events.clone(),
         limitations: r.limitations.clone(),
+        limitation_phrases: r.limitations.iter().map(|l| note_phrase(l)).collect(),
         admin_hints: admin_hints(r),
         usage: (r.mode != "local_rules").then(|| usage(&r.stats)),
         continuation: r.continuation.clone(),
@@ -1979,6 +2163,7 @@ mod tests {
         assert_eq!(d.gpus[0].name, "NVIDIA Fixture");
         assert_eq!(d.gpus[0].memory_ratio, Some(0.25));
         assert_eq!(d.gpus[0].slowdown_reasons, ["thermal (driver)"]);
+        assert_eq!(d.gpus[0].slowdown_codes, ["thermal_driver"]);
         assert_eq!(d.gpus[0].temperature.status, None);
         assert_eq!(d.gpu_engines[0].kind, "3d");
         assert_eq!(d.processes[0].name, "editor.exe");
@@ -2540,6 +2725,15 @@ mod tests {
         // Readable names stay in the view: the selection source is the raw activity.
         let shared = serde_json::to_string(&raw).unwrap();
         assert!(!shared.contains("Example Browser"));
+        assert!(!app.unnamed && !app.members[0].unnamed);
+        // Without a name the English fallback stays, flagged for the window to word itself.
+        let mut raw = raw;
+        raw.applications[0].name = None;
+        raw.processes[0].instance.executable_name = Some("  ".into());
+        let view = activity(&raw, lookup, &no_readable_names);
+        let app = &view.applications[0];
+        assert_eq!(app.name, "Unnamed application");
+        assert!(app.unnamed && app.members[0].unnamed && !app.members[1].unnamed);
     }
 
     #[test]
@@ -3195,6 +3389,205 @@ mod tests {
         }
     }
 
+    #[test]
+    fn findings_and_their_citations_carry_phrases_beside_their_english_text() {
+        use pcagent_agent::{Answer, Category, Citation, Confidence};
+        let mut s = fixture();
+        s.evidence.push(Evidence::measured(
+            Metric::ProcessPrivateCommitBytes,
+            "proc-00000001",
+            5 << 30,
+            "fixture",
+            Window::instant(),
+        ));
+        let mut inv = pcagent_agent::local_report(&s);
+        let contributor = inv
+            .findings
+            .iter()
+            .find(|f| f.classification == Classification::LargestMemoryContributor)
+            .expect("the fixture has a largest memory contributor")
+            .clone();
+        // Every sentence the window shows has its phrase, in the same order as the texts.
+        let view = finding(&contributor, &inv.local_processes, &no_readable_names);
+        assert_eq!(
+            view.summary_phrase.as_ref().map(|p| p.key),
+            Some("summary.largest_memory_contributor")
+        );
+        assert_eq!(
+            view.facts,
+            // One process cited: no PID, as every text shown is labelled (#70).
+            ["Process editor.exe had 5.00 GiB private commit."]
+        );
+        assert_eq!(
+            view.fact_phrases,
+            [Some(
+                Phrase::new("fact.process_private_commit")
+                    .with(
+                        "process",
+                        Quantity::Process {
+                            name: Some("editor.exe".into()),
+                            pid: 4242
+                        }
+                    )
+                    .with("size", Quantity::Bytes(5 << 30))
+            )]
+        );
+        assert_eq!(
+            view.next_step_phrase.as_ref().map(|p| p.key),
+            Some("next.instance_growth")
+        );
+        assert_eq!(view.limitation_phrases.len(), view.limitations.len());
+        assert!(
+            view.limitation_phrases.iter().all(Option::is_some),
+            "{:?}",
+            view.limitations
+        );
+        // An unnamed process is named by the window, never by the English fallback.
+        let mut unnamed = inv.local_processes.clone();
+        unnamed[0].executable_name = None;
+        assert_eq!(
+            finding(&contributor, &unnamed, &no_readable_names).fact_phrases[0]
+                .as_ref()
+                .map(|p| p.values["process"].clone()),
+            Some(Quantity::Process {
+                name: None,
+                pid: 4242
+            })
+        );
+        // Cited by an AI answer: the classification names the source, its summary comes first.
+        inv.answer = Some(Answer {
+            text: "editor.exe holds the most [F1].".into(),
+            confidence: Confidence::Medium,
+            category: Category::Memory,
+            citations: vec![Citation {
+                reference: "F1".into(),
+                kind: CitationKind::Finding,
+                target: contributor.id.clone(),
+            }],
+            action_refs: Vec::new(),
+            follow_ups: Vec::new(),
+            unverified: Vec::new(),
+            repairs: 0,
+        });
+        let r = report(&inv, "q", &no_readable_names);
+        let cited = &r.answer.as_ref().unwrap().citations[0];
+        assert_eq!(cited.title, "Largest memory contributor");
+        assert_eq!(
+            cited.classification,
+            Some(Classification::LargestMemoryContributor)
+        );
+        assert_eq!(cited.facts.len(), 2);
+        assert_eq!(cited.fact_phrases.len(), 2);
+        assert_eq!(
+            cited.fact_phrases[0].as_ref().map(|p| p.key),
+            Some("summary.largest_memory_contributor")
+        );
+        assert_eq!(cited.fact_phrases[1], view.fact_phrases[0]);
+        let json = serde_json::to_value(cited).unwrap();
+        assert_eq!(json["classification"], "largest_memory_contributor");
+        assert_eq!(json["fact_phrases"][1]["values"]["size"]["unit"], "bytes");
+    }
+
+    #[test]
+    fn turn_limitations_have_a_phrase_when_the_window_knows_their_wording() {
+        let mut inv = pcagent_agent::local_report(&fixture());
+        inv.limitations = vec![
+            "Short sample: no sustained contention, memory leak or causal diagnosis can be established.".into(),
+            "Process list is ranked by read I/O rate; unknown values sort last.".into(),
+            "Process list is ranked by bogus; unknown values sort last.".into(),
+            "Initial observation thresholds are prototype triggers, not validated diagnostic rules.".into(),
+            LOCAL_EVIDENCE_NOTE.into(),
+            "A limitation the window has no wording for.".into(),
+        ];
+        let keys: Vec<Option<&str>> = report(&inv, "q", &no_readable_names)
+            .limitation_phrases
+            .iter()
+            .map(|p| p.as_ref().map(|p| p.key))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                Some("note.short_sample"),
+                Some("note.ranked_io_read"),
+                None,
+                Some("limit.thresholds"),
+                Some("note.local_evidence"),
+                None,
+            ]
+        );
+    }
+
+    /// The notes and missing-value reasons the window words itself are their producers' texts.
+    #[test]
+    fn notes_and_missing_reasons_match_their_producers() {
+        let sources = [
+            include_str!("../../../crates/telemetry/src/windows/mod.rs"),
+            include_str!("../../../crates/telemetry/src/windows/services.rs"),
+            include_str!("../../../crates/telemetry/src/activity.rs"),
+            include_str!("../../../crates/telemetry/src/counters.rs"),
+            include_str!("../../../crates/telemetry/src/gpu.rs"),
+            include_str!("../../../crates/store/src/samples/history.rs"),
+            include_str!("../../../crates/agent/src/history_tools.rs"),
+            include_str!("app.rs"),
+        ]
+        .concat();
+        for (key, text) in NOTES {
+            // The local Explain note is used by name where app.rs adds it.
+            let text = if key == "note.local_evidence" {
+                "view::LOCAL_EVIDENCE_NOTE"
+            } else {
+                text
+            };
+            assert!(sources.contains(text), "{key}: {text}");
+        }
+        assert!(sources.contains(&format!("\"{}{{}}{}\"", RANKED.0, RANKED.1)));
+        for (code, _) in RANKED_KEYS {
+            assert!(
+                pcagent_telemetry::ProcessSort::parse(code).is_some(),
+                "{code}"
+            );
+        }
+        for (text, code) in MISSING_REASONS {
+            assert!(sources.contains(text), "{code}: {text}");
+        }
+        let keys: BTreeSet<&str> = NOTES.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), NOTES.len());
+    }
+
+    #[test]
+    fn a_missing_live_value_names_its_reason_by_a_closed_code() {
+        let reason = |note: &str| {
+            let mut e = Evidence::missing(
+                Metric::ProcessCpuBasisPoints,
+                "proc-1",
+                "fixture",
+                Status::Partial,
+                note,
+            );
+            e.limitations.push("A second note.".into());
+            Measure::of(Some(&e)).note_code
+        };
+        assert_eq!(
+            reason("No earlier reading of this instance in this window; a rate needs two readings of the same instance."),
+            Some("first_reading")
+        );
+        assert_eq!(
+            reason("NVML returned 999 (unknown error)."),
+            Some("nvml_error")
+        );
+        assert_eq!(reason("Something else."), None);
+        // A usable value, or no evidence at all, has no reason.
+        let ok = Evidence::measured(
+            Metric::CpuBusyBasisPoints,
+            "system",
+            7,
+            "fixture",
+            Window::instant(),
+        );
+        assert_eq!(Measure::of(Some(&ok)).note_code, None);
+        assert_eq!(Measure::of(None).note_code, None);
+    }
+
     fn observed(tool: &str, cloud: Value) -> pcagent_agent::Observation {
         pcagent_agent::Observation {
             observation_id: format!("obs-{tool}"),
@@ -3204,6 +3597,7 @@ mod tests {
             status: pcagent_shared::Status::Unsupported,
             citable: false,
             facts: Vec::new(),
+            fact_phrases: Vec::new(),
             limitations: Vec::new(),
             observation: cloud,
             storage_items: Vec::new(),

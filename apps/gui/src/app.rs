@@ -10,7 +10,7 @@ use crate::{
     selection::{PreparedSelection, ReviewedSelection, SelectionPreview, SelectionRegistry},
     session::{ObservedModel, ObservedTools, SeenProcesses, Step},
     settings::{self, PrivacyMode, PrivacySettings},
-    view,
+    shell, view,
 };
 use pcagent_agent::{
     capabilities::Probes,
@@ -1660,9 +1660,7 @@ fn investigation(
         if let Some(selected) = ask.selected {
             report.mode = "local_evidence".into();
             report.record_local_observation(&GET_SELECTED_EVIDENCE, selected.output().clone());
-            report
-                .limitations
-                .push("Local evidence only: no model explanation was requested.".into());
+            report.limitations.push(view::LOCAL_EVIDENCE_NOTE.into());
         }
         report
     };
@@ -1841,9 +1839,10 @@ fn quick_folders() -> Vec<QuickFolder> {
 #[tauri::command]
 async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let texts = shell::shell_texts(pcagent_inspect::elevation::windows_ui_is_french());
         app.dialog()
             .file()
-            .set_title("Choose a folder to scan")
+            .set_title(texts.folder_dialog)
             .blocking_pick_folder()
             .and_then(|p| p.into_path().ok())
             .map(|p| p.display().to_string())
@@ -2320,11 +2319,13 @@ pub fn run() {
                 menu::{Menu, MenuItem},
                 tray::{TrayIconBuilder, TrayIconEvent},
             };
-            let open = MenuItem::with_id(app, "open", "Open PC Agent", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit PC Agent", true, None::<&str>)?;
+            // Drawn by Windows, outside the page: in the language of Windows itself.
+            let texts = shell::shell_texts(pcagent_inspect::elevation::windows_ui_is_french());
+            let open = MenuItem::with_id(app, "open", texts.tray_open, true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", texts.tray_quit, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             let mut tray = TrayIconBuilder::with_id("pcagent")
-                .tooltip("PC Agent — local performance history")
+                .tooltip(texts.tray_tooltip)
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => {

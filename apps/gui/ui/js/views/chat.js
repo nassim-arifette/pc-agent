@@ -4,6 +4,7 @@
 import { h, fill, announce } from "../dom.js";
 import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
+import { citationFacts, findingFacts, findingNextStep, findingSummary, targetText } from "../phrases.js";
 import { markdown, labelCitations } from "../markdown.js";
 import { mark } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "../ask.js";
@@ -15,7 +16,7 @@ import { adminChecksCard } from "../adminchecks.js";
 import { capable } from "../capabilities.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
-import { bytes, date, duration, labelled, usd } from "../format.js";
+import { bytes, date, duration, labelled, number, usd } from "../format.js";
 import { modelName, startModelId } from "../models.js";
 import { costFigure, costText, modelChange, modelsLabel, recordedSwitch, routingNote, shareName, turnModels, usedModelIds } from "../usage.js";
 import { navigate } from "../router.js";
@@ -198,7 +199,7 @@ function sourceLines(n, c) {
   const title = target ? `[${mdText(citationTitle(c))}](${target})` : mdText(citationTitle(c));
   const when = c.web ? webOrigin(c).trim() : c.measured_at_unix_ms ? `· ${t("copy.measured", { at: date(c.measured_at_unix_ms, true) })}` : "";
   const earlier = c.earlier ? ` · ${t("copy.earlier")}` : "";
-  return [`${n}. ${title}${when ? ` ${when}` : ""}${earlier}`, ...c.facts.map((fact) => `   - ${fact}`)];
+  return [`${n}. ${title}${when ? ` ${when}` : ""}${earlier}`, ...citationFacts(c, state.conversation?.turns).map((fact) => `   - ${fact}`)];
 }
 
 /** The answer as Markdown: the question, the answer with its numbered citations, then its sources. */
@@ -240,9 +241,11 @@ function usageLines(report) {
 
 function findingText(question, report) {
   const f = report.selected;
-  const lines = [labelled(`**${t("copy.question")}**`, question), "", `**${classificationLabel(f)}**`, "", f.summary];
-  if (f.facts.length) lines.push("", ...f.facts.map((x) => `- ${x}`));
-  if (f.next_step) lines.push("", labelled(`**${t("answer.next")}**`, f.next_step));
+  const facts = findingFacts(f);
+  const next = findingNextStep(f);
+  const lines = [labelled(`**${t("copy.question")}**`, question), "", `**${classificationLabel(f)}**`, "", findingSummary(f)];
+  if (facts.length) lines.push("", ...facts.map((x) => `- ${x}`));
+  if (next) lines.push("", labelled(`**${t("answer.next")}**`, next));
   return lines.join("\n");
 }
 
@@ -267,13 +270,15 @@ function writtenAnswer(report, index) {
 /** A local analysis: the rules' best finding, kept short. */
 function localFinding(question, report) {
   const f = report.selected;
+  const facts = findingFacts(f);
+  const next = findingNextStep(f);
   return h(
     "div",
     { class: "answer-text" },
     h("h4", { class: "md-heading" }, classificationLabel(f)),
-    h("p", null, f.summary),
-    f.facts.length ? h("ul", { class: "md-list" }, f.facts.map((x) => h("li", null, x))) : null,
-    f.next_step ? h("p", null, labelled(t("answer.next"), f.next_step)) : null,
+    h("p", null, findingSummary(f)),
+    facts.length ? h("ul", { class: "md-list" }, facts.map((x) => h("li", null, x))) : null,
+    next ? h("p", null, labelled(t("answer.next"), next)) : null,
     cloudReady() ? h("div", { class: "row" }, h("button", { type: "button", class: "btn", onclick: () => askWithAi(question) }, icon("sparkle"), t("chat.askAi"))) : null,
   );
 }
@@ -313,7 +318,7 @@ function planSummary(plan) {
   const files = plan.targets.reduce((n, x) => n + (x.files || 0), 0);
   const size = plan.targets.reduce((n, x) => n + (x.bytes || 0), 0);
   const parts = [];
-  if (files) parts.push(t(files === 1 ? "action.files.one" : "action.files", { count: files }));
+  if (files) parts.push(t(files === 1 ? "action.files.one" : "action.files", { count: number(files) }));
   if (size) parts.push(bytes(size));
   parts.push(t(`action.recovery.${plan.recovery}`));
   return parts.join(" · ");
@@ -337,7 +342,7 @@ async function review(turn, plan) {
         "ul",
         { class: "plan-targets" },
         plan.targets.map((x) =>
-          h("li", null, h("span", { class: "mono", title: x.executable_name || null }, x.label), x.files || x.bytes ? h("span", { class: "faint" }, ` · ${[x.files ? t("action.files", { count: x.files }) : null, x.bytes ? bytes(x.bytes) : null].filter(Boolean).join(", ")}`) : null),
+          h("li", null, h("span", { class: "mono", title: x.executable_name || null }, targetText(x)), x.files || x.bytes ? h("span", { class: "faint" }, ` · ${[x.files ? t("action.files", { count: x.files }) : null, x.bytes ? bytes(x.bytes) : null].filter(Boolean).join(", ")}`) : null),
         ),
       ),
       h("p", { class: "note" }, labelled(t("action.recovery"), t(`action.recovery.${plan.recovery}`))),

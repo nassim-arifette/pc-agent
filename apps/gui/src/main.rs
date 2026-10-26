@@ -19,6 +19,8 @@ mod session;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod shell;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod view;
 
 #[cfg(windows)]

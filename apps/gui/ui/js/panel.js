@@ -3,7 +3,8 @@
 // analysis keep their own context.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
-import { t } from "./i18n.js";
+import { t, language } from "./i18n.js";
+import { citationFacts, limitationLines, targetLabel } from "./phrases.js";
 import { state, subscribe, openPanel, closePanel, setLivePaused, watchActivity, pokeActivity } from "./store.js";
 import { liveView, driveName } from "./live.js";
 import { numbering, citationTitle, isWeb } from "./citations.js";
@@ -41,17 +42,22 @@ function sourceCard(citation, n, focused) {
       citation.measured_at_unix_ms ? h("span", { class: "source-time" }, t("sources.measuredAt", { time: clock(citation.measured_at_unix_ms) })) : null,
     ),
     citation.earlier ? h("p", { class: "note" }, t("sources.earlier")) : null,
-    h("ul", { class: "source-facts" }, citation.facts.map((fact) => h("li", null, fact))),
+    h("ul", { class: "source-facts" }, citationFacts(citation, state.conversation?.turns).map((fact) => h("li", null, fact))),
   );
 }
 
-/** What could not be measured, and what the run consumed: kept out of the answer, one click away. */
+/**
+ * What could not be measured, and what the run consumed: kept out of the answer, one click away.
+ * Limitations the window cannot word in another language stay one more click away, in English.
+ */
 function runDetails(report) {
-  const limits = [...new Set([...(report.limitations || []), ...(report.selected?.limitations || [])])];
+  const lines = limitationLines(report);
+  const english = language() === "en" ? [] : lines.filter((line) => !line.worded);
+  const limits = english.length ? lines.filter((line) => line.worded) : lines;
   const missing = (report.coverage?.domains || []).filter((d) => d.status !== "complete");
   const u = report.usage;
   const blocks = [];
-  if (limits.length || missing.length) {
+  if (lines.length || missing.length) {
     blocks.push(
       h(
         "details",
@@ -63,9 +69,17 @@ function runDetails(report) {
           h(
             "ul",
             { class: "bullets note" },
-            missing.map((d) => h("li", null, labelled(`${t(`domain.${d.domain}`)}${d.target ? ` (${d.target})` : ""}`, t(`coverage.${d.status}`)))),
-            limits.map((x) => h("li", null, x)),
+            missing.map((d) => h("li", null, labelled(`${t(`domain.${d.domain}`)}${d.target ? ` (${targetLabel(d.target)})` : ""}`, t(`coverage.${d.status}`)))),
+            limits.map((x) => h("li", null, x.text)),
           ),
+          english.length
+            ? h(
+                "details",
+                { class: "more" },
+                h("summary", null, icon("chevron"), t("answer.limits.english", { count: number(english.length) })),
+                h("ul", { class: "bullets note", lang: "en" }, english.map((x) => h("li", null, x.text))),
+              )
+            : null,
         ),
       ),
     );

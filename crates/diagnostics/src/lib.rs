@@ -3,8 +3,8 @@
 mod compare;
 pub use compare::{compare, Comparison, Direction, Outcome, WindowSummary};
 use pcagent_shared::{
-    gpu_slowdown_reasons, ratio_basis_points, Evidence, Metric, Snapshot,
-    NVML_HW_POWER_BRAKE_SLOWDOWN, NVML_HW_SLOWDOWN, NVML_HW_THERMAL_SLOWDOWN,
+    gpu_slowdown_codes, gpu_slowdown_reasons, ratio_basis_points, Evidence, Metric, Phrase,
+    Quantity, Snapshot, NVML_HW_POWER_BRAKE_SLOWDOWN, NVML_HW_SLOWDOWN, NVML_HW_THERMAL_SLOWDOWN,
     NVML_SW_THERMAL_SLOWDOWN, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,21 @@ pub enum Classification {
     InsufficientEvidence,
 }
 impl Classification {
+    /// Every classification, in declaration order.
+    pub const ALL: [Self; 12] = [
+        Self::LowAvailableMemory,
+        Self::HighCommitRatio,
+        Self::HighCpuSample,
+        Self::LargestMemoryContributor,
+        Self::HighDiskLatency,
+        Self::HardFaultPressure,
+        Self::SaturatedLogicalProcessor,
+        Self::HighGpuEngineSample,
+        Self::GpuClockSlowdown,
+        Self::GpuMemoryPressure,
+        Self::NoContentionObserved,
+        Self::InsufficientEvidence,
+    ];
     /// Short heading for human-readable output.
     pub fn label(self) -> &'static str {
         match self {
@@ -68,6 +83,10 @@ impl Support {
 pub struct Fact {
     pub text: String,
     pub evidence_refs: Vec<String>,
+    /// The same statement as a closed key and the measured values, for the desktop window to
+    /// word in its own language. Never serialized: model payloads, traces and the CLI keep `text`.
+    #[serde(skip)]
+    pub phrase: Option<Phrase>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
@@ -122,6 +141,97 @@ const GPU_SLOWDOWN_BITS: u64 = NVML_HW_SLOWDOWN
 const HIGH_GPU_MEMORY_BP: u64 = 9_000;
 const NO_PURCHASE: &str =
     "This observation is not a hardware replacement or purchase recommendation.";
+const SUMMARY_LOW_MEMORY: &str =
+    "Available physical memory is low in this sample. Memory contention is plausible but unproven.";
+const SUMMARY_HARD_FAULTS: &str = "Many pages were read from disk to resolve hard faults while available memory was low. Paging pressure is plausible but unproven.";
+const SUMMARY_HIGH_COMMIT: &str = "System commit is close to its current limit. This does not measure physical RAM occupancy or page-file activity.";
+const SUMMARY_HIGH_CPU: &str = "Aggregate CPU activity is high during this short observation. Its connection to the reported symptom needs more evidence.";
+const SUMMARY_DISK_LATENCY: &str = "Average disk request latency is high in this sample. Storage contention is plausible but unproven.";
+const SUMMARY_SATURATED_CORE: &str = "One logical processor was nearly saturated while aggregate CPU was not. A single busy thread is plausible but unproven.";
+const SUMMARY_GPU_ENGINE: &str = "A GPU engine was nearly fully busy during this short observation. High GPU use is expected for games and rendering and is not a fault by itself.";
+const SUMMARY_LARGEST_COMMIT: &str = "This readable process instance has the largest private commit observed. Size alone does not indicate a leak, malware or uselessness.";
+const SUMMARY_NO_CONTENTION: &str = "No memory or aggregate CPU contention was observed in this sample. No software intervention is identified from these measurements.";
+const SUMMARY_ABSTAIN: &str = "The available measurements do not establish the cause of the symptom. No intervention or hardware purchase is justified by this report alone.";
+const SUMMARY_GPU_SLOWDOWN: &str = "An NVIDIA GPU was reducing its clocks because of heat or a hardware limit during this sample. Laptops do this near their limits; a sustained slowdown under load makes games and rendering slower.";
+const SUMMARY_GPU_MEMORY: &str = "An NVIDIA GPU's memory was nearly full during this sample. Games and applications that need more video memory can stutter when it is full.";
+const NEXT_MEMORY: &str =
+    "Inspect process memory contributors and observe whether low availability persists.";
+const NEXT_HARD_FAULTS: &str =
+    "Observe whether hard faults and low availability persist together under the same workload.";
+const NEXT_DISK_LATENCY: &str = "Observe disk latency over a longer representative workload and identify which activity issues the requests.";
+const NEXT_GROWTH: &str =
+    "Observe whether this instance grows under the same workload before drawing conclusions.";
+const NEXT_GPU_SLOWDOWN: &str = "Check the vents and airflow, then observe the GPU temperature and slowdown reasons again under the same workload.";
+const NEXT_GPU_MEMORY: &str = "Close other GPU-heavy applications or lower texture and resolution settings, then observe GPU memory again under the same workload.";
+const LIMIT_HARD_FAULTS: &str = "Pages Input/sec includes executables and mapped files being loaded; hard faults are not hardware faults.";
+const LIMIT_COMMIT: &str =
+    "Commit limit includes page files; it is not a RAM purchase recommendation.";
+const LIMIT_CORE: &str = "Processor utility is normalized to nominal frequency and threads migrate between processors; the busy thread is not identified.";
+const LIMIT_GPU_ENGINES: &str = "GPU engines are aggregated by generic type; dedicated memory, adapter and the using process are not reported.";
+const LIMIT_PROCESSES: &str =
+    "Inaccessible processes may be larger; working sets and commit are not exclusive RAM.";
+const LIMIT_NVML: &str =
+    "NVML reports the driver's state at one instant; a short spike can set a reason.";
+const LIMIT_GPU_MEMORY: &str = "Memory in use includes the driver's reserve; the process holding it is not reported on Windows.";
+const NOT_MEASURED: &str = "Not measured in this snapshot: ";
+
+/// Every fixed sentence a finding shows (its summary, next step and limitations) with the closed
+/// key the desktop window words it by. Support reasons, hypotheses and counter-evidence are not
+/// displayed there.
+const SENTENCES: [(&str, &str); 29] = [
+    ("summary.low_available_memory", SUMMARY_LOW_MEMORY),
+    ("summary.hard_fault_pressure", SUMMARY_HARD_FAULTS),
+    ("summary.high_commit_ratio", SUMMARY_HIGH_COMMIT),
+    ("summary.high_cpu_sample", SUMMARY_HIGH_CPU),
+    ("summary.high_disk_latency", SUMMARY_DISK_LATENCY),
+    (
+        "summary.saturated_logical_processor",
+        SUMMARY_SATURATED_CORE,
+    ),
+    ("summary.high_gpu_engine_sample", SUMMARY_GPU_ENGINE),
+    ("summary.largest_memory_contributor", SUMMARY_LARGEST_COMMIT),
+    ("summary.no_contention_observed", SUMMARY_NO_CONTENTION),
+    ("summary.insufficient_evidence", SUMMARY_ABSTAIN),
+    ("summary.gpu_clock_slowdown", SUMMARY_GPU_SLOWDOWN),
+    ("summary.gpu_memory_pressure", SUMMARY_GPU_MEMORY),
+    ("next.observe_longer", OBSERVE_LONGER),
+    ("next.memory_contributors", NEXT_MEMORY),
+    ("next.hard_faults", NEXT_HARD_FAULTS),
+    ("next.disk_latency", NEXT_DISK_LATENCY),
+    ("next.instance_growth", NEXT_GROWTH),
+    ("next.gpu_slowdown", NEXT_GPU_SLOWDOWN),
+    ("next.gpu_memory", NEXT_GPU_MEMORY),
+    ("limit.thresholds", THRESHOLDS),
+    ("limit.no_purchase", NO_PURCHASE),
+    ("limit.disk_aggregate", DISK_AGGREGATE),
+    ("limit.hard_faults", LIMIT_HARD_FAULTS),
+    ("limit.commit_limit", LIMIT_COMMIT),
+    ("limit.processor_utility", LIMIT_CORE),
+    ("limit.gpu_engines", LIMIT_GPU_ENGINES),
+    ("limit.inaccessible_processes", LIMIT_PROCESSES),
+    ("limit.nvml_instant", LIMIT_NVML),
+    ("limit.gpu_memory_reserve", LIMIT_GPU_MEMORY),
+];
+
+/// A fixed sentence of a finding (its summary, next step or a limitation, including the list of
+/// counters a snapshot did not measure) as a closed key, for the desktop window to word in its
+/// own language. `None` for any other text. Facts carry their own phrase ([`Fact::phrase`]).
+pub fn phrase(text: &str) -> Option<Phrase> {
+    if let Some((key, _)) = SENTENCES.iter().find(|(_, sentence)| *sentence == text) {
+        return Some(Phrase::new(key));
+    }
+    let labels = text.strip_prefix(NOT_MEASURED)?.strip_suffix('.')?;
+    let metrics = labels
+        .split(", ")
+        .map(|label| {
+            SYSTEM_METRICS
+                .iter()
+                .find(|(_, known)| *known == label)
+                .map(|(metric, _)| *metric)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Phrase::new("limit.not_measured").with("metrics", Quantity::Metrics(metrics)))
+}
 
 /// Names the counters this snapshot could not measure, so gaps are explicit per snapshot.
 fn unmeasured(s: &Snapshot) -> Option<String> {
@@ -130,7 +240,7 @@ fn unmeasured(s: &Snapshot) -> Option<String> {
         .filter(|(m, _)| s.system_value(*m).is_none())
         .map(|(_, label)| *label)
         .collect();
-    (!absent.is_empty()).then(|| format!("Not measured in this snapshot: {}.", absent.join(", ")))
+    (!absent.is_empty()).then(|| format!("{NOT_MEASURED}{}.", absent.join(", ")))
 }
 fn ms(microseconds: u64) -> String {
     format!("{:.1} ms", microseconds as f64 / 1_000.0)
@@ -145,10 +255,20 @@ fn gib(bytes: u64) -> String {
 fn percent(basis_points: u64) -> String {
     format!("{:.1}%", basis_points as f64 / 100.0)
 }
-fn fact(text: String, refs: &[&Evidence]) -> Fact {
+fn fact(text: String, phrase: Phrase, refs: &[&Evidence]) -> Fact {
     Fact {
         text,
         evidence_refs: refs.iter().map(|e| e.id.clone()).collect(),
+        phrase: Some(phrase),
+    }
+}
+/// The phrase of a disk latency fact, by direction.
+fn latency_phrase(kind: &str, over: bool) -> &'static str {
+    match (kind, over) {
+        ("read", true) => "fact.disk_read_latency_over",
+        ("read", false) => "fact.disk_read_latency",
+        (_, true) => "fact.disk_write_latency_over",
+        (_, false) => "fact.disk_write_latency",
     }
 }
 
@@ -245,9 +365,18 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     if let Some((a, t, available, total, bp)) = low_memory {
         let mut d = Draft::new(
             Classification::LowAvailableMemory,
-            "Available physical memory is low in this sample. Memory contention is plausible but unproven.",
+            SUMMARY_LOW_MEMORY,
             vec![fact(
-                format!("Available physical memory was {} of {} ({}).", gib(available), gib(total), percent(bp)),
+                format!(
+                    "Available physical memory was {} of {} ({}).",
+                    gib(available),
+                    gib(total),
+                    percent(bp)
+                ),
+                Phrase::new("fact.available_of_total")
+                    .with("available", Quantity::Bytes(available))
+                    .with("total", Quantity::Bytes(total))
+                    .with("share", Quantity::BasisPoints(bp)),
                 &[a, t],
             )],
         );
@@ -267,8 +396,7 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             }
             _ => {}
         }
-        d.next_step =
-            "Inspect process memory contributors and observe whether low availability persists.";
+        d.next_step = NEXT_MEMORY;
         drafts.push(d);
     }
     if let (Some((a, t, _, _, bp)), Some((f, faults))) = (
@@ -279,10 +407,24 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     ) {
         let mut d = Draft::new(
             Classification::HardFaultPressure,
-            "Many pages were read from disk to resolve hard faults while available memory was low. Paging pressure is plausible but unproven.",
+            SUMMARY_HARD_FAULTS,
             vec![
-                fact(format!("Hard-fault page reads averaged {} over {} ms.", rate(faults), f.window.duration_ms), &[f]),
-                fact(format!("Available physical memory was {}.", percent(bp)), &[a, t]),
+                fact(
+                    format!(
+                        "Hard-fault page reads averaged {} over {} ms.",
+                        rate(faults),
+                        f.window.duration_ms
+                    ),
+                    Phrase::new("fact.hard_faults_over")
+                        .with("rate", Quantity::PagesPerSecondX100(faults))
+                        .with("window", Quantity::Milliseconds(f.window.duration_ms)),
+                    &[f],
+                ),
+                fact(
+                    format!("Available physical memory was {}.", percent(bp)),
+                    Phrase::new("fact.available_share").with("share", Quantity::BasisPoints(bp)),
+                    &[a, t],
+                ),
             ],
         );
         d.hypothesis = Some("Memory pressure may be forcing pages to be read back from disk.");
@@ -296,35 +438,54 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             ));
             d.facts.push(fact(
                 format!("Average disk read latency was {}.", ms(read)),
+                Phrase::new(latency_phrase("read", false))
+                    .with("latency", Quantity::Microseconds(read)),
                 &[e],
             ));
         }
-        d.limitations.push("Pages Input/sec includes executables and mapped files being loaded; hard faults are not hardware faults.".into());
+        d.limitations.push(LIMIT_HARD_FAULTS.into());
         d.limitations.push(NO_PURCHASE.into());
-        d.next_step = "Observe whether hard faults and low availability persist together under the same workload.";
+        d.next_step = NEXT_HARD_FAULTS;
         drafts.push(d);
     }
     if let Some((u, l, used, limit, bp)) = r.commit.filter(|c| c.4 >= 9_000) {
         let mut d = Draft::new(
             Classification::HighCommitRatio,
-            "System commit is close to its current limit. This does not measure physical RAM occupancy or page-file activity.",
+            SUMMARY_HIGH_COMMIT,
             vec![fact(
-                format!("System commit was {} of a {} limit ({}).", gib(used), gib(limit), percent(bp)),
+                format!(
+                    "System commit was {} of a {} limit ({}).",
+                    gib(used),
+                    gib(limit),
+                    percent(bp)
+                ),
+                Phrase::new("fact.commit_of_limit")
+                    .with("used", Quantity::Bytes(used))
+                    .with("limit", Quantity::Bytes(limit))
+                    .with("share", Quantity::BasisPoints(bp)),
                 &[u, l],
             )],
         );
         d.hypothesis =
             Some("Allocation failures or page-file growth may occur if commit keeps rising.");
-        d.limitations.push(
-            "Commit limit includes page files; it is not a RAM purchase recommendation.".into(),
-        );
+        d.limitations.push(LIMIT_COMMIT.into());
         drafts.push(d);
     }
     if let Some((e, busy)) = r.cpu.filter(|c| c.1 >= 9_000) {
         let mut d = Draft::new(
             Classification::HighCpuSample,
-            "Aggregate CPU activity is high during this short observation. Its connection to the reported symptom needs more evidence.",
-            vec![fact(format!("Aggregate CPU busy was {} of total capacity over {} ms.", percent(busy), e.window.duration_ms), &[e])],
+            SUMMARY_HIGH_CPU,
+            vec![fact(
+                format!(
+                    "Aggregate CPU busy was {} of total capacity over {} ms.",
+                    percent(busy),
+                    e.window.duration_ms
+                ),
+                Phrase::new("fact.cpu_busy_over")
+                    .with("share", Quantity::BasisPoints(busy))
+                    .with("window", Quantity::Milliseconds(e.window.duration_ms)),
+                &[e],
+            )],
         );
         d.hypothesis = Some("CPU contention may contribute to the reported symptom.");
         drafts.push(d);
@@ -344,12 +505,19 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     if !slow_disk.is_empty() {
         let mut d = Draft::new(
             Classification::HighDiskLatency,
-            "Average disk request latency is high in this sample. Storage contention is plausible but unproven.",
+            SUMMARY_DISK_LATENCY,
             slow_disk
                 .iter()
                 .map(|(e, v, kind)| {
                     fact(
-                        format!("Average disk {kind} latency was {} over {} ms.", ms(*v), e.window.duration_ms),
+                        format!(
+                            "Average disk {kind} latency was {} over {} ms.",
+                            ms(*v),
+                            e.window.duration_ms
+                        ),
+                        Phrase::new(latency_phrase(kind, true))
+                            .with("latency", Quantity::Microseconds(*v))
+                            .with("window", Quantity::Milliseconds(e.window.duration_ms)),
                         &[e],
                     )
                 })
@@ -364,18 +532,22 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                 "Disks were idle {} of the window; averages over few requests are noisy.",
                 percent(idle)
             ));
-            d.facts
-                .push(fact(format!("Disk idle time was {}.", percent(idle)), &[e]));
+            d.facts.push(fact(
+                format!("Disk idle time was {}.", percent(idle)),
+                Phrase::new("fact.disk_idle").with("share", Quantity::BasisPoints(idle)),
+                &[e],
+            ));
         }
         if let Some((e, queue)) = snapshot.system_value(Metric::DiskQueueLength) {
             d.facts.push(fact(
                 format!("{queue} disk requests were outstanding at the end of the window."),
+                Phrase::new("fact.disk_queue").with("count", Quantity::Count(queue)),
                 &[e],
             ));
         }
         d.limitations.push(DISK_AGGREGATE.into());
         d.limitations.push(NO_PURCHASE.into());
-        d.next_step = "Observe disk latency over a longer representative workload and identify which activity issues the requests.";
+        d.next_step = NEXT_DISK_LATENCY;
         drafts.push(d);
     }
     let busiest_core = snapshot
@@ -384,14 +556,29 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     if let (Some((c, core)), Some((e, busy))) = (busiest_core, r.cpu.filter(|c| c.1 < 9_000)) {
         let mut d = Draft::new(
             Classification::SaturatedLogicalProcessor,
-            "One logical processor was nearly saturated while aggregate CPU was not. A single busy thread is plausible but unproven.",
+            SUMMARY_SATURATED_CORE,
             vec![
-                fact(format!("The busiest logical processor had {} processor utility.", percent(core)), &[c]),
-                fact(format!("Aggregate CPU busy was {} of total capacity.", percent(busy)), &[e]),
+                fact(
+                    format!(
+                        "The busiest logical processor had {} processor utility.",
+                        percent(core)
+                    ),
+                    Phrase::new("fact.busiest_core").with("share", Quantity::BasisPoints(core)),
+                    &[c],
+                ),
+                fact(
+                    format!(
+                        "Aggregate CPU busy was {} of total capacity.",
+                        percent(busy)
+                    ),
+                    Phrase::new("fact.cpu_busy_of_total")
+                        .with("share", Quantity::BasisPoints(busy)),
+                    &[e],
+                ),
             ],
         );
         d.hypothesis = Some("A single-threaded workload may be limited by one processor.");
-        d.limitations.push("Processor utility is normalized to nominal frequency and threads migrate between processors; the busy thread is not identified.".into());
+        d.limitations.push(LIMIT_CORE.into());
         drafts.push(d);
     }
     if let Some((g, gpu)) = snapshot
@@ -404,6 +591,9 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                 percent(gpu),
                 g.window.duration_ms
             ),
+            Phrase::new("fact.gpu_engine_over")
+                .with("share", Quantity::BasisPoints(gpu))
+                .with("window", Quantity::Milliseconds(g.window.duration_ms)),
             &[g],
         )];
         facts.extend(
@@ -416,16 +606,18 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                 .map(|e| {
                     fact(
                         format!("Engine type {} reached that value.", e.entity_ref),
+                        Phrase::new("fact.gpu_engine_type")
+                            .with("engine", Quantity::Entity(e.entity_ref.clone())),
                         &[e],
                     )
                 }),
         );
         let mut d = Draft::new(
             Classification::HighGpuEngineSample,
-            "A GPU engine was nearly fully busy during this short observation. High GPU use is expected for games and rendering and is not a fault by itself.",
+            SUMMARY_GPU_ENGINE,
             facts,
         );
-        d.limitations.push("GPU engines are aggregated by generic type; dedicated memory, adapter and the using process are not reported.".into());
+        d.limitations.push(LIMIT_GPU_ENGINES.into());
         d.limitations.push(NO_PURCHASE.into());
         drafts.push(d);
     }
@@ -433,19 +625,22 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     if let Some((p, e, bytes)) = largest_private_commit(snapshot) {
         let mut d = Draft::new(
             Classification::LargestMemoryContributor,
-            "This readable process instance has the largest private commit observed. Size alone does not indicate a leak, malware or uselessness.",
-            vec![fact(format!("Process {p} had {} private commit.", gib(bytes)), &[e])],
+            SUMMARY_LARGEST_COMMIT,
+            vec![fact(
+                format!("Process {p} had {} private commit.", gib(bytes)),
+                Phrase::new("fact.process_private_commit")
+                    .with("process", Quantity::Entity(p.to_owned()))
+                    .with("size", Quantity::Bytes(bytes)),
+                &[e],
+            )],
         );
         (d.support, d.support_reason) = if low_memory.is_some() {
             (Support::Plausible, "Observed together with low available memory in the same sample; one sample cannot attribute a slowdown.")
         } else {
             (Support::Insufficient, "No memory contention is observed in this sample; a large allocation is not a problem by itself.")
         };
-        d.limitations.push(
-            "Inaccessible processes may be larger; working sets and commit are not exclusive RAM."
-                .into(),
-        );
-        d.next_step = "Observe whether this instance grows under the same workload before drawing conclusions.";
+        d.limitations.push(LIMIT_PROCESSES.into());
+        d.next_step = NEXT_GROWTH;
         drafts.push(d);
     }
     if let (Some(a), Some(c), Some((e, busy))) = (r.available, r.commit, r.cpu) {
@@ -463,11 +658,24 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         if a.4 >= 2_000 && c.4 < 8_000 && busy < 5_000 && !contended {
             let mut d = Draft::new(
                 Classification::NoContentionObserved,
-                "No memory or aggregate CPU contention was observed in this sample. No software intervention is identified from these measurements.",
+                SUMMARY_NO_CONTENTION,
                 vec![
-                    fact(format!("Available physical memory was {}.", percent(a.4)), &[a.0, a.1]),
-                    fact(format!("System commit was {} of its limit.", percent(c.4)), &[c.0, c.1]),
-                    fact(format!("Aggregate CPU busy was {}.", percent(busy)), &[e]),
+                    fact(
+                        format!("Available physical memory was {}.", percent(a.4)),
+                        Phrase::new("fact.available_share")
+                            .with("share", Quantity::BasisPoints(a.4)),
+                        &[a.0, a.1],
+                    ),
+                    fact(
+                        format!("System commit was {} of its limit.", percent(c.4)),
+                        Phrase::new("fact.commit_share").with("share", Quantity::BasisPoints(c.4)),
+                        &[c.0, c.1],
+                    ),
+                    fact(
+                        format!("Aggregate CPU busy was {}.", percent(busy)),
+                        Phrase::new("fact.cpu_busy").with("share", Quantity::BasisPoints(busy)),
+                        &[e],
+                    ),
                 ],
             );
             match snapshot.system_value(Metric::CpuBusiestCoreBasisPoints) {
@@ -476,6 +684,7 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                         "The busiest logical processor had {} processor utility.",
                         percent(core)
                     ),
+                    Phrase::new("fact.busiest_core").with("share", Quantity::BasisPoints(core)),
                     &[c],
                 )),
                 None => d.counter_evidence.push(
@@ -490,6 +699,8 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                 if let Some((e, v)) = snapshot.system_value(m) {
                     d.facts.push(fact(
                         format!("Average disk {kind} latency was {}.", ms(v)),
+                        Phrase::new(latency_phrase(kind, false))
+                            .with("latency", Quantity::Microseconds(v)),
                         &[e],
                     ));
                 }
@@ -497,6 +708,8 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             if let Some((f, faults)) = snapshot.system_value(Metric::HardFaultPagesPerSecondX100) {
                 d.facts.push(fact(
                     format!("Hard-fault page reads were {}.", rate(faults)),
+                    Phrase::new("fact.hard_faults")
+                        .with("rate", Quantity::PagesPerSecondX100(faults)),
                     &[f],
                 ));
             }
@@ -506,7 +719,7 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
     }
     let mut abstain = Draft::new(
         Classification::InsufficientEvidence,
-        "The available measurements do not establish the cause of the symptom. No intervention or hardware purchase is justified by this report alone.",
+        SUMMARY_ABSTAIN,
         snapshot
             .evidence
             .iter()
@@ -514,7 +727,10 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             .filter_map(|e| {
                 let value = e.usable_value()?;
                 let text = format!("{}: {}.", e.metric.label(), e.metric.format_value(value));
-                Some(fact(text, &[e]))
+                let phrase = Phrase::new("fact.metric_value")
+                    .with("metric", Quantity::Metric(e.metric))
+                    .with("value", Quantity::of(e.metric, value));
+                Some(fact(text, phrase, &[e]))
             })
             .collect(),
     );
@@ -546,6 +762,7 @@ fn nvidia_findings(snapshot: &Snapshot, drafts: &mut Vec<Draft>) {
     let (mut slow, mut full) = (Vec::new(), Vec::new());
     for entity in devices {
         let name = format!("NVIDIA GPU {}", entity.trim_start_matches("gpu-nvidia-"));
+        let gpu = || Quantity::Entity(entity.to_owned());
         if let Some((e, bits)) = value(entity, Metric::GpuSlowdownReasons)
             .filter(|(_, bits)| bits & GPU_SLOWDOWN_BITS != 0)
         {
@@ -554,10 +771,19 @@ fn nvidia_findings(snapshot: &Snapshot, drafts: &mut Vec<Draft>) {
                     "{name} reported slowdown reasons: {}.",
                     gpu_slowdown_reasons(bits).join(", ")
                 ),
+                Phrase::new("fact.gpu_slowdown")
+                    .with("gpu", gpu())
+                    .with("reasons", Quantity::GpuSlowdown(gpu_slowdown_codes(bits))),
                 &[e],
             ));
             if let Some((t, celsius)) = value(entity, Metric::GpuTemperatureCelsius) {
-                slow.push(fact(format!("{name} was at {celsius} °C."), &[t]));
+                slow.push(fact(
+                    format!("{name} was at {celsius} °C."),
+                    Phrase::new("fact.gpu_temperature")
+                        .with("gpu", gpu())
+                        .with("temperature", Quantity::Celsius(celsius)),
+                    &[t],
+                ));
             }
         }
         if let (Some((u, used)), Some((t, total))) = (
@@ -573,34 +799,28 @@ fn nvidia_findings(snapshot: &Snapshot, drafts: &mut Vec<Draft>) {
                         gib(total),
                         percent(bp)
                     ),
+                    Phrase::new("fact.gpu_memory")
+                        .with("gpu", gpu())
+                        .with("used", Quantity::Bytes(used))
+                        .with("total", Quantity::Bytes(total))
+                        .with("share", Quantity::BasisPoints(bp)),
                     &[u, t],
                 ));
             }
         }
     }
     if !slow.is_empty() {
-        let mut d = Draft::new(
-            Classification::GpuClockSlowdown,
-            "An NVIDIA GPU was reducing its clocks because of heat or a hardware limit during this sample. Laptops do this near their limits; a sustained slowdown under load makes games and rendering slower.",
-            slow,
-        );
+        let mut d = Draft::new(Classification::GpuClockSlowdown, SUMMARY_GPU_SLOWDOWN, slow);
         d.hypothesis = Some("If it persists under the same workload, cooling (dust, blocked vents, a soft surface under a laptop) or the power supply may be limiting the GPU.");
-        d.next_step = "Check the vents and airflow, then observe the GPU temperature and slowdown reasons again under the same workload.";
-        d.limitations.push(
-            "NVML reports the driver's state at one instant; a short spike can set a reason."
-                .into(),
-        );
+        d.next_step = NEXT_GPU_SLOWDOWN;
+        d.limitations.push(LIMIT_NVML.into());
         d.limitations.push(NO_PURCHASE.into());
         drafts.push(d);
     }
     if !full.is_empty() {
-        let mut d = Draft::new(
-            Classification::GpuMemoryPressure,
-            "An NVIDIA GPU's memory was nearly full during this sample. Games and applications that need more video memory can stutter when it is full.",
-            full,
-        );
-        d.next_step = "Close other GPU-heavy applications or lower texture and resolution settings, then observe GPU memory again under the same workload.";
-        d.limitations.push("Memory in use includes the driver's reserve; the process holding it is not reported on Windows.".into());
+        let mut d = Draft::new(Classification::GpuMemoryPressure, SUMMARY_GPU_MEMORY, full);
+        d.next_step = NEXT_GPU_MEMORY;
+        d.limitations.push(LIMIT_GPU_MEMORY.into());
         d.limitations.push(NO_PURCHASE.into());
         drafts.push(d);
     }
@@ -908,6 +1128,158 @@ mod tests {
         let texts: Vec<&str> = abstain.facts.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(texts, ["CPU (all cores): 11.2%.", "Disk idle time: 98.1%."]);
     }
+    /// Snapshots that together raise every classification.
+    fn every_classification() -> Vec<Snapshot> {
+        use pcagent_shared::{NVML_HW_THERMAL_SLOWDOWN, NVML_SW_THERMAL_SLOWDOWN};
+        let mut gpu = healthy_with(&[(Metric::GpuBusiestEngineBasisPoints, 9_800)]);
+        for (metric, entity, value) in [
+            (Metric::GpuEngineBasisPoints, "gpu-engine-3d", 9_800),
+            (
+                Metric::GpuSlowdownReasons,
+                "gpu-nvidia-0",
+                NVML_HW_THERMAL_SLOWDOWN | NVML_SW_THERMAL_SLOWDOWN,
+            ),
+            (Metric::GpuTemperatureCelsius, "gpu-nvidia-0", 87),
+            (Metric::GpuMemoryUsedBytes, "gpu-nvidia-0", 1_950 << 20),
+            (Metric::GpuMemoryTotalBytes, "gpu-nvidia-0", 2 << 30),
+        ] {
+            gpu.evidence.push(Evidence::measured(
+                metric,
+                entity,
+                value,
+                "fixture",
+                Window::instant(),
+            ));
+        }
+        vec![
+            with_process(
+                sample(&[
+                    (Metric::PhysicalAvailableBytes, 3),
+                    (Metric::PhysicalTotalBytes, 100),
+                    (Metric::SystemCommitBytes, 95),
+                    (Metric::SystemCommitLimitBytes, 100),
+                    (Metric::CpuBusyBasisPoints, 9_500),
+                    (Metric::HardFaultPagesPerSecondX100, 250_000),
+                    (Metric::DiskReadLatencyMicroseconds, 1_000),
+                ]),
+                8 << 30,
+            ),
+            healthy_with(&[
+                (Metric::DiskReadLatencyMicroseconds, 80_000),
+                (Metric::DiskWriteLatencyMicroseconds, 60_000),
+                (Metric::DiskIdleBasisPoints, 9_500),
+                (Metric::DiskQueueLength, 2),
+                (Metric::CpuBusiestCoreBasisPoints, 9_900),
+            ]),
+            gpu,
+            healthy_with(&[
+                (Metric::CpuBusiestCoreBasisPoints, 3_000),
+                (Metric::DiskReadLatencyMicroseconds, 1_000),
+                (Metric::DiskWriteLatencyMicroseconds, 2_000),
+                (Metric::HardFaultPagesPerSecondX100, 500),
+            ]),
+            sample(&HEALTHY),
+        ]
+    }
+
+    #[test]
+    fn every_displayed_sentence_has_a_phrase() {
+        // One summary key per classification, and every classification raised.
+        let mut summaries: Vec<(Classification, &str)> = Vec::new();
+        for snapshot in every_classification() {
+            for f in analyze(&snapshot) {
+                let summary = phrase(&f.summary).unwrap_or_else(|| panic!("{}", f.summary));
+                assert!(summary.key.starts_with("summary."), "{}", summary.key);
+                match summaries.iter().find(|(c, _)| *c == f.classification) {
+                    Some((_, key)) => assert_eq!(*key, summary.key),
+                    None => {
+                        assert!(summaries.iter().all(|(_, key)| *key != summary.key));
+                        summaries.push((f.classification, summary.key));
+                    }
+                }
+                assert!(phrase(&f.next_step).is_some(), "{}", f.next_step);
+                for limit in &f.limitations {
+                    assert!(phrase(limit).is_some(), "{limit}");
+                }
+                for fact in &f.facts {
+                    let phrase = fact
+                        .phrase
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{}", fact.text));
+                    assert!(phrase.key.starts_with("fact."), "{}", phrase.key);
+                    assert!(!phrase.values.is_empty(), "{}", phrase.key);
+                }
+            }
+        }
+        // Every classification is raised, and listed in `Classification::ALL`.
+        assert_eq!(summaries.len(), Classification::ALL.len(), "{summaries:?}");
+        assert!(summaries
+            .iter()
+            .all(|(c, _)| Classification::ALL.contains(c)));
+        // Every fixed sentence is listed once.
+        for (i, (key, text)) in SENTENCES.iter().enumerate() {
+            assert!(SENTENCES[i + 1..]
+                .iter()
+                .all(|(k, t)| k != key && t != text));
+        }
+    }
+
+    #[test]
+    fn fact_phrases_carry_the_raw_measurements() {
+        let f = analyze(&sample(&[
+            (Metric::PhysicalAvailableBytes, 1 << 30),
+            (Metric::PhysicalTotalBytes, 20 << 30),
+        ]));
+        let low = finding(&f, Classification::LowAvailableMemory).unwrap();
+        assert_eq!(
+            low.facts[0].text,
+            "Available physical memory was 1.00 GiB of 20.00 GiB (5.0%)."
+        );
+        assert_eq!(
+            low.facts[0].phrase,
+            Some(
+                Phrase::new("fact.available_of_total")
+                    .with("available", Quantity::Bytes(1 << 30))
+                    .with("total", Quantity::Bytes(20 << 30))
+                    .with("share", Quantity::BasisPoints(500))
+            )
+        );
+        let abstain = f.last().unwrap();
+        assert_eq!(
+            abstain.facts[0].phrase,
+            Some(
+                Phrase::new("fact.metric_value")
+                    .with("metric", Quantity::Metric(Metric::PhysicalAvailableBytes))
+                    .with("value", Quantity::Bytes(1 << 30))
+            )
+        );
+    }
+
+    #[test]
+    fn the_not_measured_note_lists_its_metrics_and_other_texts_have_no_phrase() {
+        let f = analyze(&sample(&HEALTHY));
+        let note = f[0]
+            .limitations
+            .iter()
+            .find(|l| l.starts_with(NOT_MEASURED))
+            .unwrap();
+        assert_eq!(
+            phrase(note),
+            Some(Phrase::new("limit.not_measured").with(
+                "metrics",
+                Quantity::Metrics(SYSTEM_METRICS[5..].iter().map(|(m, _)| *m).collect())
+            ))
+        );
+        for other in [
+            "",
+            "Not measured in this snapshot: .",
+            "Not measured in this snapshot: per-core CPU, a sensor.",
+            "Something the core never says.",
+        ] {
+            assert_eq!(phrase(other), None, "{other}");
+        }
+    }
+
     #[test]
     fn nvidia_slowdowns_and_full_memory_are_findings_but_a_power_cap_is_not() {
         use pcagent_shared::{NVML_HW_THERMAL_SLOWDOWN, NVML_SW_POWER_CAP};

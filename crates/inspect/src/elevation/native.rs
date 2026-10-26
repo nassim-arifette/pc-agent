@@ -387,9 +387,14 @@ fn wait_for_private_cleanup(pending: &std::sync::Mutex<PrivateCleanup>) {
     }
 }
 
-pub(crate) fn show_elevated_host_notice() {
+/// The user's Windows display language is French (primary language 0x0c, any region).
+pub(crate) fn ui_language_is_french() -> bool {
     // SAFETY: GetUserDefaultUILanguage has no pointer arguments or safety preconditions.
-    let french = unsafe { GetUserDefaultUILanguage() & 0x03ff == 0x0c };
+    unsafe { GetUserDefaultUILanguage() & 0x03ff == 0x0c }
+}
+
+pub(crate) fn show_elevated_host_notice() {
+    let french = ui_language_is_french();
     let (title, body) = super::elevated_host_notice(french);
     let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
     let body: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();

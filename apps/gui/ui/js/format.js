@@ -58,6 +58,19 @@ export function date(unixMs, withTime = false) {
   return new Intl.DateTimeFormat(locale(), options).format(new Date(unixMs));
 }
 
+/**
+ * A wall-clock time with no known zone ("2026-10-03 21:14:05…", as Windows' energy history writes
+ * it) as a date and minute in the interface language, never shifted by this PC's zone; null when
+ * the text does not start with one.
+ */
+export function civilTime(text) {
+  const parts = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(String(text ?? ""));
+  if (!parts) return null;
+  const [year, month, day, hour, minute] = parts.slice(1).map(Number);
+  const at = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  return new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(at);
+}
+
 /** Price strings such as "0.30" from the core, localized. */
 export function price(value) {
   if (value == null) return "?";

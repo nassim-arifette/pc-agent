@@ -6,6 +6,7 @@
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
+import { applicationName, processName, slowdownText } from "../phrases.js";
 import { state, subscribe, setLivePaused, watchActivity, pokeActivity } from "../store.js";
 import { almostFull, batteryInspector, driveName, gpuName, measureText, notReported, sparkline } from "../live.js";
 import { batteryItems } from "../battery.js";
@@ -123,10 +124,7 @@ function resolve(cards) {
     kind: selected.kind,
     app,
     member,
-    // Shown by its readable name when known; the PID stays here, in the inspector, where it tells
-    // same-named processes apart. `name` is the executable name, the only one a question may
-    // carry (C5).
-    label: selected.kind === "process" ? `${member.readable_name || member.name} (PID ${member.pid})` : app.readable_name || app.name,
+    label: selected.kind === "process" ? `${member.readable_name || processName(member)} (PID ${member.pid})` : app.readable_name || applicationName(app),
     name: selected.kind === "process" ? member.name : app.name,
     measuredAt: activity.collected_at_unix_ms,
     reference,
@@ -146,7 +144,7 @@ function topApp(by) {
   const value = (a) => (by === "cpu" ? a.cpu.value : a.working_set.value) ?? -1;
   const top = [...apps].sort((a, b) => value(b) - value(a))[0];
   if (!top || value(top) < 0) return null;
-  return `${top.name} · ${by === "cpu" ? basisPoints(top.cpu.value) : bytes(top.working_set.value)}`;
+  return `${applicationName(top)} · ${by === "cpu" ? basisPoints(top.cpu.value) : bytes(top.working_set.value)}`;
 }
 
 function resourceDetails(card) {
@@ -186,7 +184,7 @@ function resourceDetails(card) {
     [t("inspect.gpu.load"), g.utilization.value != null ? basisPoints(g.utilization.value) : null],
     [t("inspect.gpu.memory"), g.memory_used.value != null && g.memory_total.value != null ? t("metric.gpu.memory", { used: bytes(g.memory_used.value), total: bytes(g.memory_total.value) }) : null],
     [t("inspect.gpu.temp"), g.temperature.value != null ? `${g.temperature.value} °C` : null],
-    [t("inspect.gpu.slowdown"), g.slowdown.value == null ? null : g.slowdown.value ? (g.slowdown_reasons || []).join(", ") || basisPoints(g.slowdown.value) : t("inspect.gpu.none")],
+    [t("inspect.gpu.slowdown"), g.slowdown.value == null ? null : g.slowdown.value ? slowdownText(g.slowdown_codes) || (g.slowdown_reasons || []).join(", ") || null : t("inspect.gpu.none")],
   ]);
 }
 
@@ -217,7 +215,7 @@ function appDetails(item) {
             h(
               "button",
               { type: "button", class: "insp-member", "data-key": `process:${m.entity_ref}`, onclick: () => select({ kind: "process", app: app.entity_ref, key: m.entity_ref }) },
-              h("span", { class: "insp-member-name", title: m.readable_name || null }, `${m.name} · PID ${m.pid}`),
+              h("span", { class: "insp-member-name", title: m.readable_name || null }, `${processName(m)} · PID ${m.pid}`),
               h("span", null, measureText(m.cpu, "cpu")),
               h("span", null, measureText(m.working_set, "bytes")),
             ),
@@ -225,7 +223,7 @@ function appDetails(item) {
           app.process_count > app.members.length ? h("span", { class: "note" }, t("live.apps.others", { count: app.process_count - app.members.length })) : null,
         )
       : null,
-    member ? h("p", { class: "note" }, t("inspect.app.target", { name: member.name, pid: member.pid })) : h("p", { class: "note" }, t("inspect.app.none")),
+    member ? h("p", { class: "note" }, t("inspect.app.target", { name: processName(member), pid: member.pid })) : h("p", { class: "note" }, t("inspect.app.none")),
   ];
 }
 
@@ -372,7 +370,7 @@ function applications(item) {
               "data-actbar-item": Boolean(bar),
               onclick: () => select(pressed && selected.kind === "app" ? null : { kind: "app", app: app.entity_ref }),
             },
-            h("span", { class: "livepage-app-name", title: app.name }, app.readable_name || app.name),
+            h("span", { class: "livepage-app-name", title: applicationName(app) }, app.readable_name || applicationName(app)),
             h("span", { class: "livepage-app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
             h("span", { class: "livepage-app-value" }, measureText(app.cpu, "cpu")),
             h("span", { class: "livepage-app-value" }, measureText(app.working_set, "bytes")),

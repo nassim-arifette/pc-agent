@@ -3,6 +3,7 @@
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
+import { citationFacts, findingFacts, findingSummary } from "./phrases.js";
 import { state, subscribe, stopInvestigation } from "./store.js";
 import { continueSummary, retrySummary } from "./select.js";
 import { markdown } from "./markdown.js";
@@ -27,7 +28,7 @@ function sourceCard(citation, number, focused, inv) {
     h("div", { class: "source-head" }, h("span", { class: "num" }, String(number)), h("strong", null, citationTitle(citation))),
     citation.measured_at_unix_ms ? h("p", { class: "source-time" }, date(citation.measured_at_unix_ms, true)) : null,
     citation.earlier ? h("p", { class: "note" }, t("sources.earlier")) : null,
-    h("ul", { class: "source-facts" }, (citation.facts || []).map((fact) => h("li", null, fact))),
+    h("ul", { class: "source-facts" }, citationFacts(citation, state.conversation?.turns).map((fact) => h("li", null, fact))),
   );
 }
 
@@ -99,7 +100,7 @@ export function mountSelectionInspector(host) {
             h("div", { class: ["answer-text summary-answer draft", inv?.checking && "checking"] }, markdown(partial, null, draftLabel)),
             h("p", { class: "note" }, t(running ? "chat.draft" : "chat.partial")))
         : report?.selected
-          ? h("div", { class: "answer-text summary-answer" }, h("p", null, report.selected.summary), h("ul", null, (report.selected.facts || []).map((fact) => h("li", null, fact))))
+          ? h("div", { class: "answer-text summary-answer" }, h("p", null, findingSummary(report.selected)), h("ul", null, findingFacts(report.selected).map((fact) => h("li", null, fact))))
           : !preparing && !running && !error ? h("p", { class: "note" }, t("summary.noAnswer")) : null;
 
     keepFocus(host, () => {
