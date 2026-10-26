@@ -3,7 +3,9 @@
 `pcagent-elevated` is a separate, read-only helper for one locally approved task. The GUI,
 CLI and model stay unelevated. The helper has no model client, HTTP client, command interpreter
 or arbitrary query entry point. Its executable forbids unsafe code; the Windows calls live in
-the native `pcagent-inspect::elevation` module.
+the native modules of `pcagent-elevation` (`crates/elevation`). The executable depends directly
+on that crate, not the standard inspection collectors. Existing host APIs remain re-exported
+from `pcagent_inspect::elevation`; the C4 projection and coverage notes remain in `pcagent-inspect`.
 
 ## Tasks and coverage
 

@@ -183,21 +183,19 @@ pub fn coverage_notes(response: &ElevationResponse) -> Vec<CoverageNote> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::{empty_response as response_fixture, request};
     use super::super::{
         mft::{Collection, CollectionEnd, Limit, TreeLimit},
-        protocol::{
-            CacheCategory, CacheCoverage, CacheSummary, ElevatedTask, ElevationLimit,
-            ElevationRequest, ElevationResponse, ElevationStatus,
-        },
         system::{SystemReadLimit, SystemReadSummary},
-        to_inspection, DriveLetter,
+        to_inspection, CacheCategory, CacheCoverage, CacheSummary, DriveLetter, ElevatedTask,
+        ElevationLimit, ElevationResponse, ElevationStatus,
     };
     use super::*;
     use std::time::Duration;
 
     fn empty_response(task: ElevatedTask, limit: ElevationLimit) -> ElevationResponse {
-        let request = ElevationRequest::new(task, Duration::from_secs(10)).unwrap();
-        ElevationResponse::empty(&request, ElevationStatus::Partial, limit)
+        let request = request(task, Duration::from_secs(10));
+        response_fixture(&request, ElevationStatus::Partial, limit)
     }
 
     fn codes(note: &CoverageNote) -> Vec<(&str, Option<u64>)> {

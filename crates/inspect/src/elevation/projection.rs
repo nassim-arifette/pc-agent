@@ -555,14 +555,12 @@ pub(super) fn add(out: &mut Inspection, response: &ElevationResponse) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::{empty_response, request, validate_response};
     use super::super::{
         energy::{parse_export, EnergySummary},
         mft::{Collection, CollectionEnd, Limit, TreeItem, TreeLimit, TreeSummary},
-        protocol::{
-            ElevatedTask, ElevationLimit, ElevationRequest, ElevationResponse, ElevationStatus,
-        },
         system::{DiskReliabilitySample, ShadowStorageSample, SystemReadLimit, SystemReadSummary},
-        to_inspection,
+        to_inspection, ElevatedTask, ElevationLimit, ElevationResponse, ElevationStatus,
     };
     use crate::CoverageStatus;
     use pcagent_shared::Status;
@@ -587,20 +585,19 @@ mod tests {
     }
 
     fn mft_response(collection: Collection) -> ElevationResponse {
-        let request = ElevationRequest::new(
+        let request = request(
             ElevatedTask::MftInventory {
                 volume: super::super::DriveLetter::parse("C").unwrap(),
             },
             Duration::from_secs(10),
-        )
-        .unwrap();
-        let mut response = ElevationResponse::empty(
+        );
+        let mut response = empty_response(
             &request,
             ElevationStatus::Partial,
             ElevationLimit::MetadataSnapshot,
         );
         response.mft = Some(collection);
-        response.validate(&request).unwrap();
+        validate_response(&response, &request).unwrap();
         response
     }
 
@@ -783,15 +780,14 @@ mod tests {
 
     #[test]
     fn accepted_historical_estimates_are_usable_but_never_complete_coverage() {
-        let request =
-            ElevationRequest::new(ElevatedTask::BatteryEnergy, Duration::from_secs(10)).unwrap();
-        let mut response = ElevationResponse::empty(
+        let request = request(ElevatedTask::BatteryEnergy, Duration::from_secs(10));
+        let mut response = empty_response(
             &request,
             ElevationStatus::Partial,
             ElevationLimit::MetadataSnapshot,
         );
         response.battery_energy = Some(energy());
-        response.validate(&request).unwrap();
+        validate_response(&response, &request).unwrap();
         let inspection = to_inspection(&response);
         assert_eq!(inspection.status, Status::Partial);
         let coverage = inspection
@@ -830,9 +826,8 @@ mod tests {
 
     #[test]
     fn raw_energy_identities_and_paths_are_absent_from_serialized_inspection() {
-        let request =
-            ElevationRequest::new(ElevatedTask::BatteryEnergy, Duration::from_secs(10)).unwrap();
-        let mut response = ElevationResponse::empty(
+        let request = request(ElevatedTask::BatteryEnergy, Duration::from_secs(10));
+        let mut response = empty_response(
             &request,
             ElevationStatus::Partial,
             ElevationLimit::MetadataSnapshot,
@@ -848,6 +843,7 @@ mod tests {
             ["app.exe"]
         );
         let serialized = serde_json::to_string(&inspection).unwrap();
+        let request = serde_json::to_value(&request).unwrap();
         for private in [
             "private-user",
             "S-1-5-21-111-222-333-1001",
@@ -855,8 +851,8 @@ mod tests {
             "AppId",
             "UserId",
             "app.exe",
-            request.nonce.as_str(),
-            request.job_id.as_str(),
+            request["nonce"].as_str().unwrap(),
+            request["job_id"].as_str().unwrap(),
         ] {
             assert!(
                 !serialized.contains(private),
@@ -867,20 +863,21 @@ mod tests {
 
     #[test]
     fn consistent_shadow_storage_numbers_are_usable_with_partial_enumeration() {
-        let request =
-            ElevationRequest::new(ElevatedTask::ShadowStorage, Duration::from_secs(10)).unwrap();
-        let mut response = ElevationResponse::empty(
+        let request = request(ElevatedTask::ShadowStorage, Duration::from_secs(10));
+        let mut response = empty_response(
             &request,
             ElevationStatus::Partial,
             ElevationLimit::MetadataSnapshot,
         );
         response.shadow_storage = Some(SystemReadSummary {
             status: ElevationStatus::Partial,
-            samples: vec![ShadowStorageSample::from_provider(
-                Some(20),
-                Some(30),
-                Some(100),
-            )],
+            samples: vec![ShadowStorageSample {
+                used_bytes: Some(20),
+                allocated_bytes: Some(30),
+                maximum_bytes: Some(100),
+                maximum_unlimited: Some(false),
+                values_consistent: Some(true),
+            }],
             truncated: false,
             read_errors: 1,
             limitations: vec![
@@ -888,7 +885,7 @@ mod tests {
                 SystemReadLimit::RestorePointAttributionUnavailable,
             ],
         });
-        response.validate(&request).unwrap();
+        validate_response(&response, &request).unwrap();
         let inspection = to_inspection(&response);
         assert_eq!(inspection.status, Status::Partial);
         assert_eq!(inspection.coverage[0].status, CoverageStatus::Partial);
@@ -906,8 +903,7 @@ mod tests {
 
     #[test]
     fn inconsistent_wmi_counters_do_not_become_ok_when_other_fields_are_missing() {
-        let request =
-            ElevationRequest::new(ElevatedTask::DiskReliability, Duration::from_secs(10)).unwrap();
+        let request = request(ElevatedTask::DiskReliability, Duration::from_secs(10));
         let sample: DiskReliabilitySample = serde_json::from_value(json!({
             "temperature_celsius":35,"temperature_limit_celsius":null,"wear_percent":101,
             "power_on_hours":null,"read_errors_total":1,"read_errors_corrected":1,
@@ -916,7 +912,7 @@ mod tests {
             "maximum_read_latency_ms":null,"maximum_write_latency_ms":null,"maximum_flush_latency_ms":null
         })).unwrap();
         assert_eq!(sample.values_consistent(), Some(false));
-        let mut response = ElevationResponse::empty(
+        let mut response = empty_response(
             &request,
             ElevationStatus::Partial,
             ElevationLimit::MetadataSnapshot,
@@ -931,7 +927,7 @@ mod tests {
                 SystemReadLimit::ProviderValuesInconsistent,
             ],
         });
-        response.validate(&request).unwrap();
+        validate_response(&response, &request).unwrap();
         let inspection = to_inspection(&response);
         assert_eq!(inspection.status, Status::Partial);
         assert_eq!(inspection.coverage[0].status, CoverageStatus::Partial);

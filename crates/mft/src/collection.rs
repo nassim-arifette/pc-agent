@@ -178,7 +178,7 @@ impl Collection {
         Ok(())
     }
 
-    pub(crate) fn cancelled_before_open() -> Self {
+    pub fn cancelled_before_open() -> Self {
         Self {
             summary: Summary {
                 limitations: [

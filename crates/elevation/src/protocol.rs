@@ -748,16 +748,6 @@ mod tests {
         mismatch.nonce = new_id("nonce");
         assert!(mismatch.validate(&request).is_err());
         assert!(!format!("{request:?} {response:?}").contains(&request.nonce));
-        let projected = serde_json::to_string(&super::super::to_inspection(&response)).unwrap();
-        assert!(!projected.contains(&request.nonce));
-        assert!(!projected.contains(&request.job_id));
-        assert!(super::super::to_inspection(&response)
-            .observations
-            .is_empty());
-        assert_eq!(
-            super::super::to_inspection(&response).status,
-            pcagent_shared::Status::Unsupported
-        );
     }
     #[test]
     fn budgets_and_cli_are_strict() {

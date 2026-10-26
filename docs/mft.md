@@ -1,8 +1,10 @@
 # Bounded NTFS stream accounting and local storage index
 
-`pcagent_inspect::elevation::mft` contains a portable NTFS 3.0/3.1 FILE-record parser and a
-streaming aggregate collector with a bounded local directory/file index. The Windows adapter in
-`mft_native.rs` belongs exclusively to the
+`pcagent_mft` (`crates/mft`, re-exported as `pcagent_inspect::elevation::mft` for existing callers)
+contains a portable NTFS 3.0/3.1 FILE-record parser and a streaming aggregate collector with a
+bounded local directory/file index. It forbids unsafe code and depends only on serde, serde_json
+and SHA-256; it never opens a volume itself. The Windows adapter in
+`crates/elevation/src/mft_native.rs` belongs exclusively to the
 separately approved elevated worker. It opens one approved fixed local NTFS drive with
 `GENERIC_READ`, uses read-only filesystem controls, and closes the handle on every exit. It does
 not create a journal, lock/dismount a volume, decompress contents or change files. The ordinary
@@ -48,7 +50,7 @@ the returned record length and reference sequence are checked before parsing. Ga
 as walked slots, not as additional files or as known file bytes.
 
 One control per record costs one system call per file. When the layout allows it, the adapter
-instead reads the `$MFT` stream in bulk (`mft_chunked.rs`): it takes the extents of the unnamed
+instead reads the `$MFT` stream in bulk (`crates/mft/src/chunked.rs`): it takes the extents of the unnamed
 `$DATA` stream of record 0 (obtained with the same control and parsed by the same validator),
 then serves the same descending requests from 1 MiB cluster-aligned `ReadFile` windows on the
 already opened read-only volume handle, about a thousand records per read. It keeps the
@@ -131,7 +133,7 @@ covers the full job; `duration_ms` covers the portable collector itself.
 
 ## Local directory/file inventory
 
-`mft_tree.rs` reads resident FILE_NAME metadata only: filename, namespace and parent record
+`crates/mft/src/tree.rs` reads resident FILE_NAME metadata only: filename, namespace and parent record
 reference/sequence. It ignores the FILE_NAME copies of logical/allocated sizes and timestamps;
 all byte amounts still come from validated DATA streams. Invalid UTF-16, path separators,
 control characters, missing names and unsupported filename forms leave explicit limitations

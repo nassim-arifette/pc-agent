@@ -1,6 +1,7 @@
 //! Bounded NTFS 3.0/3.1 FILE-record accounting. Only finite aggregates can be serialized.
 //! Input must contain raw, un-restored 512-byte update-sequence strides from one snapshot.
 //! References and filename metadata stay local; resident contents are never decoded/returned.
+#![forbid(unsafe_code)]
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -306,7 +307,7 @@ fn restore(raw: &[u8], g: Geometry) -> Result<Vec<u8>, ParseError> {
 /// Normalize only a kernel-returned FILE record, whose transfer fixups may already be applied.
 /// Offline callers must continue using `summarize` with protected on-disk records.
 #[cfg(any(windows, test))]
-pub(crate) fn normalize_kernel_record(raw: &[u8], g: Geometry) -> Result<Vec<u8>, ParseError> {
+pub fn normalize_kernel_record(raw: &[u8], g: Geometry) -> Result<Vec<u8>, ParseError> {
     validate_geometry(g)?;
     if raw.len() != g.record_bytes || bytes(raw, 0, 4)? != b"FILE" {
         return Err(ParseError::InvalidHeader);
@@ -988,22 +989,18 @@ fn account_group(
     Ok(())
 }
 
-#[path = "mft_tree.rs"]
 mod tree;
 pub use tree::{
     TreeItem, TreeLimit, TreeSummary, MAX_TREE_ITEMS, MAX_TREE_PATH_BYTES, MAX_TREE_RESPONSE_BYTES,
 };
 
-#[path = "mft_collection.rs"]
 mod collection;
 pub use collection::{
     collect, CollectError, Collection, CollectionBounds, CollectionEnd, JournalWitness, RecordData,
     Source, VolumeSnapshot,
 };
 
-#[cfg(any(windows, test))]
-#[path = "mft_chunked.rs"]
-pub(crate) mod chunked;
+pub mod chunked;
 
 #[cfg(test)]
 mod tests {
