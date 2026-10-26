@@ -10,7 +10,6 @@ import { call } from "./api.js";
 import { state, notify } from "./store.js";
 import { toast } from "./ui.js";
 import { failureText } from "./failure.js";
-import { modelName } from "./models.js";
 import { modelName, familyId as listedFamily, startModelId } from "./models.js";
 
 export const REASONING = ["on", "low", "off"];
