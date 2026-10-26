@@ -111,7 +111,7 @@ again, runs it, and shows the free space or system measurements before and after
 program turned off this way can be restored. In the app, removed files always go to the Recycle
 Bin, where they keep taking space until you empty it; nothing runs without your click.
 
-![Reviewing a proposal before it runs: the exact files, how to get them back, and Run now](docs/images/chat-action-review.png)
+![Reviewing a proposed action before it runs: the exact target, how to undo it, and Run now](docs/images/chat-action-review.png)
 
 ### Optional web lookups
 
