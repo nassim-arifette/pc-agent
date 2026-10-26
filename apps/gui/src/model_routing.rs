@@ -1,4 +1,5 @@
 //! Local model policy only: no credentials, endpoints or provider requests belong here.
+use crate::failure::{self, Code, Failure};
 use pcagent_agent::{
     credentials,
     routing::{CalibratedRule, Calibration, RoutingMode, RoutingSettings, MAX_CALIBRATION_BYTES},
@@ -150,9 +151,10 @@ impl ModelRouting {
             && review.configured_model_id.as_deref() == configured_model_id
     }
 
-    pub fn set(&mut self, settings: RoutingSettings) -> Result<RoutingView, String> {
+    pub fn set(&mut self, settings: RoutingSettings) -> Result<RoutingView, Failure> {
         self.set_in(
-            &directory().ok_or("The local settings directory is unavailable.")?,
+            &directory()
+                .ok_or_else(|| failure::saving("The local settings directory is unavailable."))?,
             settings,
         )
     }
@@ -161,14 +163,15 @@ impl ModelRouting {
         &mut self,
         directory: &Path,
         settings: RoutingSettings,
-    ) -> Result<RoutingView, String> {
+    ) -> Result<RoutingView, Failure> {
         settings.validate().map_err(|error| error.to_string())?;
         let revision = self
             .revision
             .checked_add(1)
             .ok_or("The local routing revision is exhausted.")?;
-        let calibration = load_calibration(directory, &settings)?;
-        save_settings(&directory.join("model-routing.json"), &settings)?;
+        let calibration = load_calibration(directory, &settings)
+            .map_err(|error| Failure::new(Code::RoutingUnavailable, error))?;
+        save_settings(&directory.join("model-routing.json"), &settings).map_err(failure::saving)?;
         self.revision = revision;
         self.settings = settings;
         self.calibration = calibration;
@@ -362,7 +365,14 @@ mod tests {
             super_model_id: Some("nvidia/nemotron-3-super-120b-a12b".into()),
             ultra_model_id: Some("nvidia/Nemotron-3-Ultra-550b-a55b".into()),
         };
-        assert!(policy.set_in(&folder.0, automatic).is_err());
+        assert_eq!(
+            policy
+                .set_in(&folder.0, automatic)
+                .err()
+                .expect("refused")
+                .code,
+            Code::RoutingUnavailable
+        );
         assert_eq!(policy.view().settings.mode, RoutingMode::Configured);
         fs::create_dir_all(&folder.0).unwrap();
         fs::write(

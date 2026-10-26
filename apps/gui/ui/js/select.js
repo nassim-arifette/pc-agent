@@ -6,6 +6,7 @@ import { t } from "./i18n.js";
 import { call } from "./api.js";
 import { state, notify, sendSelection, waitForPrivacy, beginTurnPreparation, endTurnPreparation, openPanel, closePanel, openConversation } from "./store.js";
 import { toast } from "./ui.js";
+import { failureText, pageFailure, startFailure } from "./failure.js";
 import { effectiveMode, namesShared } from "./ask.js";
 import { navigate } from "./router.js";
 
@@ -70,20 +71,20 @@ export async function runSelection(selection, intent, { conversationId: requeste
   }
   try {
     if (requestedConversation != null && requestedConversation !== state.conversation?.id) {
-      if (!await openConversation(requestedConversation)) throw new Error(t("select.conversationGone"));
+      if (!await openConversation(requestedConversation)) throw pageFailure("select.conversationGone");
     }
     const conversation = state.conversation;
     const conversationId = conversation?.id ?? null;
     const conversationRevision = state.conversationRevision;
     const sameConversation = () => conversation === state.conversation && conversationId === (state.conversation?.id ?? null) && conversationRevision === state.conversationRevision;
     await waitForPrivacy();
-    if (!sameConversation() || (summary && state.summary !== summary)) throw new Error(t("share.changed"));
+    if (!sameConversation() || (summary && state.summary !== summary)) throw pageFailure("share.changed");
     const privacyRevision = state.privacyRevision;
     const cloud = effectiveMode() !== "local";
     const asked = question(selected, intent);
     const preview = await call("selection_preview", { reference: selected.reference, intent, question: asked, conversationId, names: namesShared(), fileNames: false });
     if (privacyRevision !== state.privacyRevision || !sameConversation() || (summary && state.summary !== summary)) {
-      throw new Error(t("share.changed"));
+      throw pageFailure("share.changed");
     }
     if (intent === "investigate") {
       closePanel();
@@ -93,9 +94,9 @@ export async function runSelection(selection, intent, { conversationId: requeste
   } catch (error) {
     if (summary) {
       summary.status = "failed";
-      summary.error = { message: error.message };
+      summary.error = startFailure(error);
       notify("summary");
-    } else toast(error.message, "bad");
+    } else toast(failureText(error), "bad");
     return false;
   } finally {
     endTurnPreparation();

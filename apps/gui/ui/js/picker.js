@@ -9,6 +9,7 @@ import { t } from "./i18n.js";
 import { call } from "./api.js";
 import { state, notify } from "./store.js";
 import { toast } from "./ui.js";
+import { failureText } from "./failure.js";
 import { modelName, familyId as listedFamily, startModelId } from "./models.js";
 
 export const REASONING = ["on", "low", "off"];
@@ -64,7 +65,7 @@ async function chooseModel(modelId) {
     if (modelId !== cloud.model_id) state.info.cloud = await call("save_cloud_settings", { apiKey: null, modelId, reasoning: cloud.reasoning });
     notify("info");
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
   }
 }
 
@@ -74,7 +75,7 @@ async function chooseAuto() {
     state.routing = await call("model_routing_set", { settings: { mode: "automatic", super_model_id: familyId("super"), ultra_model_id: familyId("ultra") } });
     notify("info");
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
   }
 }
 
@@ -86,7 +87,7 @@ async function chooseReasoning(reasoning) {
     state.info.cloud = await call("save_cloud_settings", { apiKey: null, modelId: cloud.model_id, reasoning });
     notify("info");
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
   }
 }
 

@@ -1,4 +1,5 @@
 //! A local, single-use consent ticket binds the reviewed message to its immutable inputs.
+use crate::failure::{Code, Failure};
 use pcagent_agent::{
     conversation_message_with_privacy, PastTurn, PrivacyContext, Sharing, StorageContext,
 };
@@ -80,12 +81,18 @@ pub struct Reviewed<'a> {
 pub fn take(
     slot: &mut Option<PreparedTurn>,
     reviewed: Reviewed<'_>,
-) -> Result<PreparedTurn, String> {
+) -> Result<PreparedTurn, Failure> {
     let Some(pending) = slot.as_ref() else {
-        return Err("Open the sharing preview before sending.".into());
+        return Err(Failure::new(
+            Code::PreviewRequired,
+            "Open the sharing preview before sending.",
+        ));
     };
     if pending.expires_at <= Instant::now() {
-        return Err("The preview expired. Open it again for a fresh measurement.".into());
+        return Err(Failure::new(
+            Code::PreviewExpired,
+            "The preview expired. Open it again for a fresh measurement.",
+        ));
     }
     if pending.id != reviewed.id
         || pending.question != reviewed.question
@@ -97,9 +104,10 @@ pub fn take(
             .storage_scope
             .is_some_and(|s| pending.storage_scope.as_deref() != Some(s))
     {
-        return Err(
-            "The question, conversation or sharing choice changed. Open the preview again.".into(),
-        );
+        return Err(Failure::new(
+            Code::PreviewChanged,
+            "The question, conversation or sharing choice changed. Open the preview again.",
+        ));
     }
     Ok(slot.take().expect("matching ticket exists"))
 }
@@ -218,8 +226,20 @@ mod tests {
                 7 => input.file_names = true,
                 _ => {}
             }
-            assert!(take(&mut Some(p), input).is_err(), "case {changed}");
+            let refused = take(&mut Some(p), input).err().expect("refused");
+            // The page translates why nothing was sent.
+            let expected = if changed == 6 {
+                Code::PreviewExpired
+            } else {
+                Code::PreviewChanged
+            };
+            assert_eq!(refused.code, expected, "case {changed}");
         }
+        let (id, past) = (String::from("preview-none"), Vec::new());
+        let missing = take(&mut None, reviewed(&id, &past))
+            .err()
+            .expect("refused");
+        assert_eq!(missing.code, Code::PreviewRequired);
     }
 
     #[test]

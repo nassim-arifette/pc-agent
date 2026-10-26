@@ -27,13 +27,29 @@ export async function connect() {
   return impl;
 }
 
-/** Calls a Rust command. Errors come back as plain sentences. */
+/**
+ * Calls a Rust command. A failure rejects with an Error whose `code` is a stable code from a
+ * closed set ("unknown" when the host sent a bare sentence), `reason` the closed reason of a
+ * refused action, and `message` the host's English detail: failure.js turns the code into a
+ * sentence in the interface language and never shows the message as the main text.
+ */
 export async function call(command, args) {
   try {
     return await impl.invoke(command, args);
   } catch (error) {
-    throw new Error(typeof error === "string" ? error : error?.message || String(error));
+    throw commandError(error);
   }
+}
+
+const CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** One shape for a failed command, whether the host sent a string or `{ code, message, reason? }`. */
+export function commandError(error) {
+  const message = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : String(error);
+  const failure = new Error(message);
+  failure.code = typeof error?.code === "string" && CODE.test(error.code) ? error.code : "unknown";
+  if (typeof error?.reason === "string" && CODE.test(error.reason)) failure.reason = error.reason;
+  return failure;
 }
 
 export function on(name, callback) {

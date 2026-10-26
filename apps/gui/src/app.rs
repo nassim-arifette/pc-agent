@@ -3,6 +3,7 @@
 //! this side, and the Nebius key never reaches the page.
 use crate::{
     actions, elevation,
+    failure::{self, Code, Failure},
     model_routing::{ModelRouting, RoutingReview, RoutingView},
     preview::{self, PreparedTurn, Reviewed},
     protocol,
@@ -16,7 +17,7 @@ use pcagent_agent::{
     converse_with_privacy, converse_with_selection,
     credentials::{self, Credentials},
     local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius, PastTurn,
-    PrivacyContext, Sharing, StorageContext, Workstation, MAX_QUESTION_BYTES,
+    PrivacyContext, Sharing, StorageContext, Workstation,
 };
 use pcagent_agent::{
     routing::{RoutedModel, RoutingMode, RoutingSettings},
@@ -28,7 +29,7 @@ use pcagent_agent::{
 };
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{unix_ms, Snapshot};
-use pcagent_storage::{ItemKind, ScanOptions, StorageError, StorageService, MAX_PAGE};
+use pcagent_storage::{ItemKind, ScanOptions, StorageService, MAX_PAGE};
 use pcagent_store::{
     sampler::{Sampler, SamplerStatus},
     HistoryQuery, HistorySeries, Recording,
@@ -136,6 +137,10 @@ fn open_sampler() -> Option<Sampler> {
     Sampler::start(&dir.join("pcagent.sqlite")).ok()
 }
 
+fn history_unavailable() -> Failure {
+    Failure::new(Code::HistoryUnavailable, "Local history is unavailable.")
+}
+
 #[tauri::command]
 fn history_status(state: State<'_, AppState>) -> Option<SamplerStatus> {
     state.sampler.as_ref().map(Sampler::status)
@@ -148,11 +153,8 @@ async fn metric_history(
     from_unix_ms: u64,
     to_unix_ms: u64,
     entity_ref: Option<String>,
-) -> Result<HistorySeries, String> {
-    let sampler = state
-        .sampler
-        .clone()
-        .ok_or("Local history is unavailable.")?;
+) -> Result<HistorySeries, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
     let selections = state.selections.clone();
     let revision = lock(&selections).history_revision();
     tauri::async_runtime::spawn_blocking(move || {
@@ -163,7 +165,7 @@ async fn metric_history(
                 to_unix_ms,
                 entity_ref: entity_ref.unwrap_or_else(|| "system".into()),
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(failure::history)?;
         let _ =
             lock(&selections).publish_history(SelectionSource::History(series.clone()), revision);
         Ok(series)
@@ -176,16 +178,13 @@ async fn metric_history(
 async fn record_activity_start(
     state: State<'_, AppState>,
     duration_seconds: u64,
-) -> Result<Recording, String> {
-    let sampler = state
-        .sampler
-        .clone()
-        .ok_or("Local history is unavailable.")?;
+) -> Result<Recording, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
     let selections = state.selections.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let recording = sampler
             .start_recording(duration_seconds)
-            .map_err(|e| e.to_string())?;
+            .map_err(failure::history)?;
         retain_recording(&selections, &sampler, &recording.id);
         Ok(recording)
     })
@@ -198,11 +197,11 @@ async fn record_activity_start(
 async fn battery_recording(
     state: State<'_, AppState>,
     recording_id: String,
-) -> Result<Option<pcagent_store::BatteryRecording>, String> {
+) -> Result<Option<pcagent_store::BatteryRecording>, Failure> {
     let sampler = state
         .sampler
         .as_ref()
-        .ok_or("Local history is unavailable.")?
+        .ok_or_else(history_unavailable)?
         .clone();
     let selections = state.selections.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -212,29 +211,26 @@ async fn battery_recording(
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    .map_err(failure::history)
 }
 
 #[tauri::command]
-fn record_activity_cancel(state: State<'_, AppState>, recording_id: String) -> Result<(), String> {
+fn record_activity_cancel(state: State<'_, AppState>, recording_id: String) -> Result<(), Failure> {
     state
         .sampler
         .as_ref()
-        .ok_or("Local history is unavailable.")?
+        .ok_or_else(history_unavailable)?
         .cancel_recording(&recording_id)
-        .map_err(|e| e.to_string())
+        .map_err(failure::history)
 }
 
 #[tauri::command]
-async fn history_clear(state: State<'_, AppState>) -> Result<usize, String> {
-    let sampler = state
-        .sampler
-        .clone()
-        .ok_or("Local history is unavailable.")?;
+async fn history_clear(state: State<'_, AppState>) -> Result<usize, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
     let selections = state.selections.clone();
     lock(&selections).begin_history_clear();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = sampler.clear().map_err(|e| e.to_string());
+        let result = sampler.clear().map_err(failure::history);
         lock(&selections).finish_history_clear();
         result
     })
@@ -243,14 +239,14 @@ async fn history_clear(state: State<'_, AppState>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-fn startup_get() -> Result<bool, String> {
-    pcagent_inspect::autostart::get().map_err(|e| e.to_string())
+fn startup_get() -> Result<bool, Failure> {
+    pcagent_inspect::autostart::get().map_err(failure::startup)
 }
 
 #[tauri::command]
-fn startup_set(enabled: bool) -> Result<bool, String> {
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    pcagent_inspect::autostart::set(enabled, &executable).map_err(|e| e.to_string())?;
+fn startup_set(enabled: bool) -> Result<bool, Failure> {
+    let executable = std::env::current_exe().map_err(failure::startup)?;
+    pcagent_inspect::autostart::set(enabled, &executable).map_err(failure::startup)?;
     startup_get()
 }
 
@@ -430,7 +426,7 @@ fn model_routing_get(state: State<'_, AppState>) -> RoutingView {
 fn model_routing_set(
     state: State<'_, AppState>,
     settings: RoutingSettings,
-) -> Result<RoutingView, String> {
+) -> Result<RoutingView, Failure> {
     let view = lock(&state.model_routing).set(settings)?;
     state.preview_revision.fetch_add(1, Ordering::SeqCst);
     state
@@ -455,7 +451,7 @@ fn selection_preview(
     conversation_id: Option<String>,
     names: bool,
     file_names: Option<bool>,
-) -> Result<Value, String> {
+) -> Result<Value, Failure> {
     let question = question
         .map(|question| checked_question(&question))
         .transpose()?;
@@ -484,7 +480,10 @@ fn selection_preview(
         || !lock(&state.model_routing).matches(&routing, configured_model_id().as_deref())
     {
         registry.invalidate_tickets();
-        return Err("Settings changed. Open the selected preview again.".into());
+        return Err(Failure::new(
+            Code::PreviewChanged,
+            "Settings changed. Open the selected preview again.",
+        ));
     }
     registry.bind_routing(&preview.preview_id, routing.clone())?;
     let mut value =
@@ -509,15 +508,21 @@ fn selection_send(
     question: Option<String>,
     conversation_id: Option<String>,
     preview_id: String,
-) -> Result<Started, String> {
+) -> Result<Started, Failure> {
     let privacy = lock(&state.privacy).clone();
     let cloud = privacy.mode.sharing().is_some()
         && Config::from_lookup(|name| Credentials::load().get(name)).is_ok();
     // No confirmation dialog stands before a send (C5, 9 October): the single-use ticket of the
     // exact preview is what a cloud send needs.
-    let (sharing, file_names, _) = lock(&state.selections)
-        .choices(&preview_id)
-        .ok_or("Open the selected-evidence sharing preview before sending.")?;
+    let (sharing, file_names, _) =
+        lock(&state.selections)
+            .choices(&preview_id)
+            .ok_or_else(|| {
+                Failure::new(
+                    Code::PreviewRequired,
+                    "Open the selected-evidence sharing preview before sending.",
+                )
+            })?;
     let use_storage = matches!(reference.target, SelectionTarget::Storage { .. });
     let question = question.unwrap_or_else(|| reference.target.default_question(intent));
     launch_investigation(
@@ -642,14 +647,17 @@ fn measure_thread(
 async fn ask_measure<T: Send + 'static>(
     state: &AppState,
     request: impl FnOnce(mpsc::Sender<T>) -> Measure,
-) -> Result<T, String> {
+) -> Result<T, Failure> {
     let (tx, rx) = mpsc::channel();
-    lock(&state.measure)
-        .send(request(tx))
-        .map_err(|_| "The measurement thread stopped; restart PC Agent.".to_owned())?;
+    lock(&state.measure).send(request(tx)).map_err(|_| {
+        Failure::new(
+            Code::LiveUnavailable,
+            "The measurement thread stopped; restart PC Agent.",
+        )
+    })?;
     tauri::async_runtime::spawn_blocking(move || {
         rx.recv_timeout(Duration::from_secs(30))
-            .map_err(|_| "Measurements took too long.".to_owned())
+            .map_err(|_| Failure::new(Code::LiveUnavailable, "Measurements took too long."))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -665,7 +673,7 @@ fn app_info(state: State<'_, AppState>) -> view::AppInfo {
 }
 
 #[tauri::command]
-async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, String> {
+async fn dashboard(state: State<'_, AppState>) -> Result<view::Dashboard, Failure> {
     ask_measure(&state, Measure::Dashboard).await
 }
 
@@ -681,7 +689,7 @@ async fn startup_restore_prepare(
     state: State<'_, AppState>,
     source_plan_id: String,
     item_index: usize,
-) -> Result<actions::StartupRestoration, String> {
+) -> Result<actions::StartupRestoration, Failure> {
     let slot = state.actions.clone();
     let names = state.program_names.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -698,7 +706,7 @@ fn action_decline(
     state: State<'_, AppState>,
     turn_id: String,
     plan_id: String,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     actions::decline(&state.actions, &turn_id, &plan_id)
 }
 
@@ -709,7 +717,7 @@ async fn action_run(
     state: State<'_, AppState>,
     turn_id: String,
     plan_id: String,
-) -> Result<view::ActionOutcome, String> {
+) -> Result<view::ActionOutcome, Failure> {
     let slot = state.actions.clone();
     tauri::async_runtime::spawn_blocking(move || actions::run(&slot, &turn_id, &plan_id))
         .await
@@ -718,7 +726,7 @@ async fn action_run(
 
 /// Application groups, their members and services over a short fresh window (local only).
 #[tauri::command]
-async fn process_activity(state: State<'_, AppState>) -> Result<view::ActivityView, String> {
+async fn process_activity(state: State<'_, AppState>) -> Result<view::ActivityView, Failure> {
     ask_measure(&state, Measure::Activity).await
 }
 
@@ -755,7 +763,7 @@ async fn cloud_preview(
     names: bool,
     conversation_id: Option<String>,
     file_names: Option<bool>,
-) -> Result<Preview, String> {
+) -> Result<Preview, Failure> {
     let revision = state.preview_revision.fetch_add(1, Ordering::SeqCst) + 1;
     let question = checked_question(&question)?;
     let sharing = sharing_of(names);
@@ -790,11 +798,16 @@ async fn cloud_preview(
         prepared.protect_secret(&secret);
     }
     if file_names {
-        let scope = prepared
-            .storage_scope
-            .as_deref()
-            .ok_or("Scan and authorize a folder before previewing its names.")?;
-        let index = state.storage.index(scope).map_err(|e| e.to_string())?;
+        let scope = prepared.storage_scope.as_deref().ok_or_else(|| {
+            Failure::new(
+                Code::ScanUnavailable,
+                "Scan and authorize a folder before previewing its names.",
+            )
+        })?;
+        let index = state
+            .storage
+            .index(scope)
+            .map_err(|e| failure::storage(&e, storage_folder.as_deref().unwrap_or_default()))?;
         prepared
             .storage_context
             .authorize_useful_names_with_privacy(&index, &prepared.privacy)
@@ -818,14 +831,23 @@ async fn cloud_preview(
     // lock and keep it through publication, rejecting a deleted or changed conversation.
     let history = lock(&state.history);
     if read_past_from(&history, prepared.conversation_id.as_deref())? != prepared.past {
-        return Err("Conversation history changed. Open the sharing preview again.".into());
+        return Err(Failure::new(
+            Code::PreviewChanged,
+            "Conversation history changed. Open the sharing preview again.",
+        ));
     }
     let mut slot = lock(&state.preview);
     if revision != state.preview_revision.load(Ordering::SeqCst) {
-        return Err("A newer sharing preview was requested.".into());
+        return Err(Failure::new(
+            Code::PreviewChanged,
+            "A newer sharing preview was requested.",
+        ));
     }
     if !lock(&state.model_routing).matches(&routing, configured_model_id().as_deref()) {
-        return Err("Model settings changed. Open the preview again.".into());
+        return Err(Failure::new(
+            Code::PreviewChanged,
+            "Model settings changed. Open the preview again.",
+        ));
     }
     *slot = Some(prepared);
     Ok(Preview {
@@ -842,32 +864,35 @@ async fn cloud_preview(
     })
 }
 
-fn read_past(state: &AppState, id: Option<&str>) -> Result<Vec<PastTurn>, String> {
+fn read_past(state: &AppState, id: Option<&str>) -> Result<Vec<PastTurn>, Failure> {
     let history = lock(&state.history);
     read_past_from(&history, id)
 }
 
-fn read_past_from(history: &Option<Store>, id: Option<&str>) -> Result<Vec<PastTurn>, String> {
+fn read_past_from(history: &Option<Store>, id: Option<&str>) -> Result<Vec<PastTurn>, Failure> {
     let Some(id) = id else { return Ok(Vec::new()) };
     let conversation = history
         .as_ref()
-        .ok_or("Conversation history is unavailable.")?
+        .ok_or_else(|| {
+            Failure::new(
+                Code::HistoryUnavailable,
+                "Conversation history is unavailable.",
+            )
+        })?
         .get(id)
-        .map_err(|e| e.to_string())?
-        .ok_or("This conversation no longer exists.")?;
+        .map_err(failure::history)?
+        .ok_or_else(|| {
+            Failure::new(
+                Code::ConversationMissing,
+                "This conversation no longer exists.",
+            )
+        })?;
     Ok(past_turns(&conversation))
 }
 
-fn checked_question(question: &str) -> Result<String, String> {
+fn checked_question(question: &str) -> Result<String, Failure> {
     let question = question.trim();
-    if question.is_empty() {
-        return Err("Type a question first.".into());
-    }
-    if question.len() > MAX_QUESTION_BYTES {
-        return Err(format!(
-            "The question is longer than {MAX_QUESTION_BYTES} bytes; shorten it."
-        ));
-    }
+    failure::check_question(question)?;
     Ok(question.to_owned())
 }
 
@@ -880,8 +905,8 @@ fn privacy_get(state: State<'_, AppState>) -> PrivacySettings {
 fn privacy_set(
     state: State<'_, AppState>,
     settings: PrivacySettings,
-) -> Result<PrivacySettings, String> {
-    settings::save(&settings)?;
+) -> Result<PrivacySettings, Failure> {
+    settings::save(&settings).map_err(failure::saving)?;
     // Every sharing toggle belongs to the frozen preview; changing one needs a new ticket.
     let invalidates_preview = settings.invalidates_preview(&lock(&state.privacy));
     *lock(&state.privacy) = settings.clone();
@@ -906,14 +931,17 @@ fn send_message(
     text: String,
     scope_ids: Vec<String>,
     preview_id: Option<String>,
-) -> Result<Started, String> {
+) -> Result<Started, Failure> {
     if scope_ids.len() > 1 {
         return Err("Attach one scanned folder to a message.".into());
     }
     if let Some(scope) = scope_ids.first() {
         let scan = lock(&state.scan);
         if scan.running || scan.scope_id.as_ref() != Some(scope) {
-            return Err("The selected folder is no longer the current completed scan.".into());
+            return Err(Failure::new(
+                Code::ScanUnavailable,
+                "The selected folder is no longer the current completed scan.",
+            ));
         }
     }
     let privacy = lock(&state.privacy).clone();
@@ -1047,6 +1075,13 @@ struct FailedEvent {
     message: String,
 }
 
+fn preview_required() -> Failure {
+    Failure::new(
+        Code::PreviewRequired,
+        "Open the sharing preview before sending.",
+    )
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StartRequest {
@@ -1065,7 +1100,7 @@ fn start_investigation(
     app: AppHandle,
     state: State<'_, AppState>,
     request: StartRequest,
-) -> Result<Started, String> {
+) -> Result<Started, Failure> {
     launch_investigation(app, &state, request, None)
 }
 
@@ -1074,7 +1109,7 @@ fn launch_investigation(
     state: &AppState,
     request: StartRequest,
     selected_start: Option<SelectionStart>,
-) -> Result<Started, String> {
+) -> Result<Started, Failure> {
     let StartRequest {
         question,
         cloud,
@@ -1095,7 +1130,10 @@ fn launch_investigation(
         .as_ref()
         .is_some_and(|r| !r.finished.load(Ordering::SeqCst))
     {
-        return Err("An investigation is already running.".into());
+        return Err(Failure::new(
+            Code::TurnRunning,
+            "An investigation is already running.",
+        ));
     }
     let history_guard = lock(&state.history);
     let prior = read_past_from(&history_guard, conversation_id.as_deref())?;
@@ -1112,13 +1150,16 @@ fn launch_investigation(
                 || scan.scope_id.as_ref() != Some(scope_id)
                 || state.storage.index(scope_id).is_err()
             {
-                return Err("The selected storage scan is no longer available.".into());
+                return Err(Failure::new(
+                    Code::ScanUnavailable,
+                    "The selected storage scan is no longer available.",
+                ));
             }
         }
         let mut selections = lock(&state.selections);
         let (sharing, approved_file_names, routing) = selections
             .choices(&selected.preview_id)
-            .ok_or("The selected preview expired.")?;
+            .ok_or_else(|| Failure::new(Code::PreviewExpired, "The selected preview expired."))?;
         // Match the preview's registry -> routing lock order. A policy update must not
         // slip between validation and consumption of its reviewed ticket.
         let model_routing = lock(&state.model_routing);
@@ -1126,9 +1167,10 @@ fn launch_investigation(
             || sharing != sharing_of(names)
             || !model_routing.matches(&routing, configured_model_id().as_deref())
         {
-            return Err(
-                "Sharing or model settings changed. Open the selected preview again.".into(),
-            );
+            return Err(Failure::new(
+                Code::PreviewChanged,
+                "Sharing or model settings changed. Open the selected preview again.",
+            ));
         }
         Some(ApprovedCapture::Selected(Box::new(selections.take(
             ReviewedSelection {
@@ -1150,7 +1192,12 @@ fn launch_investigation(
                 scan.scope_id
                     .as_deref()
                     .filter(|s| !scan.running && state.storage.index(s).is_ok())
-                    .ok_or("The approved scan is no longer available. Open the preview again.")?,
+                    .ok_or_else(|| {
+                        Failure::new(
+                            Code::ScanUnavailable,
+                            "The approved scan is no longer available. Open the preview again.",
+                        )
+                    })?,
             )
         } else {
             None
@@ -1159,19 +1206,20 @@ fn launch_investigation(
         let routing = preview
             .as_ref()
             .and_then(|prepared| prepared.routing.clone())
-            .ok_or("Open the sharing preview before sending.")?;
+            .ok_or_else(preview_required)?;
         // The preview owns its ticket before the routing guard, as in cloud_preview.
         // Keep both until take so a concurrent policy change cannot approve stale settings.
         let model_routing = lock(&state.model_routing);
         if !model_routing.matches(&routing, configured_model_id().as_deref()) {
-            return Err("Model settings changed. Open the sharing preview again.".into());
+            return Err(Failure::new(
+                Code::PreviewChanged,
+                "Model settings changed. Open the sharing preview again.",
+            ));
         }
         Some(ApprovedCapture::Snapshot(Box::new(preview::take(
             &mut preview,
             Reviewed {
-                id: preview_id
-                    .as_deref()
-                    .ok_or("Open the sharing preview before sending.")?,
+                id: preview_id.as_deref().ok_or_else(preview_required)?,
                 question: &question,
                 conversation_id: conversation_id.as_deref(),
                 past: &prior,
@@ -1199,7 +1247,7 @@ fn launch_investigation(
         web_search: kept.web_search,
         file_names: kept.file_names,
     };
-    settings::save(&remembered)?;
+    settings::save(&remembered).map_err(failure::saving)?;
     if lock(&state.privacy).mode != remembered.mode {
         state.preview_revision.fetch_add(1, Ordering::SeqCst);
         state
@@ -1220,7 +1268,7 @@ fn launch_investigation(
                         // capture, but must not recreate a thread containing its deleted past.
                         let past = store
                             .get(&id)
-                            .map_err(|e| e.to_string())?
+                            .map_err(failure::history)?
                             .map(|conversation| past_turns(&conversation))
                             .unwrap_or_default();
                         (Some(id), past)
@@ -1808,23 +1856,12 @@ struct ScanStarted {
     scope_id: String,
     root: String,
 }
+/// `code` translates `message` for the page (failure.rs); the message stays for diagnosis.
 #[derive(Clone, Serialize)]
 struct ScanFailed {
     scope_id: String,
+    code: Code,
     message: String,
-}
-
-fn storage_error(e: StorageError, shown: &str) -> String {
-    match e {
-        StorageError::NotADirectory => format!("{shown} is not a folder."),
-        StorageError::ReparseRoot => {
-            format!("{shown} is a link to another place. Choose the folder it points to instead.")
-        }
-        StorageError::UnsupportedVolume(what) => {
-            format!("{shown} cannot be scanned: {what}.")
-        }
-        other => format!("Cannot scan {shown}: {other}."),
-    }
 }
 
 #[tauri::command]
@@ -1832,23 +1869,32 @@ fn start_scan(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
-) -> Result<ScanStarted, String> {
+) -> Result<ScanStarted, Failure> {
     let root = PathBuf::from(path.trim());
     let shown = root.display().to_string();
     if !root.is_absolute() {
-        return Err("Choose a complete folder path, such as C:\\Users\\you\\Downloads.".into());
+        return Err(Failure::new(
+            Code::NotAFolder,
+            "Choose a complete folder path, such as C:\\Users\\you\\Downloads.",
+        ));
     }
     if !root.exists() {
-        return Err(format!("{shown} does not exist."));
+        return Err(Failure::new(
+            Code::FolderMissing,
+            format!("{shown} does not exist."),
+        ));
     }
     let mut slot = lock(&state.scan);
     if slot.running {
-        return Err("A scan is already running.".into());
+        return Err(Failure::new(
+            Code::ScanRunning,
+            "A scan is already running.",
+        ));
     }
     let info = state
         .storage
         .authorize(&root)
-        .map_err(|e| storage_error(e, &shown))?;
+        .map_err(|e| failure::storage(&e, &shown))?;
     // Only the latest folder stays authorized and indexed; its memory is freed otherwise.
     if let Some(old) = slot.scope_id.replace(info.scope_id.clone()) {
         state.storage.revoke(&old);
@@ -1894,18 +1940,22 @@ fn start_scan(
             lock(&scan).running = false;
             let _ = match result {
                 Ok(done) => app.emit("scan:done", done),
-                Err(e) => app.emit(
-                    "scan:failed",
-                    ScanFailed {
-                        scope_id: scope,
-                        message: storage_error(e, &info.root),
-                    },
-                ),
+                Err(e) => {
+                    let failed = failure::storage(&e, &info.root);
+                    app.emit(
+                        "scan:failed",
+                        ScanFailed {
+                            scope_id: scope,
+                            code: failed.code,
+                            message: failed.message,
+                        },
+                    )
+                }
             };
         })
         .map_err(|e| {
             lock(&state.scan).running = false;
-            format!("Cannot start the scan: {e}")
+            Failure::new(Code::ScanFailed, format!("Cannot start the scan: {e}"))
         })?;
     Ok(started)
 }
@@ -1923,7 +1973,7 @@ fn scan_page(
     scope_id: String,
     kind: ItemKind,
     offset: usize,
-) -> Result<view::Page, String> {
+) -> Result<view::Page, Failure> {
     let root = lock(&state.scan).root.clone().unwrap_or_default();
     state
         .storage
@@ -1935,19 +1985,27 @@ fn scan_page(
             shown.selection_source_id = selection_source_id;
             shown
         })
-        .map_err(|e| storage_error(e, &root))
+        .map_err(|e| failure::storage(&e, &root))
 }
 
 /// Opens Explorer on an item of the latest scan. The page names the item by reference only.
 #[tauri::command]
-fn reveal(state: State<'_, AppState>, scope_id: String, item_ref: String) -> Result<(), String> {
+fn reveal(state: State<'_, AppState>, scope_id: String, item_ref: String) -> Result<(), Failure> {
     let item = state
         .storage
         .index(&scope_id)
         .and_then(|index| index.item(&item_ref))
-        .map_err(|_| "This item is no longer in the latest scan.".to_owned())?;
-    let path = item.path.ok_or("This item has no local path.")?;
-    pcagent_actions::show_in_explorer(Path::new(&path)).map_err(|e| e.detail)
+        .map_err(|_| {
+            Failure::new(
+                Code::ItemUnavailable,
+                "This item is no longer in the latest scan.",
+            )
+        })?;
+    let path = item
+        .path
+        .ok_or_else(|| Failure::new(Code::ItemUnavailable, "This item has no local path."))?;
+    pcagent_actions::show_in_explorer(Path::new(&path))
+        .map_err(|e| Failure::new(Code::OpenFailed, e.detail))
 }
 
 #[tauri::command]
@@ -1956,7 +2014,7 @@ fn save_cloud_settings(
     api_key: Option<String>,
     model_id: String,
     reasoning: Option<pcagent_agent::Reasoning>,
-) -> Result<view::Cloud, String> {
+) -> Result<view::Cloud, Failure> {
     let model_id = model_id.trim().to_owned();
     // The same rule as the CLI: an explicit nvidia/ Nemotron ID, never a silent fallback.
     Config::from_lookup(|name| match name {
@@ -1976,8 +2034,9 @@ fn save_cloud_settings(
     if let Some(reasoning) = reasoning {
         updates.push(("NEBIUS_REASONING", reasoning.as_str()));
     }
-    let file = credentials::file_path().ok_or("The APPDATA folder is unknown.")?;
-    credentials::save(&file, &updates)?;
+    let file = credentials::file_path()
+        .ok_or_else(|| failure::saving("The APPDATA folder is unknown."))?;
+    credentials::save(&file, &updates).map_err(failure::saving)?;
     // The preview's protected credentials are frozen; changing them requires a fresh ticket.
     state.preview_revision.fetch_add(1, Ordering::SeqCst);
     state
@@ -1990,15 +2049,19 @@ fn save_cloud_settings(
 
 /// Saves or removes the Tavily key for web lookups. The page sends it once and never reads it back.
 #[tauri::command]
-fn save_search_key(api_key: Option<String>) -> Result<view::Cloud, String> {
-    let file = credentials::file_path().ok_or("The APPDATA folder is unknown.")?;
+fn save_search_key(api_key: Option<String>) -> Result<view::Cloud, Failure> {
+    let file = credentials::file_path()
+        .ok_or_else(|| failure::saving("The APPDATA folder is unknown."))?;
     let key = api_key.map(|k| k.trim().to_owned()).unwrap_or_default();
     if key.is_empty() {
-        credentials::remove(&file, &["TAVILY_API_KEY"])?;
+        credentials::remove(&file, &["TAVILY_API_KEY"]).map_err(failure::saving)?;
     } else if !key.starts_with("tvly-") {
-        return Err("A Tavily key starts with tvly-.".into());
+        return Err(Failure::new(
+            Code::SearchKeyInvalid,
+            "A Tavily key starts with tvly-.",
+        ));
     } else {
-        credentials::save(&file, &[("TAVILY_API_KEY", key.as_str())])?;
+        credentials::save(&file, &[("TAVILY_API_KEY", key.as_str())]).map_err(failure::saving)?;
     }
     Ok(view::cloud(&Credentials::load()))
 }
@@ -2011,31 +2074,37 @@ fn open_web_source(
     conversation_id: String,
     turn_id: String,
     reference: String,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
+    let gone = |message: &str| Failure::new(Code::WebSourceUnavailable, message);
     let conversation = lock(&state.history)
         .as_ref()
-        .ok_or("The local history is unavailable.")?
+        .ok_or_else(|| {
+            Failure::new(
+                Code::HistoryUnavailable,
+                "The local history is unavailable.",
+            )
+        })?
         .get(&conversation_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("This conversation no longer exists.")?;
+        .map_err(failure::history)?
+        .ok_or_else(|| gone("This conversation no longer exists."))?;
     let turn = conversation
         .turns
         .iter()
         .find(|turn| turn.id == turn_id)
-        .ok_or("This answer no longer exists.")?;
+        .ok_or_else(|| gone("This answer no longer exists."))?;
     let url = turn.report["answer"]["citations"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|c| c["reference"] == reference.as_str() && c["kind"] == "web")
         .and_then(|c| c["web"]["url"].as_str())
-        .ok_or("This answer has no such web source.")?;
+        .ok_or_else(|| gone("This answer has no such web source."))?;
     // Even a stored report that was altered can only open a site the lookups search.
     let host = pcagent_agent::tavily::domain(url).ok_or("Only https web pages can be opened.")?;
     if !pcagent_agent::external_tools::searchable(&host) {
         return Err("This address is not one of the sites web lookups search.".into());
     }
-    pcagent_actions::open_web_page(url).map_err(|e| e.detail)
+    pcagent_actions::open_web_page(url).map_err(|e| Failure::new(Code::OpenFailed, e.detail))
 }
 
 #[derive(Serialize)]
@@ -2068,7 +2137,7 @@ async fn elevation_prepare(
     state: State<'_, AppState>,
     task: pcagent_inspect::elevation::ElevatedTask,
     budget_ms: u64,
-) -> Result<elevation::PreparedView, String> {
+) -> Result<elevation::PreparedView, Failure> {
     let slot = state.elevation.clone();
     // Native creation and failed-creation cleanup belong off the GUI thread. Slot reserves
     // admission before that work and keeps status/cancellation responsive while it is pending.
@@ -2080,7 +2149,9 @@ async fn elevation_prepare(
 }
 
 #[tauri::command]
-fn elevation_status(state: State<'_, AppState>) -> Result<Option<elevation::PreparedView>, String> {
+fn elevation_status(
+    state: State<'_, AppState>,
+) -> Result<Option<elevation::PreparedView>, Failure> {
     state.elevation.status()
 }
 
@@ -2089,14 +2160,14 @@ fn elevation_status(state: State<'_, AppState>) -> Result<Option<elevation::Prep
 async fn elevation_run(
     state: State<'_, AppState>,
     request_id: String,
-) -> Result<elevation::InspectionResult, String> {
+) -> Result<elevation::InspectionResult, Failure> {
     let run = state.elevation.begin(&request_id)?;
     let result = tauri::async_runtime::spawn_blocking(move || run.execute()).await;
     result.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn elevation_cancel(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+fn elevation_cancel(state: State<'_, AppState>, request_id: String) -> Result<(), Failure> {
     state.elevation.cancel(&request_id)
 }
 

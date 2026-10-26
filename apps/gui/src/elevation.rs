@@ -1,4 +1,5 @@
 //! One local, reviewed elevated inspection at a time. The model cannot reach this slot.
+use crate::failure::{self, Code, Failure};
 use pcagent_inspect::elevation::{ElevatedTask, PreparedElevation};
 use pcagent_shared::new_id;
 use pcagent_storage::CancelToken;
@@ -36,13 +37,13 @@ trait PendingTask: Send {
     fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
         None
     }
-    fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String>;
+    fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure>;
 }
 trait ApprovedTask: Send {
     fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
         None
     }
-    fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, String>;
+    fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, Failure>;
 }
 trait TaskCompletion: Send {
     fn on_complete(self: Box<Self>, finished: Box<dyn FnOnce() + Send>);
@@ -65,11 +66,11 @@ impl PendingTask for NativePending {
     fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
         Some(Box::new(NativeCompletion(self.0.completion())))
     }
-    fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+    fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure> {
         let mut prepared = self.0;
         let approval = prepared
             .approve_locally()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failure::elevation(&error))?;
         Ok(Box::new(NativeApproved { prepared, approval }))
     }
 }
@@ -77,11 +78,11 @@ impl ApprovedTask for NativeApproved {
     fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
         Some(Box::new(NativeCompletion(self.prepared.completion())))
     }
-    fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, String> {
+    fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, Failure> {
         let response = self
             .prepared
             .run_locally_bounded(self.approval, cancel)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| failure::elevation(&error))?;
         Ok(InspectionResult {
             inspection: pcagent_inspect::elevation::to_inspection(&response),
             coverage_notes: pcagent_inspect::elevation::coverage_notes(&response),
@@ -154,11 +155,11 @@ pub struct Run {
 }
 
 impl Slot {
-    pub fn prepare(&self, task: ElevatedTask, budget: Duration) -> Result<PreparedView, String> {
+    pub fn prepare(&self, task: ElevatedTask, budget: Duration) -> Result<PreparedView, Failure> {
         self.prepare_with_budget(task.clone(), budget, || {
             PreparedElevation::prepare(task, budget)
                 .map(|prepared| Box::new(NativePending(prepared)) as Box<dyn PendingTask>)
-                .map_err(|error| error.to_string())
+                .map_err(|error| failure::elevation(&error))
         })
     }
 
@@ -166,8 +167,8 @@ impl Slot {
     fn prepare_with(
         &self,
         task: ElevatedTask,
-        prepare: impl FnOnce() -> Result<Box<dyn PendingTask>, String>,
-    ) -> Result<PreparedView, String> {
+        prepare: impl FnOnce() -> Result<Box<dyn PendingTask>, Failure>,
+    ) -> Result<PreparedView, Failure> {
         self.prepare_with_budget(task, Duration::from_secs(1), prepare)
     }
 
@@ -175,23 +176,26 @@ impl Slot {
         &self,
         task: ElevatedTask,
         budget: Duration,
-        prepare: impl FnOnce() -> Result<Box<dyn PendingTask>, String>,
-    ) -> Result<PreparedView, String> {
+        prepare: impl FnOnce() -> Result<Box<dyn PendingTask>, Failure>,
+    ) -> Result<PreparedView, Failure> {
         let budget_ms = u64::try_from(budget.as_millis())
             .ok()
             .filter(|ms| (1..=pcagent_inspect::elevation::MAX_BUDGET_MS).contains(ms))
             .ok_or_else(|| {
-                pcagent_inspect::elevation::ElevationError::InvalidRequest.to_string()
+                failure::elevation(&pcagent_inspect::elevation::ElevationError::InvalidRequest)
             })?;
         let mut slot = self
             .state
             .lock()
             .map_err(|_| "Elevation state unavailable.")?;
         if slot.closing {
-            return Err("PC Agent is shutting down.".into());
+            return Err(shutting_down());
         }
         if slot.job.is_some() {
-            return Err("An elevated inspection is already prepared or running.".into());
+            return Err(Failure::new(
+                Code::HelperBusy,
+                "An elevated inspection is already prepared or running.",
+            ));
         }
         let id = new_id("elevation");
         let cancel = CancelToken::default();
@@ -241,7 +245,7 @@ impl Slot {
     }
 
     /// Recover local review/progress after a webview reload without issuing another approval.
-    pub fn status(&self) -> Result<Option<PreparedView>, String> {
+    pub fn status(&self) -> Result<Option<PreparedView>, Failure> {
         let slot = self
             .state
             .lock()
@@ -297,16 +301,19 @@ impl Slot {
     }
 
     /// Called only by the window's local approval command, after reviewing PreparedView.
-    pub fn begin(self: &Arc<Self>, request_id: &str) -> Result<Run, String> {
+    pub fn begin(self: &Arc<Self>, request_id: &str) -> Result<Run, Failure> {
         let mut slot = self
             .state
             .lock()
             .map_err(|_| "Elevation state unavailable.")?;
         if slot.closing {
-            return Err("PC Agent is shutting down.".into());
+            return Err(shutting_down());
         }
         if !matches!(slot.job.as_ref(), Some(Job::Prepared { id, .. }) if id == request_id) {
-            return Err("This elevated inspection is no longer awaiting approval.".into());
+            return Err(Failure::new(
+                Code::RequestExpired,
+                "This elevated inspection is no longer awaiting approval.",
+            ));
         }
         let Some(Job::Prepared { id, task, prepared }) = slot.job.take() else {
             unreachable!()
@@ -405,7 +412,7 @@ impl Slot {
             .collect()
     }
 
-    pub fn cancel(&self, request_id: &str) -> Result<(), String> {
+    pub fn cancel(&self, request_id: &str) -> Result<(), Failure> {
         let mut slot = self
             .state
             .lock()
@@ -419,7 +426,12 @@ impl Slot {
             }
             Some(Job::Cleanup { id, .. }) if id == request_id => return Ok(()),
             Some(Job::Prepared { id, .. }) if id == request_id => {}
-            _ => return Err("This elevated inspection is no longer available.".into()),
+            _ => {
+                return Err(Failure::new(
+                    Code::RequestExpired,
+                    "This elevated inspection is no longer available.",
+                ))
+            }
         }
         let Some(Job::Prepared { id, task, prepared }) = slot.job.take() else {
             unreachable!()
@@ -449,11 +461,18 @@ impl Slot {
     }
 }
 
-fn preparation_stop(closing: bool, cancel: &CancelToken) -> Option<String> {
+fn shutting_down() -> Failure {
+    Failure::new(Code::ShuttingDown, "PC Agent is shutting down.")
+}
+
+fn preparation_stop(closing: bool, cancel: &CancelToken) -> Option<Failure> {
     if closing {
-        Some("PC Agent is shutting down.".into())
+        Some(shutting_down())
     } else if cancel.is_cancelled() {
-        Some("This elevated inspection was cancelled before execution.".into())
+        Some(Failure::new(
+            Code::Cancelled,
+            "This elevated inspection was cancelled before execution.",
+        ))
     } else {
         None
     }
@@ -539,11 +558,13 @@ impl Drop for Slot {
 }
 
 impl Run {
-    pub fn execute(mut self) -> Result<InspectionResult, String> {
-        let approved = self
-            .approved
-            .take()
-            .ok_or_else(|| "This elevated inspection was already consumed.".to_owned())?;
+    pub fn execute(mut self) -> Result<InspectionResult, Failure> {
+        let approved = self.approved.take().ok_or_else(|| {
+            Failure::new(
+                Code::RequestExpired,
+                "This elevated inspection was already consumed.",
+            )
+        })?;
         let result = approved.execute(&self.cancel);
         if !self.cancel.is_cancelled() {
             if let (Some(slot), Ok(inspection)) = (self.slot.upgrade(), &result) {
@@ -614,7 +635,7 @@ mod tests {
         fn budget(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure> {
             self.0.approvals.fetch_add(1, Ordering::SeqCst);
             if self.0.reject_approval.load(Ordering::SeqCst) {
                 return Err("fixture expired".into());
@@ -633,7 +654,7 @@ mod tests {
         }
     }
     impl ApprovedTask for FixtureApproved {
-        fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, String> {
+        fn execute(self: Box<Self>, cancel: &CancelToken) -> Result<InspectionResult, Failure> {
             if cancel.is_cancelled() {
                 return Err("fixture cancelled".into());
             }
@@ -755,6 +776,34 @@ mod tests {
     }
 
     #[test]
+    fn slot_refusals_carry_codes_the_page_translates() {
+        let slot = Arc::new(Slot::default());
+        let counters = Arc::new(Counters::default());
+        let view = prepare(&slot, &counters);
+        let busy = slot
+            .prepare_with(ElevatedTask::SystemCaches, || panic!("occupied"))
+            .err()
+            .expect("refused");
+        assert_eq!(busy.code, Code::HelperBusy);
+        assert_eq!(
+            slot.begin("unknown").err().expect("refused").code,
+            Code::RequestExpired
+        );
+        assert_eq!(
+            slot.cancel("unknown").unwrap_err().code,
+            Code::RequestExpired
+        );
+        slot.cancel(&view.request_id).unwrap();
+        let shutdown = slot.begin_shutdown().unwrap();
+        let closed = slot
+            .prepare_with(ElevatedTask::SystemCaches, || panic!("closed"))
+            .err()
+            .expect("refused");
+        assert_eq!(closed.code, Code::ShuttingDown);
+        assert!(shutdown.wait(Duration::ZERO));
+    }
+
+    #[test]
     fn status_recovers_the_same_review_and_tracks_cancellation_without_reapproval() {
         let slot = Arc::new(Slot::default());
         let counters = Arc::new(Counters::default());
@@ -861,12 +910,12 @@ mod tests {
         fn budget(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure> {
             Ok(Box::new(CleanupApproved(*self)))
         }
     }
     impl ApprovedTask for CleanupApproved {
-        fn execute(self: Box<Self>, _: &CancelToken) -> Result<InspectionResult, String> {
+        fn execute(self: Box<Self>, _: &CancelToken) -> Result<InspectionResult, Failure> {
             Err("cleanup fixture executes no task".into())
         }
     }
@@ -952,7 +1001,7 @@ mod tests {
         fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
             Some(Box::new(GatedCompletion(self.completion.clone())))
         }
-        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure> {
             self.counters.approvals.fetch_add(1, Ordering::SeqCst);
             Err("fixture expired".into())
         }
@@ -989,7 +1038,7 @@ mod tests {
         match path {
             "cancel" => slot.cancel(&view.request_id).unwrap(),
             "approval" => assert!(
-                matches!(slot.begin(&view.request_id), Err(error) if error == "fixture expired")
+                matches!(slot.begin(&view.request_id), Err(error) if error.message == "fixture expired")
             ),
             "shutdown" => assert_eq!(
                 slot.begin_shutdown().unwrap().wait(Duration::ZERO),
@@ -1070,7 +1119,12 @@ mod tests {
                     assert_eq!(view.state, "awaiting_local_approval");
                     slot.cancel(&view.request_id).unwrap();
                 } else {
-                    assert!(result.is_err());
+                    let expected = if stop == "cancel" {
+                        Code::Cancelled
+                    } else {
+                        Code::ShuttingDown
+                    };
+                    assert_eq!(result.err().expect("stopped").code, expected);
                 }
                 assert_eq!(slot.status().unwrap().unwrap().state, "cancelling");
                 assert_eq!(counters.pending_drops.load(Ordering::SeqCst), 1);
@@ -1099,7 +1153,7 @@ mod tests {
         fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
             Some(Box::new(GatedCompletion(self.completion.clone())))
         }
-        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure> {
             self.counters.approvals.fetch_add(1, Ordering::SeqCst);
             let _ = self.entered.send(());
             let _ = self.release.recv_timeout(Duration::from_secs(10));
@@ -1232,7 +1286,7 @@ mod tests {
         fn budget(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, String> {
+        fn approve(self: Box<Self>) -> Result<Box<dyn ApprovedTask>, Failure> {
             Ok(self)
         }
     }
@@ -1240,7 +1294,7 @@ mod tests {
         fn completion(&self) -> Option<Box<dyn TaskCompletion>> {
             Some(Box::new(GatedCompletion(self.completion.clone())))
         }
-        fn execute(self: Box<Self>, _: &CancelToken) -> Result<InspectionResult, String> {
+        fn execute(self: Box<Self>, _: &CancelToken) -> Result<InspectionResult, Failure> {
             Err(self.failure.into())
         }
     }
@@ -1260,7 +1314,7 @@ mod tests {
                 })
                 .unwrap();
             let run = slot.begin(&view.request_id).unwrap();
-            assert!(matches!(run.execute(), Err(error) if error == failure));
+            assert!(matches!(run.execute(), Err(error) if error.message == failure));
             assert_eq!(slot.status().unwrap().unwrap().state, "cancelling");
             assert!(slot
                 .prepare_with(ElevatedTask::SystemCaches, || panic!("cleanup pending"))
