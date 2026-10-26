@@ -279,6 +279,9 @@ and secrets, process IDs, and identifiers of the machine (computer name, serial 
 
 ## Command line
 
+Run `pcagent.exe` from a terminal in its folder (`.\pcagent.exe doctor` in PowerShell), or put
+that folder on your `PATH`:
+
 ```powershell
 pcagent doctor                                      # offline checks of this PC and the setup
 pcagent snapshot                                    # memory, processor, disks, GPUs, top processes
@@ -292,10 +295,6 @@ pcagent chat --allow-cloud                          # several questions in one s
 pcagent models --allow-cloud                        # Nemotron models your key can use
 ```
 
-- Nothing is sent without `--allow-cloud`; `doctor --check-cloud` and `models --allow-cloud` read
-  only the model catalog. The key and model come from the environment variables `NEBIUS_API_KEY`
-  and `NEBIUS_MODEL_ID`, otherwise from `%APPDATA%\pcagent\.env`, the file the app writes
-  ([.env.example](.env.example) lists the settings).
 - `--anonymize` sends opaque references instead of program names; `--json` prints machine-readable
   output.
 - A proposed action is shown with its real target and runs only if you type `yes` in an
@@ -305,6 +304,23 @@ pcagent models --allow-cloud                        # Nemotron models your key c
   collection. A completed diagnosis is not a claim that the PC is healthy.
 
 `pcagent --help` lists every command, including history, recordings and the administrator checks.
+
+### Opt-in cloud investigation
+
+Nothing is sent without `--allow-cloud`; `doctor --check-cloud` and `models --allow-cloud` read
+only the model catalog. The key and model come from the environment variables `NEBIUS_API_KEY`
+and `NEBIUS_MODEL_ID`, otherwise from `%APPDATA%\pcagent\.env`, the file the desktop app writes
+([.env.example](.env.example) lists every setting). Without the app, you can set them for one
+terminal session and keep the key out of the command history:
+
+```powershell
+$secret = Read-Host "Nebius API key" -AsSecureString
+$env:NEBIUS_API_KEY = [System.Net.NetworkCredential]::new("", $secret).Password
+$env:NEBIUS_MODEL_ID = "nvidia/nemotron-3-super-120b-a12b"   # an ID listed by: pcagent models --allow-cloud
+pcagent doctor --check-cloud
+pcagent diagnose "Why is my PC slow?" --allow-cloud --verbose
+Remove-Item Env:NEBIUS_API_KEY
+```
 
 ## Build from source
 
