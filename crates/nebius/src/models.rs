@@ -1,6 +1,6 @@
 //! The account catalog is the authority for availability and dated prices. Missing metadata
 //! stays unknown; model names never imply a context limit, capability or quality ranking.
-use crate::{AgentError, Pricing};
+use pcagent_agent::{validate_model_id, AgentError, Pricing};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -72,21 +72,6 @@ pub(crate) struct CatalogEntry {
     capabilities: Value,
     #[serde(default)]
     supported_features: Value,
-}
-
-/// Submission scope: an explicit NVIDIA Nemotron ID, with no fallback to another vendor.
-pub fn validate_model_id(id: &str) -> Result<(), AgentError> {
-    let lower = id.to_ascii_lowercase();
-    if id.len() > 200
-        || !lower.starts_with("nvidia/")
-        || !lower.contains("nemotron")
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
-    {
-        return Err(AgentError::InvalidModel);
-    }
-    Ok(())
 }
 
 pub(crate) fn catalog_pricing(entry: &CatalogEntry, read_at_unix_ms: u64) -> Option<Pricing> {
@@ -173,7 +158,7 @@ mod tests {
 
     #[test]
     fn public_vision_support_requires_one_active_exact_multimodal_tool_flavor() {
-        let id = crate::image_input::MODEL_ID;
+        let id = pcagent_agent::image_input::MODEL_ID;
         let entry = json!({"status":"active","flavors":[{
             "model_id":id,"model_type":"image2text","use_cases":["function_calling"]
         }]});

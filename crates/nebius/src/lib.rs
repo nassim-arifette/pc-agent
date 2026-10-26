@@ -1,13 +1,17 @@
-use super::{
+//! Bounded Nebius HTTP/SSE transport. The agent depends only on the Model interface, not this client.
+#![forbid(unsafe_code)]
+mod config;
+mod models;
+#[cfg(test)]
+use crate::models::catalog_pricing;
+use crate::models::{published_vision_support, Catalog, CATALOG_URL, PUBLIC_CATALOG_URL};
+use config::sampling;
+pub use config::{Config, Reasoning};
+pub use models::{ModelCatalog, ModelInfo};
+use pcagent_agent::{
     AgentError, FunctionCall, Model, Pricing, Reply, ToolCall, ToolChoice, MAX_OUTPUT_TOKENS,
     SUBMIT_ANSWER,
 };
-#[cfg(test)]
-use crate::models::catalog_pricing;
-use crate::models::{
-    published_vision_support, validate_model_id, Catalog, CATALOG_URL, PUBLIC_CATALOG_URL,
-};
-use crate::ModelCatalog;
 use reqwest::{
     blocking::{Client, RequestBuilder, Response},
     redirect::Policy,
@@ -20,108 +24,9 @@ use std::{
 };
 
 const BASE_URL: &str = "https://api.tokenfactory.nebius.com/v1";
-/// NVIDIA's sampling for Nemotron 3, from the model cards: Super and Ultra use temperature 1.0 and
-/// top_p 0.95 for every task, tool calling included; Nano's card gives 0.6 for tool calling.
-/// Greedy decoding (temperature 0) let Super loop until the output limit, with almost no
-/// reasoning, on 2026-10-03 and 2026-10-05.
-fn sampling(model_id: &str) -> (f64, f64) {
-    if model_id.to_ascii_lowercase().contains("nano") {
-        (0.6, 0.95)
-    } else {
-        (1.0, 0.95)
-    }
-}
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// A streamed reply repeats its envelope in every event, so it may be larger than a plain one.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
-
-/// How much Nemotron 3 reasons before answering, through its chat template: `enable_thinking`,
-/// and the lighter mode, which Super calls `low_effort` and Ultra `medium_effort`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Reasoning {
-    #[default]
-    On,
-    Low,
-    Off,
-}
-impl Reasoning {
-    /// The `NEBIUS_REASONING` setting; anything else keeps the default.
-    pub fn parse(text: &str) -> Option<Self> {
-        match text.trim() {
-            "on" => Some(Self::On),
-            "low" => Some(Self::Low),
-            "off" => Some(Self::Off),
-            _ => None,
-        }
-    }
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::On => "on",
-            Self::Low => "low",
-            Self::Off => "off",
-        }
-    }
-    /// With reasoning, the cards ask for `force_nonempty_content` when tools are called, so a
-    /// call is never lost inside the reasoning.
-    fn template_kwargs(self, model_id: &str) -> Value {
-        let ultra = model_id.to_ascii_lowercase().contains("ultra");
-        match self {
-            Self::On => json!({"enable_thinking":true,"force_nonempty_content":true}),
-            Self::Low if ultra => {
-                json!({"enable_thinking":true,"medium_effort":true,"force_nonempty_content":true})
-            }
-            Self::Low => {
-                json!({"enable_thinking":true,"low_effort":true,"force_nonempty_content":true})
-            }
-            Self::Off => json!({"enable_thinking":false}),
-        }
-    }
-}
-
-/// Intentionally does not implement Debug or Serialize: API keys must not enter logs.
-pub struct Config {
-    api_key: String,
-    model_id: String,
-    reasoning: Reasoning,
-}
-impl Config {
-    pub fn model_id(&self) -> &str {
-        &self.model_id
-    }
-    pub fn reasoning(&self) -> Reasoning {
-        self.reasoning
-    }
-    /// Reuse an already local credential for an explicit catalog-checked routing target.
-    pub fn for_model(&self, model_id: &str) -> Result<Self, AgentError> {
-        validate_model_id(model_id)?;
-        Ok(Self {
-            api_key: self.api_key.clone(),
-            model_id: model_id.into(),
-            reasoning: self.reasoning,
-        })
-    }
-    pub fn from_env() -> Result<Self, AgentError> {
-        Self::from_lookup(|name| std::env::var(name).ok())
-    }
-    /// `lookup` returns `NEBIUS_API_KEY` / `NEBIUS_MODEL_ID` (and the optional
-    /// `NEBIUS_REASONING`) from whatever source the caller trusts (environment, a per-user
-    /// credentials file); empty values count as missing.
-    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, AgentError> {
-        let get = |name: &str| lookup(name).filter(|s| !s.trim().is_empty());
-        let api_key = get("NEBIUS_API_KEY").ok_or(AgentError::MissingKey)?;
-        let model_id = get("NEBIUS_MODEL_ID").ok_or(AgentError::MissingModel)?;
-        validate_model_id(&model_id)?;
-        let reasoning = get("NEBIUS_REASONING")
-            .and_then(|text| Reasoning::parse(&text))
-            .unwrap_or_default();
-        Ok(Self {
-            api_key,
-            model_id,
-            reasoning,
-        })
-    }
-}
 
 /// A request that ran out of time is reported as such; other transport failures stay opaque.
 fn transport_error(e: &reqwest::Error) -> AgentError {
@@ -215,7 +120,7 @@ impl Nebius {
     }
 
     pub fn check_image_catalog(&mut self, timeout: Duration) -> Result<(), AgentError> {
-        if self.config.model_id != crate::image_input::MODEL_ID {
+        if self.config.model_id != pcagent_agent::image_input::MODEL_ID {
             return Err(AgentError::ImageNotAllowed);
         }
         self.check_catalog_for(timeout, true)
@@ -603,6 +508,7 @@ impl Model for Nebius {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pcagent_agent::validate_model_id;
     #[test]
     fn final_answer_choice_names_only_the_submission_tool() {
         assert_eq!(tool_choice_value(ToolChoice::Required), json!("required"));

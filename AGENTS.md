@@ -33,7 +33,8 @@ ancienne feuille de route, ancienne comparaison de modèles) : ne pas les suivre
 | `crates/storage` | scanner de dossiers |
 | `crates/policy` | classification, contexte et plans |
 | `crates/actions` | actions approuvées et journal |
-| `crates/agent` | boucle LLM, outils, client Nebius, identifiants |
+| `crates/agent` | boucle LLM, outils, vérification, confidentialité, identifiants |
+| `crates/nebius` | client HTTP/SSE Nebius, catalogue et configuration du modèle |
 | `apps/cli` | CLI `pcagent` |
 | `apps/gui` | app Tauri `pcagent-gui` : commandes Rust dans `src/`, interface en JavaScript sans build dans `ui/` ([docs/gui.md](docs/gui.md)) |
 

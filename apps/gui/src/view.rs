@@ -6,12 +6,13 @@ use pcagent_agent::capabilities::{Capability, Probes};
 use pcagent_agent::selection::is_battery_ref;
 use pcagent_agent::{
     credentials::{Credentials, Source},
-    AgentError, Answer, Category, CitationKind, Confidence, Config, Cost, ExecutionStatus,
+    AgentError, Answer, Category, CitationKind, Confidence, Cost, ExecutionStatus,
     ExtensionRequest, Investigation, IssueKind, ModelRequestUsage, Pricing, RequestUsage,
     SensorCoverage, Stats,
 };
 use pcagent_diagnostics::{Classification, Finding, Support};
 use pcagent_inspect::{CoverageStatus, Inspection, Observation};
+use pcagent_nebius::Config;
 use pcagent_shared::{
     format_bytes, gpu_slowdown_codes, gpu_slowdown_reasons, unix_ms, Evidence, HardwareInventory,
     Metric, Phrase, ProcessCoverage, ProcessInstance, Quantity, Snapshot, Status, VolumeKind,
@@ -2045,7 +2046,7 @@ pub fn cloud(creds: &Credentials) -> Cloud {
         ready: checked.is_ok(),
         reasoning: creds
             .get("NEBIUS_REASONING")
-            .and_then(|text| pcagent_agent::Reasoning::parse(&text))
+            .and_then(|text| pcagent_nebius::Reasoning::parse(&text))
             .unwrap_or_default()
             .as_str(),
         problem: checked.err().map(|e| e.to_string()),

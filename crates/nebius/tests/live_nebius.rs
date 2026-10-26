@@ -1,6 +1,7 @@
 //! Live smoke test against Nebius. Ignored by default; run with real credentials:
-//! `cargo test -p pcagent-agent --test live_nebius -- --ignored --nocapture`
-use pcagent_agent::{investigate, Config, Nebius, SnapshotTools};
+//! `cargo test -p pcagent-nebius --test live_nebius -- --ignored --nocapture`
+use pcagent_agent::{investigate, SnapshotTools};
+use pcagent_nebius::{Config, Nebius};
 use pcagent_shared::{Origin, Snapshot};
 
 /// Exercises the repair transport deterministically: inspection data and the duplicate first

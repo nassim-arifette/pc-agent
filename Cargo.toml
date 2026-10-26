@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "apps/gui", "apps/eval", "apps/elevated", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect", "crates/mft", "crates/elevation"]
+members = ["apps/cli", "apps/gui", "apps/eval", "apps/elevated", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/nebius", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect", "crates/mft", "crates/elevation"]
 resolver = "2"
 
 [workspace.package]
@@ -28,6 +28,7 @@ pcagent-shared = { path = "crates/shared" }
 pcagent-telemetry = { path = "crates/telemetry" }
 pcagent-diagnostics = { path = "crates/diagnostics" }
 pcagent-agent = { path = "crates/agent" }
+pcagent-nebius = { path = "crates/nebius" }
 pcagent-storage = { path = "crates/storage" }
 pcagent-policy = { path = "crates/policy" }
 pcagent-actions = { path = "crates/actions" }

@@ -2413,6 +2413,7 @@ dependencies = [
  "pcagent-agent",
  "pcagent-diagnostics",
  "pcagent-inspect",
+ "pcagent-nebius",
  "pcagent-policy",
  "pcagent-shared",
  "pcagent-storage",
@@ -2492,6 +2493,7 @@ dependencies = [
  "clap",
  "pcagent-agent",
  "pcagent-inspect",
+ "pcagent-nebius",
  "pcagent-policy",
  "pcagent-shared",
  "pcagent-storage",
@@ -2510,6 +2512,7 @@ dependencies = [
  "pcagent-agent",
  "pcagent-diagnostics",
  "pcagent-inspect",
+ "pcagent-nebius",
  "pcagent-policy",
  "pcagent-shared",
  "pcagent-storage",
@@ -2543,6 +2546,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "pcagent-nebius"
+version = "0.1.0"
+dependencies = [
+ "pcagent-agent",
+ "pcagent-shared",
+ "reqwest 0.12.24",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -3,8 +3,8 @@ use crate::failure::{self, Code, Failure};
 use pcagent_agent::{
     credentials,
     routing::{CalibratedRule, Calibration, RoutingMode, RoutingSettings, MAX_CALIBRATION_BYTES},
-    Config, Reasoning,
 };
+use pcagent_nebius::{Config, Reasoning};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,

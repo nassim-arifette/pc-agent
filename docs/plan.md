@@ -1144,7 +1144,7 @@ sortie). Les quatre annoncent les outils et le raisonnement.
   la sortie passe à 8 192 tokens, et une réponse coupée est redemandée une fois. À faire : ne pas
   renvoyer au modèle un résultat identique à un appel récent, puis laisser l'évaluation trancher le
   modèle par défaut.
-- La garde qui refuse les modèles non NVIDIA ([`nebius.rs`](../crates/agent/src/nebius.rs)) reste en
+- La garde qui refuse les modèles non NVIDIA ([politique du cœur](../crates/agent/src/model_policy.rs)) reste en
   place pour la soumission. Ensuite : fournisseur compatible OpenAI configurable (Kimi, DeepSeek,
   Qwen…) et API Anthropic ou OpenAI.
 
@@ -1521,6 +1521,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
+| Réorganisation C — cœur / outils / Nebius | A, B | premier lot validé localement : transport/catalogue/configuration dans `pcagent-nebius`, composition explicite dans les apps ; 827 tests Rust sur 19 exécutables sous compte standard, Clippy et quatre builds release ; séparation des outils et découpage des gros fichiers encore à faire ; non fusionné | refactor/agent-boundaries |
 | 6 — Inspiration Orb (26 octobre) | C | fusionné : [note et deux captures](orb-ui-reference.md), dossiers, connecteurs à définir, barre de choix sous la saisie ; exploration future uniquement, aucun changement de l'interface actuelle | [#92](https://github.com/nassim-arifette/pc-agent/pull/92) |
 | 6, 10 — Image jointe (#55) | A, C | intégration implémentée sur branche : préparation PNG/JPEG bornée, orientation et retrait des métadonnées, aperçu exact, collage/sélection/retrait, Complet et Super VL sans escalade, stockage atomique et suppression ; tests locaux et captures simulées réalisés ; parcours Windows natif avec Nebius et fusion encore à valider | feature/image-attachments ; contrat [#93](https://github.com/nassim-arifette/pc-agent/pull/93) |
 | Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |

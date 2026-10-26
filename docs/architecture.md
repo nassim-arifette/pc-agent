@@ -36,7 +36,8 @@ describes the code, not the plan.
 | `crates/storage` | `pcagent-storage` | Bounded metadata scans of an authorized folder, optional local content comparison ([storage.md](storage.md)) | `windows` module only |
 | `crates/policy` | `pcagent-policy` | Protected paths, preferences, cleanup classification and plans; pure, no filesystem access ([policy.md](policy.md)) | forbidden |
 | `crates/actions` | `pcagent-actions` | Action plans, single-use local approval, revalidation, effects and journal ([actions.md](actions.md)) | `windows` module only |
-| `crates/agent` | `pcagent-agent` | The model loop, tool registry, answer verification, privacy projection, Nebius and Tavily clients, credentials, selected evidence, routing and cost | forbidden |
+| `crates/agent` | `pcagent-agent` | The model loop, tool registry, answer verification, privacy projection, Tavily client, credentials, selected evidence, routing and cost | forbidden |
+| `crates/nebius` | `pcagent-nebius` | Bounded Nebius HTTP/SSE transport, account/public catalogs, provider configuration and sampling | forbidden |
 | `crates/store` | `pcagent-store` | SQLite storage of conversations, the five-second history, recordings and detected events; the background sampler ([history-performance.md](history-performance.md)) | forbidden |
 | `apps/cli` | `pcagent` | Command-line interface | forbidden |
 | `apps/gui` | `pcagent-gui` | Tauri 2 desktop app: Rust commands in `src/`, plain JavaScript modules in `ui/` ([gui.md](gui.md)) | forbidden |
@@ -51,6 +52,13 @@ Windows, and the helper refuses to run.
 
 The CLI and the window call the same crates for measurements, verification and actions; the
 window adds only display rules, such as the words of its PC status pill.
+
+The apps compose `pcagent-agent` with `pcagent-nebius`. The provider implements the engine's
+`Model` interface; the engine has no Rust dependency on the provider crate. The local calibration
+fingerprint still includes the provider transport and configuration sources, deliberately: moving
+a file must not silently stop invalidating calibration when transport behavior changes. This
+build-time source identity is not a runtime client import. Tool extraction is a separate step; `pcagent-agent` still owns
+the read-only tool implementations and the Tavily client at this stage.
 
 The inspection boundary is split without changing the worker protocol:
 
@@ -230,7 +238,7 @@ The loop lives in `crates/agent/src/lib.rs` (`converse_inner`).
 
 ## Nebius Token Factory client
 
-`crates/agent/src/nebius.rs` and `models.rs`:
+`crates/nebius/src/lib.rs` and `models.rs`:
 
 - Fixed endpoint `https://api.tokenfactory.nebius.com/v1` (OpenAI-compatible
   `chat/completions`, and `models?verbose=true` for the account catalog); HTTPS only, redirects

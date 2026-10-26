@@ -26,7 +26,7 @@ node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs 
   every build uses `--locked`; no check rewrites it.
 - Tests use synthetic data and scripted model replies. They need no credentials and must not see
   any: unset `NEBIUS_API_KEY`, `NEBIUS_MODEL_ID`, `NEBIUS_REASONING` and `TAVILY_API_KEY` first.
-  The live tests (`crates/agent/tests/live_nebius.rs`, and one Tavily search in
+  The live tests (`crates/nebius/tests/live_nebius.rs`, and one Tavily search in
   `crates/agent/src/tavily.rs`) are `#[ignore]`d: they make paid requests and run only when
   someone asks for them explicitly with `--ignored`.
 - On Linux, the same `cargo test --workspace --locked` runs the portable tests; native collectors

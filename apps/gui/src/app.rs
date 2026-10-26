@@ -19,8 +19,8 @@ use pcagent_agent::{
     capabilities::Probes,
     converse_with_image, converse_with_privacy, converse_with_selection,
     credentials::{self, Credentials},
-    local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius, PastTurn,
-    PrivacyContext, Sharing, StorageContext, Workstation,
+    local_report, AgentError, ExtensionRequest, Investigation, PastTurn, PrivacyContext, Sharing,
+    StorageContext, Workstation,
 };
 use pcagent_agent::{
     routing::{RoutedModel, RoutingMode, RoutingSettings},
@@ -30,6 +30,7 @@ use pcagent_agent::{
     },
     SnapshotTools,
 };
+use pcagent_nebius::{Config, Nebius};
 use pcagent_policy::{Policy, Preferences};
 use pcagent_shared::{unix_ms, Snapshot};
 use pcagent_storage::{ItemKind, ScanOptions, StorageService, MAX_PAGE};
@@ -2173,7 +2174,7 @@ fn save_cloud_settings(
     state: State<'_, AppState>,
     api_key: Option<String>,
     model_id: String,
-    reasoning: Option<pcagent_agent::Reasoning>,
+    reasoning: Option<pcagent_nebius::Reasoning>,
 ) -> Result<view::Cloud, Failure> {
     let model_id = model_id.trim().to_owned();
     // The same rule as the CLI: an explicit nvidia/ Nemotron ID, never a silent fallback.
@@ -2281,7 +2282,7 @@ fn open_nebius_console() -> Result<(), String> {
 
 /// Lists the saved account's catalog; the page receives metadata, never the local key.
 #[tauri::command]
-async fn cloud_models() -> Result<pcagent_agent::ModelCatalog, String> {
+async fn cloud_models() -> Result<pcagent_nebius::ModelCatalog, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let credentials = Credentials::load();
         Nebius::account_catalog(|name| credentials.get(name), Duration::from_secs(10))
