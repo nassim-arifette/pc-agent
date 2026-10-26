@@ -658,6 +658,12 @@ It lives outside `ui/`, so the app never embeds it.
   fixed NTFS drive) and the deeper-checks card of the chat; 224 agent tests cover the per-turn
   toolbox, the variants and the system prompt; the tour in English, light and dark, with no page
   errors.
+- French interface completed on 2026-10-26 (#65): the core's sentences reach the window as closed
+  phrase keys with typed values (`Phrase`, `ui/js/phrases.js`: findings, next steps, limitations,
+  Sources facts, local answer, GPU slowdowns, elevated coverage, unnamed processes) and every
+  failed command carries a closed code the page translates (`src/failure.rs`, `ui/js/failure.js`),
+  the English detail kept as a tooltip. 88 app tests and 46 Node checks (every code and phrase in
+  both languages); the tour in French, light and dark, with no page errors.
 
 ## Known gaps
 
