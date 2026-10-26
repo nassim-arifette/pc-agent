@@ -407,6 +407,15 @@ mode Local. Le lien « Voir ce qui part » ouvre l'aperçu exact de la prochaine
 octet pour octet à ce qui sera envoyé ; après le tour, ses étapes montrent ce qui est parti. La
 liste « jamais » ci-dessus ne change pas.
 
+Note du 26 octobre (#70), demandée par le porteur du projet : le nom lisible d'un programme (la
+description ou le nom de produit de la ressource de version de son exécutable, par exemple
+« Google Chrome ») n'est pas un chemin. Dans cette version, il reste local : la fenêtre l'affiche
+(listes, inspecteur, réponses, avec le nom d'exécutable en info-bulle et le PID seulement dans
+l'inspecteur ou pour distinguer deux instances), mais il ne part pas vers le modèle, qui reçoit
+toujours le nom d'exécutable en mode Complet et une référence opaque en mode Anonymisé. S'il doit
+partir un jour, ce sera en mode Complet seulement, comme un nom d'application, tronqué et nettoyé
+comme les noms d'exécutables et visible dans l'aperçu exact ; ce changement passera par ce plan.
+
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
 
@@ -1303,6 +1312,19 @@ choix produit, annoncé tel quel dans le README.
 Règle de conduite jusqu'au 30 : on ne touche pas aux contrats C1–C7 et on ne commence aucun nouveau
 chantier ; tout ce qui n'est pas dans cette section est repoussé.
 
+**Décision du porteur du projet, 26 octobre (remplace la règle ci-dessus et le gel du 27) :** tout
+terminer avant l'échéance, y compris les listes « Repoussé après la soumission » et la phase 5.
+Chaque élément entre dans `main` dès qu'il est entièrement validé (formatage, Clippy
+`-D warnings`, tests sous un compte standard, build release) et sans déstabiliser la build
+soumise, jusqu'au 29 octobre ; les éléments de la soumission passent en premier. Les contrats
+C1–C7 ne changent toujours que sur décision du porteur, dans une PR du plan à part. Le code est
+nettoyé et refactorisé au passage, sans changer son comportement ; la restructuration du dépôt est
+proposée au porteur avant tout déplacement de fichiers. Le 29 octobre (Paris) : gel, tag annoté
+`v0.1.0` sur `main` et release GitHub avec les quatre exécutables (Devpost renvoie au tag). Du
+30 octobre 10 h PDT au 15 décembre, `main` est gelée (règlement Devpost : aucune modification de la
+soumission après la période de soumission) ; ce qui n'est pas terminé va sur une branche `next`,
+fusionnée dans `main` après le 15 décembre.
+
 ### Phase 0 — Remise en route (17–18 oct.)
 
 | Tâche | Pourquoi | Fait quand |
@@ -1350,11 +1372,13 @@ actifs (chantier 9), cache Tavily.
 
 ### Phase 4 — Gel et soumission (27–29 oct.)
 
-1. **Gel le 27** : seulement des corrections de bugs.
+1. **Gel le 29** (décision du 26 octobre, qui lève le gel du 27) : tag annoté `v0.1.0` sur `main`
+   et release ; ensuite, seulement des corrections de bugs jusqu'à la soumission.
 2. README en anglais : vision, captures, installation, plateforme annoncée (**Windows 10/11 x64**),
    confidentialité, usage de Nemotron et de Token Factory, avertissement SmartScreen.
 3. Docs en retard sur le code (#71) : README, `architecture.md`, `validation.md`.
-4. Release GitHub : `pcagent-gui.exe` et `pcagent.exe`, version et commit.
+4. Release GitHub sur le tag `v0.1.0` : `pcagent-gui.exe`, `pcagent-elevated.exe` (à placer à côté
+   de la fenêtre), `pcagent.exe` et `pcagent-eval.exe`, version et commit.
 5. Rendre le dépôt public, licence MIT visible dans « About ».
 6. Vidéo de moins de 3 minutes en anglais, publique sur YouTube : vrai problème → conversation →
    outils en direct → réponse citée → action validée → avant/après.
@@ -1362,11 +1386,13 @@ actifs (chantier 9), cache Tavily.
    Nebius, ou mode local), retours sur Token Factory et Nemotron, ce qui a changé pendant la
    période de soumission.
 
-### Phase 5 — Après la soumission (novembre)
+### Phase 5 — Multi-OS (avancée avant l'échéance, décision du 26 octobre)
 
 Ne pas casser la release soumise pendant le jugement (1er–15 déc.) : le travail multi-OS se fait sur
 des branches et de nouvelles versions, dans le même dépôt et le même workspace (trois cibles de
-build, pas trois forks).
+build, pas trois forks). Décision du 26 octobre : ces étapes sont menées avant le 29 octobre, chacune
+fusionnée dans `main` une fois validée et sans déstabiliser la build soumise ; ce qui reste au
+30 octobre va sur `next`.
 
 1. PR du plan : contrats renommés de façon neutre (commit, startup, services, events, settings
    pages), registre des capacités étendu par OS.
@@ -1421,7 +1447,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater ; #50 à #54, #57 et #68 traités côté interface le 10 octobre (branches `wp6-chat-polish`, `wp6-views-polish`, `wp3-composer-toggles`) ; reprise terminée : corrections de revue, confidentialité et envois concurrents, 52 contrôles navigateur et 9 contrôles natifs locaux réussis, release reconstruite sur D:, formatage/Clippy et 715 tests réussis (2 ignorés) ; parcours avec modèle réel encore à vérifier | #72 |
 | 6 — Résumé dans l'inspecteur et recherche de cause | C | implémenté et validé localement (10 octobre) : #56, résumé sans quitter la vue, poursuite du même fil et étiquettes de sélection ; 57 contrôles rendus, 28 régressions du contrôleur et 12 contrôles natifs réussis ; formatage/Clippy et 715 tests réussis (2 ignorés), binaire reconstruit sur D: ; évaluation réelle des réponses et livraison reportées à la demande du porteur du projet | wp6-selection-inspector |
 | 5, 6 — Historique : lectures et volume | B, C | premier lot implémenté et validé localement (10 octobre) : format compact compatible en lecture avec les anciennes mesures, lecture partagée et cache invalidé après écriture, chargement et tracé réduits préservant lacunes, extrema et couvertures ; formatage/Clippy, 732 tests Rust (2 ignorés), 42 contrôles navigateur et 12 contrôles natifs réussis, CLI et GUI release reconstruits sur D: ; mesures et limites dans [history-performance.md](history-performance.md) ; #58/#59 restent partiels : commande dédiée, table système, comptes d'événements et budget disque demandent un lot de contrats distinct | wp5-history-performance |
-| 2 — WebView2 par application (#61) | B | en cours (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents, sans ligne de commande | wp2-webview2-groups |
+| 2 — WebView2 par application (#61) | B | fait (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents validée (jamais par le nom d'image), sans ligne de commande ; un arbre sans hôte attribuable forme son propre groupe ; 3 tests synthétiques (dont un contrôle par mutation) ; fusionné après validation locale (formatage, Clippy, 749 tests sous compte standard, build release) ; pas encore vu avec de vrais hôtes WebView2 (aucun sur la VM) | wp2-webview2-groups |
 | 14 — Escalade visible (#69) | A, C | en cours (26 oct.) : changement de modèle affiché sur la réponse, coût par modèle dans l'app et la CLI | wp14-escalation-visible |
 | 6 — Stockage minimal (#67) | C | en cours (26 oct.) : résultats d'abord, liste et inspecteur ; carte et arbre repoussés | wp6-storage-minimal |
 | 6 — Interface en français (#65) | A, C | en cours (26 oct.) : dernières chaînes anglaises et formats non localisés de l'interface française | wp6-french-ui |
