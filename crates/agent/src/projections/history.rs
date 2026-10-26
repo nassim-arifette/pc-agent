@@ -1,85 +1,18 @@
-//! Persistent-history tools. The host supplies a local sampler; no model-selected file is opened.
-use crate::{
-    tools::{Args, Param, ParamKind, ToolClass, ToolOutput, ToolSpec},
-    PrivacyContext, Sharing,
-};
-use pcagent_shared::{unix_ms, Evidence, Metric, Status, Window};
-use pcagent_store::{
-    sampler::Sampler, EventObservation, HistoryQuery, HistorySeries, ProcessPeaks,
-};
+//! Pure C5 projections of supplied history and recording measurements.
+use crate::{PrivacyContext, Sharing, ToolOutput};
+use pcagent_shared::{Evidence, Metric, Status, Window};
+use pcagent_store::{EventObservation, HistorySeries, ProcessPeaks};
 use serde_json::{json, Value};
-use std::{
-    collections::BTreeSet,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::collections::BTreeSet;
 
-const MAX_HISTORY_POINTS: usize = 120;
-const MAX_RECORDING_POINTS: usize = 30;
-const MAX_PROCESS_PEAKS: usize = 10;
+use crate::catalog::history::MAX_PROCESS_PEAKS;
 const MAX_EVENTS: usize = 30;
 const MAX_GAPS: usize = 30;
 // Store::metric_history currently reads at most this many events. Reaching its limit does not
 // prove that older matching events are absent, even before the smaller cloud projection.
 const STORE_EVENT_LIMIT: usize = 100;
 
-pub const METRICS: &[&str] = &[
-    "physical_total_bytes",
-    "physical_available_bytes",
-    "system_commit_bytes",
-    "system_commit_limit_bytes",
-    "cpu_busy_basis_points",
-    "cpu_busiest_core_basis_points",
-    "disk_read_latency_microseconds",
-    "disk_write_latency_microseconds",
-    "disk_idle_basis_points",
-    "disk_queue_length",
-    "hard_fault_pages_per_second_x100",
-    "gpu_busiest_engine_basis_points",
-    "process_working_set_bytes",
-    "process_private_commit_bytes",
-    "process_cpu_basis_points",
-    "process_io_read_bytes_per_second",
-    "process_io_write_bytes_per_second",
-    "process_io_other_bytes_per_second",
-    "process_gpu_basis_points",
-];
-const WINDOW: Param = Param {
-    name: "window_seconds",
-    description: "History window, up to seven days.",
-    kind: ParamKind::Integer {
-        min: 1,
-        max: 604_800,
-    },
-    required: true,
-};
-const END: Param = Param {
-    name: "end_unix_ms",
-    description:
-        "Optional end of a past window as Unix milliseconds; defaults to now. Never a future time.",
-    kind: ParamKind::Integer {
-        min: 1,
-        max: i64::MAX as u64,
-    },
-    required: false,
-};
-pub const TOOLS: &[ToolSpec] = &[
-    ToolSpec { name:"get_metric_history", class:ToolClass::Inspection,
-        description:"Read persisted local samples, including previous app sessions. Seven-day retention; one-minute averages/minima/maxima after 24 hours. At most 120 response points retain weighted averages, extrema and coverage. Gaps and missing process rows remain unknown. Use end_unix_ms to investigate a past time.",
-        params:&[Param {name:"metric",description:"Recorded metric.",kind:ParamKind::OneOf(METRICS),required:true},WINDOW,END,
-            Param {name:"entity_ref",description:"Opaque process reference from history/events, or system (default).",kind:ParamKind::OpaqueRef {prefix:""},required:false}] },
-    ToolSpec { name:"get_activity_events",class:ToolClass::Inspection,
-        description:"Measured CPU, memory and disk latency peaks in local history, limited to 30 recent events with explicit omissions. Contributor means observed resource use, not proven cause; normal recovery is not an incident.",params:&[WINDOW,END] },
-    ToolSpec { name:"record_activity",class:ToolClass::Inspection,
-        description:"Measure the problem now at one-second cadence for 30–120 seconds. Returns markers, at most 120 system history points, gaps, 10 process CPU peaks, up to 10 separate peaks each for process GPU/read/write activity, and at most 128 battery points across 16 opaque batteries. Activity is limited to sampled processes and indicates correlation, not per-app energy. Battery evolution uses only continuous coherent discharge intervals. Can be cancelled by stopping the turn. Reads only; changes no system setting.",
-        params:&[Param{name:"duration_seconds",description:"Recording duration, default 30 seconds.",kind:ParamKind::Integer{min:30,max:120},required:false}] },
-];
-#[derive(Clone)]
-pub struct HistoryTools {
-    pub sampler: Sampler,
-    pub stop: Arc<AtomicBool>,
-}
-
-fn empty(status: Status, message: &str) -> ToolOutput {
+pub fn empty(status: Status, message: &str) -> ToolOutput {
     ToolOutput {
         status,
         inspection_complete: false,
@@ -91,15 +24,7 @@ fn empty(status: Status, message: &str) -> ToolOutput {
         limitations: vec![message.into()],
     }
 }
-fn bounds(args: &Args) -> Option<(u64, u64)> {
-    let end = args.integer("end_unix_ms").unwrap_or_else(unix_ms);
-    let seconds = args.integer("window_seconds")?;
-    if seconds == 0 || seconds > 604_800 || end > unix_ms() {
-        return None;
-    }
-    Some((end.saturating_sub(seconds * 1000), end))
-}
-fn process_ref(reference: &str) -> bool {
+pub fn process_ref(reference: &str) -> bool {
     reference.strip_prefix("proc-").is_some_and(|rest| {
         rest.len() == 8
             && rest
@@ -128,7 +53,7 @@ pub(crate) fn event_observation(observation: &EventObservation, reference: &str)
     value
 }
 
-pub(crate) fn project(
+pub fn project(
     mut series: HistorySeries,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -319,7 +244,7 @@ pub(crate) fn project(
     }
 }
 
-pub(crate) fn measured_at(cloud: &Value) -> Option<u64> {
+pub fn measured_at(cloud: &Value) -> Option<u64> {
     let points = cloud["points"]
         .as_array()
         .into_iter()
@@ -375,7 +300,7 @@ pub(crate) fn measured_at(cloud: &Value) -> Option<u64> {
         .max()
 }
 
-pub(crate) fn project_process_peaks(
+pub fn project_process_peaks(
     peaks: ProcessPeaks,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -389,7 +314,7 @@ pub(crate) fn project_process_peaks(
     )
 }
 
-pub(crate) fn project_resource_peaks(
+pub fn project_resource_peaks(
     peaks: ProcessPeaks,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -479,222 +404,12 @@ fn project_peaks(
     }
 }
 
-pub fn run(
-    spec: &ToolSpec,
-    args: &Args,
-    context: Option<&HistoryTools>,
-    sharing: Sharing,
-) -> Option<ToolOutput> {
-    if !TOOLS.iter().any(|tool| tool.name == spec.name) {
-        return None;
-    }
-    let Some(context) = context else {
-        return Some(empty(
-            Status::Unsupported,
-            "Persistent collection was not enabled by this local client.",
-        ));
-    };
-    let privacy = PrivacyContext::local();
-    let mut out = empty(Status::Partial, "No measurements in the requested window.");
-    match spec.name {
-        "get_metric_history" => {
-            let Some((from, to)) = bounds(args) else {
-                return Some(empty(Status::Error, "Invalid or future history window."));
-            };
-            let Some(metric) = args
-                .text("metric")
-                .and_then(|m| serde_json::from_value::<Metric>(json!(m)).ok())
-            else {
-                return Some(empty(Status::Error, "Unsupported recorded metric."));
-            };
-            let entity = args.text("entity_ref").unwrap_or("system");
-            if entity != "system" && !process_ref(entity) {
-                return Some(empty(
-                    Status::Error,
-                    "Unknown opaque history entity reference.",
-                ));
-            }
-            let query = HistoryQuery {
-                metric,
-                entity_ref: entity.into(),
-                from_unix_ms: from,
-                to_unix_ms: to,
-            };
-            match context.sampler.history(&query) {
-                Ok(series) => {
-                    out = project(series, sharing, &privacy, Some(MAX_HISTORY_POINTS));
-                }
-                Err(_) => {
-                    return Some(empty(Status::Error, "The local history could not be read."))
-                }
-            }
-        }
-        "get_activity_events" => {
-            let Some((from, to)) = bounds(args) else {
-                return Some(empty(Status::Error, "Invalid or future history window."));
-            };
-            // Reading one series supplies both measured events and collection gaps for this window.
-            match context.sampler.history(&HistoryQuery {
-                metric: Metric::CpuBusyBasisPoints,
-                entity_ref: "system".into(),
-                from_unix_ms: from,
-                to_unix_ms: to,
-            }) {
-                Ok(series) => {
-                    out = project(series, sharing, &privacy, None);
-                }
-                Err(_) => {
-                    return Some(empty(
-                        Status::Error,
-                        "The local event history could not be read.",
-                    ))
-                }
-            }
-        }
-        "record_activity" => {
-            let seconds = args.integer("duration_seconds").unwrap_or(30);
-            let recording=match context.sampler.record(seconds,&context.stop) {
-                Ok(recording)=>recording,
-                Err(_)=>return Some(empty(Status::Error,"Recording unavailable, cancelled before starting, or another recording is running.")),
-            };
-            let to = recording
-                .ended_at_unix_ms
-                .unwrap_or_else(unix_ms)
-                .max(recording.started_at_unix_ms + 1);
-            let mut histories = Vec::new();
-            let mut complete = recording.status == "completed";
-            out.limitations.clear();
-            for metric in [
-                Metric::CpuBusyBasisPoints,
-                Metric::PhysicalAvailableBytes,
-                Metric::DiskReadLatencyMicroseconds,
-                Metric::DiskWriteLatencyMicroseconds,
-            ] {
-                match context.sampler.history(&HistoryQuery {
-                    metric,
-                    entity_ref: "system".into(),
-                    from_unix_ms: recording.started_at_unix_ms,
-                    to_unix_ms: to,
-                }) {
-                    Ok(series) => {
-                        let projected =
-                            project(series, sharing, &privacy, Some(MAX_RECORDING_POINTS));
-                        complete &= projected.status == Status::Ok;
-                        histories.push(projected.cloud);
-                        out.evidence.extend(projected.evidence);
-                        for limitation in projected.limitations {
-                            if !out.limitations.contains(&limitation) {
-                                out.limitations.push(limitation);
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        complete = false;
-                        histories.push(json!({"metric":metric,"entity_ref":"system",
-                            "status":Status::Error,"from_unix_ms":recording.started_at_unix_ms,
-                            "to_unix_ms":to,"points":[],
-                            "coverage":{"history":"The local history could not be read."}}));
-                        let limitation = "At least one recording metric could not be read.".into();
-                        if !out.limitations.contains(&limitation) {
-                            out.limitations.push(limitation);
-                        }
-                    }
-                }
-            }
-            let peaks = match context.sampler.process_peaks(
-                recording.started_at_unix_ms,
-                to,
-                MAX_PROCESS_PEAKS,
-            ) {
-                Ok(peaks) => project_process_peaks(peaks, sharing, &privacy),
-                Err(_) => empty(
-                    Status::Error,
-                    "Observed process peaks could not be read for this recording.",
-                ),
-            };
-            complete &= peaks.status == Status::Ok;
-            out.evidence.extend(peaks.evidence);
-            for limitation in &peaks.limitations {
-                if !out.limitations.contains(limitation) {
-                    out.limitations.push(limitation.clone());
-                }
-            }
-            let resources = match context.sampler.process_resource_peaks(
-                recording.started_at_unix_ms,
-                to,
-                MAX_PROCESS_PEAKS,
-            ) {
-                Ok(resources) => project_resource_peaks(resources, sharing, &privacy),
-                Err(_) => empty(
-                    Status::Error,
-                    "Recorded process GPU and I/O peaks could not be read.",
-                ),
-            };
-            if resources.status == Status::Error {
-                complete = false;
-            }
-            out.evidence.extend(resources.evidence);
-            for limitation in &resources.limitations {
-                if !out.limitations.contains(limitation) {
-                    out.limitations.push(limitation.clone());
-                }
-            }
-            let battery = match context.sampler.battery_recording(&recording.id) {
-                Ok(Some(battery)) => {
-                    if battery.status != Status::Ok && battery.status != Status::Unsupported {
-                        complete = false;
-                    }
-                    out.limitations.extend(battery.limitations.iter().cloned());
-                    serde_json::to_value(battery).expect("bounded battery recording serializes")
-                }
-                Ok(None) | Err(_) => {
-                    complete = false;
-                    out.limitations
-                        .push("Battery measurements could not be read for this recording.".into());
-                    json!({"status":Status::Error,"batteries":[],"gaps":[],
-                        "coverage":{"battery":"The recorded battery measurements are unavailable."}})
-                }
-            };
-            out.status = if complete {
-                Status::Ok
-            } else {
-                Status::Partial
-            };
-            out.inspection_complete = !out.evidence.is_empty()
-                || battery["batteries"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .flat_map(|battery| battery["points"].as_array().into_iter().flatten())
-                    .flat_map(|point| point["observations"].as_array().into_iter().flatten())
-                    .any(|observation| !observation["value"].is_null());
-            out.cloud = json!({"status":out.status,"recording":{
-                "started_at_unix_ms":recording.started_at_unix_ms,
-                "ended_at_unix_ms":recording.ended_at_unix_ms,
-                "status":recording.status,
-                "samples":recording.samples,"markers":recording.markers},
-                "histories":histories,"battery":battery,"source":"local persistent sampler",
-                "resource_activity":resources.cloud,
-                "observations":peaks.cloud.get("observations").cloned().unwrap_or_else(||json!([])),
-                "shared_names":peaks.cloud.get("shared_names").cloned().unwrap_or_else(||json!({})),
-                "process_activity":{"status":peaks.status,
-                    "from_unix_ms":recording.started_at_unix_ms,"to_unix_ms":to,
-                    "limitations":peaks.limitations},
-                "limitations":out.limitations});
-        }
-        _ => return None,
-    }
-    out.cloud["measured_at_unix_ms"] = measured_at(&out.cloud).into();
-    out.cloud["historical"] = true.into();
-    out.cloud["queried_at_unix_ms"] = unix_ms().into();
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::history::{MAX_HISTORY_POINTS, MAX_RECORDING_POINTS};
     use pcagent_shared::{Origin, Snapshot};
-    use pcagent_store::{Store, StoredSample};
+    use pcagent_store::{HistoryQuery, Store, StoredSample};
 
     fn fixture(count: u64) -> HistorySeries {
         let mut store = Store::open_in_memory().unwrap();
@@ -1255,27 +970,5 @@ mod tests {
         let recording =
             json!({"observations":cpu.cloud["observations"],"resource_activity":anonymous.cloud});
         assert_eq!(measured_at(&recording), Some(2000));
-    }
-
-    #[test]
-    fn history_schemas_reject_arbitrary_paths_future_windows_and_unbounded_recording() {
-        assert!(TOOLS[0]
-            .validate(r#"{"metric":"cpu_busy_basis_points","window_seconds":604801}"#)
-            .is_err());
-        assert!(TOOLS[0].validate(r#"{"metric":"cpu_busy_basis_points","window_seconds":60,"entity_ref":"C:\\private"}"#).is_err());
-        assert!(TOOLS[2].validate(r#"{"duration_seconds":121}"#).is_err());
-        let args = TOOLS[0]
-            .validate(&format!(
-                r#"{{"metric":"cpu_busy_basis_points","window_seconds":60,"end_unix_ms":{}}}"#,
-                unix_ms() + 10_000
-            ))
-            .unwrap();
-        assert!(bounds(&args).is_none());
-        assert_eq!(
-            run(&TOOLS[0], &Args::default(), None, Sharing::Complete)
-                .unwrap()
-                .status,
-            Status::Unsupported
-        );
     }
 }

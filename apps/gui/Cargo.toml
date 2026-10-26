@@ -17,6 +17,7 @@ serde_json.workspace = true
 pcagent-shared.workspace = true
 pcagent-diagnostics.workspace = true
 pcagent-agent.workspace = true
+pcagent-tools.workspace = true
 pcagent-nebius.workspace = true
 pcagent-storage.workspace = true
 pcagent-telemetry.workspace = true

@@ -1,7 +1,8 @@
 # Native system inspection
 
 `pcagent-inspect` implements the read-only Windows tools registered by
-`crates/agent/src/system_tools.rs`. The public entry point is `inspect(Query)`. The tool registry
+`crates/agent/src/catalog/system.rs`, dispatched in `crates/tools/src/system_tools.rs`.
+The public entry point is `inspect(Query)`. The tool registry
 accepts only bounded integers and enumerated query names; it cannot accept a command, WQL, a
 registry path, an event XPath, a remote host, or an arbitrary filesystem root. The capability
 registry declares these tools to the model only on Windows, and on a PC where Windows lists no

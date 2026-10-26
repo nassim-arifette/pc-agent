@@ -2419,6 +2419,7 @@ dependencies = [
  "pcagent-storage",
  "pcagent-store",
  "pcagent-telemetry",
+ "pcagent-tools",
  "serde",
  "serde_json",
 ]
@@ -2450,7 +2451,6 @@ dependencies = [
  "pcagent-storage",
  "pcagent-store",
  "pcagent-telemetry",
- "reqwest 0.12.24",
  "serde",
  "serde_json",
  "sha2",
@@ -2499,6 +2499,7 @@ dependencies = [
  "pcagent-storage",
  "pcagent-store",
  "pcagent-telemetry",
+ "pcagent-tools",
  "serde",
  "serde_json",
  "sha2",
@@ -2518,6 +2519,7 @@ dependencies = [
  "pcagent-storage",
  "pcagent-store",
  "pcagent-telemetry",
+ "pcagent-tools",
  "serde",
  "serde_json",
  "tauri",
@@ -2613,6 +2615,23 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pcagent-tools"
+version = "0.1.0"
+dependencies = [
+ "pcagent-actions",
+ "pcagent-agent",
+ "pcagent-inspect",
+ "pcagent-policy",
+ "pcagent-shared",
+ "pcagent-storage",
+ "pcagent-store",
+ "pcagent-telemetry",
+ "reqwest 0.12.24",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

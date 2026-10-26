@@ -36,7 +36,8 @@ describes the code, not the plan.
 | `crates/storage` | `pcagent-storage` | Bounded metadata scans of an authorized folder, optional local content comparison ([storage.md](storage.md)) | `windows` module only |
 | `crates/policy` | `pcagent-policy` | Protected paths, preferences, cleanup classification and plans; pure, no filesystem access ([policy.md](policy.md)) | forbidden |
 | `crates/actions` | `pcagent-actions` | Action plans, single-use local approval, revalidation, effects and journal ([actions.md](actions.md)) | `windows` module only |
-| `crates/agent` | `pcagent-agent` | The model loop, tool registry, answer verification, privacy projection, Tavily client, credentials, selected evidence, routing and cost | forbidden |
+| `crates/agent` | `pcagent-agent` | The model loop, static tool contracts/catalogs, answer verification, pure privacy projections, credentials, selected evidence, routing and cost | forbidden |
+| `crates/tools` | `pcagent-tools` | Host-owned `Workstation`, local collection/recording dispatch, action proposals and targets, approved-result cache, typed web lookups and Tavily transport | forbidden |
 | `crates/nebius` | `pcagent-nebius` | Bounded Nebius HTTP/SSE transport, account/public catalogs, provider configuration and sampling | forbidden |
 | `crates/store` | `pcagent-store` | SQLite storage of conversations, the five-second history, recordings and detected events; the background sampler ([history-performance.md](history-performance.md)) | forbidden |
 | `apps/cli` | `pcagent` | Command-line interface | forbidden |
@@ -53,12 +54,39 @@ Windows, and the helper refuses to run.
 The CLI and the window call the same crates for measurements, verification and actions; the
 window adds only display rules, such as the words of its PC status pill.
 
-The apps compose `pcagent-agent` with `pcagent-nebius`. The provider implements the engine's
-`Model` interface; the engine has no Rust dependency on the provider crate. The local calibration
-fingerprint still includes the provider transport and configuration sources, deliberately: moving
-a file must not silently stop invalidating calibration when transport behavior changes. This
-build-time source identity is not a runtime client import. Tool extraction is a separate step; `pcagent-agent` still owns
-the read-only tool implementations and the Tavily client at this stage.
+The apps compose the engine, tool implementations and provider:
+
+```text
+apps ──> pcagent-agent (Model / Toolbox contracts, loop, verification)
+  ├───> pcagent-tools ──> pcagent-agent + native collectors / storage / actions
+  └───> pcagent-nebius ──> pcagent-agent::Model
+```
+
+The engine has no Cargo dependency on either implementation crate or the HTTP client. Its
+`catalog` module owns the closed tool declarations and capability variants; routing and replay
+read them without constructing a collector. Its `projections` module consumes supplied
+measurements for both previews and tool results, with the same privacy rules. It still depends
+on measurement/storage/action crates for their data types and verification contracts; this is
+not yet a standalone data-types-only package.
+
+The answer boundary keeps its public types in `answer.rs`. Internal modules separate the
+model-facing submission schema and repairs (`answer/submission.rs`), review orchestration
+(`answer/review.rs`), citation/name/markup checks (`answer/text.rs`), quantity parsing and unit
+comparison (`answer/quantities.rs`), and source-scoped grounding (`answer/grounding.rs`).
+Regression tests are grouped by contract, battery, measurement and grounding behavior.
+
+The selected-evidence boundary exposes its existing API from `selection.rs`, with closed
+references in `selection/reference.rs`, host-owned captures in `selection/source.rs`, immutable
+bounded projections in `selection/projection.rs`, and Explain/Investigate tool delegation in
+`selection/toolbox.rs`. None of these modules starts a collector. Their tests cover captures,
+history, storage, batteries and the public conversation engine separately.
+
+`pcagent-tools` owns collection and local execution wiring. A model call can prepare a proposal
+but cannot approve or execute it. The elevated executable depends on neither the engine, tools
+nor provider. Local calibration deliberately fingerprints the catalog, projections, runtime
+tool sources and provider transport/configuration: moving a file must not stop invalidating
+calibration when behavior changes. Those workspace-relative source hashes are build-time
+identity, not runtime dependencies.
 
 The inspection boundary is split without changing the worker protocol:
 
@@ -157,7 +185,7 @@ The desktop app path; the CLI follows the same steps without the page.
    request), then `turn:done` or `turn:failed`. The page keeps the exact message sent with the
    turn's steps for the session. A reloaded window reattaches a running turn with
    `current_turn`; Stop calls `stop_turn`.
-6. **Result.** `view.rs` turns the report into display data: the verified answer, its citations,
+6. **Result.** The `view.rs` facade and feature modules under `view/` turn the report into display data: the verified answer, its citations,
    unverified passages, steps, usage and cost per request. The turn is saved in SQLite, action
    proposals wait on the Rust side for a click, and an answer that lacked administrator readings
    gets the matching *Deeper checks* card (a local rule over `needs_admin` coverage).
@@ -192,7 +220,7 @@ The loop lives in `crates/agent/src/lib.rs` (`converse_inner`).
   most three times; JSON and non-interactive CLI runs never extend. Stop refuses the next request
   and discards the reply of the one in flight, keeping its billed usage; a request already sent
   cannot be recalled.
-- **Verification** (`answer.rs`, `answer/grounding.rs`, contract C1). Before an answer is
+- **Verification** (`answer/review.rs` and the other `answer/` modules, contract C1). Before an answer is
   accepted:
   - every citation (`[O2]`, `[F1]`, `[W1]`) exists in this conversation;
   - every number with a unit or a percentage matches a quantity of the source cited in the same
@@ -257,14 +285,19 @@ The loop lives in `crates/agent/src/lib.rs` (`converse_inner`).
 
 ## Tool registry
 
-Tools are declared in a local registry (`ToolSpec` in `tools.rs`) and sent as JSON schemas with
+Tools are declared in the static `crates/agent/src/catalog` registry (`ToolSpec` in
+`crates/agent/src/tools.rs`) and sent as JSON schemas with
 `additionalProperties: false`. Arguments are bounded integers, closed enumerations or short
 references with a fixed shape (`proc-…`, `scope-…`, `device-…`, an update number `KB…` or an
 error code `0x…`). References to local items resolve only against what the PC itself issued; no
 tool accepts a path, a command or free text. Unknown keys, wrong types and out-of-range values
 are rejected before any dispatch.
 
-| Family | Tools | Source |
+The runtime sources below are in `crates/tools/src`, except selected evidence and answer
+handling, which stay in `crates/agent/src`. Shared cloud projections live in the engine's
+`projections` module and do not start measurements.
+
+| Family | Tools | Runtime source |
 | --- | --- | --- |
 | System and processes | `get_system_snapshot`, `get_processes`, `get_process_details`, `get_process_tree`, `get_process_activity` | `workstation.rs`, `activity_tools.rs` over `pcagent-telemetry` |
 | Windows inspections | `get_startup_programs`, `get_services`, `get_recent_events`, `get_system_state`, `get_power_and_thermal`, `get_installed_apps`, `get_hardware_inventory`, `get_drivers`, `get_cleanup_opportunities`, `query_system` | `system_tools.rs` over `pcagent-inspect` |
@@ -273,8 +306,8 @@ are rejected before any dispatch.
 | Administrator results | `get_approved_elevated_inspection` (reads a result the person already approved; never launches anything) | `elevated_tools.rs` |
 | Proposals | `prepare_action_plan` (at most three plans per turn) | `proposals.rs`, declared when actions are enabled |
 | Web, optional | `lookup_driver_notes`, `lookup_known_issue`, `lookup_upgrade_price`, `lookup_pc_specs` (at most three searches per turn) | `external_tools.rs`, declared with a key and consent |
-| Selected evidence | `get_selected_evidence` | `selection.rs`, Explain and Investigate only |
-| Answer | `submit_answer` | `answer.rs` |
+| Selected evidence | `get_selected_evidence` | `selection/toolbox.rs`, Explain and Investigate only |
+| Answer | `submit_answer` | `answer/submission.rs`, `answer/review.rs` |
 
 The model sees opaque process references; in complete sharing a payload also carries
 `process_names`, the executable name of each reference it mentions (a basename, cleaned, at most
@@ -304,18 +337,23 @@ the finite list frozen in the preview when file-name sharing is on.
 ## Desktop app
 
 ```text
-ui/ (HTML, CSS, JavaScript modules, no build step) --invoke--> src/app.rs (Tauri commands)
+ui/ (HTML, CSS, JavaScript modules, no build step) --invoke--> src/app/ (Tauri commands)
         ^                                                           |
         +------------ events: turn:*, scan:* <----------------------+
                                                                     v
-             pcagent-telemetry, -inspect, -agent, -storage, -store, -policy, -actions
+             pcagent-agent, -tools, -nebius, -telemetry, -inspect, -storage, -store, -policy, -actions
 ```
 
-- `src/app.rs` holds the commands and the threads: one owns the live collector (dashboard,
-  process activity, preview snapshots), one reads the battery, the sampler records history, and
-  each turn and each scan runs on its own thread. It also owns the notification-area icon and the
-  startup guard that refuses an elevated session.
-- `src/view.rs` turns core types into display data (raw value, text and status for every
+- `src/app.rs` composes the window, registers the commands and owns startup, the notification-area
+  icon and shutdown. It refuses elevated sessions before starting any collector or window.
+  `src/app/state.rs` defines the shared host state and typed turn inputs/events. Command modules
+  under `src/app/` group history, actions, selections, previews, settings, turns, storage, elevation
+  and images; their names and payloads at the page boundary stay unchanged. `measurements.rs`
+  owns the live-collector and battery threads, and `worker.rs` executes a consented investigation.
+  The sampler records history; each turn and each scan still runs on its own thread.
+- `src/view.rs` exposes feature-specific projections from `src/view/`: measurements/dashboard,
+  battery freshness, action reviews, activity, local labels, answer reports, usage/costs, storage
+  and settings. They turn core types into display data (raw value, text and status for every
   measurement); `src/session.rs` reports each real step and turns Stop into a refused next
   request; `src/preview.rs` and `src/selection.rs` hold the single-use tickets; `src/settings.rs`
   and `src/model_routing.rs` keep the local choices; `src/protocol.rs` projects stored turns.
@@ -367,7 +405,7 @@ Design and bounds: [elevation.md](elevation.md), [elevation-completion.md](eleva
 
 ## Actions broker and journal
 
-`crates/actions` with the model-facing wiring in `crates/agent/src/proposals.rs`:
+`crates/actions` with the model-facing wiring in `crates/tools/src/proposals.rs`:
 
 ```text
 model --prepare_action_plan (opaque refs only)--> Broker::prepare_plan --> ActionPlan (awaiting approval)
@@ -394,7 +432,7 @@ local click --approve_locally--> ApprovalToken (single use) --> Broker::execute 
 
 ## Web lookups
 
-`crates/agent/src/external_tools.rs` and `tavily.rs`, contract C6. Four typed lookups compose
+`crates/tools/src/external_tools.rs` and `tavily.rs`, contract C6. Four typed lookups compose
 their query on the PC from measured references (driver provider and version, a KB number or stop
 code, the memory type and size, the PC maker and model), restricted to fixed domains, at most five
 results, never `include_answer` or page content. Results are cited `[W1]`, `[W2]`, are not

@@ -21,7 +21,7 @@ text such as "fais tout" are rejected and can never produce approval.
 ## Wiring (`pcagent-agent`, CLI)
 
 `Workstation::enable_action_proposals(ActionDesk)` adds the `prepare_action_plan` tool
-(`crates/agent/src/proposals.rs`); the CLI enables it with `diagnose --allow-cloud --propose-actions`.
+(`crates/tools/src/proposals.rs`); the CLI enables it with `diagnose --allow-cloud --propose-actions`.
 
 - `open_settings_page` takes one of `storagesense`, `appsfeatures`, `startupapps`,
   `windowsupdate`, `windowsupdate-optionalupdates`, `powersleep` or `batterysaver-usagedetails`. Opening a page does not

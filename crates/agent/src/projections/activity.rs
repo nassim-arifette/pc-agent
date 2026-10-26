@@ -1,36 +1,9 @@
-//! Process activity tool registry and explicit C5 cloud projection.
-use crate::{Args, Param, ParamKind, PrivacyContext, Sharing, ToolClass, ToolOutput, ToolSpec};
+//! Pure C5 projection of supplied process activity.
+use crate::{PrivacyContext, Sharing, ToolOutput};
 use pcagent_shared::Evidence;
-use pcagent_telemetry::{Collector, ProcessActivity, DEFAULT_ACTIVITY_WINDOW_SECONDS};
+use pcagent_telemetry::ProcessActivity;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
-
-pub const TOOLS: &[ToolSpec] = &[ToolSpec {
-    name: "get_process_activity",
-    class: ToolClass::Inspection,
-    description: "Measure CPU, memory increase/decrease, I/O throughput and observed GPU activity over one fresh window. Return processes and application groups, ranked by CPU then I/O and memory, with service attribution and explicit coverage. Growth is an observation, not proof of a leak. No commands, paths or process IDs.",
-    params: &[
-        Param { name: "window_seconds", description: "Fresh two-sample measurement duration in seconds (default 3).", kind: ParamKind::Integer { min: 1, max: 30 }, required: false },
-        Param { name: "limit", description: "Maximum returned processes and applications, after measuring all instances (default 10).", kind: ParamKind::Integer { min: 1, max: 50 }, required: false },
-    ],
-}];
-
-pub fn run(
-    spec: &ToolSpec,
-    args: &Args,
-    collector: &mut Collector,
-    sharing: Sharing,
-) -> Option<ToolOutput> {
-    if spec.name != "get_process_activity" {
-        return None;
-    }
-    let activity = collector.process_activity(
-        args.integer("window_seconds")
-            .unwrap_or(DEFAULT_ACTIVITY_WINDOW_SECONDS),
-        args.integer("limit").unwrap_or(10) as usize,
-    );
-    Some(project(activity, sharing, &PrivacyContext::local()))
-}
 
 /// Native generated references contain exactly eight random hex digits. Reject composite
 /// PID/creation-time references or names instead of allowing their spelling into JSON keys.
@@ -53,7 +26,7 @@ fn observation(index: usize, e: &Evidence) -> Value {
     })
 }
 
-pub(crate) fn project(
+pub fn project(
     activity: ProcessActivity,
     sharing: Sharing,
     privacy: &PrivacyContext,
@@ -170,6 +143,7 @@ pub(crate) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::activity::TOOLS;
     use pcagent_shared::{
         Metric, Origin, ProcessCoverage, ProcessInstance, Status, Window, SCHEMA_VERSION,
     };

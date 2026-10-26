@@ -1,6 +1,10 @@
 //! Resolve the citations next to a claim before looking for its measured quantities.
 //! Conversation prose is useful context, but cannot certify a measurement.
-use super::{claims, is_reference, Context, Dim, Issue, IssueKind, Known};
+use super::{
+    quantities::{claims, Dim, Known},
+    text::is_reference,
+    Context, Issue, IssueKind,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -247,7 +251,7 @@ fn known(ctx: &Context<'_>, references: &[&str], query: &Query<'_>) -> Known {
         {
             continue;
         }
-        for fact_claim in super::claims(&fact) {
+        for fact_claim in claims(&fact) {
             if query.topic != Topic::Any && topic(&fact, fact_claim.dim) != query.topic {
                 continue;
             }

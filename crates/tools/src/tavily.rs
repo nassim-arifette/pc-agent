@@ -290,7 +290,8 @@ mod tests {
     #[test]
     #[ignore]
     fn live_search_with_the_saved_key() {
-        let Some(key) = crate::credentials::Credentials::load().get("TAVILY_API_KEY") else {
+        let Some(key) = pcagent_agent::credentials::Credentials::load().get("TAVILY_API_KEY")
+        else {
             eprintln!("no TAVILY_API_KEY saved");
             return;
         };

@@ -1,0 +1,20 @@
+[package]
+name = "pcagent-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pcagent-agent.workspace = true
+pcagent-shared.workspace = true
+pcagent-telemetry.workspace = true
+pcagent-storage.workspace = true
+pcagent-policy.workspace = true
+pcagent-actions.workspace = true
+pcagent-store.workspace = true
+pcagent-inspect.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true

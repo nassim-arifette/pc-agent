@@ -3,7 +3,7 @@
 //! be run against exactly the same PC. Raw scenarios contain local data (process names, paths)
 //! and stay on the machine; only anonymized ones may be versioned.
 use crate::tools::{Args, ToolOutput, ToolSpec, Toolbox};
-use crate::{FindingAliases, Investigation, Observation, Sharing, Workstation};
+use crate::{FindingAliases, Investigation, Observation, Sharing};
 use pcagent_diagnostics::Finding;
 use pcagent_shared::{Evidence, ProcessInstance, Snapshot, Status};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub enum ReplayError {
 
 /// The tools the agent offers today; replay validates against the same closed schemas.
 fn registry() -> Vec<ToolSpec> {
-    Workstation::tool_specs()
+    crate::catalog::inspection_tools()
 }
 fn default_tools() -> Vec<String> {
     registry().iter().map(|s| s.name.into()).collect()

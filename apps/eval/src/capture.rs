@@ -1,9 +1,10 @@
 //! A bounded sweep of the currently implemented tools, or an explicit validated call list.
 use crate::Result;
 use pcagent_agent::{
-    replay::Recorder, ToolSpec, Toolbox, Workstation, HISTORY_TOOL_METRICS, SYSTEM_QUERY_NAMES,
+    replay::Recorder, ToolSpec, Toolbox, HISTORY_TOOL_METRICS, SYSTEM_QUERY_NAMES,
 };
 use pcagent_shared::Snapshot;
+use pcagent_tools::Workstation;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;

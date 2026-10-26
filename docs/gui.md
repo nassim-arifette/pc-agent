@@ -431,19 +431,24 @@ covered by `node --experimental-default-type=module --test apps/gui/dev/usage.te
 ## Architecture
 
 ```text
-ui/ (HTML, CSS, JS modules, no build step) ──invoke──▶ src/app.rs (Tauri commands)
+ui/ (HTML, CSS, JS modules, no build step) ──invoke──▶ src/app/ (Tauri commands)
         ▲                                                   │
         └──────────── events (inv:*, scan:*) ◀──────────────┤
                                                             ▼
                           pcagent-telemetry · -agent · -storage · -policy · -actions
 ```
 
-- `src/view.rs` turns core types into plain data for the page (raw value + text + status for every
+- `src/view.rs` exposes feature modules under `src/view/` for measurements/dashboard, battery,
+  actions, activity, local labels, reports, usage, storage and settings. They turn core types
+  into plain data for the page (raw value + text + status for every
   measurement). Portable and unit-tested.
 - `src/session.rs` wraps the model and the toolbox so each real step is reported as it starts and
   ends, and so Stop refuses the next model request (`AgentError::Cancelled`). A request already sent
   cannot be recalled. Portable and unit-tested.
-- `src/app.rs` (Windows only) holds the Tauri commands. One thread owns the live collector for the
+- `src/app.rs` (Windows only) composes the shell, registers Tauri commands and owns startup/shutdown.
+  Its `app/` modules separate shared state, feature commands, measurement threads and the
+  investigation worker. Command names, payloads, consent checks and helper lifecycle stay at the
+  same host-owned boundary. One thread owns the live collector for the
   live measurements (and, every 30 s, the drives' free space); a second thread reads the battery
   (`pcagent_inspect::live_battery`, about every 10 s while measurements are polled), which the
   measurement thread never waits on. Each investigation and each scan runs on its own thread and
@@ -472,12 +477,35 @@ The native ES modules under `ui/js/` are grouped by responsibility:
 | `storage/` | storage view, item facts and quick drive analysis |
 | `elevation/` | deeper-check cards and the shared helper slot |
 | `history/` | history view, charts and recording controls |
+| `i18n/` | pure English/French dictionaries and translated finding headings |
 
 Shared infrastructure stays at the root: the shell (`main.js`), router, store, Tauri bridge,
 preferences, localization, DOM helpers and common controls. Each view imports the modules it
 needs directly; there are no compatibility wrappers for the old paths. In `live/`, `model.js`
 owns the health priorities and labels without importing the store, DOM or Tauri; `panel.js`
 renders them. This lets Node test the decisions without mounting the interface.
+
+`i18n.js` keeps locale selection, placeholder interpolation and fallback behavior. Its dictionaries
+under `i18n/` have no browser dependencies; tests import them directly to check key and parameter
+parity. Measurement sentences remain in `phrases.js`.
+
+The development bridge follows the same feature boundaries under `dev/mock/`:
+
+| Module | Responsibility |
+| --- | --- |
+| `live.js`, `battery.js` | synthetic resource readings, battery fixtures and capability probes |
+| `history.js` | history, recordings and startup preferences |
+| `provider.js`, `models.js`, `usage.js` | provider settings, model routing and synthetic prices |
+| `conversations.js`, `investigate.js`, `reports.js` | turn lifecycle, simulated events and answer fixtures |
+| `selection.js`, `sharing.js` | expiring capture references, one-use tickets and sharing projections |
+| `storage.js` | scan lifecycle, pages and selection publication |
+| `actions.js` | synthetic plans, decisions and startup restoration |
+| `elevation.js`, `inspections.js` | helper lifecycle and read-only inspection fixtures |
+
+`dev/mock.js` composes these factories and exposes the unchanged `invoke`/`listen` bridge. Each
+feature owns its mutable state; cross-feature calls use explicit functions rather than a shared
+mutable context object. Factories are initialized once per module load, preserving the mock's
+existing lifetime and fresh imports used by tests. Nothing under `dev/` is embedded in the app.
 
 ### Views and the view bar
 
@@ -538,6 +566,11 @@ process with `--experimental-vm-modules`. It parses **every** UI module and link
 catching missing files, missing named exports and duplicate declarations. It does not evaluate
 application code, create a DOM or invoke Tauri. This complements, not replaces, the browser
 tour and native app validation.
+
+The mock contracts also exercise every IPC command across URL scenarios with a virtual clock
+and deterministic readings. They check sharing tickets, stale selections, scan failures, history,
+plan decisions and helper cancellation without waiting for real timers. Image decoding and the
+real Windows/Nebius path still need their own validations.
 
 ## Design review without the app
 

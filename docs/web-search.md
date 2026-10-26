@@ -12,7 +12,7 @@ person's consent, the tools are not declared and everything else works as before
 ## Tools
 
 The model chooses a lookup and a measured reference. It never writes the query: the query is
-composed on the PC from local measurements ([`external_tools.rs`](../crates/agent/src/external_tools.rs)).
+composed on the PC from local measurements ([`external_tools.rs`](../crates/tools/src/external_tools.rs)).
 
 | Tool | Argument | Query composed from | Sites searched |
 | --- | --- | --- | --- |
@@ -25,7 +25,7 @@ composed on the PC from local measurements ([`external_tools.rs`](../crates/agen
   and simple punctuation before a query. No program name, user name, path, command line, file
   content, secret, serial number or machine identifier is ever part of a query, whatever the
   sharing mode.
-- **Search settings.** The client ([`tavily.rs`](../crates/agent/src/tavily.rs)):
+- **Search settings.** The client ([`tavily.rs`](../crates/tools/src/tavily.rs)):
   - asks for `search_depth: basic`, at most 5 results, and `include_domains` restricted to the
     sites above;
   - never asks for `include_answer`, raw page content, images or the extraction of a model-chosen
