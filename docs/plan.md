@@ -1241,6 +1241,15 @@ Repoussé après la soumission :
 - capteurs par le pilote de LibreHardwareMonitor dans le collecteur élevé (chantier 9) ;
 - fournisseurs de modèles hors NVIDIA, compatibles OpenAI ou API Anthropic (chantier 10).
 
+**Piste future ajoutée le 26 octobre — inspiration Orb :** conserver les deux captures fournies
+par le porteur et le dépôt [Th0rgal/orb](https://github.com/Th0rgal/orb) comme références dans
+[la note dédiée](orb-ui-reference.md). À reprendre sélectivement : dossiers/projets pour ranger
+les conversations, possibilité de connecteurs (lesquels restent à définir), et surtout la barre
+compacte de choix **sous la zone de saisie**. La demande est de garder cette direction pour plus
+tard, pas de changer l'interface maintenant ni de l'ajouter aux prérequis de `v0.1.0`. Pendant le
+gel, un éventuel travail va sur `next`. Toute reprise de code exige une vérification préalable
+de sa licence ; aucun connecteur ni fournisseur supplémentaire n'est adopté par cette note.
+
 ## 6. Répartition entre Claude et Codex
 
 Les pistes touchent des fichiers différents pour limiter les conflits.
@@ -1441,6 +1450,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
+| 6 — Inspiration Orb (26 octobre) | C | référence documentée : [note et deux captures](orb-ui-reference.md), dossiers, connecteurs à définir, barre de choix sous la saisie ; exploration future uniquement, aucun changement de l'interface actuelle | wp6-orb-design-roadmap |
 | Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |
 | 1 — Le LLM rédige | A | logique terminée : réponse, vérification des mesures C4, contexte multi-tour, stockage et identifiants stables, flux et arrêt testés ; comparaison de qualité à faire au chantier 7 ; #66 : consigne de vouvoiement ajoutée, évaluation à réaliser | #19, #23, wp1-stream, wp1-phase1-logic |
 | 2 — Tous les processus, sans admin | B | logique terminée : fenêtres, regroupement, services et GPU par processus ; couverture et coût mesurés sans admin (voir docs/telemetry.md) | #22, wp1-phase1-logic |
