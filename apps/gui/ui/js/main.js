@@ -40,7 +40,7 @@ import {
 import { mountPanel } from "./panel.js";
 import { health } from "./live.js";
 import { dialog, button, dialogOpen } from "./ui.js";
-import { usd } from "./format.js";
+import { costText } from "./usage.js";
 import { modelName } from "./models.js";
 import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
@@ -461,7 +461,8 @@ function extensionDialog() {
   const inv = state.inv;
   const ext = inv?.extension;
   if (!ext || dialogOpen()) return;
-  const cost = ext.usage?.cost ? usd(ext.usage.cost.usd) : t("extension.cost.unknown");
+  // The total so far, or a lower bound once a request has no cost (both models after Ultra took over).
+  const cost = costText(ext.usage) ?? t("extension.cost.unknown");
   dialog(
     (close) => [
       h("h2", { class: "dialog-title" }, t("extension.title")),

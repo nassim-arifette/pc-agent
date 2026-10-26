@@ -45,7 +45,8 @@ pub struct ActivityProcess {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationActivity {
     pub entity_ref: String,
-    /// Observed executable image of the earliest member. This is a local heuristic label.
+    /// Observed executable image of the earliest member, preferring an application over a hosted
+    /// runtime such as WebView2. This is a local heuristic label.
     pub name: Option<String>,
     pub process_refs: Vec<String>,
     pub process_count: usize,
@@ -489,6 +490,14 @@ fn boundary(name: Option<&str>) -> bool {
     )
 }
 
+/// A shared runtime that many applications start as their own child process, so its image names
+/// the runtime, not the application. It joins only through its validated parent chain: a
+/// Microsoft Edge WebView2 browser process joins the application that started it, and its
+/// renderer, GPU, utility and crash-handler children join that browser process.
+fn hosted_runtime(name: &str) -> bool {
+    name.eq_ignore_ascii_case("msedgewebview2.exe")
+}
+
 fn find_root(parents: &mut [usize], mut i: usize) -> usize {
     while parents[i] != i {
         parents[i] = parents[parents[i]];
@@ -506,6 +515,8 @@ fn join(parents: &mut [usize], a: usize, b: usize) {
 
 /// Same basename within one Windows session, plus observed descendants. Generic launchers and
 /// service hosts are boundaries, so Explorer or svchost cannot merge unrelated applications.
+/// Hosted runtimes skip the image join: one WebView2 group would merge every application that
+/// embeds it, since each WebView2 tree also joins its own host.
 fn groups(rows: &[ProcessReading]) -> Vec<Vec<usize>> {
     let mut parents: Vec<_> = (0..rows.len()).collect();
     let by_pid: HashMap<_, _> = rows.iter().enumerate().map(|(i, p)| (p.pid, i)).collect();
@@ -514,7 +525,7 @@ fn groups(rows: &[ProcessReading]) -> Vec<Vec<usize>> {
         if boundary(p.name.as_deref()) {
             continue;
         }
-        if let Some(name) = &p.name {
+        if let Some(name) = p.name.as_deref().filter(|&name| !hosted_runtime(name)) {
             if let Some(&other) = by_image.get(&(p.session, name.to_ascii_lowercase())) {
                 join(&mut parents, i, other);
             } else {
@@ -731,9 +742,14 @@ pub(crate) fn assemble(
             gpu.status = Status::Unsupported;
         }
         ev.push(gpu);
+        // A child's creation time can equal its parent's, and its PID can be lower: prefer an
+        // application over a hosted runtime so a WebView2 tree never renames its host's group.
         let primary = members
             .iter()
-            .min_by_key(|&&i| (rows[i].created, rows[i].pid))
+            .min_by_key(|&&i| {
+                let runtime = rows[i].name.as_deref().is_some_and(hosted_runtime);
+                (runtime, rows[i].created, rows[i].pid)
+            })
             .copied()
             .expect("nonempty group");
         for &i in &members {
@@ -776,6 +792,8 @@ pub(crate) fn assemble(
     }
     out.limitations.extend([
         "Application groups are an image-and-parent heuristic within one Windows session, not verified product identities. Executable basenames can coincide. Generic shells and service hosts form separate boundaries; all members are aggregated before the returned lists are capped.".into(),
+        // No literal image name: free text is anonymized against the observed names.
+        "Microsoft Edge WebView2 runtime processes join only through their observed parent chain, never by image: each WebView2 tree counts toward the application that started it. A tree whose starter is a shell or service host, has exited, runs in another session or has a reused PID forms its own group; a WebView2 browser process shared by several applications (same user data folder) counts toward the one that started it.".into(),
         "Application references are scoped to this observation; process references remain stable for PID plus creation time in the collector session.".into(),
         "Working-set sums include shared pages; they are not exclusive physical RAM. Memory increase/decrease is observed net change, not evidence of a leak.".into(),
         "GPU is the busiest observed physical engine. Application GPU sums members on each physical engine before taking the maximum; missing or newly created counter instances are counted in coverage. No GPU instance means unknown, never zero.".into(),
@@ -957,6 +975,170 @@ mod tests {
         assert!(groups
             .iter()
             .all(|group| !(group.contains(&5) && group.contains(&7))));
+    }
+
+    /// Teams, Outlook and PC Agent each start one WebView2 tree (a browser process and its
+    /// renderer, GPU or crash-handler children); the other trees have no attributable host.
+    fn webview2_rows() -> Vec<ProcessReading> {
+        let in_session = |mut p: ProcessReading, session| {
+            p.session = session;
+            p
+        };
+        vec![
+            row(1, 0, 1, "explorer.exe"),
+            row(100, 1, 100, "ms-teams.exe"),
+            row(110, 100, 110, "msedgewebview2.exe"),
+            row(111, 110, 111, "msedgewebview2.exe"),
+            row(112, 110, 112, "msedgewebview2.exe"),
+            row(200, 1, 200, "olk.exe"),
+            row(210, 200, 210, "MSEdgeWebView2.exe"),
+            row(211, 210, 211, "msedgewebview2.exe"),
+            row(300, 1, 300, "pcagent-gui.exe"),
+            row(310, 300, 310, "msedgewebview2.exe"),
+            row(311, 310, 311, "msedgewebview2.exe"),
+            // The host exited: PID 400 is no longer observed.
+            row(410, 400, 410, "msedgewebview2.exe"),
+            row(411, 410, 411, "msedgewebview2.exe"),
+            // PID 500 was reused by a process created after the tree it would have started.
+            row(500, 1, 600, "Widgets.exe"),
+            row(510, 500, 510, "msedgewebview2.exe"),
+            row(511, 510, 511, "msedgewebview2.exe"),
+            // Trees started by a COM surrogate, Explorer and a service host: all boundaries.
+            row(800, 0, 2, "svchost.exe"),
+            row(700, 800, 700, "dllhost.exe"),
+            row(710, 700, 710, "msedgewebview2.exe"),
+            row(711, 710, 711, "msedgewebview2.exe"),
+            row(20, 1, 20, "msedgewebview2.exe"),
+            row(21, 20, 21, "msedgewebview2.exe"),
+            row(810, 800, 810, "msedgewebview2.exe"),
+            row(811, 810, 811, "msedgewebview2.exe"),
+            // Teams in another session with its own tree, and a tree whose host is there.
+            in_session(row(900, 0, 900, "ms-teams.exe"), 2),
+            in_session(row(905, 900, 905, "msedgewebview2.exe"), 2),
+            row(910, 900, 910, "msedgewebview2.exe"),
+        ]
+    }
+
+    #[test]
+    fn webview2_trees_join_the_application_that_started_them_never_each_other() {
+        let rows = webview2_rows();
+        let mut found: Vec<Vec<u32>> = groups(&rows)
+            .into_iter()
+            .map(|group| {
+                let mut pids: Vec<_> = group.into_iter().map(|i| rows[i].pid).collect();
+                pids.sort_unstable();
+                pids
+            })
+            .collect();
+        found.sort();
+        let mut expected = vec![
+            vec![100, 110, 111, 112],
+            vec![200, 210, 211],
+            vec![300, 310, 311],
+            vec![900, 905],
+            vec![410, 411],
+            vec![510, 511],
+            vec![710, 711],
+            vec![20, 21],
+            vec![810, 811],
+            vec![910],
+            vec![1],
+            vec![500],
+            vec![700],
+            vec![800],
+        ];
+        expected.sort();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn webview2_applications_are_named_after_their_host_with_summed_members() {
+        let first = webview2_rows();
+        let mut last = first.clone();
+        for p in &mut last {
+            p.working_set = u64::from(p.pid) * 1000;
+            // 100 basis points of a two-second window on four logical processors.
+            p.cpu_100ns += 800_000;
+        }
+        let activity = assemble(&mut Collector::new(), collection(first, last), 50);
+        let application_of = |pid: u32| {
+            activity
+                .processes
+                .iter()
+                .find(|p| p.instance.pid == pid)
+                .map(|p| p.application_ref.as_str())
+                .unwrap()
+        };
+        let mut seen = HashSet::new();
+        for (name, members) in [
+            ("ms-teams.exe", &[100, 110, 111, 112][..]),
+            ("olk.exe", &[200, 210, 211]),
+            ("pcagent-gui.exe", &[300, 310, 311]),
+            ("ms-teams.exe", &[900, 905]),
+            ("msedgewebview2.exe", &[410, 411]),
+            ("msedgewebview2.exe", &[510, 511]),
+            ("msedgewebview2.exe", &[710, 711]),
+            ("msedgewebview2.exe", &[20, 21]),
+            ("msedgewebview2.exe", &[810, 811]),
+            ("msedgewebview2.exe", &[910]),
+        ] {
+            let reference = application_of(members[0]);
+            assert!(seen.insert(reference), "{members:?} shares a group");
+            assert!(members.iter().all(|&pid| application_of(pid) == reference));
+            let app = activity
+                .applications
+                .iter()
+                .find(|app| app.entity_ref == reference)
+                .unwrap();
+            assert_eq!(app.name.as_deref(), Some(name), "{members:?}");
+            assert_eq!(app.process_count, members.len());
+            assert_eq!(app.process_refs.len(), members.len());
+            assert!(!app.members_truncated);
+            let memory = members.iter().map(|&pid| u64::from(pid) * 1000).sum();
+            assert_eq!(
+                value(&activity, reference, Metric::ProcessWorkingSetBytes),
+                Some(memory)
+            );
+            assert_eq!(
+                value(&activity, reference, Metric::ProcessCpuBasisPoints),
+                Some(100 * members.len() as u64)
+            );
+        }
+        // Explorer, svchost, dllhost and the process that reused PID 500 stand alone.
+        assert_eq!(activity.coverage.applications_total, seen.len() + 4);
+        // Observed names are masked in free text before sharing; the rule must stay readable.
+        assert!(activity
+            .limitations
+            .iter()
+            .any(|text| text.contains("WebView2")));
+        assert!(activity
+            .limitations
+            .iter()
+            .all(|text| !text.to_ascii_lowercase().contains("msedgewebview2")));
+    }
+
+    #[test]
+    fn a_host_keeps_its_group_name_when_its_webview2_child_ties_on_creation_time() {
+        // The parent check accepts an equal creation time, and this browser process also has a
+        // lower PID than its host. A group without a hosted runtime keeps its earliest member.
+        let rows = vec![
+            row(300, 1, 300, "pcagent-gui.exe"),
+            row(296, 300, 300, "msedgewebview2.exe"),
+            row(304, 296, 310, "msedgewebview2.exe"),
+            row(60, 50, 60, "app.exe"),
+            row(50, 1, 50, "launcher.exe"),
+        ];
+        let activity = assemble(&mut Collector::new(), collection(rows.clone(), rows), 50);
+        let mut names: Vec<_> = activity
+            .applications
+            .iter()
+            .map(|app| (app.name.as_deref(), app.process_count))
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [(Some("launcher.exe"), 2), (Some("pcagent-gui.exe"), 3)]
+        );
     }
 
     #[test]

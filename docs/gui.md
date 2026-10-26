@@ -295,7 +295,7 @@ The guide reuses the Settings AI and privacy cards, in English and French and th
 Run the no-dependency logic/IPC-fixture suite from the repository root:
 
 ```powershell
-node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs
+node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs apps/gui/dev/storage.test.mjs
 ```
 
 These are synthetic tests, not browser or live-service validation. For manual browser QA, use a
@@ -360,6 +360,57 @@ not shown again. Without it the turn ran unseen, could wait forever for an answe
 every new question. A saved conversation whose only question never got an answer (the window
 closed mid-run) shows the question, *This question has no answer* and *Ask again*, never a blank
 page. Mock switches: `?turn=orphan` and `?conversation=empty`.
+
+## Model routing: Super, then Ultra
+
+Chantier 14 and the routing complement of C3 (4 October). The routing mechanism and its
+calibrated triggers belong to the engine ([selection.md](selection.md#local-routing-configuration));
+the window only shows what happened and what it cost.
+
+- **Choosing.** The composer's model menu offers *Auto*, then the models. *Auto* can be picked only
+  when `model_routing_get` reports `automatic_available`: Auto is on with a valid calibration, or a
+  reviewed calibration in the fixed local file matches the listed Super and Ultra models, which is
+  exactly when `model_routing_set` accepts it (the file is read again each time the menu or Settings
+  opens). Otherwise its note says it becomes available once the evaluation is reviewed. An Auto
+  choice saved earlier and rejected at start-up (outdated calibration, malformed file) leaves the
+  configured model in use: Settings says so under the model (the engine's reason, which exists in
+  English only, is added on the English page) and the menu's *Auto* note points there. *Always
+  Super* and *always Ultra* are not separate choices: picking *Nemotron 3 Super* or *Nemotron 3
+  Ultra* in the menu gives exactly that behaviour (one model, no escalation). The `always_super` and
+  `always_ultra` modes still work from a hand-written `model-routing.json`, and Settings says when
+  one applies.
+- **While a turn runs**, its header names the model in use (the configured model, or Super with
+  Auto). On `model_changed` a step says that Ultra takes the question over with the measurements
+  already taken, the header becomes *Nemotron 3 Super → Nemotron 3 Ultra*, and a draft already on
+  screen stays, dimmed, until Ultra's text catches up. A window reloaded during an Auto turn cannot
+  know whether the change already happened: the header says *Auto* until a step or the end of the
+  turn tells.
+- **Under the answer** a lasting line says that Ultra took the question over and why (Super's answer
+  had low confidence, Super found too little evidence, Super's answer still had unverified passages
+  after its corrections, or Super used its share of requests without answering). When Ultra wrote
+  nothing it says so truthfully: its only request failed and the answer shown is Super's, its last
+  request failed and the answer shown is the best one kept before the failure, the turn ended before
+  it answered, or the person stopped the analysis (then no answer falls back to Super's). The header
+  names the models that worked, in order, then the duration and the cost: the total of both models,
+  or *≥* the priced requests when a request has no cost. A two-model cost is never one model's price
+  applied to every token.
+- **Sources** (*Requests and cost*) gives, after a change, one line per model: requests, tokens, cost
+  and its dated Nebius price, then the total only when every request is priced (else *at least*).
+  A turn of one model keeps the single cost and price lines.
+- **Copy** adds the models, the change and the cost, with each model's own when there are two.
+- **Reopened conversations** rebuild the switch from the saved report (*Nemotron 3 Ultra took the
+  question over after 2 requests*), since the saved tool steps carry no request numbers; a run that
+  reattached after a reload gets the switch back the same way when it ends.
+
+The report's `usage` (`view::Usage`) keeps every earlier field and adds `models` (each model's
+requests, tokens, exact cost only when all its requests are priced, and dated price),
+`total_cost` (the display form of `total_cost_usd`, absent exactly when it is) and
+`priced_cost_lower_bound` (what the priced requests cost at least, only without a total). Turns
+saved before them keep their single cost. In the mock, `?routing=calibrated` offers Auto,
+`?routing=escalated` turns Auto on and hands every AI answer from Super to Ultra,
+`?routing=escalation_failed` makes Ultra's request time out (Super's answer stays, no total) and
+`?routing=stale` shows an Auto choice rejected at start-up. The logic and these mock scenarios are
+covered by `node --experimental-default-type=module --test apps/gui/dev/usage.test.mjs`.
 
 ## Architecture
 
@@ -451,6 +502,8 @@ python -m http.server 5173 --bind 127.0.0.1
 # (none is a desktop PC, also without a battery in recordings), ?sources=short for selection
 # sources that expire after 5 s, ?pc=desktop for a desktop without an NVIDIA GPU or a battery whose
 # D: drive is exFAT, ?ntfs=none for no fixed NTFS drive, ?helper=missing for no pcagent-elevated)
+# sources that expire after 5 s, ?routing=calibrated|escalated|escalation_failed|stale for model
+# routing, see "Model routing" above)
 ```
 
 Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
@@ -459,7 +512,8 @@ to turn off and restore; `health` (or `santé`) ends with the deeper checks card
 `dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
 screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, storage, the
 deeper checks with a review and a result, settings, the Live PC view with the action bar under an
-application (`10a`) and under memory, Explain and its answer, the action bar under a History
+application (`10a`) and under memory, Explain and its answer, an answer Ultra took over and its
+costs in Sources (`16a`, `16b`), the action bar under a History
 event (`17`) and a Storage folder (`18`), the battery card with its inspector discharging (`19`)
 and plugged in (`20`), and the pill of a critically low battery (`21`)) in light and dark themes
 (`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and
@@ -562,6 +616,26 @@ It lives outside `ui/`, so the app never embeds it.
   with zero conversations or provider requests. Its app process and debug port were closed.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
+- Storage results first on 2026-10-26 (#67), with the mock: the scanned folder's totals and its
+  largest folders and files now come right after the drop zone, beside an inspector of the
+  selected item (sizes, shares, dates, location, Explorer, Explain and Investigate), and the two
+  administrator cards follow under their own heading. 11 Node checks cover `storage-item.js`
+  (shares, coverage, facts and notes); the tour in English and French, light and dark, adds the
+  folder and file inspectors, the summary in the panel, the inspector under the row at 860 px
+  and the administrator section (steps 22 to 26), with no page errors.
+- Readable program names on 2026-10-26 (#70): Live PC, its inspector, answers, findings, sources
+  and action reviews name a process as Task Manager does (*Google Chrome* for `chrome.exe`), the
+  executable name as tooltip and the PID only in the inspector or when two cited processes would
+  read the same. 74 telemetry tests (version-resource parsing on synthetic blocks, caches, the own
+  process) and 68 app tests (labels, one-pass replacement, drafts named like the answer, the
+  selection source unchanged); the tour in English, light and dark, against the mock's readable
+  names, with no page errors.
+- Escalation made visible on 2026-10-26 (#69), with the mock (`?routing=escalated`): the step when
+  Ultra takes the question over, the header *Nemotron 3 Super → Nemotron 3 Ultra* with the total of
+  both models (or a lower bound), the lasting note under the answer with the reason, and one line
+  per model in Sources › Requests and cost; the CLI prints the same breakdown. 11 Node checks on
+  `usage.js`, 73 app tests and the CLI's routed-turn tests; the tour in English, light and dark
+  (steps 16a and 16b), with no page errors.
 
 ## Known gaps
 

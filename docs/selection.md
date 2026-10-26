@@ -175,6 +175,12 @@ recording/event dates and reject legacy peaks or saved values presented as curre
 
 `model_routing_get` returns model policy and calibration availability; `model_routing_set` stores
 only the closed `RoutingSettings` object in `model-routing.json` beside the existing app settings.
+`automatic_available` is true when automatic mode is in use with its valid calibration or, in any
+other mode, when the calibration file is valid for the Super and Ultra models the window lists (the
+exact settings its Auto choice saves), so the window offers Auto exactly when `model_routing_set`
+would accept it. `model_routing_get` reads that file again for this, without changing the policy
+in use, its revision or any frozen preview; `calibration_reviewed_at_unix_ms` and
+`calibrated_rules` describe the same calibration.
 The default is `configured`, preserving the explicitly configured Nemotron model. The other modes
 are `always_super`, `always_ultra` and `automatic`; no key or endpoint is accepted by these commands.
 Automatic mode requires a validated, human-reviewed campaign in the fixed local
@@ -190,6 +196,10 @@ and a local revision. Sending rechecks the policy and configured model; the work
 again before constructing its transport. A changed setting requires a new preview. Model changes
 produce an additive `model_changed` step; usage includes per-request model identity and cost, with
 the aggregate cost unknown when any request cost is unknown. Existing event fields are preserved.
+The window's `usage` also groups the requests by model (requests, tokens, an exact cost only when
+all of that model's requests are priced, and the dated price) and gives the total, or without one
+what the priced requests cost at least; the legacy single `cost` stays absent after a change. The
+CLI text report prints the change and each model's cost the same way ([gui.md](gui.md#model-routing-super-then-ultra)).
 
 Explain reads frozen evidence without constructing a native collector, requesting helper work or
 creating action proposals. Investigate shares the existing worker, cancellation, extensions,
