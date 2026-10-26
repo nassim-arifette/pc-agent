@@ -134,7 +134,7 @@ test("the mock offers Auto exactly when a reviewed calibration exists, as model_
   const none = await plain.invoke("model_routing_get");
   assert.equal(none.automatic_available, false);
   assert.deepEqual(none.calibrated_rules, []);
-  await assert.rejects(plain.invoke("model_routing_set", { settings: { mode: "automatic", super_model_id: SUPER, ultra_model_id: ULTRA } }), /calibration/);
+  await assert.rejects(plain.invoke("model_routing_set", { settings: { mode: "automatic", super_model_id: SUPER, ultra_model_id: ULTRA } }), (error) => error.code === "routing_unavailable" && /calibration/.test(error.message));
   const calibrated = await mock("?cloud=ready&routing=calibrated");
   const offered = await calibrated.invoke("model_routing_get");
   assert.equal(offered.settings.mode, "configured");
