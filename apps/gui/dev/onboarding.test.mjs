@@ -3,6 +3,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { en as english } from "../ui/js/i18n/en.js";
+import { fr as french } from "../ui/js/i18n/fr.js";
 import { shouldOfferOnboarding, leaveOnboarding, cloudError, createCloudCheck, cloudModelSelection } from "../ui/js/settings/onboarding.js";
 
 test("first launch offers setup only for an unconfigured profile", () => {
@@ -165,13 +167,9 @@ test("known errors are localized categories; unexpected error text is never expo
   }
 });
 
-test("all new strings exist in French and English and use the same placeholders", async () => {
-  const source = await readFile(new URL("../ui/js/i18n.js", import.meta.url), "utf8");
-  const tables = [...source.matchAll(/const (en|fr) = \{([\s\S]*?)\n\};/g)].map((match) => {
-    const lines = match[2].split("\n").filter((line) => line.trim().startsWith('"onboarding.'));
-    return JSON.parse(`{${lines.join("\n").trim().replace(/,$/, "")}}`);
-  });
-  assert.equal(tables.length, 2);
+test("all new strings exist in French and English and use the same placeholders", () => {
+  const tables = [english, french].map((dictionary) => Object.fromEntries(
+    Object.entries(dictionary).filter(([key]) => key.startsWith("onboarding."))));
   const [en, fr] = tables;
   assert.deepEqual(Object.keys(en).sort(), Object.keys(fr).sort());
   for (const key of Object.keys(en)) {
