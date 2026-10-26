@@ -3,6 +3,8 @@
 //! ever sent anywhere; the person can delete a conversation or everything, and old ones expire.
 #![forbid(unsafe_code)]
 mod battery;
+mod images;
+pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 mod process_peaks;
 pub mod sampler;
 mod samples;
@@ -23,7 +25,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -35,7 +37,7 @@ pub enum StoreError {
     Database(String),
     #[error("The history database was written by a newer version of PC Agent ({0})")]
     TooNew(i64),
-    #[error("A stored turn is not valid JSON")]
+    #[error("Stored conversation data is invalid")]
     Corrupt,
     #[error("Invalid history window, metric, sampling interval or recording duration")]
     InvalidQuery,
@@ -63,6 +65,8 @@ pub struct StoredTurn {
     pub asked_at_unix_ms: u64,
     /// The report as the interface showed it; its shape belongs to the interface.
     pub report: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -167,6 +171,9 @@ impl Store {
         if version < 5 {
             conn.execute_batch(battery::MIGRATION)?;
         }
+        if version < 6 {
+            conn.execute_batch(images::MIGRATION)?;
+        }
         Ok(Self {
             conn,
             history_cache: RefCell::new(None),
@@ -211,6 +218,25 @@ impl Store {
         asked_at_unix_ms: u64,
         report: &Value,
     ) -> Result<Option<String>, StoreError> {
+        self.add_turn_with_image(
+            conversation_id,
+            id,
+            question,
+            asked_at_unix_ms,
+            report,
+            None,
+        )
+    }
+
+    pub fn add_turn_with_image(
+        &mut self,
+        conversation_id: &str,
+        id: &str,
+        question: &str,
+        asked_at_unix_ms: u64,
+        report: &Value,
+        image: Option<&ImageRecord>,
+    ) -> Result<Option<String>, StoreError> {
         if !id.starts_with("turn-")
             || id.len() > 100
             || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
@@ -251,6 +277,9 @@ impl Store {
             "UPDATE conversations SET updated_at = MAX(updated_at, ?2) WHERE id = ?1",
             params![conversation_id, stored(asked_at_unix_ms)],
         )?;
+        if let Some(image) = image {
+            images::insert(&tx, id, image)?;
+        }
         tx.commit()?;
         Ok(Some(id.to_owned()))
     }
@@ -298,6 +327,7 @@ impl Store {
         for row in rows {
             let (id, question, asked_at, report) = row?;
             turns.push(StoredTurn {
+                image: images::info(&self.conn, &id)?,
                 id,
                 question,
                 asked_at_unix_ms: millis(asked_at),

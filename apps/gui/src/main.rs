@@ -7,6 +7,8 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod failure;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod images;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod model_routing;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod preview;

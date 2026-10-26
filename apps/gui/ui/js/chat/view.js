@@ -9,6 +9,7 @@ import { markdown, labelCitations } from "../markdown.js";
 import { mark } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "./composer.js";
 import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
+import { savedImage } from "./images.js";
 import { showSource } from "../panel.js";
 import { health } from "../live/model.js";
 import { numbering, citationTitle, toolLabel } from "./citations.js";
@@ -520,6 +521,7 @@ function turnView(turn, index, { last, inv, cloud, cards = [] }) {
     "section",
     { class: "turn" },
     requestView(turn.question, turn.selection ?? inv?.selection),
+    savedImage(turn.image, state.conversation?.id, turn.id),
     h("div", { class: "assistant" }, head(meta(report, inv)), routingNote(report), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), deeperChecks(turn, last, cards), followUps, footer),
   );
 }
@@ -798,7 +800,7 @@ export function mount(page) {
       renderDraft();
       if (stick) toBottom();
     }
-    else if (topic === "info" || topic === "privacy") {
+    else if (topic === "info" || topic === "privacy" || topic === "image") {
       box?.refresh();
       renderFootnote();
     } else if (topic === "live" && mode === "home") renderSuggestions();

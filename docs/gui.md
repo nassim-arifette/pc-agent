@@ -541,6 +541,35 @@ tour and native app validation.
 
 ## Design review without the app
 
+### Image attachments
+
+The chat composer accepts one explicitly selected or pasted static PNG/JPEG per question.
+Rust validates the bytes (8 MiB input, 24 million pixels, 16,384 pixels per axis), applies
+orientation, flattens transparency on white, strips metadata and reduces the longest side to
+1,600 pixels. The prepared JPEG is at most 2 MiB. The thumbnail and expanded preview use these
+exact prepared bytes; the page sends only an opaque `image_id` with the question.
+
+Images require **Complete** sharing, with a visible warning about personal information in the
+pixels. The host uses exactly `nvidia/Nemotron-3.5-Super-VL` for that turn, without escalation
+or changing the saved text model. Availability is checked in the authenticated account catalog.
+Missing modality metadata must be confirmed by an active, exact `image2text` flavor with tool
+support in Nebius's [public JSON catalog](https://tokenfactory.nebius.com/api/public/models_info);
+an unknown, conflicting, unavailable or explicitly incompatible capability prevents sending.
+The public catalog request carries no API key, question, telemetry or image.
+
+The single-use preview binds the question, image digest, conversation, sharing and routing.
+Removing, replacing or expiring the draft invalidates it. Stored pixels are separate from the
+text history, committed with the turn and deleted with it (including retention and clear-all).
+History loads images only when requested; follow-up questions never automatically include them.
+An image is untrusted context, not measured evidence: numerical claims still require tools.
+
+`dev/images.js` is a browser-only fixture for reviewing this UI; it is not the production decoder
+or a substitute for native Windows/Nebius acceptance. `dev/image-draft.test.mjs` covers byte-only
+IPC preparation, size/type rejection, clipboard filtering, single-image replacement, removal
+and stale asynchronous results. Rust tests cover decoding/orientation, animation/dimensions,
+preview equality and consumption, routing restrictions, tool-context retention and SQLite
+rollback/deletion/retention.
+
 `dev/mock.js` answers every command with synthetic data, so the interface can be reviewed in a
 browser:
 
