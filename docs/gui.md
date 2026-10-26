@@ -604,6 +604,12 @@ It lives outside `ui/`, so the app never embeds it.
   process) and 68 app tests (labels, one-pass replacement, drafts named like the answer, the
   selection source unchanged); the tour in English, light and dark, against the mock's readable
   names, with no page errors.
+- Escalation made visible on 2026-10-26 (#69), with the mock (`?routing=escalated`): the step when
+  Ultra takes the question over, the header *Nemotron 3 Super → Nemotron 3 Ultra* with the total of
+  both models (or a lower bound), the lasting note under the answer with the reason, and one line
+  per model in Sources › Requests and cost; the CLI prints the same breakdown. 11 Node checks on
+  `usage.js`, 73 app tests and the CLI's routed-turn tests; the tour in English, light and dark
+  (steps 16a and 16b), with no page errors.
 
 ## Known gaps
 
