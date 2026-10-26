@@ -274,7 +274,7 @@ The guide reuses the Settings AI and privacy cards, in English and French and th
 Run the no-dependency logic/IPC-fixture suite from the repository root:
 
 ```powershell
-node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs
+node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs apps/gui/dev/storage.test.mjs
 ```
 
 These are synthetic tests, not browser or live-service validation. For manual browser QA, use a
@@ -537,6 +537,13 @@ It lives outside `ui/`, so the app never embeds it.
   with zero conversations or provider requests. Its app process and debug port were closed.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
+- Storage results first on 2026-10-26 (#67), with the mock: the scanned folder's totals and its
+  largest folders and files now come right after the drop zone, beside an inspector of the
+  selected item (sizes, shares, dates, location, Explorer, Explain and Investigate), and the two
+  administrator cards follow under their own heading. 11 Node checks cover `storage-item.js`
+  (shares, coverage, facts and notes); the tour in English and French, light and dark, adds the
+  folder and file inspectors, the summary in the panel, the inspector under the row at 860 px
+  and the administrator section (steps 22 to 26), with no page errors.
 
 ## Known gaps
 
