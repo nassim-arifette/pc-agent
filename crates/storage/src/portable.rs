@@ -93,7 +93,7 @@ impl Directory {
             FileType::Symlink => AttributeClass::Reparse,
             _ => AttributeClass::Special,
         };
-        let logical = u64::try_from(stat.st_size).unwrap_or(0);
+        let logical = u64::try_from(stat.st_size).map_err(|_| io::ErrorKind::InvalidData)?;
         let modified_ms = modified_ms(&stat);
         let facts = (class == AttributeClass::File).then(|| FileFacts {
             logical,
