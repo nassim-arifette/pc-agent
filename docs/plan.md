@@ -91,6 +91,17 @@ refusés, avec les mêmes plafonds de réparations, de temps et de coût. L'exce
 administrateur et ne change pas les vérifications locales. Elle ne force pas la première conclusion
 après une inspection : le modèle peut toujours chercher d'autres mesures avant de tenter sa réponse.
 
+**Déclaration de `submit_answer` (26 octobre 2026, campagne de latence) :** tant qu'aucune inspection
+n'a rendu de mesures utilisables (ou que la capture figée d'« Expliquer » n'est pas disponible), la requête
+ne déclare que les outils d'inspection ; `submit_answer` est ajouté à partir de la requête suivante. Le
+schéma lui-même ne change pas. Motif mesuré : dans les 4 parcours réels dont le détail des corrections a été
+relevé, la première requête était une réponse sans inspection, rejetée `no_inspection` (31–49 s perdues).
+Un appel `submit_answer` non déclaré reste traité comme avant (correction `no_inspection`).
+La consigne de langue est renforcée : quand les mots courants de la question la rangent clairement en
+anglais ou en français, le prompt système l'indique explicitement ; sinon la règle générique « langue de la
+question » s'applique. Les statistiques exposent désormais la durée de chaque requête (`duration_ms`) et
+chaque demande de correction avec ses motifs (`repair_requests`), lues en local seulement.
+
 **Fermeture du flux (26 octobre 2026, décision du porteur) :** quelle que soit la requête, dès que
 la réponse en flux contient un seul appel `submit_answer` dont les arguments forment un objet JSON
 complet, l'app cesse de lire : Nemotron continue sinon d'écrire des balises et une seconde copie de

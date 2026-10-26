@@ -78,7 +78,9 @@ fn the_prompt_and_answer_schema_name_only_declared_tools() {
 #[test]
 fn a_turn_sends_its_declared_tools_and_the_matching_answer_schema() {
     use crate::capabilities::{catalog, registry, Capabilities, Capability};
-    struct Recording(Vec<Value>);
+    // One inspection, then a failure: the first request declares the inspection tools only,
+    // the second adds the answer schema.
+    struct Recording(Vec<Value>, bool);
     impl Model for Recording {
         fn complete(
             &mut self,
@@ -88,16 +90,19 @@ fn a_turn_sends_its_declared_tools_and_the_matching_answer_schema() {
             _: Duration,
         ) -> Result<Reply, AgentError> {
             self.0.push(tools.clone());
+            if self.1 && self.0.len() == 1 {
+                return Ok(super::tools(vec![call("a", "get_system_snapshot", "{}")]));
+            }
             Err(AgentError::Network)
         }
     }
-    struct Declared(Vec<ToolSpec>);
-    impl Toolbox for Declared {
+    struct Declared<F: FnMut(bool, usize) -> Snapshot>(Vec<ToolSpec>, SnapshotTools<F>);
+    impl<F: FnMut(bool, usize) -> Snapshot> Toolbox for Declared<F> {
         fn specs(&self) -> &[ToolSpec] {
             &self.0
         }
-        fn run(&mut self, _: &ToolSpec, _: &Args) -> ToolOutput {
-            unreachable!("the model fails before any tool call")
+        fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
+            self.1.run(spec, args)
         }
     }
     for capabilities in [
@@ -109,15 +114,29 @@ fn a_turn_sends_its_declared_tools_and_the_matching_answer_schema() {
         Capabilities::none(),
     ] {
         let declared = catalog(&registry(), &capabilities);
-        let mut model = Recording(Vec::new());
+        let inspects = declared.iter().any(|s| s.name == "get_system_snapshot");
+        let mut model = Recording(Vec::new(), inspects);
         investigate(
             &mut model,
             "Why is my PC slow?",
             &fixture(),
-            &mut Declared(declared.clone()),
+            &mut Declared(
+                declared.clone(),
+                SnapshotTools::new(|_, _| usable_snapshot()),
+            ),
             |_| {},
         );
-        let sent = model.0[0].as_array().unwrap().clone();
+        let before = model.0[0].as_array().unwrap();
+        assert_eq!(before.len(), declared.len());
+        for (definition, spec) in before.iter().zip(&declared) {
+            assert_eq!(*definition, spec.definition());
+        }
+        if !inspects {
+            assert_eq!(model.0.len(), 1, "{capabilities:?}");
+            continue;
+        }
+        assert_eq!(model.0.len(), 2, "{capabilities:?}");
+        let sent = model.0[1].as_array().unwrap().clone();
         assert_eq!(sent.len(), declared.len() + 1);
         for (definition, spec) in sent.iter().zip(&declared) {
             assert_eq!(*definition, spec.definition());
@@ -160,4 +179,26 @@ fn instructions_mention_proposals_only_when_the_tool_is_offered() {
     assert!(plain.contains("do not guess"));
     assert!(with_plans.contains("call prepare_action_plan"));
     assert!(!with_plans.contains(NO_ACTIONS));
+}
+
+#[test]
+fn the_question_language_is_recognized_from_common_words() {
+    for (question, expected) in [
+        ("Why is my PC slow?", Some(QuestionLanguage::English)),
+        ("Is my CPU the bottleneck?", Some(QuestionLanguage::English)),
+        ("Pourquoi mon PC rame ?", Some(QuestionLanguage::French)),
+        (
+            "Mon disque est-il le problème ?",
+            Some(QuestionLanguage::French),
+        ),
+        (
+            "Est-ce que j'ai besoin de plus de RAM ?",
+            Some(QuestionLanguage::French),
+        ),
+        ("RAM", None),
+    ] {
+        assert_eq!(question_language(question), expected, "{question}");
+    }
+    let english = system_prompt(&[], Sharing::Complete, false, None);
+    assert!(!english.contains("written in English"));
 }

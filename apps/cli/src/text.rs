@@ -1188,6 +1188,7 @@ mod tests {
                     },
                     cost: tokens
                         .and_then(|(p, c)| estimate_cost(p, c, &prices[usize::from(id == ULTRA)])),
+                    duration_ms: 0,
                 })
                 .collect();
             let known = |count: fn((u64, u64)) -> u64| sent.iter().filter_map(|s| s.1).map(count);

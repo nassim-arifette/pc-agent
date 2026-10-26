@@ -105,7 +105,7 @@ pub(crate) fn definition_for(proposals: bool) -> Value {
             "required":["answer","confidence","category"],
             "properties":{
                 "answer":{"type":"string","maxLength":MAX_ANSWER_CHARS,
-                    "description":"The answer in the language of the question: the direct answer first, then what the user can do, then what supports it and what remains uncertain. Plain prose and short lists; cite the source of every number right after it, like [O1] or [F1]. Numbers from an earlier measurement are written in the past."},
+                    "description":"The answer in the language the question is written in (an English question gets an English answer): the direct answer first, then what the user can do, then what supports it and what remains uncertain. Plain prose and short lists; cite the source of every number right after it, like [O1] or [F1]. Numbers from an earlier measurement are written in the past."},
                 "confidence":{"type":"string","enum":["high","medium","low"],
                     "description":"How well the measurements support the answer."},
                 "category":{"type":"string","enum":CATEGORIES,
@@ -114,7 +114,7 @@ pub(crate) fn definition_for(proposals: bool) -> Value {
                     "description":action_refs},
                 "follow_ups":{"type":"array","maxItems":MAX_FOLLOW_UPS,
                     "items":{"type":"string","maxLength":MAX_FOLLOW_UP_CHARS},
-                    "description":"Up to three short follow-up questions or checks the user could ask next, in the language of the question."}}}}})
+                    "description":"Up to three short follow-up questions or checks the user could ask next, in the same language as the answer."}}}}})
 }
 
 /// The tool reply that sends an answer back for correction. When a citation is wrong, it lists

@@ -33,6 +33,19 @@ fn answers_are_checked_and_repaired_before_acceptance() {
     );
     let answer = r.answer.expect("accepted after one repair");
     assert_eq!(answer.repairs, 1);
+    assert_eq!(r.stats.model_requests.len(), 3);
+    assert!(r
+        .stats
+        .model_requests
+        .iter()
+        .all(|m| m.duration_ms < 60_000));
+    assert_eq!(r.stats.repair_requests.len(), 1);
+    assert_eq!(r.stats.repair_requests[0].request, 2);
+    assert_eq!(
+        r.stats.repair_requests[0].issues[0].kind,
+        IssueKind::UnsupportedNumber
+    );
+    assert!(!r.stats.repair_requests[0].output_limit);
     assert!(answer.unverified.is_empty(), "{:?}", answer.unverified);
     assert_eq!(answer.citations[0].reference, "O1");
     assert_eq!(
@@ -78,6 +91,24 @@ fn plain_text_after_inspection_does_not_start_named_repair() {
         |_| {},
     );
     assert_eq!(result.answer.unwrap().repairs, 2);
+    let kinds: Vec<_> = result
+        .stats
+        .repair_requests
+        .iter()
+        .map(|r| {
+            (
+                r.request,
+                r.issues.iter().map(|i| i.kind).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (2, vec![IssueKind::NoToolCall]),
+            (3, vec![IssueKind::Malformed])
+        ]
+    );
     assert_eq!(
         model.choices,
         [
