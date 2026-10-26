@@ -19,7 +19,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked          # from a standard session: see below
 cargo build --release --locked -p pcagent -p pcagent-gui -p pcagent-elevated -p pcagent-eval
 python scripts/test-eval-mcp-client.py
-node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs
+node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs apps/gui/dev/storage.test.mjs
 ```
 
 - The toolchain is pinned to Rust 1.90.0 (`rust-toolchain.toml`). `Cargo.lock` is committed and
