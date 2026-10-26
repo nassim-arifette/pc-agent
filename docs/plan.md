@@ -416,6 +416,18 @@ toujours le nom d'exécutable en mode Complet et une référence opaque en mode 
 partir un jour, ce sera en mode Complet seulement, comme un nom d'application, tronqué et nettoyé
 comme les noms d'exécutables et visible dans l'aperçu exact ; ce changement passera par ce plan.
 
+Décision du porteur du projet, 26 octobre (#55, option B, avant le 29) : une image que
+l'utilisateur joint lui-même à sa question peut partir vers Nebius, en mode Complet seulement, avec
+le modèle NVIDIA qui lit les images (`nvidia/Nemotron-3.5-Super-VL`) pour ce tour, sans escalade.
+C'est une exception explicite à la liste « jamais » : l'image peut contenir des informations
+personnelles (nom d'utilisateur, chemin du profil, contenu d'une fenêtre) et aucun masquage local
+n'est exigé. L'aperçu exact montre l'image telle qu'elle part (réduite et ré-encodée localement,
+sans métadonnées). Une image n'est jamais envoyée en mode Anonymisé ou Local, ni renvoyée dans les
+suivis. Côté C1, l'image est un contexte, comme la question, jamais une preuve mesurée : un chiffre
+lu sur l'image doit être mesuré par un outil avant d'être cité, sinon il reste « non vérifié ». Les
+commandes et le stockage de la pièce jointe (C2, C3) sont précisés dans ce plan avec
+l'implémentation.
+
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
 
@@ -1447,12 +1459,12 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater ; #50 à #54, #57 et #68 traités côté interface le 10 octobre (branches `wp6-chat-polish`, `wp6-views-polish`, `wp3-composer-toggles`) ; reprise terminée : corrections de revue, confidentialité et envois concurrents, 52 contrôles navigateur et 9 contrôles natifs locaux réussis, release reconstruite sur D:, formatage/Clippy et 715 tests réussis (2 ignorés) ; parcours avec modèle réel encore à vérifier | #72 |
 | 6 — Résumé dans l'inspecteur et recherche de cause | C | implémenté et validé localement (10 octobre) : #56, résumé sans quitter la vue, poursuite du même fil et étiquettes de sélection ; 57 contrôles rendus, 28 régressions du contrôleur et 12 contrôles natifs réussis ; formatage/Clippy et 715 tests réussis (2 ignorés), binaire reconstruit sur D: ; évaluation réelle des réponses et livraison reportées à la demande du porteur du projet | wp6-selection-inspector |
 | 5, 6 — Historique : lectures et volume | B, C | premier lot implémenté et validé localement (10 octobre) : format compact compatible en lecture avec les anciennes mesures, lecture partagée et cache invalidé après écriture, chargement et tracé réduits préservant lacunes, extrema et couvertures ; formatage/Clippy, 732 tests Rust (2 ignorés), 42 contrôles navigateur et 12 contrôles natifs réussis, CLI et GUI release reconstruits sur D: ; mesures et limites dans [history-performance.md](history-performance.md) ; #58/#59 restent partiels : commande dédiée, table système, comptes d'événements et budget disque demandent un lot de contrats distinct | wp5-history-performance |
-| 2 — WebView2 par application (#61) | B | en cours (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents, sans ligne de commande | wp2-webview2-groups |
+| 2 — WebView2 par application (#61) | B | fait (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents validée (jamais par le nom d'image), sans ligne de commande ; un arbre sans hôte attribuable forme son propre groupe ; 3 tests synthétiques (dont un contrôle par mutation) ; fusionné après validation locale (formatage, Clippy, 749 tests sous compte standard, build release) ; pas encore vu avec de vrais hôtes WebView2 (aucun sur la VM) | wp2-webview2-groups |
 | 14 — Escalade visible (#69) | A, C | en cours (26 oct.) : changement de modèle affiché sur la réponse, coût par modèle dans l'app et la CLI | wp14-escalation-visible |
-| 6 — Stockage minimal (#67) | C | en cours (26 oct.) : résultats d'abord, liste et inspecteur ; carte et arbre repoussés | wp6-storage-minimal |
+| 6 — Stockage minimal (#67) | C | fait (26 oct.) : résultats d'abord (totaux, liste), inspecteur de l'élément sélectionné à côté de la liste ou sous la ligne quand la fenêtre est étroite, cartes admin regroupées après les résultats ; 11 tests Node, tour en/fr clair/sombre sans erreur ; carte et arbre restent en P2 | wp6-storage-minimal |
 | 6 — Interface en français (#65) | A, C | en cours (26 oct.) : dernières chaînes anglaises et formats non localisés de l'interface française | wp6-french-ui |
 | Registre des capacités (phase 1) | A, B, C | en cours (26 oct.) : outils indisponibles retirés du catalogue envoyé, vues pilotées par les capacités | wp4-capability-registry |
-| 12 — README et docs (#71) | D | en cours (26 oct.) : README en anglais, `architecture.md` et `validation.md` à jour | wp12-docs |
+| 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) | wp12-docs |
 
 Arrêt demandé le 10 octobre après la validation de ce lot, avant la nouvelle vue Stockage et sans
 commencer un autre chantier. L'évaluation réelle des réponses et la livraison restent reportées.
