@@ -1464,7 +1464,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Stockage minimal (#67) | C | en cours (26 oct.) : résultats d'abord, liste et inspecteur ; carte et arbre repoussés | wp6-storage-minimal |
 | 6 — Interface en français (#65) | A, C | en cours (26 oct.) : dernières chaînes anglaises et formats non localisés de l'interface française | wp6-french-ui |
 | Registre des capacités (phase 1) | A, B, C | en cours (26 oct.) : outils indisponibles retirés du catalogue envoyé, vues pilotées par les capacités | wp4-capability-registry |
-| 12 — README et docs (#71) | D | en cours (26 oct.) : README en anglais, `architecture.md` et `validation.md` à jour | wp12-docs |
+| 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) | wp12-docs |
 
 Arrêt demandé le 10 octobre après la validation de ce lot, avant la nouvelle vue Stockage et sans
 commencer un autre chantier. L'évaluation réelle des réponses et la livraison restent reportées.
