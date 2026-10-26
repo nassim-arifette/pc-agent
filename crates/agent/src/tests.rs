@@ -17,19 +17,29 @@ struct Script {
     calls: usize,
     choices: Vec<ToolChoice>,
     messages: Vec<Vec<Value>>,
+    /// The tool names declared by each request, in order.
+    tools: Vec<Vec<String>>,
     pricing: Option<Pricing>,
 }
 impl Model for Script {
     fn complete(
         &mut self,
         messages: &[Value],
-        _: &Value,
+        tools: &Value,
         choice: ToolChoice,
         _: Duration,
     ) -> Result<Reply, AgentError> {
         self.calls += 1;
         self.choices.push(choice);
         self.messages.push(messages.to_vec());
+        self.tools.push(
+            tools
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+                .collect(),
+        );
         self.replies.pop_front().expect("script exhausted")
     }
     fn pricing(&self) -> Option<Pricing> {
@@ -101,6 +111,7 @@ fn script(replies: Vec<Reply>) -> Script {
         calls: 0,
         choices: Vec::new(),
         messages: Vec::new(),
+        tools: Vec::new(),
         pricing: None,
     }
 }

@@ -176,6 +176,7 @@ fn network_failure_preserves_evidence_without_fake_success() {
         calls: 0,
         choices: Vec::new(),
         messages: Vec::new(),
+        tools: Vec::new(),
         pricing: None,
     };
     let r = investigate(
@@ -199,4 +200,33 @@ fn invalid_question_never_reaches_transport() {
     let r = investigate(&mut m, "", &fixture(), &mut tb(fixture), |_| {});
     assert_eq!(m.calls, 0);
     assert_eq!(r.error, Some(AgentError::InvalidQuestion));
+}
+
+#[test]
+fn submit_answer_is_declared_only_after_a_usable_inspection() {
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        done("O1"),
+    ]);
+    let r = investigate(
+        &mut m,
+        "Why is my PC slow?",
+        &fixture(),
+        &mut tb(usable_snapshot),
+        |_| {},
+    );
+    assert!(r.answer.is_some());
+    assert_eq!(m.tools.len(), 2);
+    assert!(
+        !m.tools[0].iter().any(|t| t == SUBMIT_ANSWER),
+        "{:?}",
+        m.tools[0]
+    );
+    assert!(m.tools[0].iter().any(|t| t == "get_system_snapshot"));
+    assert!(
+        m.tools[1].iter().any(|t| t == SUBMIT_ANSWER),
+        "{:?}",
+        m.tools[1]
+    );
+    assert!(m.tools[1].iter().any(|t| t == "get_system_snapshot"));
 }

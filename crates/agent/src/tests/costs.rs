@@ -84,9 +84,9 @@ fn a_cost_lower_bound_needs_a_verified_price_for_every_counted_request() {
             completion_tokens: Some(10),
             ..Reply::default()
         });
-        stats.price_for(None, Some(earlier_model));
+        stats.price_for(None, Some(earlier_model), 0);
         stats.record_failure();
-        stats.price_for(Some(price.clone()), Some(&price.model_id));
+        stats.price_for(Some(price.clone()), Some(&price.model_id), 0);
         assert_eq!(stats.known_prompt_tokens, 100);
         assert_eq!(stats.known_completion_tokens, 10);
         assert_eq!(stats.unknown_requests, 1);
@@ -107,9 +107,9 @@ fn a_cost_lower_bound_uses_only_one_verified_price_and_complete_known_usage() {
         completion_tokens: Some(10),
         ..Reply::default()
     });
-    stats.price_for(Some(price.clone()), Some(&price.model_id));
+    stats.price_for(Some(price.clone()), Some(&price.model_id), 0);
     stats.record_failure();
-    stats.price_for(Some(price.clone()), Some(&price.model_id));
+    stats.price_for(Some(price.clone()), Some(&price.model_id), 0);
     assert!(stats.cost.is_none());
     assert!(stats.total_cost_usd.is_none());
     let bound = stats.cost_lower_bound.as_ref().unwrap();
@@ -124,7 +124,7 @@ fn a_cost_lower_bound_uses_only_one_verified_price_and_complete_known_usage() {
         completion_tokens: Some(10),
         ..Reply::default()
     });
-    stats.price_for(Some(other.clone()), Some(&other.model_id));
+    stats.price_for(Some(other.clone()), Some(&other.model_id), 0);
     assert_eq!(stats.known_prompt_tokens, 200);
     assert!(stats.cost_lower_bound.is_none());
 }
