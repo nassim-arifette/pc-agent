@@ -216,7 +216,7 @@ function appDetails(item) {
             h(
               "button",
               { type: "button", class: "insp-member", "data-key": `process:${m.entity_ref}`, onclick: () => select({ kind: "process", app: app.entity_ref, key: m.entity_ref }) },
-              h("span", { class: "insp-member-name", title: m.name }, `${m.readable_name || m.name} · PID ${m.pid}`),
+              h("span", { class: "insp-member-name", title: m.readable_name || null }, `${m.name} · PID ${m.pid}`),
               h("span", null, measureText(m.cpu, "cpu")),
               h("span", null, measureText(m.working_set, "bytes")),
             ),
