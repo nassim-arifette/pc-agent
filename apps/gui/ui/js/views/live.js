@@ -13,6 +13,7 @@ import { ago, basisPoints, bytes, number, percent } from "../format.js";
 import { runSelection } from "../select.js";
 import { actionBar, selectionKeys } from "../actionbar.js";
 import { currentRoute } from "../router.js";
+import { failureDetail, failureText } from "../failure.js";
 
 // Kept across visits so coming back to the view shows the same selection.
 let selected = null;
@@ -405,7 +406,7 @@ function render() {
   );
   const head = h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("livepage.title")), h("p", { class: "page-sub" }, t("livepage.sub"))), status);
   if (!dash) {
-    fill(host, head, live.error ? h("p", { class: "note" }, t("live.error", { message: live.error })) : h("div", { class: "skeleton", style: { height: "220px" } }));
+    fill(host, head, live.error ? h("p", { class: "note", title: failureDetail(live.error) }, failureText(live.error, "failure.live_unavailable")) : h("div", { class: "skeleton", style: { height: "220px" } }));
     return;
   }
   const cards = resources(dash, live.history);

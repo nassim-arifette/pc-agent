@@ -1,8 +1,9 @@
 // Application state and the backend's events. Views subscribe to topics ("info", "inv",
 // "conversation", "history", "scan", "extension", "live", "panel", "draft", "privacy") and redraw
 // the parts they own.
-import { call, on } from "./api.js";
+import { call, commandError, on } from "./api.js";
 import { t } from "./i18n.js";
+import { startFailure } from "./failure.js";
 import { rememberSelection, selectionForTurn, selectionForConversation, forgetSelections } from "./selection-meta.js";
 
 const listeners = new Set();
@@ -179,7 +180,7 @@ async function liveTick() {
       const busy = live.dash?.cpu?.busy;
       if (busy && busy.value == null && busy.status === "partial") next = LIVE_RETRY_MS;
     } catch (error) {
-      live.error = error.message;
+      live.error = error;
     }
     notify("live");
   }
@@ -426,7 +427,7 @@ async function startTurn(question, conversationId, followUp, sent, start, select
     return true;
   } catch (error) {
     inv.status = "failed";
-    inv.failure = { code: "start", message: error.message };
+    inv.failure = startFailure(error);
     notify("inv");
     return false;
   }
@@ -624,7 +625,7 @@ export async function runPlan(turn, plan) {
     plan.decision = plan.outcome.overall;
   } catch (error) {
     plan.decision = "refused";
-    plan.error = error.message;
+    plan.error = error;
   }
   notify("conversation");
   return plan;
@@ -670,7 +671,7 @@ export async function startScan(path) {
     }
   } catch (error) {
     state.scan.status = "failed";
-    state.scan.error = error.message;
+    state.scan.error = error;
   }
   notify("scan");
 }
@@ -713,11 +714,11 @@ export function wireEvents() {
     scan.root = view.root;
     notify("scan");
   });
-  on("scan:failed", ({ scope_id: scopeId, message }) => {
+  on("scan:failed", ({ scope_id: scopeId, code, message }) => {
     const scan = currentScan(scopeId);
     if (!scan) return;
     scan.status = "failed";
-    scan.error = message;
+    scan.error = commandError({ code, message });
     notify("scan");
   });
 }

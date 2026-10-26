@@ -12,6 +12,7 @@ import { askWithAi, cloudReady } from "./ask.js";
 import { badge, button, toast } from "./ui.js";
 import { bytes, clock, duration, number, percent } from "./format.js";
 import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
+import { failureDetail, failureText } from "./failure.js";
 
 /** The checks offered here, in display order. Each is a closed ElevatedTask without fields. */
 export const CHECKS = ["system_caches", "shadow_storage", "disk_reliability", "battery_energy"];
@@ -74,7 +75,7 @@ async function prepare(kind) {
     const request = await call("elevation_prepare", { task: { kind }, budgetMs: BUDGET_MS });
     set({ status: "review", request });
   } catch (error) {
-    set({ status: "failed", error: error.message });
+    set({ status: "failed", error });
     waitForFreeSlot(() => admin.status === "failed" && changed());
   }
 }
@@ -95,7 +96,7 @@ async function approve() {
     // After Stop, the cancellation flow reports the outcome once the slot is free.
     if (admin.status === "cancelling") return;
     // An error does not prove the slot is free: wait for elevation_status before another try.
-    set({ status: "failed", error: error.message, request: null });
+    set({ status: "failed", error, request: null });
     waitForFreeSlot(() => changed());
   }
 }
@@ -111,7 +112,7 @@ async function cancel() {
   try {
     await call("elevation_cancel", { requestId: request.request_id });
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
   }
   waitForFreeSlot(() => {
     if (admin.status === "cancelling") set({ status: wasRunning ? "cancelled" : "idle", request: null });
@@ -434,7 +435,7 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
         h("div", { class: "admin-checks" }, offered.map((kind) => checkRow(kind, { busy, blocked }))),
         blocked && !busy ? h("p", { class: "hint admin-blocked" }, icon("clock"), t("admin.slotBusy")) : null,
         admin.status === "failed"
-          ? h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("admin.failed", { check })), h("span", null, admin.error || "")))
+          ? h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("admin.failed", { check })), h("span", { title: failureDetail(admin.error) }, failureText(admin.error))))
           : null,
         admin.status === "cancelled" ? h("p", { class: "hint" }, t("admin.cancelled")) : null,
       );

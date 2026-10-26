@@ -16,6 +16,7 @@ import { webSettingsCard } from "../web.js";
 import { createCloudCheck, cloudError, cloudModelSelection } from "../onboarding.js";
 import { navigate } from "../router.js";
 import { keepFocus } from "../actionbar.js";
+import { failureText } from "../failure.js";
 
 /** The AI form as typed and not saved yet; null fields follow the saved settings. */
 const typed = { key: "", choice: null, custom: null };
@@ -238,7 +239,7 @@ export function privacyCard() {
         try {
           await setPrivacy(mode);
         } catch (error) {
-          toast(error.message, "bad");
+          toast(failureText(error), "bad");
         }
         draw();
       }),
@@ -263,7 +264,7 @@ export function privacyCard() {
           try {
             await setFileNames(on);
           } catch (error) {
-            toast(error.message, "bad");
+            toast(failureText(error), "bad");
           }
         }, t("settings.privacy.files")),
       ),
@@ -294,7 +295,7 @@ function dataCard() {
           try {
             await call("startup_set", { enabled: next });
           } catch (error) {
-            toast(error.message, "bad");
+            toast(failureText(error), "bad");
           }
         }, t("startup.title")),
       );
@@ -318,7 +319,7 @@ function dataCard() {
         await call("history_clear");
         toast(t("history.cleared"));
       } catch (error) {
-        toast(error.message, "bad");
+        toast(failureText(error), "bad");
       }
     },
   });

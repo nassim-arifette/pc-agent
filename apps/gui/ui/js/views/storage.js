@@ -14,6 +14,7 @@ import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
 import { quickScanCard } from "../quickscan.js";
 import { adminChecksCard } from "../adminchecks.js";
+import { failureDetail, failureText } from "../failure.js";
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];
@@ -98,7 +99,7 @@ export function mount(page) {
       const path = await call("pick_folder");
       if (path) startScan(path);
     } catch (error) {
-      toast(error.message, "bad");
+      toast(failureText(error), "bad");
     }
   };
 
@@ -174,7 +175,7 @@ export function mount(page) {
         try {
           await call("reveal", { scopeId: state.scan.view.scope_id, itemRef: item.item_ref });
         } catch (error) {
-          toast(error.message, "bad");
+          toast(failureText(error), "bad");
         }
       }),
       actions ? actionBar(actions) : null,
@@ -263,7 +264,7 @@ export function mount(page) {
                   try {
                     await morePage(tab);
                   } catch (error) {
-                    toast(error.message, "bad");
+                    toast(failureText(error), "bad");
                   }
                 },
               }),
@@ -331,7 +332,7 @@ export function mount(page) {
       return;
     }
     if (status === "failed") {
-      fill(body, h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("say.storage.failed")), h("span", null, scan.error))));
+      fill(body, h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t("say.storage.failed")), h("span", { title: failureDetail(scan.error) }, failureText(scan.error)))));
       return;
     }
     keepFocus(body, () =>

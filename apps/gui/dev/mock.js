@@ -4,8 +4,9 @@
 //
 // URL switches: ?cloud=none|ready|problem, ?connection=key|network|timeout|model|limit|empty,
 // ?gpu=none, ?disk=ok, ?privacy=complete|anonymized|local
-// (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow,
-// ?recording=short (3-second recordings), ?battery=none|ac|charging|low|relative|two|unavailable
+// (a confirmed choice; without it the first cloud question asks for one), ?elevation=fail|slow
+// (fail: Windows' administrator prompt is declined), ?recording=short (3-second recordings),
+// ?battery=none|ac|charging|low|relative|two|unavailable
 // (the Live PC battery read: by default one discharging laptop battery; none is a desktop PC, also
 // without a battery in recordings), ?sources=short (selection sources expire after 5 s instead of
 // five minutes, to exercise a scan page read again on Explain or Investigate). Questions containing
@@ -14,6 +15,10 @@
 // off. Both event families are emitted, like the Rust side: turn:* and inv:*.
 // Live captures, history reads and scan pages publish selection sources; Explain and Investigate
 // use selection_preview/send.
+// Failures have the Rust shape { code, message } (src/failure.rs), translated by the page. Error
+// switches: ?scan=denied (the folder cannot be read) or ?scan=fail (the scan stops midway),
+// ?action=refuse (Run now is refused: the target changed), ?preview=expired (a question's preview
+// ticket expired, nothing is sent), ?history=unavailable and ?live=fail.
 
 const params = new URLSearchParams(window.location.search);
 const listeners = new Map();
@@ -25,6 +30,10 @@ let orphanTurn = params.get("turn") === "orphan" ? { turnId: "turn-orphan", ques
 
 function emit(name, payload) {
   for (const cb of listeners.get(name) || []) cb(payload);
+}
+/** Rejects like a Rust command returning a `Failure`: a stable code and the English detail. */
+function fail(code, message, reason = null) {
+  throw reason ? { code, reason, message } : { code, message };
 }
 function fmt(bytes) {
   const units = ["KiB", "MiB", "GiB", "TiB"];
@@ -708,6 +717,11 @@ async function scan(scopeId, root) {
     entries += Math.round(jitter(4200, 800));
     emit("scan:progress", { scope_id: scopeId, entries, dirs: Math.round(entries / 9), bytes: entries * 1.9 * MiB, bytes_text: fmt(entries * 1.9 * MiB), elapsed_ms: Date.now() - started });
     await wait(150);
+    // ?scan=fail: the scan stops midway with scan:failed, which carries a code like a command.
+    if (params.get("scan") === "fail" && Date.now() - started > 900) {
+      emit("scan:failed", { scope_id: scopeId, code: "scan_failed", message: `Cannot scan ${root}: Scope root cannot be accessed: scan worker panicked.` });
+      return;
+    }
   }
   emit("scan:done", {
     scope_id: scopeId,
@@ -847,6 +861,7 @@ export function createMock() {
     ] }),
     dashboard: async () => {
       await wait(tick === 0 ? 700 : 120);
+      if (params.get("live") === "fail") fail("live_unavailable", "Measurements took too long.");
       return dashboard();
     },
     process_activity: async () => {
@@ -888,7 +903,7 @@ export function createMock() {
     startup_restore_prepare: async ({ sourcePlanId, itemIndex }) => {
       await wait(300);
       const source = [...turnPlans.values()].flat().find((p) => p.plan_id === sourcePlanId);
-      if (!source || source.kind !== "disable_user_startup" || source.decision !== "completed" || itemIndex !== 0) throw new Error("startup disable is not durably completed");
+      if (!source || source.kind !== "disable_user_startup" || source.decision !== "completed" || itemIndex !== 0) fail("action_refused", "startup disable is not durably completed", "restore_unavailable");
       const turnId = `local-restore-${sourcePlanId}`;
       const plan = { plan_id: `plan-restore-${Date.now()}`, kind: "restore_user_startup", targets: source.targets.map((x) => ({ ...x })), recovery: "restore_previous_startup_approval", checks: ["user_startup_entry_unchanged", "known_startup_approval_format"], decision: null };
       turnPlans.set(turnId, [plan]);
@@ -896,13 +911,18 @@ export function createMock() {
     },
     action_decline: ({ turnId, planId }) => {
       const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
-      if (!plan) throw new Error("These proposals are no longer current.");
+      if (!plan) fail("action_refused", "These proposals are no longer current.", "stale");
       plan.decision = plan.decision || "declined";
     },
     action_run: async ({ turnId, planId }) => {
       const plan = (turnPlans.get(turnId) || []).find((p) => p.plan_id === planId);
-      if (!plan || plan.decision) throw new Error("This proposal was already decided.");
+      if (!plan || plan.decision) fail("action_refused", "This proposal was already decided.", "already_decided");
       await wait(1200);
+      // ?action=refuse: the broker's last check finds the target changed since it was proposed.
+      if (params.get("action") === "refuse") {
+        plan.decision = "refused";
+        fail("action_refused", "target t1 changed since it was resolved", "changed");
+      }
       plan.decision = "completed";
       const gained = plan.kind === "run_cleanup_adapter" ? 18.6 * GiB : null;
       return { plan_id: planId, overall: "completed", items: [], verification: { volume: gained ? { gained_bytes: gained, status: "ok" } : null, comparisons: [] } };
@@ -910,6 +930,7 @@ export function createMock() {
     history_status: () => samplerStatus(),
     metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
       await wait(150);
+      if (params.get("history") === "unavailable") fail("history_unavailable", "Local history is unavailable.");
       const series = historySeries(metric, fromUnixMs, toUnixMs);
       // Reading history publishes its events (and a finished recording) as selection sources.
       const targets = series.events.map((e) => ({ kind: "event", event_id: e.id }));
@@ -918,6 +939,7 @@ export function createMock() {
       return series;
     },
     record_activity_start: ({ durationSeconds }) => {
+      if (params.get("history") === "unavailable") fail("history_unavailable", "Local history is unavailable.");
       if (recording && recording.ended_at_unix_ms == null) throw new Error("A recording is already running.");
       // ?recording=short makes the test recordings last 3 seconds.
       const seconds = params.get("recording") === "short" ? 3 : durationSeconds;
@@ -958,12 +980,12 @@ export function createMock() {
       const sequence = ++previewSequence;
       await wait(300);
       if (fileNames && !names) throw new Error("File names require complete sharing.");
-      if (fileNames && !lastScanRoot) throw new Error("Scan and authorize a folder before previewing its names.");
+      if (fileNames && !lastScanRoot) fail("scan_unavailable", "Scan and authorize a folder before previewing its names.");
       const message = { question: sanitize(question), initial_observation: { schema_version: 1, origin: "synthetic_fixture", measurements: { values: { system: { physical_total_bytes: 16888365056, physical_available_bytes: 1653562000, cpu_busy_basis_points: 1850 }, "proc-1a2b3c4d": { process_working_set_bytes: 2480000000 } }, units: { physical_total_bytes: "bytes" } } }, findings: [{ id: "F1", classification: "low_available_memory" }], current_finding_ids: ["F1", "F2", "F3"] };
       if (names) message.process_names = { "proc-1a2b3c4d": "chrome.exe" };
       const conversation = conversations.find((c) => c.id === conversationId);
       if (conversation?.turns.length) message.previous_turns = conversation.turns.map((turn) => ({ question: turn.question, answer: "Earlier synthetic observation.", observations: [] }));
-      if (sequence !== previewSequence) throw new Error("A newer sharing preview was requested.");
+      if (sequence !== previewSequence) fail("preview_changed", "A newer sharing preview was requested.");
       const id = `preview-${sequence}`;
       pendingPreview = { id, question, names, conversationId, fileNames };
       return { id, message, bytes: JSON.stringify(message).length, measured: 38, findings: 3, names: names ? 1 : 0, storage_folder: lastScanRoot, file_name_sharing: fileNames ? fileNameSharing(lastScanRoot) : { names: [], scope: null } };
@@ -979,7 +1001,7 @@ export function createMock() {
       await wait(250);
       if (!["explain", "investigate"].includes(intent)) throw new Error("Invalid local selection reference.");
       const source = selectionSources.get(reference?.source_id);
-      if (!source || source.expires <= Date.now()) throw new Error("The selected capture expired or was invalidated. Select the measured item again.");
+      if (!source || source.expires <= Date.now()) fail("selection_expired", "The selected capture expired or was invalidated. Select the measured item again.");
       if (!source.targets.some((target) => sameTarget(target, reference.target))) throw new Error("The target does not belong to this source type.");
       const verb = intent === "explain" ? "Explain" : "Investigate";
       const noun = reference.target.kind === "resource" ? `the selected ${reference.target.resource} measurements` : reference.target.kind === "storage" ? "the selected scan item" : `the selected ${reference.target.kind}`;
@@ -1023,9 +1045,9 @@ export function createMock() {
     selection_send: async ({ reference, intent, question = null, conversationId = null, previewId }) => {
       const cloudRun = privacy.mode !== "local" && cloud().ready;
       const ticket = selectionTickets.get(previewId);
-      if (!ticket) throw new Error("Open the selected-evidence sharing preview before sending.");
+      if (!ticket) fail("preview_required", "Open the selected-evidence sharing preview before sending.");
       if (JSON.stringify(ticket.reference) !== JSON.stringify(reference) || ticket.intent !== intent || ticket.question !== question || ticket.conversationId !== conversationId) {
-        throw new Error("The selection, question, conversation, sharing or model settings changed. Open the preview again.");
+        fail("preview_changed", "The selection, question, conversation, sharing or model settings changed. Open the preview again.");
       }
       selectionTickets.delete(previewId);
       pendingPreview = { id: previewId, question: ticket.asked, names: privacy.mode === "complete", conversationId };
@@ -1050,10 +1072,12 @@ export function createMock() {
       running.answer?.(false);
     },
     start_investigation: async ({ request: { question, cloud: cloudRun, names, conversationId = null, previewId } }) => {
-      if (running && !running.done) throw new Error("An investigation is already running.");
+      if (running && !running.done) fail("turn_running", "An investigation is already running.");
       if (cloudRun) {
-        if (!pendingPreview || pendingPreview.id !== previewId || pendingPreview.question !== question || pendingPreview.names !== names || pendingPreview.conversationId !== conversationId) throw new Error("Open the sharing preview again.");
+        if (!pendingPreview || pendingPreview.id !== previewId || pendingPreview.question !== question || pendingPreview.names !== names || pendingPreview.conversationId !== conversationId) fail("preview_changed", "The question, conversation or sharing choice changed. Open the preview again.");
         pendingPreview = null;
+        // ?preview=expired: the ticket outlived its five minutes, so nothing leaves.
+        if (params.get("preview") === "expired") fail("preview_expired", "The preview expired. Open it again for a fresh measurement.");
       }
       const id = nextId++;
       let conversation = conversations.find((c) => c.id === conversationId);
@@ -1111,6 +1135,8 @@ export function createMock() {
       return "C:\\Users\\Alex\\Downloads";
     },
     start_scan: ({ path }) => {
+      // ?scan=denied: Windows refuses the folder before the scan starts.
+      if (params.get("scan") === "denied") fail("folder_unreadable", `Cannot scan ${path}: Scope root cannot be accessed: PermissionDenied.`);
       scanId += 1;
       scanCancel = false;
       invalidateStorage();
@@ -1123,32 +1149,33 @@ export function createMock() {
       scanCancel = true;
     },
     scan_page: ({ scopeId, kind, offset }) => {
-      if (scopeId !== `scope-${scanId}` || !scanFinishedAt) throw new Error("This scan is no longer available. Scan the folder again.");
+      if (scopeId !== `scope-${scanId}` || !scanFinishedAt) fail("scan_unavailable", "This scan is no longer available. Scan the folder again.");
       return publishPage(scopeId, page(kind, lastScanRoot, offset), scanFinishedAt);
     },
     reveal: () => null,
     // ?routing=calibrated makes Auto available, as a reviewed local calibration would.
     model_routing_get: () => routingView(),
     model_routing_set: ({ settings }) => {
-      if (settings.mode === "automatic" && params.get("routing") !== "calibrated") throw new Error("Automatic routing requires a reviewed local Nemotron calibration.");
+      if (settings.mode === "automatic" && params.get("routing") !== "calibrated") fail("routing_unavailable", "Automatic routing requires a reviewed local Nemotron calibration.");
       routingSettings = { mode: settings.mode, super_model_id: settings.super_model_id ?? null, ultra_model_id: settings.ultra_model_id ?? null };
       return routingView();
     },
-    // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail; ?elevation=slow
-    // keeps a deeper check running for 20 s (to see the running state and Stop).
+    // Elevated helper: one closed task at a time. ?elevation=fail declines Windows' administrator
+    // prompt; ?elevation=slow keeps a deeper check running for 20 s (to see the running state and
+    // Stop). Errors carry the codes of src/failure.rs, their Rust names only in the detail.
     elevation_status: () => (elevation ? { request_id: elevation.id, task: elevation.task, budget_ms: elevation.budget, state: elevation.state } : null),
     elevation_prepare: async ({ task, budgetMs }) => {
-      if (elevation) throw new Error("Another administrator task is already prepared or running.");
+      if (elevation) fail("helper_busy", "An elevated inspection is already prepared or running.");
       const mft = task?.kind === "mft_inventory" && /^[A-Z]$/.test(task.volume) && Object.keys(task).length === 2;
       const check = Boolean(CHECK_RESULTS[task?.kind]) && Object.keys(task).length === 1;
-      if (!mft && !check) throw new Error("Unsupported task.");
-      if (!(budgetMs >= 1 && budgetMs <= 120000)) throw new Error("Invalid elevation request.");
+      if (!mft && !check) fail("unsupported", "This elevated task is unsupported here (Unsupported).");
+      if (!(budgetMs >= 1 && budgetMs <= 120000)) fail("unknown", "The elevated request was refused (InvalidRequest).");
       await wait(300);
       elevation = { id: `elevation-${Date.now()}`, task, budget: budgetMs, state: "awaiting_local_approval", cancelled: false };
       return { request_id: elevation.id, task, budget_ms: budgetMs, state: elevation.state };
     },
     elevation_run: async ({ requestId }) => {
-      if (!elevation || elevation.id !== requestId || elevation.state !== "awaiting_local_approval") throw new Error("This request cannot run.");
+      if (!elevation || elevation.id !== requestId || elevation.state !== "awaiting_local_approval") fail("request_expired", "This elevated inspection is no longer awaiting approval.");
       const job = elevation;
       job.state = "running";
       const slow = params.get("elevation") === "slow" && job.task.kind !== "mft_inventory";
@@ -1158,17 +1185,17 @@ export function createMock() {
       };
       if (job.cancelled) {
         finish();
-        throw new Error("The administrator task was cancelled.");
+        fail("cancelled", "The elevated task was cancelled (Cancelled).");
       }
       if (params.get("elevation") === "fail") {
         finish();
-        throw new Error("Windows consent was declined.");
+        fail("uac_declined", "The Windows administrator prompt was declined (UacDeclined).");
       }
       finish();
       return job.task.kind === "mft_inventory" ? mftResult(job.task.volume) : CHECK_RESULTS[job.task.kind]();
     },
     elevation_cancel: ({ requestId }) => {
-      if (!elevation || elevation.id !== requestId) throw new Error("No matching administrator task.");
+      if (!elevation || elevation.id !== requestId) fail("request_expired", "This elevated inspection is no longer available.");
       if (elevation.state === "awaiting_local_approval") elevation = null;
       else {
         elevation.cancelled = true;
@@ -1208,7 +1235,7 @@ export function createMock() {
     open_nebius_console: () => null,
     save_search_key: ({ apiKey = null }) => {
       const key = (apiKey || "").trim();
-      if (key && !key.startsWith("tvly-")) throw new Error("A Tavily key starts with tvly-.");
+      if (key && !key.startsWith("tvly-")) fail("search_key_invalid", "A Tavily key starts with tvly-.");
       searchKey = key || null;
       return cloud();
     },
@@ -1216,11 +1243,11 @@ export function createMock() {
     // only records the request.
     open_web_source: ({ conversationId, turnId, reference }) => {
       const conversation = conversations.find((c) => c.id === conversationId);
-      if (!conversation) throw new Error("This conversation no longer exists.");
+      if (!conversation) fail("web_source_unavailable", "This conversation no longer exists.");
       const turn = conversation.turns.find((x) => x.id === turnId);
-      if (!turn) throw new Error("This answer no longer exists.");
+      if (!turn) fail("web_source_unavailable", "This answer no longer exists.");
       const cited = (turn.report?.answer?.citations || []).find((c) => c.reference === reference && c.kind === "web");
-      if (!cited?.web?.url) throw new Error("This answer has no such web source.");
+      if (!cited?.web?.url) fail("web_source_unavailable", "This answer has no such web source.");
       openedWebSources.push({ conversationId, turnId, reference, at: Date.now() });
       return null;
     },
