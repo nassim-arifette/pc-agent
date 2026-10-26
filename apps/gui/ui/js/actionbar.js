@@ -18,8 +18,11 @@ let pending = false;
 // its entrance each time.
 let shownKey = null;
 
-/** Runs one action at a time: a second E while a preview is being prepared does nothing. */
-async function once(run) {
+/**
+ * Runs one action at a time, from the bar, the shortcuts or a view's own buttons (the Storage
+ * inspector): a second E while a preview is being prepared does nothing.
+ */
+export async function once(run) {
   if (pending || !run) return;
   pending = true;
   try {

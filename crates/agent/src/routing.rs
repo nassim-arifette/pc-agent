@@ -29,26 +29,13 @@ impl CalibrationRuntime {
         CURRENT.clone()
     }
     fn compute() -> Self {
+        // The fixed canonical catalog: a turn's capability filtering never reaches it.
         let mut specs = crate::Workstation::tool_specs();
         specs.extend([
             crate::PREPARE_ACTION_PLAN,
             crate::selection::GET_SELECTED_EVIDENCE,
         ]);
-        specs.sort_by_key(|spec| spec.name);
-        let mut definitions: Vec<_> = specs
-            .iter()
-            .map(|spec| {
-                let class = match spec.class {
-                    crate::ToolClass::Inspection => "inspection",
-                    crate::ToolClass::Context => "context",
-                    crate::ToolClass::Proposal => "proposal",
-                    crate::ToolClass::External => "external",
-                };
-                serde_json::json!({"class":class,"definition":spec.definition()})
-            })
-            .collect();
-        definitions.push(crate::answer::definition());
-        let registry = serde_json::to_vec(&definitions).expect("static tool definitions");
+        let registry = registry_sha256(&specs, crate::answer::definition());
         // Bind controller, prompt, budgets, C1 and context behavior conservatively. LF
         // normalization makes this identity independent of Git's checkout line endings.
         let mut analyst = Sha256::new();
@@ -78,11 +65,33 @@ impl CalibrationRuntime {
             analyst.update(normalized.as_bytes());
         }
         Self {
-            registered_tool_registry_sha256: format!("{:x}", Sha256::digest(registry)),
+            registered_tool_registry_sha256: registry,
             analyst_sha256: format!("{:x}", analyst.finalize()),
             harness_version: REPLAY_HARNESS_VERSION.into(),
         }
     }
+}
+
+/// The identity of a tool registry: its definitions with their classes, sorted by name, then the
+/// answer schema.
+pub(crate) fn registry_sha256(specs: &[crate::ToolSpec], answer: Value) -> String {
+    let mut specs = specs.to_vec();
+    specs.sort_by_key(|spec| spec.name);
+    let mut definitions: Vec<_> = specs
+        .iter()
+        .map(|spec| {
+            let class = match spec.class {
+                crate::ToolClass::Inspection => "inspection",
+                crate::ToolClass::Context => "context",
+                crate::ToolClass::Proposal => "proposal",
+                crate::ToolClass::External => "external",
+            };
+            serde_json::json!({"class":class,"definition":spec.definition()})
+        })
+        .collect();
+    definitions.push(answer);
+    let registry = serde_json::to_vec(&definitions).expect("static tool definitions");
+    format!("{:x}", Sha256::digest(registry))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

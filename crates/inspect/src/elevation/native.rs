@@ -568,7 +568,7 @@ fn launch(job: &NativeJob, nonce: &str) -> Result<Process, ElevationError> {
     let executable = std::env::current_exe()?
         .parent()
         .ok_or(ElevationError::InvalidArguments)?
-        .join("pcagent-elevated.exe");
+        .join(super::HELPER_FILE_NAME);
     let _pins = pin_chain(
         executable
             .parent()

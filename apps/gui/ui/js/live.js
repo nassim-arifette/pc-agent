@@ -228,7 +228,7 @@ function applicationsView(live, { sort = "memory", onSort, expanded, onToggle })
         h(
           "button",
           { type: "button", class: "app-main", "aria-expanded": String(open), onclick: () => onToggle?.(open ? null : app.entity_ref) },
-          h("span", { class: "app-name", title: applicationName(app) }, applicationName(app)),
+          h("span", { class: "app-name", title: applicationName(app) }, app.readable_name || applicationName(app)),
           h("span", { class: "app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
           h("span", { class: "app-value" }, sort === "cpu" ? measureText(app.cpu, "cpu") : measureText(app.working_set, "bytes")),
           h("div", { class: "meter" }, h("span", { style: { width: `${share * 100}%` } })),
@@ -260,7 +260,7 @@ function applicationsView(live, { sort = "memory", onSort, expanded, onToggle })
                   h(
                     "div",
                     { class: "member" },
-                    h("span", { class: "member-name" }, `${processName(m)} · PID ${m.pid}`),
+                    h("span", { class: "member-name", title: processName(m) }, `${m.readable_name || processName(m)} · PID ${m.pid}`),
                     h("span", null, measureText(m.cpu, "cpu")),
                     h("span", null, measureText(m.working_set, "bytes")),
                   ),

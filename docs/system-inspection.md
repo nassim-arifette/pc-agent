@@ -3,7 +3,10 @@
 `pcagent-inspect` implements the read-only Windows tools registered by
 `crates/agent/src/system_tools.rs`. The public entry point is `inspect(Query)`. The tool registry
 accepts only bounded integers and enumerated query names; it cannot accept a command, WQL, a
-registry path, an event XPath, a remote host, or an arbitrary filesystem root.
+registry path, an event XPath, a remote host, or an arbitrary filesystem root. The capability
+registry declares these tools to the model only on Windows, and on a PC where Windows lists no
+system battery `get_power_and_thermal` says so instead of promising battery readings
+([tool-context.md](tool-context.md#declared-tools-the-capability-registry)).
 
 Every result contains its collection time, origin, time window, typed observations, and coverage
 per source. Observations include an opaque entity reference, metric, value, unit, native source,

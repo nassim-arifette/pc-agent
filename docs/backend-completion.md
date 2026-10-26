@@ -90,6 +90,7 @@ cargo build --release --locked -j 1 -p pcagent -p pcagent-gui -p pcagent-eval -p
 ```
 
 Read-only native smoke checks use `inspect get_power_and_thermal --anonymize`, the missing approved
-helper-result path and fixed 30/60-second `elevated-inspect performance-trace` requests. The latter
+helper-result path (in the desktop app: the CLI has no helper flow and no longer declares
+`get_approved_elevated_inspection`) and fixed 30/60-second `elevated-inspect performance-trace` requests. The latter
 must return `unsupported`, `cleanup_unvalidated` and `trace_session_started: false` before UAC.
 They do not substitute for the native acceptance listed above.

@@ -407,6 +407,27 @@ mode Local. Le lien « Voir ce qui part » ouvre l'aperçu exact de la prochaine
 octet pour octet à ce qui sera envoyé ; après le tour, ses étapes montrent ce qui est parti. La
 liste « jamais » ci-dessus ne change pas.
 
+Note du 26 octobre (#70), demandée par le porteur du projet : le nom lisible d'un programme (la
+description ou le nom de produit de la ressource de version de son exécutable, par exemple
+« Google Chrome ») n'est pas un chemin. Dans cette version, il reste local : la fenêtre l'affiche
+(listes, inspecteur, réponses, avec le nom d'exécutable en info-bulle et le PID seulement dans
+l'inspecteur ou pour distinguer deux instances), mais il ne part pas vers le modèle, qui reçoit
+toujours le nom d'exécutable en mode Complet et une référence opaque en mode Anonymisé. S'il doit
+partir un jour, ce sera en mode Complet seulement, comme un nom d'application, tronqué et nettoyé
+comme les noms d'exécutables et visible dans l'aperçu exact ; ce changement passera par ce plan.
+
+Décision du porteur du projet, 26 octobre (#55, option B, avant le 29) : une image que
+l'utilisateur joint lui-même à sa question peut partir vers Nebius, en mode Complet seulement, avec
+le modèle NVIDIA qui lit les images (`nvidia/Nemotron-3.5-Super-VL`) pour ce tour, sans escalade.
+C'est une exception explicite à la liste « jamais » : l'image peut contenir des informations
+personnelles (nom d'utilisateur, chemin du profil, contenu d'une fenêtre) et aucun masquage local
+n'est exigé. L'aperçu exact montre l'image telle qu'elle part (réduite et ré-encodée localement,
+sans métadonnées). Une image n'est jamais envoyée en mode Anonymisé ou Local, ni renvoyée dans les
+suivis. Côté C1, l'image est un contexte, comme la question, jamais une preuve mesurée : un chiffre
+lu sur l'image doit être mesuré par un outil avant d'être cité, sinon il reste « non vérifié ». Les
+commandes et le stockage de la pièce jointe (C2, C3) sont précisés dans ce plan avec
+l'implémentation.
+
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
 
@@ -1303,6 +1324,19 @@ choix produit, annoncé tel quel dans le README.
 Règle de conduite jusqu'au 30 : on ne touche pas aux contrats C1–C7 et on ne commence aucun nouveau
 chantier ; tout ce qui n'est pas dans cette section est repoussé.
 
+**Décision du porteur du projet, 26 octobre (remplace la règle ci-dessus et le gel du 27) :** tout
+terminer avant l'échéance, y compris les listes « Repoussé après la soumission » et la phase 5.
+Chaque élément entre dans `main` dès qu'il est entièrement validé (formatage, Clippy
+`-D warnings`, tests sous un compte standard, build release) et sans déstabiliser la build
+soumise, jusqu'au 29 octobre ; les éléments de la soumission passent en premier. Les contrats
+C1–C7 ne changent toujours que sur décision du porteur, dans une PR du plan à part. Le code est
+nettoyé et refactorisé au passage, sans changer son comportement ; la restructuration du dépôt est
+proposée au porteur avant tout déplacement de fichiers. Le 29 octobre (Paris) : gel, tag annoté
+`v0.1.0` sur `main` et release GitHub avec les quatre exécutables (Devpost renvoie au tag). Du
+30 octobre 10 h PDT au 15 décembre, `main` est gelée (règlement Devpost : aucune modification de la
+soumission après la période de soumission) ; ce qui n'est pas terminé va sur une branche `next`,
+fusionnée dans `main` après le 15 décembre.
+
 ### Phase 0 — Remise en route (17–18 oct.)
 
 | Tâche | Pourquoi | Fait quand |
@@ -1350,11 +1384,13 @@ actifs (chantier 9), cache Tavily.
 
 ### Phase 4 — Gel et soumission (27–29 oct.)
 
-1. **Gel le 27** : seulement des corrections de bugs.
+1. **Gel le 29** (décision du 26 octobre, qui lève le gel du 27) : tag annoté `v0.1.0` sur `main`
+   et release ; ensuite, seulement des corrections de bugs jusqu'à la soumission.
 2. README en anglais : vision, captures, installation, plateforme annoncée (**Windows 10/11 x64**),
    confidentialité, usage de Nemotron et de Token Factory, avertissement SmartScreen.
 3. Docs en retard sur le code (#71) : README, `architecture.md`, `validation.md`.
-4. Release GitHub : `pcagent-gui.exe` et `pcagent.exe`, version et commit.
+4. Release GitHub sur le tag `v0.1.0` : `pcagent-gui.exe`, `pcagent-elevated.exe` (à placer à côté
+   de la fenêtre), `pcagent.exe` et `pcagent-eval.exe`, version et commit.
 5. Rendre le dépôt public, licence MIT visible dans « About ».
 6. Vidéo de moins de 3 minutes en anglais, publique sur YouTube : vrai problème → conversation →
    outils en direct → réponse citée → action validée → avant/après.
@@ -1362,11 +1398,13 @@ actifs (chantier 9), cache Tavily.
    Nebius, ou mode local), retours sur Token Factory et Nemotron, ce qui a changé pendant la
    période de soumission.
 
-### Phase 5 — Après la soumission (novembre)
+### Phase 5 — Multi-OS (avancée avant l'échéance, décision du 26 octobre)
 
 Ne pas casser la release soumise pendant le jugement (1er–15 déc.) : le travail multi-OS se fait sur
 des branches et de nouvelles versions, dans le même dépôt et le même workspace (trois cibles de
-build, pas trois forks).
+build, pas trois forks). Décision du 26 octobre : ces étapes sont menées avant le 29 octobre, chacune
+fusionnée dans `main` une fois validée et sans déstabiliser la build soumise ; ce qui reste au
+30 octobre va sur `next`.
 
 1. PR du plan : contrats renommés de façon neutre (commit, startup, services, events, settings
    pages), registre des capacités étendu par OS.
@@ -1421,12 +1459,14 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater ; #50 à #54, #57 et #68 traités côté interface le 10 octobre (branches `wp6-chat-polish`, `wp6-views-polish`, `wp3-composer-toggles`) ; reprise terminée : corrections de revue, confidentialité et envois concurrents, 52 contrôles navigateur et 9 contrôles natifs locaux réussis, release reconstruite sur D:, formatage/Clippy et 715 tests réussis (2 ignorés) ; parcours avec modèle réel encore à vérifier | #72 |
 | 6 — Résumé dans l'inspecteur et recherche de cause | C | implémenté et validé localement (10 octobre) : #56, résumé sans quitter la vue, poursuite du même fil et étiquettes de sélection ; 57 contrôles rendus, 28 régressions du contrôleur et 12 contrôles natifs réussis ; formatage/Clippy et 715 tests réussis (2 ignorés), binaire reconstruit sur D: ; évaluation réelle des réponses et livraison reportées à la demande du porteur du projet | wp6-selection-inspector |
 | 5, 6 — Historique : lectures et volume | B, C | premier lot implémenté et validé localement (10 octobre) : format compact compatible en lecture avec les anciennes mesures, lecture partagée et cache invalidé après écriture, chargement et tracé réduits préservant lacunes, extrema et couvertures ; formatage/Clippy, 732 tests Rust (2 ignorés), 42 contrôles navigateur et 12 contrôles natifs réussis, CLI et GUI release reconstruits sur D: ; mesures et limites dans [history-performance.md](history-performance.md) ; #58/#59 restent partiels : commande dédiée, table système, comptes d'événements et budget disque demandent un lot de contrats distinct | wp5-history-performance |
-| 2 — WebView2 par application (#61) | B | en cours (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents, sans ligne de commande | wp2-webview2-groups |
+| 2 — WebView2 par application (#61) | B | fait (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents validée (jamais par le nom d'image), sans ligne de commande ; un arbre sans hôte attribuable forme son propre groupe ; 3 tests synthétiques (dont un contrôle par mutation) ; fusionné après validation locale (formatage, Clippy, 749 tests sous compte standard, build release) ; pas encore vu avec de vrais hôtes WebView2 (aucun sur la VM) | wp2-webview2-groups |
 | 14 — Escalade visible (#69) | A, C | en cours (26 oct.) : changement de modèle affiché sur la réponse, coût par modèle dans l'app et la CLI | wp14-escalation-visible |
-| 6 — Stockage minimal (#67) | C | en cours (26 oct.) : résultats d'abord, liste et inspecteur ; carte et arbre repoussés | wp6-storage-minimal |
+| 6 — Stockage minimal (#67) | C | fait (26 oct.) : résultats d'abord (totaux, liste), inspecteur de l'élément sélectionné à côté de la liste ou sous la ligne quand la fenêtre est étroite, cartes admin regroupées après les résultats ; 11 tests Node, tour en/fr clair/sombre sans erreur ; carte et arbre restent en P2 | wp6-storage-minimal |
+| 2 — Noms lisibles des programmes (#70) | B/C | fait (26 oct.) : `ProgramNames` (FileDescription puis ProductName de la ressource de version, cache par chemin, lecture sans admin), nom lisible dans PC en direct, l'inspecteur, les réponses, les constats, les sources et les revues d'action ; exécutable en infobulle, PID seulement dans l'inspecteur ou pour distinguer deux processus ; jamais envoyé au modèle (C5) ; fmt, Clippy, tests, tour | wp2-app-names |
+| 14 — Escalade visible et coût des deux modèles (#69) | C | fait (26 oct.) : étape « Ultra reprend la question », en-tête « Super → Ultra · total », note durable sous la réponse avec la raison (et la vérité quand Ultra n'a rien écrit), une ligne par modèle dans Sources › Requêtes et coût, même détail dans la CLI ; jamais le prix d'un modèle appliqué aux jetons de l'autre ; Auto proposé dès qu'une calibration relue existe ; fmt, Clippy, tests, tour | wp14-escalation-visible |
 | 6 — Interface en français (#65) | A, C | en cours (26 oct.) : dernières chaînes anglaises et formats non localisés de l'interface française | wp6-french-ui |
-| Registre des capacités (phase 1) | A, B, C | en cours (26 oct.) : outils indisponibles retirés du catalogue envoyé, vues pilotées par les capacités | wp4-capability-registry |
-| 12 — README et docs (#71) | D | en cours (26 oct.) : README en anglais, `architecture.md` et `validation.md` à jour | wp12-docs |
+| Registre des capacités (phase 1) | A, B, C | fait (26 oct.) : `crates/agent/src/capabilities.rs` (9 capacités, table REQUIREMENTS, variantes constantes), outils indisponibles absents du catalogue envoyé et du prompt système, `app_info.capabilities` pilote la vue Stockage et la carte des vérifications ; 224 tests agent, tour ; identité de calibration et replays inchangés | wp4-capability-registry |
+| 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) | wp12-docs |
 
 Arrêt demandé le 10 octobre après la validation de ce lot, avant la nouvelle vue Stockage et sans
 commencer un autre chantier. L'évaluation réelle des réponses et la livraison restent reportées.

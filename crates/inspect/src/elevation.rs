@@ -37,6 +37,20 @@ pub use protocol::{
 };
 pub use worker::worker_main;
 
+/// The fixed helper's file name; it is only ever launched from the running app's own folder.
+pub const HELPER_FILE_NAME: &str = "pcagent-elevated.exe";
+
+/// Whether the fixed helper is installed next to the running app, so that a host can offer
+/// locally approved tasks at all. One file-system check, no launch; the launch checks again.
+/// Always false on other systems.
+pub fn helper_installed() -> bool {
+    cfg!(windows)
+        && std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.join(HELPER_FILE_NAME)))
+            .is_some_and(|helper| helper.is_file())
+}
+
 /// The desktop and model host must remain unelevated; only the fixed worker may be admin.
 pub fn ensure_unelevated_host() -> Result<(), ElevationError> {
     #[cfg(windows)]

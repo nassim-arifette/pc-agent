@@ -4,6 +4,8 @@
 import { call, on } from "./api.js";
 import { t } from "./i18n.js";
 import { rememberSelection, selectionForTurn, selectionForConversation, forgetSelections } from "./selection-meta.js";
+import { startModelId } from "./models.js";
+import { recordedSwitch } from "./usage.js";
 
 const listeners = new Set();
 
@@ -308,6 +310,9 @@ export async function resumeTurn() {
     extension: turn.extension ?? null,
     startedAt: turn.started_at_unix_ms || Date.now(),
     resumed: true,
+    // Unknown after a reload: with Auto, Ultra may already have taken over (see chat.js).
+    model: null,
+    change: null,
     selection: selectionForTurn(turn.turn_id),
   };
   if (turn.conversation_id) await openConversation(turn.conversation_id);
@@ -400,6 +405,9 @@ async function startTurn(question, conversationId, followUp, sent, start, select
     nextDraft: null,
     checking: false,
     switchedTo: null,
+    // The model the turn starts with under the routing policy, and the change once one happens.
+    model: state.privacy.mode !== "local" && state.info?.cloud?.ready ? startModelId(state.info, state.routing) : null,
+    change: null,
     partial: null,
     sent,
     report: null,
@@ -473,7 +481,7 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
       update(inv, "snapshot", { state: "done", duration: step.duration_ms, count: step.measured });
       break;
     case "model_started":
-      inv.steps.push({ key: `model-${step.request}`, type: "model", state: "running", at });
+      inv.steps.push({ key: `model-${step.request}`, type: "model", request: step.request, state: "running", at });
       // A new request may write a new answer: the earlier draft was not accepted as it is. It
       // stays on screen, marked as being checked, until the new text catches up with it.
       if (inv.draft) inv.checking = true;
@@ -482,6 +490,8 @@ function onStep({ turn_id: turnId, at_unix_ms: at, step }) {
     case "model_changed":
       // A stronger model takes the question over with the measurements already taken (chantier 14).
       inv.steps.push({ key: `switch-${inv.steps.length}`, type: "switch", state: "done", to: step.change?.to_model_id, at });
+      // The run's header names the model in use: "Super → Ultra" from now on.
+      inv.change = step.change ?? null;
       inv.switchedTo = inv.draft ? (step.change?.to_model_id ?? null) : null;
       if (inv.draft) inv.checking = true;
       break;
@@ -572,6 +582,13 @@ function finish(inv, turn, conversationId, failure) {
   const report = turn?.report ?? null;
   for (const step of inv.steps) if (step.state === "running") step.state = "cancelled";
   if (["local_rules", "local_evidence"].includes(report?.mode)) inv.steps.push({ key: "local", type: "local", state: "done" });
+  // A window reloaded after the model change never saw its step: put it back from the report,
+  // before the first request the new model answered, or last when that request is not shown.
+  const switched = recordedSwitch(report);
+  if (switched && inv.steps.length && !inv.steps.some((s) => s.type === "switch")) {
+    const next = inv.steps.findIndex((s) => s.type === "model" && s.request > switched.after);
+    inv.steps.splice(next < 0 ? inv.steps.length : next, 0, switched);
+  }
   // The last request of a completed turn is the one that wrote the answer.
   const lastModel = [...inv.steps].reverse().find((s) => s.type === "model");
   if (lastModel && report && !report.error && lastModel.state === "done") lastModel.final = true;

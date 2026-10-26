@@ -8,10 +8,18 @@
 // ?recording=short (3-second recordings), ?battery=none|ac|charging|low|relative|two|unavailable
 // (the Live PC battery read: by default one discharging laptop battery; none is a desktop PC, also
 // without a battery in recordings), ?sources=short (selection sources expire after 5 s instead of
-// five minutes, to exercise a scan page read again on Explain or Investigate). Questions containing
+// five minutes, to exercise a scan page read again on Explain or Investigate), ?pc=desktop (a
+// desktop without an NVIDIA GPU or a battery, whose D: drive is exFAT: app_info's capabilities say
+// so once the first dashboard is measured), ?ntfs=none (no fixed NTFS drive for the quick drive
+// analysis), ?helper=missing (no pcagent-elevated.exe next to the app). Questions containing
 // "extend" ask for a budget extension; "fail" makes the model's answer unusable; "slow"
 // stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
+// off; "health" or "santé" lacks administrator readings, so the deeper checks card follows the
+// answer. Both event families are emitted, like the Rust side: turn:* and inv:*.
 // off. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// ?routing=calibrated|escalated|escalation_failed|stale covers model routing (chantier 14): Auto
+// offered, every AI answer handed from Super to Ultra (or Ultra's request failing), and a saved
+// Auto choice rejected at start-up; see routingView below.
 // Live captures, history reads and scan pages publish selection sources; Explain and Investigate
 // use selection_preview/send.
 
@@ -76,14 +84,54 @@ function cloud() {
 }
 let cloudModel = cloudMode === "none" ? null : "nvidia/nemotron-3-super-120b-a12b";
 let cloudReasoning = "on";
-let routingSettings = { mode: "configured", super_model_id: null, ultra_model_id: null };
+// Model routing (chantier 14), as model_routing.rs reports it: Auto is available in any mode once
+// a reviewed calibration matches the listed Super and Ultra models, and then has its rules.
+// ?routing=calibrated: such a calibration exists. ?routing=escalated: Auto is on, and each AI
+// question is handed from Super to Ultra after Super's low-confidence answer;
+// ?routing=escalation_failed: the same, but Ultra's request times out, so the answer kept is
+// Super's and the turn has no total cost. ?routing=stale: an Auto choice saved earlier was
+// rejected at start-up, so questions use the configured model and Settings says why.
+const SUPER_ID = "nvidia/nemotron-3-super-120b-a12b";
+const ULTRA_ID = "nvidia/Nemotron-3-Ultra-550b-a55b";
+const routingParam = params.get("routing");
+const escalation = ["escalated", "escalation_failed"].includes(routingParam) ? routingParam : null;
+const calibrated = routingParam === "calibrated" || Boolean(escalation);
+const calibrationReviewedAt = Date.now() - 86400000;
+let routingSettings = escalation ? { mode: "automatic", super_model_id: SUPER_ID, ultra_model_id: ULTRA_ID } : { mode: "configured", super_model_id: null, ultra_model_id: null };
+let routingLimitation = routingParam === "stale" ? "Automatic routing calibration belongs to a different engine version. Run and review a new campaign." : null;
 function routingView() {
-  const calibrated = params.get("routing") === "calibrated";
-  return { settings: { ...routingSettings }, revision: 0, automatic_available: calibrated, calibration_reviewed_at_unix_ms: calibrated ? Date.now() - 86400000 : null, calibrated_rules: [], limitation: null };
+  return {
+    settings: { ...routingSettings },
+    revision: 0,
+    automatic_available: calibrated,
+    calibration_reviewed_at_unix_ms: calibrated ? calibrationReviewedAt : null,
+    calibrated_rules: calibrated ? [{ reason: "low_confidence", cases: 3, recoveries: 2, primary_request_limit: null }] : [],
+    limitation: routingLimitation,
+  };
 }
 
-function volume(root, totalGiB, freeGiB) {
-  return { root, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
+function volume(root, totalGiB, freeGiB, filesystem = "NTFS") {
+  return { root, kind: "fixed", filesystem, total_bytes: totalGiB * GiB, free_bytes: freeGiB * GiB, free_ratio: freeGiB / totalGiB };
+}
+
+// ---------- Capabilities ----------
+// What this PC offers (view::capabilities): ?pc=desktop is a desktop without an NVIDIA GPU or a
+// battery, whose D: drive is exFAT; ?ntfs=none leaves no fixed NTFS drive; ?helper=missing has no
+// pcagent-elevated.exe next to the app. Like the Rust side, the hardware probes answer with the
+// first dashboard: app_info reports them as null until then.
+const DESKTOP = params.get("pc") === "desktop";
+const NO_NTFS = params.get("ntfs") === "none";
+let probed = false;
+function capabilities() {
+  const known = (value) => (probed ? value : null);
+  return {
+    windows: true,
+    history_sampler: true,
+    elevated_helper: params.get("helper") !== "missing",
+    nvidia_gpu: known(params.get("gpu") !== "none" && !DESKTOP),
+    battery: known(BATTERY_MODE !== "none"),
+    ntfs_volumes: known(!NO_NTFS),
+  };
 }
 
 // ---------- Selection sources ----------
@@ -120,7 +168,7 @@ function dashboard() {
     ["steamwebhelper.exe", 0.18, 0.11],
   ];
   const gpus =
-    params.get("gpu") === "none"
+    params.get("gpu") === "none" || DESKTOP
       ? []
       : [
           {
@@ -173,8 +221,8 @@ function dashboard() {
     process_coverage: { status: "partial", enumerated: 231, readable: 214, permission_denied: 17, unavailable: 0, returned: 7, enumeration_truncated: false },
     // ?disk=ok gives C: room to breathe; by default it is almost full, like the development PC.
     volumes: [
-      volume("C:\\", 255, params.get("disk") === "ok" ? 61 : 0.3),
-      volume("D:\\", 476, 135),
+      volume("C:\\", 255, params.get("disk") === "ok" ? 61 : 0.3, NO_NTFS ? "ReFS" : "NTFS"),
+      volume("D:\\", 476, 135, NO_NTFS || DESKTOP ? "exFAT" : "NTFS"),
     ],
     ...liveBatteries(),
     limitations: ["Working sets can share pages; they do not add up to physical memory in use."],
@@ -186,7 +234,7 @@ function dashboard() {
 // read again about every 10 s (every second dashboard), off the dashboard itself, and each read
 // publishes its own selection source for the resource `battery`. Setting
 // window.__pcagentMock.holdBattery keeps the last read, like a stalled driver, so its age shows.
-const BATTERY_MODE = params.get("battery") || "discharging";
+const BATTERY_MODE = params.get("battery") || (DESKTOP ? "none" : "discharging");
 const BATTERY_REF = "battery-00000000-0000-4000-8000-00000000b001";
 const BATTERY_REF_2 = "battery-00000000-0000-4000-8000-00000000b002";
 let batteryRead = null;
@@ -376,6 +424,8 @@ function report(question, cloudRun, error = null, { web = false, toolEvents = []
       : [],
     tool_events: toolEvents,
     limitations: ["Short observations cannot prove a cause, a leak or a hardware purchase need."],
+    // view::admin_hints: the checks a turn lacked, when the model met needs_admin.
+    admin_hints: cloudRun && !error && /health|santé/i.test(question) ? ["disk_reliability", "battery_energy"] : [],
     usage: cloudRun
       ? {
           requests: error === "output_limit" ? 1 : 3,
@@ -388,6 +438,71 @@ function report(question, cloudRun, error = null, { web = false, toolEvents = []
         }
       : null,
     continuation: null,
+  };
+}
+
+// ---------- Usage of a routed turn (view::usage) ----------
+// Exact picodollars, as the core and view.rs compute them: each request at its own model's
+// synthetic price, a model's cost and the total only when all their requests are priced, and the
+// legacy single cost only when one price covers the whole turn.
+const PICO = 10n ** 12n;
+const PRICES = {
+  [SUPER_ID]: { prompt: "0.0000003", completion: "0.0000009", input_per_million: "0.30", output_per_million: "0.90" },
+  [ULTRA_ID]: { prompt: "0.0000006", completion: "0.0000018", input_per_million: "0.60", output_per_million: "1.80" },
+};
+const pricesReadAt = Date.now() - 90000;
+const toPico = (usd) => {
+  const [whole, fraction = ""] = usd.split(".");
+  return BigInt(whole) * PICO + BigInt(fraction.padEnd(12, "0"));
+};
+const exactUsd = (pico) => {
+  const fraction = (pico % PICO).toString().padStart(12, "0").replace(/0+$/, "");
+  return fraction ? `${pico / PICO}.${fraction}` : `${pico / PICO}`;
+};
+/** An AmountView: four decimals rounded half-up, or the exact amount when that would read zero. */
+function amountView(pico) {
+  const step = 10n ** 8n;
+  const rounded = pico / step + (pico % step >= step / 2n ? 1n : 0n);
+  const shown = `${rounded / 10000n}.${(rounded % 10000n).toString().padStart(4, "0")}`;
+  return { usd: shown === "0.0000" && pico !== 0n ? exactUsd(pico) : shown, exact_usd: exactUsd(pico) };
+}
+const priceView = (id) => ({ model_id: id, input_per_million: PRICES[id].input_per_million, output_per_million: PRICES[id].output_per_million, read_at_unix_ms: pricesReadAt });
+/** `requests`: [{ model, prompt, completion, reasoning }] in order; a failed one has no tokens. */
+function routedUsage(requests, { toolCalls, routing }) {
+  const costOf = (r) => (r.prompt == null ? null : toPico(PRICES[r.model].prompt) * BigInt(r.prompt) + toPico(PRICES[r.model].completion) * BigInt(r.completion));
+  const sum = (picos) => picos.reduce((total, pico) => (total == null || pico == null ? null : total + pico), 0n);
+  const tokens = (items, key) => (items.some((r) => r[key] == null) ? null : items.reduce((total, r) => total + r[key], 0));
+  const known = requests.filter((r) => r.prompt != null);
+  const ids = [...new Set(requests.map((r) => r.model))];
+  const total = sum(requests.map(costOf));
+  return {
+    requests: requests.length,
+    tool_calls: toolCalls,
+    extensions: 0,
+    prompt_tokens: tokens(requests, "prompt"),
+    completion_tokens: tokens(requests, "completion"),
+    reasoning_tokens: tokens(requests, "reasoning"),
+    cost: ids.length === 1 && total != null ? { ...amountView(total), price: priceView(ids[0]) } : null,
+    model_requests: requests.map((r, i) => ({
+      request: i + 1,
+      model_id: r.model,
+      usage: { prompt_tokens: r.prompt ?? null, completion_tokens: r.completion ?? null, reasoning_tokens: r.reasoning ?? null },
+      cost: r.prompt == null ? null : { usd: exactUsd(costOf(r)), prompt_tokens: r.prompt, completion_tokens: r.completion, pricing: { model_id: r.model, prompt_usd_per_token: PRICES[r.model].prompt, completion_usd_per_token: PRICES[r.model].completion, source: "synthetic mock", read_at_unix_ms: pricesReadAt } },
+    })),
+    total_cost_usd: total == null ? null : exactUsd(total),
+    routing,
+    models: ids.map((id) => {
+      const own = requests.filter((r) => r.model === id);
+      const cost = sum(own.map(costOf));
+      const priced = own.filter((r) => r.prompt != null).length;
+      return { model_id: id, requests: own.length, prompt_tokens: tokens(own, "prompt"), completion_tokens: tokens(own, "completion"), reasoning_tokens: tokens(own, "reasoning"), unpriced_requests: own.length - priced, cost: cost == null ? null : amountView(cost), price: priced ? priceView(id) : null };
+    }),
+    total_cost: total == null ? null : amountView(total),
+    priced_cost_lower_bound: total == null && known.length ? amountView(sum(known.map(costOf))) : null,
+    known_prompt_tokens: known.reduce((n, r) => n + r.prompt, 0),
+    known_completion_tokens: known.reduce((n, r) => n + r.completion, 0),
+    unknown_requests: requests.length - known.length,
+    cost_lower_bound: ids.length === 1 && total == null && known.length ? { ...amountView(sum(known.map(costOf))), price: priceView(ids[0]) } : null,
   };
 }
 
@@ -472,7 +587,7 @@ function batteryRecording(rec) {
   const o = (at, metric, value, unit) => ({ observation_id: `${ref}-measurement-${at}-${metric}`, measured_at_unix_ms: at, window: window(at), entity_ref: ref, metric, value, unit, status: "ok", source, origin: "synthetic_fixture" });
   const startCapacity = 41250;
   const rate = -8400;
-  const points = params.get("battery") === "none" ? [] : Array.from({ length: ticks }, (_, i) => {
+  const points = BATTERY_MODE === "none" ? [] : Array.from({ length: ticks }, (_, i) => {
     const at = rec.started_at_unix_ms + (i + 1) * 1000;
     const capacity = Math.round(startCapacity + (rate * (i + 1)) / 3600);
     return {
@@ -640,6 +755,9 @@ async function investigate(id, question, cloudRun) {
     if (!accepted) return done(id, { ...report(question, true, "budget"), execution: "budget_exhausted" });
   }
   if (running.stop) return done(id, report(question, true, "cancelled"));
+  // ?routing=escalated|escalation_failed with Auto on: Super's answer has low confidence, so the
+  // calibrated routing hands the question to Ultra with the measurements already taken.
+  if (escalation && routingSettings.mode === "automatic") return escalated(id, question, { step, slow, web, toolEvents });
   // The last request writes the answer: its text arrives in pieces, like Nebius's stream.
   const final = report(question, true, null, { web, toolEvents });
   request += 1;
@@ -654,6 +772,53 @@ async function investigate(id, question, cloudRun) {
   done(id, final);
 }
 
+/**
+ * A calibrated escalation as the engine reports it: Super's second request writes an answer whose
+ * confidence is low, model_changed hands the question to Ultra (after 2 requests), and Ultra's
+ * request answers, or times out with ?routing=escalation_failed, which keeps Super's answer. A
+ * Stop refuses Ultra's request, and a stopped turn never falls back to Super's answer.
+ */
+async function escalated(id, question, { step, slow, web, toolEvents }) {
+  const full = report(question, true, null, { web, toolEvents });
+  // Super's own first paragraph, less sure of itself.
+  const draft = full.answer.text.split("\n\n")[0].replace("I'm moderately sure", "I'm not sure").replace("J'en suis moyennement sûr", "Je n'en suis pas sûr");
+  const superAnswer = { ...full.answer, text: draft, confidence: "low", citations: full.answer.citations.filter((c) => draft.includes(`[${c.reference}]`)) };
+  const write = async (request, text) => {
+    for (let end = 12; end < text.length + 12; end += 12) {
+      step({ kind: "answer_draft", request, text: text.slice(0, end) });
+      await wait(70 * slow);
+    }
+  };
+  const requests = [{ model: SUPER_ID, prompt: 4627, completion: 83, reasoning: 60 }, { model: SUPER_ID, prompt: 8969, completion: 271, reasoning: 210 }];
+  step({ kind: "model_started", request: 2 });
+  await wait(500 * slow);
+  await write(2, draft);
+  step({ kind: "model_finished", request: 2, duration_ms: 1100, prompt_tokens: 8969, completion_tokens: 271, outcome: "ok" });
+  const change = { from_model_id: SUPER_ID, to_model_id: ULTRA_ID, reason: "low_confidence", after_requests: 2 };
+  step({ kind: "model_changed", change });
+  const finish = (outcome, answer) => {
+    const routing = { mode: "automatic", current_model_id: ULTRA_ID, calibration_reviewed_at_unix_ms: calibrationReviewedAt, change, last_request_error: outcome === "ok" ? null : outcome };
+    const base = outcome === "cancelled" ? report(question, true, "cancelled") : full;
+    return done(id, { ...base, answer, usage: routedUsage(requests, { toolCalls: toolEvents.length, routing }) });
+  };
+  if (running.stop) {
+    requests.push({ model: ULTRA_ID });
+    return finish("cancelled", null);
+  }
+  step({ kind: "model_started", request: 3 });
+  await wait(900 * slow);
+  if (running.stop || escalation === "escalation_failed") {
+    const outcome = running.stop ? "cancelled" : "timeout";
+    requests.push({ model: ULTRA_ID });
+    step({ kind: "model_finished", request: 3, duration_ms: 900, prompt_tokens: null, completion_tokens: null, outcome });
+    return finish(outcome, outcome === "cancelled" ? null : superAnswer);
+  }
+  await write(3, full.answer.text);
+  requests.push({ model: ULTRA_ID, prompt: 9734, completion: 512, reasoning: 380 });
+  step({ kind: "model_finished", request: 3, duration_ms: 2100, prompt_tokens: 9734, completion_tokens: 512, outcome: "ok" });
+  return finish("ok", full.answer);
+}
+
 let scanId = 0;
 let scanCancel = false;
 function items(kind, root, count, offset = 0) {
@@ -665,18 +830,21 @@ function items(kind, root, count, offset = 0) {
     const size = Math.round((kind === "dirs" ? 48 : 9) * GiB * Math.pow(0.72, n));
     const name = n < names.length ? names[n] : `${kind === "dirs" ? "Folder" : "file"}-${n}${kind === "dirs" ? "" : ".bin"}`;
     const parent = kind === "dirs" ? "" : ["", "Videos", "Installers", "Backups"][n % 4];
+    // The size on disk is a little above the data; the second file's could not be read, so it is
+    // ranked by its data and marked partial, as the scanner does (Storage inspector).
+    const unallocated = kind === "files" && n === 1;
     return {
       item_ref: `scan-${scanId}:${n + 1}`,
       name,
       parent,
       path: `${root}\\${parent ? `${parent}\\` : ""}${name}`,
-      logical_bytes: size,
-      allocated_bytes: size,
+      logical_bytes: unallocated ? size : Math.round(size * 0.995),
+      allocated_bytes: unallocated ? null : size,
       size,
       size_text: fmt(size),
       files: kind === "dirs" ? 1200 - n * 90 : null,
       modified_unix_ms: Date.now() - (n + 1) * 86400000 * 9,
-      status: n === 3 && kind === "dirs" ? "partial" : "ok",
+      status: (n === 3 && kind === "dirs") || unallocated ? "partial" : "ok",
     };
   });
 }
@@ -714,10 +882,10 @@ async function scan(scopeId, root) {
     root,
     status: scanCancel ? "partial" : "partial",
     duration_ms: Date.now() - started,
-    scanned: { logical_bytes: 212 * GiB, allocated_bytes: 208 * GiB, allocation_unknown_files: 0, files: entries },
+    scanned: { logical_bytes: 212 * GiB, allocated_bytes: 208 * GiB, allocation_unknown_files: 1, files: entries },
     scanned_text: "208.00 GiB",
     volume: { total_bytes: 476 * GiB, free_bytes: 61 * GiB, total_text: "476.00 GiB", free_text: "61.00 GiB", filesystem: "NTFS" },
-    coverage: { files: entries, dirs: Math.round(entries / 9), denied_dirs: 3, denied_files: 0, reparse_skipped: 12, placeholders: 41, placeholder_logical_bytes: 3 * GiB, other_volume_skipped: 0, special_skipped: 0, vanished: 0, changed_during_scan: 5, errors: scanCancel ? 0 : 2, hard_link_aliases: 0, allocation_unknown_files: 0, truncated: null, cancelled: scanCancel },
+    coverage: { files: entries, dirs: Math.round(entries / 9), denied_dirs: 3, denied_files: 0, reparse_skipped: 12, placeholders: 41, placeholder_logical_bytes: 3 * GiB, other_volume_skipped: 0, special_skipped: 0, vanished: 0, changed_during_scan: 5, errors: scanCancel ? 0 : 2, hard_link_aliases: 0, allocation_unknown_files: 1, truncated: null, cancelled: scanCancel },
     denied: [`${root}\\Private`],
     dirs: publishPage(scopeId, page("dirs", root, 0), (scanFinishedAt = Date.now())),
     files: publishPage(scopeId, page("files", root, 0), scanFinishedAt),
@@ -844,22 +1012,25 @@ export function createMock() {
       { id: "nvidia/Nemotron-3-Ultra-550b-a55b", note: "most_capable" },
       { id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", note: "cheaper_slower" },
       { id: "nvidia/Nemotron-3_5-Lightning", note: "not_recommended" },
-    ] }),
+    ], capabilities: capabilities() }),
     dashboard: async () => {
       await wait(tick === 0 ? 700 : 120);
+      probed = true;
       return dashboard();
     },
     process_activity: async () => {
       await wait(600);
       const now = Date.now();
       const window = { started_at_unix_ms: now - 2000, finished_at_unix_ms: now, duration_ms: 2000 };
+      // Readable names as the executables' version resources give them; svchost.exe has none.
+      const READABLE = { "chrome.exe": "Google Chrome", "Code.exe": "Visual Studio Code", "Teams.exe": "Microsoft Teams" };
       const app = (ref, name, count, cpu, ws, members, services = []) => ({
-        entity_ref: ref, name, process_count: count, members_truncated: false,
+        entity_ref: ref, name, readable_name: READABLE[name] ?? null, process_count: count, members_truncated: false,
         cpu: m(cpu, `${(cpu / 100).toFixed(1)}%`), working_set: m(ws * GiB, fmt(ws * GiB)), private_commit: m(ws * 0.8 * GiB, fmt(ws * 0.8 * GiB)),
         working_set_increase: ref === "app-1" ? m(0.2 * GiB, fmt(0.2 * GiB)) : m(0, "0"), io_read: m(120000, "117 KiB/s"), io_write: m(40000, "39 KiB/s"),
         gpu: ref === "app-1" ? m(310, "3.1%") : missing("unsupported", "No GPU counter instance for these processes."),
         services,
-        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
+        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, readable_name: READABLE[name] ?? null, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
       });
       const applications = [
           app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),
@@ -1127,11 +1298,13 @@ export function createMock() {
       return publishPage(scopeId, page(kind, lastScanRoot, offset), scanFinishedAt);
     },
     reveal: () => null,
-    // ?routing=calibrated makes Auto available, as a reviewed local calibration would.
+    // ?routing=calibrated (or escalated) makes Auto available, as a reviewed local calibration would.
     model_routing_get: () => routingView(),
     model_routing_set: ({ settings }) => {
-      if (settings.mode === "automatic" && params.get("routing") !== "calibrated") throw new Error("Automatic routing requires a reviewed local Nemotron calibration.");
+      if (settings.mode === "automatic" && !calibrated) throw new Error("Automatic routing requires a reviewed local Nemotron calibration.");
       routingSettings = { mode: settings.mode, super_model_id: settings.super_model_id ?? null, ultra_model_id: settings.ultra_model_id ?? null };
+      // A saved choice replaces the one rejected at start-up.
+      routingLimitation = null;
       return routingView();
     },
     // Elevated helper: one closed task at a time. ?elevation=fail makes the run fail; ?elevation=slow

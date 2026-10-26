@@ -86,6 +86,51 @@ Observed on the final backend code, including the scoped Linux-only lint annotat
 | Same-capture offline context benchmark | PASS — 96 calls; about 24% fewer context bytes |
 | Fresh authorized non-admin Windows lot-3, catalogue and battery probes | PASS — explicit partial coverage; see [battery.md](battery.md#native-validation--2026-10-04) |
 
-The local check record and its limits are detailed in [validation.md](validation.md).
-Source/binary hash manifests and private captures remain on D:. Compilation/tests alone do not
-establish diagnostic quality or native acceptance.
+### Local check record (4 October 2026)
+
+This record moved here from validation.md on 26 October 2026; it describes the code of
+4 October, not the current one.
+
+The isolated `wp13-backend-integration` worktree was based on main `60b09b8`. The existing
+phase-1 frontend from PR #30 was preserved; no frontend file was authored by this backend
+delivery. These local checks preceded publication; repository integration required a separate
+successful CI run.
+
+Rust checks used the pinned 1.90.0 toolchain, the committed lockfile, `-j 1` and one Cargo
+operation at a time. Targets and Windows temporary artifacts stayed on D:. Test/dev debug info
+was disabled and codegen units set to one to fit the development PC's memory. WSL tests used a
+Linux filesystem for fixtures; bulky targets stayed on D:. The Windows release directory was
+`D:\pcagent-target\backend-final-20261004`, separate from the already-running older GUI
+executable. No existing target or running GUI was removed.
+
+On Linux, the release stubs behaved as intended: read-only Windows inspections returned
+`unsupported` (exit 3), the GUI exited with code 2 and its Windows-only message, and the helper
+rejected native execution as `Unsupported` (exit 1). Linux and Windows offline projections gave
+the same scenario and registry hashes and byte metrics.
+
+The ignored test requires live credentials/network and was not enabled. Linux Clippy first
+identified fields used only by native Windows worker execution. A scoped non-Windows dead-code
+annotation preserves portable argument parsing and the honest unsupported stub; Linux checks and
+Windows Clippy/tests subsequently passed. This is a local validation record, not a published CI
+run.
+
+Authorized Windows inspections of the final release ran after compilation stopped, without
+admin, and stored anonymized outputs in a separate private D: directory. Power/thermal,
+inventory, events, system state and drivers all returned explicit partial coverage with 47, 44,
+116, 43 and 325 observations respectively. There were 64 installed-driver entries; no online
+Windows Update search was performed. The account catalogue GET succeeded with four NVIDIA models
+and sent no PC observations. Battery capacities/state and the 29-point, 30-second persisted
+recording and the earlier build-time probe are detailed in
+[battery.md](battery.md#native-validation--2026-10-04). No user startup entry or cache was
+mutated, Settings page opened, driver installed or real UAC request launched. Fixtures exercise
+action approval/revalidation, journal-bound startup reversal, bounded cleanup, helper
+supervision, battery discontinuities and fifteen offline MFT parser cases.
+
+Raw captures, recording database, compiler logs, grading packets and source/binary hash
+manifests remain outside Git under `D:\pcagent-tmp\backend-20261003`. At that date, native
+sensor-supplier readings, recorded discharge/runtime and per-process GPU acceptance remained
+unverified on this PC; native MFT collection was not implemented; dedicated-volume accuracy, real
+UAC/install acceptance and some native action effects remained outstanding. Real answers had no
+human quality scores, and the advisory judge remained ungraded. Byte reductions establish neither
+token/cost savings nor preserved diagnostic quality. Compilation/tests alone do not establish
+diagnostic quality or native acceptance.

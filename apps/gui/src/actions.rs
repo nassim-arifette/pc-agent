@@ -31,10 +31,15 @@ pub struct ActionSlot {
     pub decided: HashMap<String, String>,
 }
 impl ActionSlot {
-    fn new(turn_id: &str, pending: Vec<PendingPlan>) -> Self {
+    /// Built on the worker thread that prepared the plans: reading readable program names opens
+    /// processes, which the window's own thread never does.
+    fn new(turn_id: &str, pending: Vec<PendingPlan>, readable: view::Readable<'_>) -> Self {
         Self {
             turn_id: turn_id.to_owned(),
-            views: pending.iter().map(|p| view::plan(&p.plan, None)).collect(),
+            views: pending
+                .iter()
+                .map(|p| view::plan(&p.plan, None, readable))
+                .collect(),
             pending,
             decided: HashMap::new(),
         }
@@ -68,9 +73,9 @@ pub fn desk() -> Option<ActionDesk> {
 }
 
 /// Keeps a finished turn's proposals, replacing an older turn's: those can no longer be run.
-pub fn keep(slot: &Slot, turn_id: &str, pending: Vec<PendingPlan>) {
-    let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
-    *slot = Some(ActionSlot::new(turn_id, pending));
+pub fn keep(slot: &Slot, turn_id: &str, pending: Vec<PendingPlan>, readable: view::Readable<'_>) {
+    let kept = ActionSlot::new(turn_id, pending, readable);
+    *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(kept);
 }
 
 /// Read a completed disable's local journal and prepare a fresh restoration for review. This
@@ -79,6 +84,7 @@ pub fn prepare_startup_restore(
     slot: &Slot,
     source_plan_id: &str,
     item_index: usize,
+    readable: view::Readable<'_>,
 ) -> Result<StartupRestoration, String> {
     let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
     if slot
@@ -95,8 +101,9 @@ pub fn prepare_startup_restore(
     };
     let pending = desk.prepare_startup_restore(source_plan_id, item_index, &protection)?;
     let turn_id = format!("local-restore-{}", pending.plan.plan_id());
-    let plan = view::plan(&pending.plan, None);
-    *slot = Some(ActionSlot::new(&turn_id, vec![pending]));
+    let restoration = ActionSlot::new(&turn_id, vec![pending], readable);
+    let plan = restoration.views[0].clone();
+    *slot = Some(restoration);
     Ok(StartupRestoration { turn_id, plan })
 }
 

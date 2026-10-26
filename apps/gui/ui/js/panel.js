@@ -10,6 +10,7 @@ import { liveView, driveName } from "./live.js";
 import { numbering, citationTitle, isWeb } from "./citations.js";
 import { webSourceCard } from "./web.js";
 import { bytes, clock, date, labelled, number, price, usd } from "./format.js";
+import { modelShareText, turnModels } from "./usage.js";
 import { navigate } from "./router.js";
 import { mountSelectionInspector } from "./selection-inspector.js";
 import { keepFocus } from "./actionbar.js";
@@ -85,6 +86,23 @@ function runDetails(report) {
   }
   if (u) {
     const priced = u.cost || u.cost_lower_bound;
+    const priceText = (p) => t("usage.price", { input: price(p.input_per_million), output: price(p.output_per_million), date: date(p.read_at_unix_ms, true) });
+    // After an escalation each model keeps its own requests, tokens, cost and price; the total
+    // exists only when every request is priced, and is never one model's price on all tokens.
+    const shares = turnModels(u);
+    const costs = shares.length > 1
+      ? [
+          ...shares.map((share) => [modelShareText(share), share.price ? [" ", h("span", { class: "usage-price" }, priceText(share.price))] : null]),
+          u.total_cost
+            ? labelled(t("usage.costTotal"), usd(u.total_cost.usd))
+            : u.priced_cost_lower_bound
+              ? labelled(t("usage.costAtLeast"), usd(u.priced_cost_lower_bound.usd))
+              : labelled(t("usage.cost"), t("usage.noCost")),
+        ]
+      : [
+          u.cost ? labelled(t("usage.cost"), usd(u.cost.usd)) : u.cost_lower_bound ? labelled(t("usage.costAtLeast"), usd(u.cost_lower_bound.usd)) : t("usage.noCost"),
+          priced ? priceText(priced.price) : null,
+        ];
     const facts = [
       labelled(t("usage.requests"), number(u.requests)),
       labelled(t("usage.tools"), number(u.tool_calls)),
@@ -94,10 +112,7 @@ function runDetails(report) {
       u.prompt_tokens == null && u.unknown_requests > 0 && u.known_prompt_tokens + u.known_completion_tokens > 0
         ? labelled(t("usage.tokensAtLeast"), t("usage.tokensKnown", { in: number(u.known_prompt_tokens), out: number(u.known_completion_tokens), count: number(u.unknown_requests) }))
         : null,
-      u.cost ? labelled(t("usage.cost"), usd(u.cost.usd)) : u.cost_lower_bound ? labelled(t("usage.costAtLeast"), usd(u.cost_lower_bound.usd)) : t("usage.noCost"),
-      priced
-        ? t("usage.price", { input: price(priced.price.input_per_million), output: price(priced.price.output_per_million), date: date(priced.price.read_at_unix_ms, true) })
-        : null,
+      ...costs,
     ].filter(Boolean);
     blocks.push(h("details", { class: "more" }, h("summary", null, icon("chevron"), t("usage.title")), h("div", null, h("ul", { class: "bullets note" }, facts.map((x) => h("li", null, x))))));
   }
