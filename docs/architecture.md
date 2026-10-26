@@ -71,9 +71,11 @@ window adds only display rules, such as the words of its PC status pill.
 
 1. **Page to host.** The page is treated as untrusted input. Tauri commands validate every
    argument; paths and item references are resolved on the Rust side, never taken from the page.
-   The content security policy allows only the app's own files and Tauri's IPC; the page's only
-   capability is listening to events (`apps/gui/capabilities/main.json`). Text is always inserted
-   as text, never as HTML. API keys are written by Rust and never sent back to the page, which
+   The content security policy allows only the app's own files and Tauri's IPC. Besides PC
+   Agent's own commands, the page holds only Tauri's default event permissions
+   (`core:event:default` in `apps/gui/capabilities/main.json`, used to listen to the host's
+   events): no file-system, shell or dialog permission. Text is always inserted as text, never as
+   HTML. API keys are written by Rust and never sent back to the page, which
    sees only whether a key exists and its last four characters.
 2. **Host to model.** The provider never receives a serialized local object. Every payload is
    built from a positive allowlist (`cloud_observation`, the tool projections) and passes through
@@ -267,9 +269,10 @@ the finite list frozen in the preview when file-name sharing is on.
   `recording_battery_samples`; schema version 5. Conversations expire after 90 days; the person
   can delete one or all, and clear the history separately.
 - **Folder scans** (`crates/storage`). A folder is authorized locally, then walked for metadata
-  only, without following links or opening cloud placeholders. The Storage view and the model
-  share one `StorageService`, so a scan the person ran can be reused by an investigation of that
-  folder without rescanning.
+  only, without following links or opening cloud placeholders. When the scanned folder is
+  attached to a question, the turn uses the Storage view's own `StorageService` and reuses that
+  scan without rescanning; without an attached folder, the model gets an empty service and sees
+  no folder at all.
 
 ## Desktop app
 

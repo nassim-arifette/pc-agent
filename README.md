@@ -353,10 +353,10 @@ As of 26 October 2026:
   dark, at two window sizes. All of this runs locally: the GitHub Actions workflow that ran the
   Rust checks on Windows and Ubuntu has been disabled since 10 October, and the last Linux test run
   recorded in these docs dates from 4 October.
-- **On the development PC** (a Windows 11 laptop): native checks of the release app through its
-  real bridge (measurements, conversations, sharing previews, Explain and Investigate, history),
-  live investigations with Nemotron 3 Super and Ultra, a web lookup answered from NVIDIA's site,
-  and the first-launch guide with a real account catalog and connection test.
+- **Native checks on Windows 11**, by the developers: the release app through its real bridge
+  (measurements, conversations, sharing previews, Explain and Investigate, history), live
+  investigations with Nemotron 3 Super and Ultra, a web lookup answered from NVIDIA's site, and
+  the first-launch guide with a real account catalog and connection test.
 - **Not yet:** a full test on a second Windows 11 PC installed from the release; an evaluation
   campaign against Claude and ChatGPT on the same situations (the harness exists, scored results
   do not); Windows 10; an acceptance run of the administrator helper's consent prompts; the
