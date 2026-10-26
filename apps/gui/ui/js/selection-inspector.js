@@ -11,14 +11,7 @@ import { webSourceCard, webDescriber } from "./web.js";
 import { date, duration } from "./format.js";
 import { costText, modelsLabel, routingNote, usedModelIds } from "./usage.js";
 import { keepFocus } from "./actionbar.js";
-
-function failureText(error) {
-  if (!error) return "";
-  if (typeof error === "string") return error;
-  const key = `error.${error.code}`;
-  const translated = t(key);
-  return translated === key ? error.message || t("summary.failed") : translated;
-}
+import { failureDetail, turnFailureText } from "./failure.js";
 
 function sourceCard(citation, number, focused, inv) {
   if (isWeb(citation)) {
@@ -97,7 +90,7 @@ export function mountSelectionInspector(host) {
     const statusNode = preparing || running
       ? h("p", { class: "summary-progress", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), statusText)
       : error || status === "failed"
-        ? h("div", { class: ["callout", stopped ? "info" : "warn"], role: "status" }, icon(stopped ? "stop" : "alert"), h("div", null, h("strong", null, t(stopped ? "inv.stopped.title" : "summary.failed")), h("span", null, failureText(error))))
+        ? h("div", { class: ["callout", stopped ? "info" : "warn"], role: "status" }, icon(stopped ? "stop" : "alert"), h("div", null, h("strong", null, t(stopped ? "inv.stopped.title" : "summary.failed")), h("span", { title: failureDetail(error) }, error ? turnFailureText(error) : "")))
         : null;
     const body = answer
       ? h("div", { class: "answer-text summary-answer" }, markdown(answer.text, showCitation, (reference) => numbers.get(reference) ?? reference, webDescriber(answer)))

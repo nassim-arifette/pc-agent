@@ -12,6 +12,7 @@ import { bytes } from "./format.js";
 import { navigate } from "./router.js";
 import { closePicker, modelPicker } from "./picker.js";
 import { webConsentNote } from "./web.js";
+import { failureText } from "./failure.js";
 
 export const MODES = ["complete", "anonymized", "local"];
 const MODE_ICONS = { complete: "cloud", anonymized: "shield", local: "pc" };
@@ -127,7 +128,7 @@ export async function showPreview(text, { followUp = false } = {}) {
     // Reuse the reviewed bytes once, only if the typed question and choices are unchanged.
     shownPreview = typed && key === previewKey(question, conversationId) ? { key, preview } : null;
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
     return;
   }
   const sent = preview.message?.question ?? question;
@@ -202,7 +203,7 @@ export async function ask(question, { followUp = false } = {}) {
     navigate("chat");
     return await sendMessage(text, { followUp, previewId, scopeIds, sent });
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
     return false;
   } finally {
     endTurnPreparation();
@@ -250,7 +251,7 @@ function shareToggles({ followUp, text }) {
     try {
       await change();
     } catch (error) {
-      toast(error.message, "bad");
+      toast(failureText(error), "bad");
     }
   };
   return [
@@ -324,7 +325,7 @@ function localPill() {
         try {
           await setPrivacy("complete");
         } catch (error) {
-          toast(error.message, "bad");
+          toast(failureText(error), "bad");
         }
       },
     },

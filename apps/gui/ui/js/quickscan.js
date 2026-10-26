@@ -13,6 +13,7 @@ import { badge, bar, button, toast } from "./ui.js";
 import { bytes, clock, duration, number, percent } from "./format.js";
 import { driveName } from "./live.js";
 import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
+import { failureDetail, failureText } from "./failure.js";
 import { capable } from "./capabilities.js";
 import { subscribe } from "./store.js";
 
@@ -81,7 +82,7 @@ async function prepare(volume) {
     const request = await call("elevation_prepare", { task: { kind: "mft_inventory", volume }, budgetMs: BUDGET_MS });
     set({ status: "review", request });
   } catch (error) {
-    set({ status: "failed", error: error.message });
+    set({ status: "failed", error });
     waitForFreeSlot(() => quick.status === "failed" && changed());
   }
 }
@@ -100,7 +101,7 @@ async function approve() {
     // After Stop, the cancellation flow reports the outcome once the slot is free.
     if (quick.status === "cancelling") return;
     // An error does not prove the slot is free: wait for elevation_status before another try.
-    set({ status: "failed", error: error.message, request: null });
+    set({ status: "failed", error, request: null });
     waitForFreeSlot(() => changed());
   }
 }
@@ -116,7 +117,7 @@ async function cancel() {
   try {
     await call("elevation_cancel", { requestId: request.request_id });
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
   }
   waitForFreeSlot(() => {
     if (quick.status === "cancelling") set({ status: wasRunning ? "cancelled" : "idle", request: null });
@@ -284,7 +285,7 @@ export function quickScanCard() {
         ),
         button(t(quick.status === "preparing" ? "quick.preparing" : "quick.prepare"), { variant: quick.result ? "" : "primary", iconName: "bolt", disabled: busy || blocked, onClick: () => prepare(volume) }),
         blocked && !busy ? h("span", { class: "hint" }, t("admin.slotBusy")) : null,
-        quick.status === "failed" ? h("div", { class: "callout bad", style: { "flex-basis": "100%" } }, icon("alert"), h("div", null, h("strong", null, t("quick.failed")), h("span", null, quick.error || ""))) : null,
+        quick.status === "failed" ? h("div", { class: "callout bad", style: { "flex-basis": "100%" } }, icon("alert"), h("div", null, h("strong", null, t("quick.failed")), h("span", { title: failureDetail(quick.error) }, failureText(quick.error)))) : null,
         quick.status === "cancelled" ? h("span", { class: "hint" }, t("quick.cancelled")) : null,
       );
     }

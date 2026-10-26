@@ -12,6 +12,7 @@ import { subscribe } from "../store.js";
 import { button, segmented, toast, toggle, dialog } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
 import { hoursMinutes, watts } from "../battery.js";
+import { failureDetail, failureText } from "../failure.js";
 
 const PERIODS = [
   { id: "hour", ms: 3600 * 1000, label: "history.period.hour" },
@@ -364,7 +365,7 @@ export function mount(page) {
       await call("record_activity_start", { durationSeconds: seconds });
       refreshStatus();
     } catch (error) {
-      toast(error.message, "bad");
+      toast(failureText(error), "bad");
     }
   };
 
@@ -416,7 +417,7 @@ export function mount(page) {
               try {
                 await call("record_activity_cancel", { recordingId: r.id });
               } catch (error) {
-                toast(error.message, "bad");
+                toast(failureText(error), "bad");
               }
               refreshStatus();
             },
@@ -496,7 +497,7 @@ export function mount(page) {
       loaded = null;
       chartsHost.setAttribute("aria-busy", "false");
       eventsHost.inert = false;
-      fill(chartsHost, h("div", { class: "callout warn" }, icon("alert"), h("div", null, h("strong", null, t("history.unavailable")), h("span", null, error.message))));
+      fill(chartsHost, h("div", { class: "callout warn" }, icon("alert"), h("div", null, h("strong", null, t("history.unavailable")), h("span", { title: failureDetail(error) }, failureText(error)))));
       shownEvents = null;
       if (selected?.kind === "event") selected = null;
       fill(eventsHost);
@@ -645,7 +646,7 @@ export function mount(page) {
               try {
                 startup = await call("startup_set", { enabled: on });
               } catch (error) {
-                toast(error.message, "bad");
+                toast(failureText(error), "bad");
               }
               if (!disposed) renderCost();
             }, t("startup.title")),
@@ -671,7 +672,7 @@ export function mount(page) {
               toast(t("history.cleared"));
               load();
             } catch (error) {
-              toast(error.message, "bad");
+              toast(failureText(error), "bad");
             }
           },
         }),

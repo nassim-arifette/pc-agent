@@ -20,6 +20,7 @@ import { modelName, startModelId } from "../models.js";
 import { costFigure, costText, modelChange, modelsLabel, recordedSwitch, routingNote, shareName, turnModels, usedModelIds } from "../usage.js";
 import { navigate } from "../router.js";
 import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "../web.js";
+import { failureDetail, refusalText, turnFailureText } from "../failure.js";
 
 // ---------- Small pieces ----------
 
@@ -248,12 +249,11 @@ function findingText(question, report) {
 function errorCallout(report) {
   if (!report.error) return null;
   const code = report.error.code;
-  const text = t(`error.${code}`);
   return h(
     "div",
     { class: ["callout", code === "cancelled" ? "info" : "warn"] },
     icon(code === "cancelled" ? "info" : "alert"),
-    h("div", null, h("strong", null, text === `error.${code}` ? report.error.message : text), h("span", null, t("error.kept"))),
+    h("div", null, h("strong", { title: failureDetail(report.error) }, turnFailureText(report.error)), h("span", null, t("error.kept"))),
   );
 }
 
@@ -322,7 +322,7 @@ function planSummary(plan) {
 function outcomeText(plan) {
   if (plan.decision === "running") return t("action.running");
   if (plan.decision === "declined") return t("action.declined");
-  if (plan.decision === "refused") return plan.error ? `${t("action.refused")} ${plan.error}` : t("action.refused");
+  if (plan.decision === "refused") return `${t("action.refused")} ${refusalText(plan.error)}`;
   const gained = plan.outcome?.verification?.volume?.gained_bytes;
   const base = t(`action.outcome.${plan.decision}`);
   return gained ? `${base} ${t("action.gained", { size: bytes(gained) })}` : base;
@@ -368,7 +368,7 @@ async function restoreStartup(plan) {
   } catch (error) {
     plan.restore = null;
     notify("conversation");
-    toast(error.message, "bad");
+    toast(`${t("action.restore.refused")} ${refusalText(error)}`, "bad");
     return;
   }
   notify("conversation");
@@ -381,7 +381,7 @@ function restoreText(restore) {
   if (restore.preparing) return t("action.restore.preparing");
   if (decision === "running") return t("action.restore.running");
   if (decision === "completed") return t("action.restore.done");
-  if (decision === "refused") return restore.plan.error ? `${t("action.restore.refused")} ${restore.plan.error}` : t("action.restore.refused");
+  if (decision === "refused") return `${t("action.restore.refused")} ${refusalText(restore.plan.error)}`;
   return decision ? `${t("action.restore.prefix")} ${t(`action.outcome.${decision}`)}` : null;
 }
 
@@ -421,8 +421,8 @@ function actionCards(turn, current) {
             "div",
             { class: "action-text" },
             h("strong", null, planTitle(plan)),
-            h("span", null, plan.decision ? outcomeText(plan) : planSummary(plan)),
-            plan.restore && restoreText(plan.restore) ? h("span", null, restoreText(plan.restore)) : null,
+            h("span", { title: plan.decision === "refused" ? failureDetail(plan.error) : null }, plan.decision ? outcomeText(plan) : planSummary(plan)),
+            plan.restore && restoreText(plan.restore) ? h("span", { title: plan.restore.plan?.decision === "refused" ? failureDetail(plan.restore.plan.error) : null }, restoreText(plan.restore)) : null,
           ),
           restoreControl(plan),
           open
@@ -720,10 +720,9 @@ export function mount(page) {
       if (inv.status === "failed") {
         const code = inv.failure?.code;
         if (code === "start" && !inv.selection && !box?.text().trim()) box?.setText(inv.question);
-        const text = t(`error.${code}`);
         const setup = ["missing_key", "missing_model", "invalid_model", "model_unavailable", "http"].includes(code);
         content = [
-          h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t(code === "cancelled" ? "inv.stopped.title" : "inv.failed.title")), h("span", null, text === `error.${code}` ? inv.failure.message : text))),
+          h("div", { class: "callout bad" }, icon("alert"), h("div", null, h("strong", null, t(code === "cancelled" ? "inv.stopped.title" : "inv.failed.title")), h("span", { title: failureDetail(inv.failure) }, turnFailureText(inv.failure)))),
           inv.partial ? partialAnswer(inv.partial) : null,
           // A failed request still has inspectable steps and the message used for that request.
           // A rejected start or a cancellation before any model request sent nothing.

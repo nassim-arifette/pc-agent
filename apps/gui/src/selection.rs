@@ -1,10 +1,11 @@
 //! Bounded local sources and exact, single-use consent for already measured selections.
+use crate::failure::{self, Code, Failure};
 use crate::model_routing::RoutingReview;
 use pcagent_agent::{
     selection::{
         FrozenSelection, SelectionIntent, SelectionRef, SelectionSource, MAX_SOURCE_BYTES,
     },
-    PastTurn, PrivacyContext, Sharing, MAX_QUESTION_BYTES,
+    PastTurn, PrivacyContext, Sharing,
 };
 use pcagent_shared::{new_id, unix_ms};
 use serde::Serialize;
@@ -175,7 +176,7 @@ impl SelectionRegistry {
         file_names: bool,
         privacy: PrivacyContext,
         context_revision: u64,
-    ) -> Result<SelectionPreview, String> {
+    ) -> Result<SelectionPreview, Failure> {
         self.expire();
         if !reference.validate() {
             return Err("Invalid local selection reference.".into());
@@ -184,9 +185,12 @@ impl SelectionRegistry {
             .sources
             .iter()
             .find(|source| source.id == reference.source_id)
-            .ok_or(
-                "The selected capture expired or was invalidated. Select the measured item again.",
-            )?;
+            .ok_or_else(|| {
+                Failure::new(
+                    Code::SelectionExpired,
+                    "The selected capture expired or was invalidated. Select the measured item again.",
+                )
+            })?;
         let question = effective_question(&reference, intent, question.as_deref())?;
         if serde_json::to_vec(&past).map_or(true, |past| past.len() > MAX_PAST_BYTES) {
             return Err(
@@ -240,13 +244,18 @@ impl SelectionRegistry {
     }
 
     /// Consume exactly the reviewed immutable inputs. A mismatch permits no provider request.
-    pub fn take(&mut self, reviewed: ReviewedSelection<'_>) -> Result<PreparedSelection, String> {
+    pub fn take(&mut self, reviewed: ReviewedSelection<'_>) -> Result<PreparedSelection, Failure> {
         self.expire();
         let index = self
             .tickets
             .iter()
             .position(|ticket| ticket.prepared.id == reviewed.preview_id)
-            .ok_or("Open the selected-evidence sharing preview before sending.")?;
+            .ok_or_else(|| {
+                Failure::new(
+                    Code::PreviewRequired,
+                    "Open the selected-evidence sharing preview before sending.",
+                )
+            })?;
         let pending = &self.tickets[index].prepared;
         let question = effective_question(reviewed.reference, reviewed.intent, reviewed.question)?;
         if pending.reference != *reviewed.reference
@@ -258,7 +267,7 @@ impl SelectionRegistry {
             || pending.file_names != reviewed.file_names
             || pending.context_revision != reviewed.context_revision
         {
-            return Err("The selection, question, conversation, sharing or model settings changed. Open the preview again.".into());
+            return Err(Failure::new(Code::PreviewChanged, "The selection, question, conversation, sharing or model settings changed. Open the preview again."));
         }
         // Reconstruct only from frozen host data, then compare the exact consented wire
         // message before consuming the ticket. This performs no collection or network I/O.
@@ -267,10 +276,10 @@ impl SelectionRegistry {
             .preview_message(reviewed.past, &question, &pending.privacy)
             != pending.message
         {
-            return Err(
-                "The frozen message no longer matches its sharing preview. Open the preview again."
-                    .into(),
-            );
+            return Err(Failure::new(
+                Code::PreviewChanged,
+                "The frozen message no longer matches its sharing preview. Open the preview again.",
+            ));
         }
         Ok(self
             .tickets
@@ -344,13 +353,17 @@ impl SelectionRegistry {
         self.publish(source)
     }
 
-    pub fn bind_routing(&mut self, preview_id: &str, routing: RoutingReview) -> Result<(), String> {
+    pub fn bind_routing(
+        &mut self,
+        preview_id: &str,
+        routing: RoutingReview,
+    ) -> Result<(), Failure> {
         self.expire();
         let pending = self
             .tickets
             .iter_mut()
             .find(|ticket| ticket.prepared.id == preview_id)
-            .ok_or("The selected preview expired.")?;
+            .ok_or_else(|| Failure::new(Code::PreviewExpired, "The selected preview expired."))?;
         if pending.prepared.routing.is_some() {
             return Err("The selected preview already has a frozen model policy.".into());
         }
@@ -377,13 +390,11 @@ fn effective_question(
     reference: &SelectionRef,
     intent: SelectionIntent,
     question: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, Failure> {
     let question = question
         .map(str::to_owned)
         .unwrap_or_else(|| reference.target.default_question(intent));
-    if question.trim().is_empty() || question.len() > MAX_QUESTION_BYTES {
-        return Err("The question must be nonempty and within the question byte limit.".into());
-    }
+    failure::check_question(&question)?;
     Ok(question)
 }
 
@@ -550,6 +561,62 @@ mod tests {
                 "case {changed}"
             );
         }
+    }
+
+    #[test]
+    fn a_refused_selection_send_says_why_nothing_left() {
+        let prepare =
+            |registry: &mut SelectionRegistry, reference: &SelectionRef, question: String| {
+                registry
+                    .prepare(
+                        reference.clone(),
+                        SelectionIntent::Explain,
+                        Some(question),
+                        None,
+                        vec![],
+                        Sharing::Anonymized,
+                        false,
+                        PrivacyContext::local(),
+                        7,
+                    )
+                    .err()
+                    .expect("refused")
+                    .code
+            };
+        let (mut registry, reference, preview, past) = fixture();
+        let mut changed = reviewed(&reference, &preview, &past);
+        changed.question = Some("Different question");
+        assert_eq!(
+            registry.take(changed).err().expect("refused").code,
+            Code::PreviewChanged
+        );
+        let mut unknown = reviewed(&reference, &preview, &past);
+        unknown.preview_id = "selection-preview-unknown";
+        assert_eq!(
+            registry.take(unknown).err().expect("refused").code,
+            Code::PreviewRequired
+        );
+        let routing = crate::model_routing::ModelRouting::default().review(None);
+        assert_eq!(
+            registry
+                .bind_routing("selection-preview-unknown", routing)
+                .unwrap_err()
+                .code,
+            Code::PreviewExpired
+        );
+        assert_eq!(
+            prepare(&mut registry, &reference, " ".into()),
+            Code::QuestionEmpty
+        );
+        assert_eq!(
+            prepare(&mut registry, &reference, "x".repeat(5000)),
+            Code::QuestionTooLong
+        );
+        registry.sources[0].expires_at = Instant::now();
+        assert_eq!(
+            prepare(&mut registry, &reference, "Pourquoi ?".into()),
+            Code::SelectionExpired
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { icon } from "./icons.js";
 import { t } from "./i18n.js";
 import { ago, basisPoints, bytes, percent } from "./format.js";
 import { batteryFacts, batteryItems, lowBattery, trendCaption } from "./battery.js";
+import { failureDetail, failureText } from "./failure.js";
 
 const GiB = 1024 ** 3;
 
@@ -86,7 +87,7 @@ export function liveView(live, options) {
     h("span", { class: "spacer" }),
     h("button", { type: "button", class: "icon-btn", title: t(live.paused ? "live.resume" : "live.pause"), "aria-label": t(live.paused ? "live.resume" : "live.pause"), onclick: onPause }, icon(live.paused ? "play" : "pause")),
   );
-  if (!dash) return h("div", { class: "live" }, head, live.error ? h("p", { class: "note" }, t("live.error", { message: live.error })) : h("div", { class: "skeleton", style: { height: "180px" } }));
+  if (!dash) return h("div", { class: "live" }, head, live.error ? h("p", { class: "note", title: failureDetail(live.error) }, failureText(live.error, "failure.live_unavailable")) : h("div", { class: "skeleton", style: { height: "180px" } }));
 
   const m = dash.memory;
   const rows = [];

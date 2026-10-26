@@ -361,6 +361,22 @@ every new question. A saved conversation whose only question never got an answer
 closed mid-run) shows the question, *This question has no answer* and *Ask again*, never a blank
 page. Mock switches: `?turn=orphan` and `?conversation=empty`.
 
+## Errors
+
+A command that fails rejects with `{code, message}` (`src/failure.rs`): `code` comes from a closed
+set (`uac_declined`, `folder_unreadable`, `preview_expired`…), `message` is an English detail for
+diagnosis, and a refused action adds a closed `reason` (`expired`, `changed`, `protected`…).
+`ui/js/api.js` gives every rejection one shape, an `Error` with `code` (`unknown` for a command
+that still sends a bare sentence) and `reason`; `ui/js/failure.js` words it with `failure.<code>`
+or `failure.action_refused.<reason>` from `i18n.js`, and an unknown error reads as a generic
+sentence. The English detail is at most a tooltip, never the main text, so the French window shows
+no English sentence and no Rust name such as `UacDeclined`. Failed turns keep their C3 codes
+(`turn:failed {code, message}`, worded by `error.<code>`); a turn refused before it starts says why
+with the command's code, else `error.start`. `scan:failed` carries the same `code` as `start_scan`.
+Mock switches: `?elevation=fail` (the administrator prompt is declined), `?scan=denied` (the
+folder cannot be read), `?scan=fail` (the scan stops midway), `?action=refuse` (*Run now* finds the
+target changed), `?preview=expired` (nothing is sent), `?history=unavailable` and `?live=fail`.
+`dev/failure.test.mjs` checks the shapes, every sentence in both languages and these switches.
 ## Model routing: Super, then Ultra
 
 Chantier 14 and the routing complement of C3 (4 October). The routing mechanism and its

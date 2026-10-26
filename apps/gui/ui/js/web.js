@@ -8,6 +8,7 @@ import { state, setWebSearch, saveSearchKey, openWebSource, webSearchActive } fr
 import { citationTitle, isWeb, publishedDate, sourceCounts } from "./citations.js";
 import { badge, button, toast, toggle } from "./ui.js";
 import { clock } from "./format.js";
+import { failureText } from "./failure.js";
 
 // ---------- In the conversation ----------
 
@@ -43,7 +44,7 @@ async function open(target) {
     await openWebSource(target.conversationId, target.turnId, target.reference);
     toast(t("web.opened"));
   } catch (error) {
-    toast(error.message, "bad");
+    toast(failureText(error), "bad");
   }
 }
 
@@ -144,7 +145,7 @@ function keyForm(cloud) {
       input.value = "";
       toast(t("web.key.saved"));
     } catch (error) {
-      toast(error.message, "bad");
+      toast(failureText(error), "bad");
     }
   };
   const remove = async () => {
@@ -152,7 +153,7 @@ function keyForm(cloud) {
       await saveSearchKey(null);
       toast(t("web.key.removed"));
     } catch (error) {
-      toast(error.message, "bad");
+      toast(failureText(error), "bad");
     }
   };
   // A form, so Enter in the key field saves; nothing is submitted anywhere.
@@ -202,7 +203,7 @@ export function webSettingsCard() {
       try {
         await setWebSearch(on);
       } catch (error) {
-        toast(error.message, "bad");
+        toast(failureText(error), "bad");
       }
       redraw();
     }, t("web.toggle"));

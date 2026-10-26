@@ -2,6 +2,7 @@
 //! the plans of the last turn wait here. Nothing runs until the person clicks to approve one exact
 //! plan in this window; the same broker, guard, journal and protection as the CLI then execute it,
 //! with a measurement before and after.
+use crate::failure::{self, Failure, Refusal};
 use crate::view;
 use pcagent_actions::{
     approve_locally, recover, ActionKind, Journal, LocalSession, ResolvedTarget,
@@ -72,6 +73,17 @@ pub fn desk() -> Option<ActionDesk> {
     Some(ActionDesk::native(journal))
 }
 
+fn journal_unavailable() -> Failure {
+    Failure::refused(
+        Some(Refusal::Journal),
+        "The action journal cannot be opened.",
+    )
+}
+
+fn not_current(message: &str) -> Failure {
+    Failure::refused(Some(Refusal::Stale), message)
+}
+
 /// Keeps a finished turn's proposals, replacing an older turn's: those can no longer be run.
 pub fn keep(slot: &Slot, turn_id: &str, pending: Vec<PendingPlan>, readable: view::Readable<'_>) {
     let kept = ActionSlot::new(turn_id, pending, readable);
@@ -85,21 +97,26 @@ pub fn prepare_startup_restore(
     source_plan_id: &str,
     item_index: usize,
     readable: view::Readable<'_>,
-) -> Result<StartupRestoration, String> {
+) -> Result<StartupRestoration, Failure> {
     let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
     if slot
         .as_ref()
         .is_some_and(|current| current.decided.values().any(|v| v == "running"))
     {
-        return Err("An approved action is still running.".into());
+        return Err(Failure::refused(
+            Some(Refusal::Busy),
+            "An approved action is still running.",
+        ));
     }
-    let desk = desk().ok_or("The action journal cannot be opened.")?;
+    let desk = desk().ok_or_else(journal_unavailable)?;
     let (policy, prefs) = (Policy::from_env(), Preferences::default());
     let protection = PolicyProtection {
         policy: &policy,
         prefs: &prefs,
     };
-    let pending = desk.prepare_startup_restore(source_plan_id, item_index, &protection)?;
+    let pending = desk
+        .prepare_startup_restore(source_plan_id, item_index, &protection)
+        .map_err(|error| Failure::refused(Some(Refusal::RestoreUnavailable), error))?;
     let turn_id = format!("local-restore-{}", pending.plan.plan_id());
     let restoration = ActionSlot::new(&turn_id, vec![pending], readable);
     let plan = restoration.views[0].clone();
@@ -121,14 +138,14 @@ pub fn plans(slot: &Slot, turn_id: &str) -> Vec<view::PlanView> {
         .collect()
 }
 
-pub fn decline(slot: &Slot, turn_id: &str, plan_id: &str) -> Result<(), String> {
+pub fn decline(slot: &Slot, turn_id: &str, plan_id: &str) -> Result<(), Failure> {
     let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
     let slot = slot
         .as_mut()
         .filter(|s| s.turn_id == turn_id)
-        .ok_or("These proposals are no longer current.")?;
+        .ok_or_else(|| not_current("These proposals are no longer current."))?;
     if !slot.views.iter().any(|v| v.plan_id == plan_id) {
-        return Err("Unknown proposal.".into());
+        return Err(not_current("Unknown proposal."));
     }
     slot.decided
         .entry(plan_id.to_owned())
@@ -149,21 +166,24 @@ fn free_bytes(root: &Path) -> Option<u64> {
 
 /// Runs one plan of the current turn, once, after the person's click. The plan is taken out of
 /// the slot first, so a second click cannot run it again.
-pub fn run(slot: &Slot, turn_id: &str, plan_id: &str) -> Result<view::ActionOutcome, String> {
+pub fn run(slot: &Slot, turn_id: &str, plan_id: &str) -> Result<view::ActionOutcome, Failure> {
     let pending = {
         let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
         let slot = slot
             .as_mut()
             .filter(|s| s.turn_id == turn_id)
-            .ok_or("These proposals are no longer current.")?;
+            .ok_or_else(|| not_current("These proposals are no longer current."))?;
         if slot.decided.contains_key(plan_id) {
-            return Err("This proposal was already decided.".into());
+            return Err(Failure::refused(
+                Some(Refusal::AlreadyDecided),
+                "This proposal was already decided.",
+            ));
         }
         let index = slot
             .pending
             .iter()
             .position(|p| p.plan.plan_id() == plan_id)
-            .ok_or("Unknown proposal.")?;
+            .ok_or_else(|| not_current("Unknown proposal."))?;
         slot.decided.insert(plan_id.to_owned(), "running".into());
         slot.pending.remove(index)
     };
@@ -179,8 +199,8 @@ pub fn run(slot: &Slot, turn_id: &str, plan_id: &str) -> Result<view::ActionOutc
     outcome
 }
 
-fn execute(mut pending: PendingPlan) -> Result<view::ActionOutcome, String> {
-    let desk = desk().ok_or("The action journal cannot be opened.")?;
+fn execute(mut pending: PendingPlan) -> Result<view::ActionOutcome, Failure> {
+    let desk = desk().ok_or_else(journal_unavailable)?;
     let (policy, prefs) = (Policy::from_env(), Preferences::default());
     let protection = PolicyProtection {
         policy: &policy,
@@ -201,8 +221,8 @@ fn execute(mut pending: PendingPlan) -> Result<view::ActionOutcome, String> {
         Vec::new()
     };
     let free_before = volume_root.as_deref().and_then(free_bytes);
-    let token =
-        approve_locally(&mut pending.plan, &session, APPROVAL_TTL).map_err(|e| e.to_string())?;
+    let token = approve_locally(&mut pending.plan, &session, APPROVAL_TTL)
+        .map_err(|error| failure::action(&error))?;
     let mut plan = pending.plan.clone();
     let mut result = desk
         .broker(&pending, &protection)
@@ -213,7 +233,7 @@ fn execute(mut pending: PendingPlan) -> Result<view::ActionOutcome, String> {
             &cancel,
             before.last().map(|s| s.id.clone()),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| failure::action(&error))?;
     if measure_system {
         std::thread::sleep(SETTLE_AFTER_ACTION);
     }
