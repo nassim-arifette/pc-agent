@@ -856,13 +856,15 @@ export function createMock() {
       await wait(600);
       const now = Date.now();
       const window = { started_at_unix_ms: now - 2000, finished_at_unix_ms: now, duration_ms: 2000 };
+      // Readable names as the executables' version resources give them; svchost.exe has none.
+      const READABLE = { "chrome.exe": "Google Chrome", "Code.exe": "Visual Studio Code", "Teams.exe": "Microsoft Teams" };
       const app = (ref, name, count, cpu, ws, members, services = []) => ({
-        entity_ref: ref, name, process_count: count, members_truncated: false,
+        entity_ref: ref, name, readable_name: READABLE[name] ?? null, process_count: count, members_truncated: false,
         cpu: m(cpu, `${(cpu / 100).toFixed(1)}%`), working_set: m(ws * GiB, fmt(ws * GiB)), private_commit: m(ws * 0.8 * GiB, fmt(ws * 0.8 * GiB)),
         working_set_increase: ref === "app-1" ? m(0.2 * GiB, fmt(0.2 * GiB)) : m(0, "0"), io_read: m(120000, "117 KiB/s"), io_write: m(40000, "39 KiB/s"),
         gpu: ref === "app-1" ? m(310, "3.1%") : missing("unsupported", "No GPU counter instance for these processes."),
         services,
-        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
+        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, readable_name: READABLE[name] ?? null, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
       });
       const applications = [
           app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),

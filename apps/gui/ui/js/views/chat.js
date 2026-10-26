@@ -294,7 +294,7 @@ async function review(turn, plan) {
         "ul",
         { class: "plan-targets" },
         plan.targets.map((x) =>
-          h("li", null, h("span", { class: "mono" }, x.label), x.files || x.bytes ? h("span", { class: "faint" }, ` · ${[x.files ? t("action.files", { count: x.files }) : null, x.bytes ? bytes(x.bytes) : null].filter(Boolean).join(", ")}`) : null),
+          h("li", null, h("span", { class: "mono", title: x.executable_name || null }, x.label), x.files || x.bytes ? h("span", { class: "faint" }, ` · ${[x.files ? t("action.files", { count: x.files }) : null, x.bytes ? bytes(x.bytes) : null].filter(Boolean).join(", ")}`) : null),
         ),
       ),
       h("p", { class: "note" }, labelled(t("action.recovery"), t(`action.recovery.${plan.recovery}`))),

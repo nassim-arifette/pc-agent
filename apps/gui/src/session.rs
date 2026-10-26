@@ -1,18 +1,18 @@
 //! Observable wrappers for an investigation shown live: the model and the toolbox report each
 //! real step when it starts and ends, and the model refuses the next request once the person
 //! asks to stop. Nothing here changes what the agent may do.
-use crate::view::error_code;
+use crate::view::{self, error_code};
 use pcagent_agent::{
     draft_text, AgentError, Args, Model, Pricing, Reply, ToolChoice, ToolOutput, ToolSpec, Toolbox,
     SUBMIT_ANSWER,
 };
-use pcagent_shared::Status;
+use pcagent_shared::{ProcessInstance, Status};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -178,19 +178,48 @@ impl<M: Model, F: FnMut(Step)> Model for ObservedModel<M, F> {
     }
 }
 
-pub struct ObservedTools<T, F> {
+/// The processes a turn has seen so far: its initial capture, the selected evidence and each tool
+/// output, as the investigation keeps them (`local_processes`). The streamed draft is named from
+/// them exactly as the reviewed answer will be (`view::localize`), so it does not change when the
+/// run ends.
+#[derive(Default)]
+pub struct SeenProcesses(Mutex<Vec<ProcessInstance>>);
+impl SeenProcesses {
+    /// Keeps the first instance seen under each reference, like the investigation.
+    pub fn add(&self, processes: &[ProcessInstance]) {
+        let mut seen = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        for p in processes {
+            if !seen.iter().any(|known| known.entity_ref == p.entity_ref) {
+                seen.push(p.clone());
+            }
+        }
+    }
+    /// A draft as the window shows it.
+    pub fn localize(&self, text: &str, readable: view::Readable<'_>) -> String {
+        let seen = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        view::localize(text, &seen, readable)
+    }
+}
+
+pub struct ObservedTools<T, F, G> {
     inner: T,
     on_start: F,
+    on_output: G,
 }
-impl<T, F> ObservedTools<T, F> {
-    pub fn new(inner: T, on_start: F) -> Self {
-        Self { inner, on_start }
+impl<T, F, G> ObservedTools<T, F, G> {
+    /// `on_start` gets each tool's name as it starts, `on_output` its output once it returns.
+    pub fn new(inner: T, on_start: F, on_output: G) -> Self {
+        Self {
+            inner,
+            on_start,
+            on_output,
+        }
     }
     pub fn into_inner(self) -> T {
         self.inner
     }
 }
-impl<T: Toolbox, F: FnMut(&str)> Toolbox for ObservedTools<T, F> {
+impl<T: Toolbox, F: FnMut(&str), G: FnMut(&ToolOutput)> Toolbox for ObservedTools<T, F, G> {
     fn specs(&self) -> &[ToolSpec] {
         self.inner.specs()
     }
@@ -199,7 +228,9 @@ impl<T: Toolbox, F: FnMut(&str)> Toolbox for ObservedTools<T, F> {
     }
     fn run(&mut self, spec: &ToolSpec, args: &Args) -> ToolOutput {
         (self.on_start)(spec.name);
-        self.inner.run(spec, args)
+        let output = self.inner.run(spec, args);
+        (self.on_output)(&output);
+        output
     }
     fn definitions(&self) -> Value {
         self.inner.definitions()
@@ -392,10 +423,11 @@ mod tests {
                 ObservedModel::new(Script(VecDeque::from([tool_call(), done])), stop, |step| {
                     steps.push(step)
                 });
-            let mut tools =
-                ObservedTools::new(SnapshotTools::new(|_, _| snapshot()), |name: &str| {
-                    started.push(name.to_owned())
-                });
+            let mut tools = ObservedTools::new(
+                SnapshotTools::new(|_, _| snapshot()),
+                |name: &str| started.push(name.to_owned()),
+                |_: &ToolOutput| {},
+            );
             let report = investigate(&mut model, "test", &s, &mut tools, |_| {});
             assert!(report.error.is_none(), "{:?}", report.error);
         }
@@ -570,6 +602,73 @@ mod tests {
             .any(|step| matches!(step, Step::AnswerDraft { .. })));
         assert!(
             matches!(steps.last(), Some(Step::ModelFinished { outcome, .. }) if outcome == "cancelled")
+        );
+    }
+
+    #[test]
+    fn drafts_are_named_from_the_processes_the_turn_has_seen_like_its_answer() {
+        use std::collections::BTreeSet;
+        let measured =
+            || {
+                let mut s = snapshot();
+                s.processes
+                    .extend([("proc-0000000a", 40), ("proc-0000000b", 41)].map(
+                        |(reference, pid)| ProcessInstance {
+                            entity_ref: reference.into(),
+                            pid,
+                            creation_time_filetime: 7,
+                            boot_id: None,
+                            executable_name: Some("browser.exe".into()),
+                        },
+                    ));
+                s
+            };
+        let names = |pid: u32, _: u64| matches!(pid, 40 | 41).then(|| "Example Browser".to_owned());
+        let text = "browser.exe (proc-0000000a) is the busiest program [O1].";
+        let answer = Reply {
+            calls: vec![ToolCall {
+                id: "answer".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: SUBMIT_ANSWER.into(),
+                    arguments: json!({"answer":text, "confidence":"high", "category":"cpu",
+                        "action_refs":[], "follow_ups":[]})
+                    .to_string(),
+                },
+            }],
+            ..Reply::default()
+        };
+        let seen = SeenProcesses::default();
+        let initial = snapshot();
+        seen.add(&initial.processes);
+        // Before any tool output, a draft has nothing to name.
+        assert_eq!(seen.localize(text, &names), text);
+        let report = {
+            let mut model = ObservedModel::new(
+                Script(VecDeque::from([tool_call(), answer])),
+                Arc::new(AtomicBool::new(false)),
+                |_| {},
+            );
+            let mut tools = ObservedTools::new(
+                SnapshotTools::new(|_, _| measured()),
+                |_: &str| {},
+                |output: &ToolOutput| seen.add(&output.processes),
+            );
+            investigate(&mut model, "test", &initial, &mut tools, |_| {})
+        };
+        // The tool's processes were recorded as the investigation recorded them, so the last
+        // draft reads exactly as the reviewed answer will.
+        let refs = |list: &[ProcessInstance]| -> BTreeSet<String> {
+            list.iter().map(|p| p.entity_ref.clone()).collect()
+        };
+        assert_eq!(refs(&seen.0.lock().unwrap()), refs(&report.local_processes));
+        assert_eq!(
+            seen.localize(text, &names),
+            "Example Browser is the busiest program [O1]."
+        );
+        assert_eq!(
+            seen.localize(text, &names),
+            view::localize(text, &report.local_processes, &names)
         );
     }
 

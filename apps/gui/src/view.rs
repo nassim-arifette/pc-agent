@@ -519,6 +519,8 @@ impl LiveBattery {
 pub struct TargetView {
     pub kind: String,
     pub label: String,
+    /// For a process shown by its readable name: its executable name, the label's tooltip.
+    pub executable_name: Option<String>,
     pub files: Option<u64>,
     pub bytes: Option<u64>,
 }
@@ -550,52 +552,91 @@ fn snake(value: &impl Serialize) -> String {
         .unwrap_or_default()
 }
 
-pub fn plan(plan: &pcagent_actions::ActionPlan, decision: Option<&str>) -> PlanView {
+/// A proposal as the person reviews it. A process target reads as the program it is ("Google
+/// Chrome", its executable name as tooltip); its PID shows only when two targets would read the
+/// same, or when no name is known at all.
+pub fn plan(
+    plan: &pcagent_actions::ActionPlan,
+    decision: Option<&str>,
+    readable: Readable<'_>,
+) -> PlanView {
     use pcagent_actions::ResolvedTarget;
-    let targets = plan
+    let target = |kind: &str, label: String, files, bytes| TargetView {
+        kind: kind.into(),
+        label,
+        executable_name: None,
+        files,
+        bytes,
+    };
+    // Each process target's readable and executable names, read once.
+    let named: Vec<(Option<String>, Option<String>)> = plan
         .items()
         .iter()
         .map(|item| match &item.target {
-            ResolvedTarget::File(f) => TargetView {
-                kind: "file".into(),
-                label: f.path.display().to_string(),
-                files: Some(1),
-                bytes: None,
-            },
-            ResolvedTarget::SettingsPage { page } => TargetView {
-                kind: "settings_page".into(),
-                label: page.uri().into(),
-                files: None,
-                bytes: None,
-            },
-            ResolvedTarget::CleanupAdapter(c) => TargetView {
-                kind: "cleanup".into(),
-                label: c.root.display().to_string(),
-                files: Some(c.files),
-                bytes: c.bytes,
-            },
-            ResolvedTarget::Process(t) => TargetView {
-                kind: "process".into(),
-                label: format!(
-                    "{} (PID {})",
-                    t.executable_name.as_deref().unwrap_or("process"),
-                    t.identity.pid
-                ),
-                files: None,
-                bytes: None,
-            },
-            ResolvedTarget::UserStartup(t) => TargetView {
-                kind: "startup".into(),
-                label: t.value_name().into(),
-                files: None,
-                bytes: None,
-            },
-            ResolvedTarget::RecycleCleanup(c) => TargetView {
-                kind: "cleanup".into(),
-                label: c.root().path.display().to_string(),
-                files: Some(c.files().len() as u64),
-                bytes: c.bytes(),
-            },
+            ResolvedTarget::Process(t) => {
+                let instance = ProcessInstance {
+                    entity_ref: String::new(),
+                    pid: t.identity.pid,
+                    creation_time_filetime: t.identity.creation_time_filetime,
+                    boot_id: None,
+                    executable_name: t.executable_name.clone(),
+                };
+                let executable = t
+                    .executable_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
+                (readable_name(&instance, readable), executable)
+            }
+            _ => (None, None),
+        })
+        .collect();
+    let shown = |index: usize| {
+        let (readable, executable) = &named[index];
+        readable.as_deref().or(executable.as_deref())
+    };
+    let targets = plan
+        .items()
+        .iter()
+        .enumerate()
+        .map(|(index, item)| match &item.target {
+            ResolvedTarget::File(f) => target("file", f.path.display().to_string(), Some(1), None),
+            ResolvedTarget::SettingsPage { page } => {
+                target("settings_page", page.uri().into(), None, None)
+            }
+            ResolvedTarget::CleanupAdapter(c) => target(
+                "cleanup",
+                c.root.display().to_string(),
+                Some(c.files),
+                c.bytes,
+            ),
+            ResolvedTarget::Process(t) => {
+                let name = shown(index);
+                let shared = name.is_some_and(|name| {
+                    (0..named.len()).any(|other| {
+                        other != index
+                            && shown(other).is_some_and(|o| o.to_lowercase() == name.to_lowercase())
+                    })
+                });
+                let label = match name {
+                    Some(name) if !shared => name.to_owned(),
+                    Some(name) => format!("{name} (PID {})", t.identity.pid),
+                    None => format!("process (PID {})", t.identity.pid),
+                };
+                let (readable, executable) = &named[index];
+                TargetView {
+                    executable_name: readable.as_ref().and(executable.clone()),
+                    ..target("process", label, None, None)
+                }
+            }
+            ResolvedTarget::UserStartup(t) => target("startup", t.value_name().into(), None, None),
+            ResolvedTarget::RecycleCleanup(c) => target(
+                "cleanup",
+                c.root().path.display().to_string(),
+                Some(c.files().len() as u64),
+                c.bytes(),
+            ),
         })
         .collect();
     PlanView {
@@ -631,7 +672,12 @@ pub struct ServiceView {
 #[derive(Debug, Clone, Serialize)]
 pub struct MemberView {
     pub entity_ref: String,
+    /// The executable name: the tooltip of `readable_name`, and the only name a question may
+    /// carry (C5).
     pub name: String,
+    /// What the window shows when known: the executable's own description ("Google Chrome").
+    /// Local display only, never sent anywhere.
+    pub readable_name: Option<String>,
     pub pid: u32,
     pub cpu: Measure,
     pub working_set: Measure,
@@ -641,7 +687,10 @@ pub struct MemberView {
 #[derive(Debug, Clone, Serialize)]
 pub struct ApplicationView {
     pub entity_ref: String,
+    /// The executable the group is named after, as for `MemberView::name`.
     pub name: String,
+    /// The readable name of the member the group is named after, as for `MemberView`.
+    pub readable_name: Option<String>,
     pub process_count: usize,
     pub members_truncated: bool,
     pub cpu: Measure,
@@ -687,8 +736,28 @@ fn services(list: &[pcagent_telemetry::ServiceProcess]) -> Vec<ServiceView> {
         .collect()
 }
 
-/// Application groups with their members and services, for the local Live PC view.
-pub fn activity(a: &pcagent_telemetry::ProcessActivity) -> ActivityView {
+/// The member an application group is named after, as the collector names it: the earliest
+/// instance (creation time, then PID) of the group's executable among its listed members.
+/// `instance` resolves a member reference, including members ranked too low to be returned.
+fn naming_member(
+    app: &pcagent_telemetry::ApplicationActivity,
+    instance: &impl Fn(&str) -> Option<ProcessInstance>,
+) -> Option<ProcessInstance> {
+    let name = app.name.as_deref()?;
+    app.process_refs
+        .iter()
+        .filter_map(|reference| instance(reference))
+        .filter(|p| p.executable_name.as_deref() == Some(name))
+        .min_by_key(|p| (p.creation_time_filetime, p.pid))
+}
+
+/// Application groups with their members and services, for the local Live PC view. `instance`
+/// resolves member references (the live collector's registry); `readable` gives readable names.
+pub fn activity(
+    a: &pcagent_telemetry::ProcessActivity,
+    instance: impl Fn(&str) -> Option<ProcessInstance>,
+    readable: Readable<'_>,
+) -> ActivityView {
     let m = |entity: &str, metric| evidence_measure(&a.evidence, entity, metric);
     let applications = a
         .applications
@@ -701,6 +770,7 @@ pub fn activity(a: &pcagent_telemetry::ProcessActivity) -> ActivityView {
                 .map(|p| MemberView {
                     entity_ref: p.instance.entity_ref.clone(),
                     name: process_name(&p.instance),
+                    readable_name: readable_name(&p.instance, readable),
                     pid: p.instance.pid,
                     cpu: m(&p.instance.entity_ref, Metric::ProcessCpuBasisPoints),
                     working_set: m(&p.instance.entity_ref, Metric::ProcessWorkingSetBytes),
@@ -720,6 +790,8 @@ pub fn activity(a: &pcagent_telemetry::ProcessActivity) -> ActivityView {
                     .filter(|n| !n.is_empty())
                     .unwrap_or("Unnamed application")
                     .to_owned(),
+                readable_name: naming_member(app, &instance)
+                    .and_then(|p| readable_name(&p, readable)),
                 process_count: app.process_count,
                 members_truncated: app.members_truncated,
                 cpu: m(&app.entity_ref, Metric::ProcessCpuBasisPoints),
@@ -755,6 +827,35 @@ pub fn process_name(p: &ProcessInstance) -> String {
         .filter(|n| !n.is_empty())
         .unwrap_or("Unnamed process")
         .to_owned()
+}
+
+/// Readable program names by process instance (PID, creation time): the description or product
+/// name of the executable's version resource, as Task Manager shows them ("Google Chrome"), read
+/// on a worker thread (`pcagent_telemetry::ProgramNames`). They are for this window only: never
+/// part of a model payload, a preview, a question or the conversation context (C5, note of 26
+/// October), which keep executable names or opaque references.
+pub type Readable<'a> = &'a dyn Fn(u32, u64) -> Option<String>;
+
+/// For views built without readable names (a turn that failed before measuring anything).
+pub fn no_readable_names(_pid: u32, _created: u64) -> Option<String> {
+    None
+}
+
+/// The readable name the window shows for a process, when one is known and says more than its
+/// executable name.
+fn readable_name(p: &ProcessInstance, readable: Readable<'_>) -> Option<String> {
+    let name = readable(p.pid, p.creation_time_filetime)?;
+    let name = name.trim();
+    let same = p
+        .executable_name
+        .as_deref()
+        .is_some_and(|exe| exe.trim().eq_ignore_ascii_case(name));
+    (!name.is_empty() && !same).then(|| name.to_owned())
+}
+
+/// How the window names a process: its readable name, else its executable name.
+fn display_name(p: &ProcessInstance, readable: Readable<'_>) -> String {
+    readable_name(p, readable).unwrap_or_else(|| process_name(p))
 }
 
 pub fn dashboard(s: &Snapshot) -> Dashboard {
@@ -997,32 +1098,155 @@ pub struct Report {
     pub continuation: Option<ExtensionRequest>,
 }
 
-/// Replaces opaque process references (`proc-1a2b3c4d`) with local names for this window. A model
-/// that names a process and adds its reference ("firefox.exe (proc-1a2b3c4d)", needed when several
-/// processes share a name) gets "firefox.exe (PID 42)", not the name twice.
-fn localize(text: &str, processes: &[ProcessInstance]) -> String {
-    processes.iter().fold(text.to_owned(), |text, p| {
-        let name = process_name(p);
-        let local = format!("{name} (PID {})", p.pid);
-        text.replace(&format!("{name} ({})", p.entity_ref), &local)
-            .replace(&p.entity_ref, &local)
-    })
+/// Whether `reference` stands at byte `at` of `text` as a whole word.
+fn reference_at(text: &str, at: usize, reference: &str) -> bool {
+    text[at..].starts_with(reference)
+        && text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
+        && text[at + reference.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric())
 }
-pub fn finding(f: &Finding, processes: &[ProcessInstance]) -> FindingView {
-    let local = |t: &str| localize(t, processes);
-    let all = |items: &[String]| items.iter().map(|t| local(t)).collect();
+
+fn cites(text: &str, reference: &str) -> bool {
+    text.match_indices(reference)
+        .any(|(at, _)| reference_at(text, at, reference))
+}
+
+/// One process cited in a text: its reference, its executable name as the model may have written
+/// it before the reference, and how the window names it there.
+struct Label {
+    reference: String,
+    written: String,
+    label: String,
+}
+
+/// How this window names the processes that texts shown together (an answer, a finding, a source)
+/// cite by opaque reference (`proc-1a2b3c4d`): each by its readable name ("Google Chrome"), else
+/// its executable name, with " (PID n)" only when two different processes cited there would
+/// otherwise read the same. Display only: the model's own text, kept for the conversation
+/// context, never changes.
+pub struct ProcessLabels {
+    /// Longest reference first, so a reference never matches inside a longer one.
+    labels: Vec<Label>,
+}
+impl ProcessLabels {
+    pub fn new(texts: &[&str], processes: &[ProcessInstance], readable: Readable<'_>) -> Self {
+        let cited: Vec<(&ProcessInstance, String)> = processes
+            .iter()
+            .filter(|p| {
+                !p.entity_ref.is_empty() && texts.iter().any(|text| cites(text, &p.entity_ref))
+            })
+            .map(|p| (p, display_name(p, readable)))
+            .collect();
+        let mut labels: Vec<Label> = cited
+            .iter()
+            .map(|(p, name)| {
+                let shared = cited.iter().any(|(other, other_name)| {
+                    other.entity_ref != p.entity_ref
+                        && other_name.to_lowercase() == name.to_lowercase()
+                });
+                Label {
+                    reference: p.entity_ref.clone(),
+                    written: process_name(p),
+                    label: if shared {
+                        format!("{name} (PID {})", p.pid)
+                    } else {
+                        name.clone()
+                    },
+                }
+            })
+            .collect();
+        labels.sort_by_key(|l| std::cmp::Reverse(l.reference.len()));
+        Self { labels }
+    }
+    /// The text with each cited reference replaced by its label, in one pass: a label is never
+    /// read again, so a program whose name looks like a reference cannot stand for another. A
+    /// model that wrote the executable name before the reference ("chrome.exe (proc-1a2b3c4d)",
+    /// as it does when several processes share a name) gets the label once.
+    pub fn apply(&self, text: &str) -> String {
+        if self.labels.is_empty() {
+            return text.to_owned();
+        }
+        let mut out = String::with_capacity(text.len());
+        // Where the last inserted label ends: what precedes it is never rewritten.
+        let mut fixed = 0;
+        let mut at = 0;
+        'scan: while at < text.len() {
+            for label in &self.labels {
+                if !reference_at(text, at, &label.reference) {
+                    continue;
+                }
+                let end = at + label.reference.len();
+                let written = format!("{} (", label.written);
+                let start = out.len().saturating_sub(written.len());
+                let named = text[end..].starts_with(')')
+                    && start >= fixed
+                    && out.is_char_boundary(start)
+                    && out[start..].eq_ignore_ascii_case(&written);
+                if named {
+                    out.truncate(start);
+                }
+                out.push_str(&label.label);
+                fixed = out.len();
+                at = if named { end + 1 } else { end };
+                continue 'scan;
+            }
+            let c = text[at..]
+                .chars()
+                .next()
+                .expect("at is a character boundary");
+            out.push(c);
+            at += c.len_utf8();
+        }
+        out
+    }
+    fn all(&self, texts: &[String]) -> Vec<String> {
+        texts.iter().map(|text| self.apply(text)).collect()
+    }
+}
+
+/// One text as the window shows it (`ProcessLabels`). The streamed draft goes through this same
+/// function as the reviewed answer's text, so the answer does not change when the run ends.
+pub fn localize(text: &str, processes: &[ProcessInstance], readable: Readable<'_>) -> String {
+    ProcessLabels::new(&[text], processes, readable).apply(text)
+}
+
+pub fn finding(f: &Finding, processes: &[ProcessInstance], readable: Readable<'_>) -> FindingView {
+    let mut texts = vec![
+        f.support_reason.as_str(),
+        f.summary.as_str(),
+        f.next_step.as_str(),
+    ];
+    texts.extend(f.facts.iter().map(|fact| fact.text.as_str()));
+    texts.extend(f.hypothesis.as_deref());
+    texts.extend(
+        [&f.counter_evidence, &f.missing, &f.limitations]
+            .into_iter()
+            .flatten()
+            .map(String::as_str),
+    );
+    // A finding reads as one block: a process keeps one label across its texts.
+    let labels = ProcessLabels::new(&texts, processes, readable);
     FindingView {
         classification: f.classification,
         label: f.classification.label(),
         support: f.support,
-        support_reason: local(&f.support_reason),
-        summary: local(&f.summary),
-        facts: f.facts.iter().map(|fact| local(&fact.text)).collect(),
-        hypothesis: f.hypothesis.as_deref().map(local),
-        counter_evidence: all(&f.counter_evidence),
-        missing: all(&f.missing),
-        next_step: local(&f.next_step),
-        limitations: all(&f.limitations),
+        support_reason: labels.apply(&f.support_reason),
+        summary: labels.apply(&f.summary),
+        facts: f
+            .facts
+            .iter()
+            .map(|fact| labels.apply(&fact.text))
+            .collect(),
+        hypothesis: f.hypothesis.as_deref().map(|text| labels.apply(text)),
+        counter_evidence: labels.all(&f.counter_evidence),
+        missing: labels.all(&f.missing),
+        next_step: labels.apply(&f.next_step),
+        limitations: labels.all(&f.limitations),
     }
 }
 pub fn error_code(e: &AgentError) -> String {
@@ -1071,9 +1295,11 @@ pub fn usage(s: &Stats) -> Usage {
         cost_lower_bound: s.cost_lower_bound.as_ref().map(cost),
     }
 }
-fn answer(r: &Investigation, a: &Answer) -> AnswerView {
+fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> AnswerView {
     let processes = &r.local_processes;
-    let local = |text: &str| localize(text, processes);
+    // The text is labelled on its own, exactly as its streamed draft was; quoted passages keep
+    // its labels.
+    let text = ProcessLabels::new(&[&a.text], processes, readable);
     let citations = a
         .citations
         .iter()
@@ -1121,6 +1347,7 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                     }),
                 });
             }
+            // Each source reads as one block, labelled on its own.
             let (title, facts, earlier) = match c.kind {
                 CitationKind::Observation => {
                     let o = r
@@ -1130,7 +1357,7 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                         .find(|o| o.observation_id == c.target)?;
                     (
                         o.tool.clone(),
-                        o.facts.iter().map(|f| local(f)).collect(),
+                        local_block(&o.facts, processes, readable),
                         false,
                     )
                 }
@@ -1141,10 +1368,14 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
                         .iter()
                         .chain(&r.historical_findings)
                         .find(|f| f.id == c.target)?;
-                    let facts = std::iter::once(local(&f.summary))
-                        .chain(f.facts.iter().map(|fact| local(&fact.text)))
+                    let facts: Vec<String> = std::iter::once(f.summary.clone())
+                        .chain(f.facts.iter().map(|fact| fact.text.clone()))
                         .collect();
-                    (f.classification.label().to_owned(), facts, earlier)
+                    (
+                        f.classification.label().to_owned(),
+                        local_block(&facts, processes, readable),
+                        earlier,
+                    )
                 }
                 CitationKind::Web => return None,
             };
@@ -1166,10 +1397,11 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
         })
         .collect();
     AnswerView {
-        text: local(&a.text),
+        text: text.apply(&a.text),
         confidence: a.confidence,
         category: a.category,
         citations,
+        // Sent as the next question when clicked: they keep the model's own references.
         follow_ups: a.follow_ups.clone(),
         action_refs: a.action_refs.clone(),
         unverified: a
@@ -1177,11 +1409,20 @@ fn answer(r: &Investigation, a: &Answer) -> AnswerView {
             .iter()
             .map(|i| IssueView {
                 kind: i.kind,
-                excerpt: local(&i.excerpt),
+                excerpt: text.apply(&i.excerpt),
             })
             .collect(),
         repairs: a.repairs,
     }
+}
+/// Texts shown together (the facts of one source), with one label per process.
+fn local_block(
+    texts: &[String],
+    processes: &[ProcessInstance],
+    readable: Readable<'_>,
+) -> Vec<String> {
+    let all: Vec<&str> = texts.iter().map(String::as_str).collect();
+    ProcessLabels::new(&all, processes, readable).all(texts)
 }
 /// The deeper checks the chat offers under an answer; the Storage view lists the same ones.
 const OFFERED_CHECKS: [&str; 4] = [
@@ -1227,7 +1468,9 @@ fn admin_hints(r: &Investigation) -> Vec<String> {
     hints.sort_by_key(|h| OFFERED_CHECKS.iter().position(|o| o == h));
     hints.into_iter().map(str::to_owned).collect()
 }
-pub fn report(r: &Investigation, question: &str) -> Report {
+/// The finished turn as the window shows it. Process references in its texts become readable
+/// names (`ProcessLabels`); `context` keeps the model's own text for the next turns.
+pub fn report(r: &Investigation, question: &str, readable: Readable<'_>) -> Report {
     let processes = &r.local_processes;
     let observations = r
         .observations
@@ -1238,7 +1481,7 @@ pub fn report(r: &Investigation, question: &str) -> Report {
         .map(|o| ObservationView {
             tool: o.tool.clone(),
             status: o.status,
-            facts: o.facts.iter().map(|f| localize(f, processes)).collect(),
+            facts: local_block(&o.facts, processes, readable),
             limitations: o.limitations.clone(),
         })
         .collect();
@@ -1253,12 +1496,12 @@ pub fn report(r: &Investigation, question: &str) -> Report {
             code: error_code(e),
             message: e.to_string(),
         }),
-        answer: r.answer.as_ref().map(|a| answer(r, a)),
-        selected: finding(&r.selected, processes),
+        answer: r.answer.as_ref().map(|a| answer(r, a, readable)),
+        selected: finding(&r.selected, processes, readable),
         alternatives: r
             .alternatives
             .iter()
-            .map(|f| finding(f, processes))
+            .map(|f| finding(f, processes, readable))
             .collect(),
         observations,
         tool_events: r.tool_events.clone(),
@@ -2002,16 +2245,17 @@ mod tests {
             "metric":metric,"entity_ref":entity,"value":value,"unit":"","source":"fixture","window":window,
             "status": if value.is_some() {"ok"} else {"partial"},"origin":"synthetic_fixture","limitations":["not measured"]})
         };
-        let process = |r: &str, pid: u32, app: &str, services: serde_json::Value| {
+        let instance = |r: &str, pid: u32, created: u64, exe: &str| serde_json::json!({"entity_ref":r,"pid":pid,"creation_time_filetime":created,"boot_id":null,"executable_name":exe});
+        let process = |r: &str, pid: u32, created: u64, services: serde_json::Value| {
             serde_json::json!({
-            "instance":{"entity_ref":r,"pid":pid,"creation_time_filetime":1,"boot_id":null,"executable_name":"browser.exe"},
-            "parent_ref":null,"application_ref":app,"role":"application","handles":1,"threads":1,"session":1,"services":services})
+            "instance":instance(r, pid, created, "browser.exe"),
+            "parent_ref":null,"application_ref":"app-1","role":"application","handles":1,"threads":1,"session":1,"services":services})
         };
         let raw: pcagent_telemetry::ProcessActivity = serde_json::from_value(serde_json::json!({
             "schema_version":1,"id":"a","session_id":"s","origin":"synthetic_fixture","status":"ok","window":window,
-            "processes":[process("proc-1",10,"app-1",serde_json::json!([])),
-                process("proc-2",11,"app-1",serde_json::json!([{"pid":11,"service_name":"Spooler","display_name":"Print Spooler","state":"running"}]))],
-            "applications":[{"entity_ref":"app-1","name":"browser.exe","process_refs":["proc-1","proc-2"],"process_count":12,"members_truncated":false}],
+            "processes":[process("proc-1",10,5,serde_json::json!([])),
+                process("proc-2",11,6,serde_json::json!([{"pid":11,"service_name":"Spooler","display_name":"Print Spooler","state":"running"}]))],
+            "applications":[{"entity_ref":"app-1","name":"browser.exe","process_refs":["proc-1","proc-2","proc-0","proc-w"],"process_count":12,"members_truncated":false}],
             "evidence":[ev("process_cpu_basis_points","app-1",Some(940)),ev("process_working_set_bytes","app-1",Some(3 << 30)),
                 ev("process_cpu_basis_points","proc-1",Some(700)),ev("process_gpu_basis_points","app-1",None)],
             "coverage":{"processes":{"status":"ok","enumerated":2,"readable":2,"permission_denied":0,"unavailable":0,"returned":2,"enumeration_truncated":false},
@@ -2020,18 +2264,64 @@ mod tests {
                 "gpu_instances_rejected":0,"gpu_instances_unattributed":0,"applications_total":5,"applications_returned":1},
             "limitations":[]
         })).unwrap();
-        let view = activity(&raw);
+        // The collector's registry also knows members ranked too low to be returned: the group's
+        // earliest browser process, and an even earlier embedded runtime it started.
+        let registry: Vec<ProcessInstance> = raw
+            .processes
+            .iter()
+            .map(|p| p.instance.clone())
+            .chain([
+                serde_json::from_value(instance("proc-0", 9, 3, "browser.exe")).unwrap(),
+                serde_json::from_value(instance("proc-w", 8, 2, "runtime.exe")).unwrap(),
+            ])
+            .collect();
+        let lookup = |r: &str| registry.iter().find(|p| p.entity_ref == r).cloned();
+        let names = |pid: u32, created: u64| match (pid, created) {
+            (9, 3) => Some("Example Browser".to_owned()),
+            (10, 5) => Some("  Example Browser ".to_owned()),
+            (8, 2) => Some("Example Runtime".to_owned()),
+            // A process that refused a query-only handle has no readable name.
+            _ => None,
+        };
+        let view = activity(&raw, lookup, &names);
         let app = &view.applications[0];
         assert_eq!((app.name.as_str(), app.process_count), ("browser.exe", 12));
+        // Named after its earliest browser process, never after the runtime it embeds.
+        assert_eq!(app.readable_name.as_deref(), Some("Example Browser"));
         // The group's own sum, not its first member's value.
         assert_eq!(app.cpu.value, Some(940));
         assert_eq!(app.members.len(), 2);
         assert_eq!(app.members[0].cpu.value, Some(700));
+        assert_eq!(
+            (
+                app.members[0].name.as_str(),
+                app.members[0].readable_name.as_deref()
+            ),
+            ("browser.exe", Some("Example Browser"))
+        );
+        // Unknown: the page shows the executable name.
+        assert_eq!(app.members[1].readable_name, None);
         assert_eq!(app.services[0].display_name, "Print Spooler");
         // Unknown GPU stays unknown, with its reason.
         assert_eq!(app.gpu.value, None);
         assert_eq!(app.gpu.note.as_deref(), Some("not measured"));
         assert_eq!(view.applications_total, 5);
+        // Without readable names, or with one that only repeats the executable name, the page
+        // keeps the executable name.
+        let plain = activity(&raw, lookup, &no_readable_names);
+        assert!(plain.applications[0].readable_name.is_none());
+        assert!(plain.applications[0]
+            .members
+            .iter()
+            .all(|m| m.readable_name.is_none()));
+        let echo = activity(&raw, lookup, &|_, _| Some("BROWSER.EXE".to_owned()));
+        assert!(echo.applications[0].readable_name.is_none());
+        // A group whose members are all unknown to the registry stays unnamed.
+        let unknown = activity(&raw, |_| None, &names);
+        assert!(unknown.applications[0].readable_name.is_none());
+        // Readable names stay in the view: the selection source is the raw activity.
+        let shared = serde_json::to_string(&raw).unwrap();
+        assert!(!shared.contains("Example Browser"));
     }
 
     #[test]
@@ -2094,7 +2384,7 @@ mod tests {
             Window::instant(),
         ));
         let inv = pcagent_agent::local_report(&s);
-        let r = report(&inv, "Why is my PC slow?");
+        let r = report(&inv, "Why is my PC slow?", &names);
         assert_eq!(r.mode, "local_rules");
         assert!(r.usage.is_none());
         assert_eq!(r.question, "Why is my PC slow?");
@@ -2103,16 +2393,237 @@ mod tests {
             .iter()
             .find(|f| f.classification == Classification::LargestMemoryContributor)
             .expect("the fixture has a largest memory contributor");
-        let text = serde_json::to_string(&finding(contributor, &inv.local_processes)).unwrap();
-        assert!(!text.contains("proc-00000001"), "{text}");
-        assert!(text.contains("editor.exe (PID 4242)"), "{text}");
+        // Named as the window names it, without a PID: no other cited process reads the same.
+        for (readable, shown) in [
+            (&names as Readable<'_>, "Example Editor"),
+            (&no_readable_names as Readable<'_>, "editor.exe"),
+        ] {
+            let text = serde_json::to_string(&finding(contributor, &inv.local_processes, readable))
+                .unwrap();
+            assert!(!text.contains("proc-00000001"), "{text}");
+            assert!(text.contains(shown) && !text.contains("PID"), "{text}");
+        }
         // A model that wrote the name and the reference does not get the name twice.
         assert_eq!(
             localize(
                 "editor.exe (proc-00000001) uses 5 GiB; proc-00000001 grew.",
-                &inv.local_processes
+                &inv.local_processes,
+                &names
             ),
-            "editor.exe (PID 4242) uses 5 GiB; editor.exe (PID 4242) grew."
+            "Example Editor uses 5 GiB; Example Editor grew."
+        );
+        assert_eq!(
+            localize(
+                "Editor.EXE (proc-00000001) uses 5 GiB.",
+                &inv.local_processes,
+                &no_readable_names
+            ),
+            "editor.exe uses 5 GiB."
+        );
+    }
+
+    /// Readable names of the synthetic processes: the fixture's editor (PID 4242), two browser
+    /// processes and a program whose name differs only in case. Others have none.
+    fn names(pid: u32, _created: u64) -> Option<String> {
+        match pid {
+            4242 => Some("Example Editor".to_owned()),
+            40 | 41 => Some("Example Browser".to_owned()),
+            50 => Some("example browser".to_owned()),
+            _ => None,
+        }
+    }
+
+    fn process(reference: &str, pid: u32, exe: &str) -> ProcessInstance {
+        ProcessInstance {
+            entity_ref: reference.into(),
+            pid,
+            creation_time_filetime: u64::from(pid),
+            boot_id: None,
+            executable_name: Some(exe.into()),
+        }
+    }
+
+    #[test]
+    fn the_pid_is_shown_only_when_two_cited_processes_would_read_the_same() {
+        let processes = [
+            process("proc-0000000a", 40, "browser.exe"),
+            process("proc-0000000b", 41, "browser.exe"),
+            process("proc-0000000c", 50, "other.exe"),
+            process("proc-0000000d", 60, "tool.exe"),
+            process("proc-0000000e", 61, "tool.exe"),
+            process("proc-00000001", 4242, "editor.exe"),
+        ];
+        let l = |text: &str| localize(text, &processes, &names);
+        // One browser process cited: its name alone, even though another one runs.
+        assert_eq!(
+            l("proc-0000000a uses 2 GiB [O1]."),
+            "Example Browser uses 2 GiB [O1]."
+        );
+        // Two different processes that would read the same both get their PID; others do not.
+        assert_eq!(
+            l("browser.exe (proc-0000000a) and browser.exe (proc-0000000b) use 3 GiB; proc-00000001 is idle."),
+            "Example Browser (PID 40) and Example Browser (PID 41) use 3 GiB; Example Editor is idle."
+        );
+        // Names that differ only in case read the same.
+        assert_eq!(
+            l("proc-0000000a, proc-0000000c"),
+            "Example Browser (PID 40), example browser (PID 50)"
+        );
+        // Without readable names, executable names decide.
+        assert_eq!(
+            l("proc-0000000d then proc-0000000e"),
+            "tool.exe (PID 60) then tool.exe (PID 61)"
+        );
+        assert_eq!(l("proc-0000000d alone"), "tool.exe alone");
+        // The same process cited twice is still one process.
+        assert_eq!(
+            l("proc-0000000a, again proc-0000000a"),
+            "Example Browser, again Example Browser"
+        );
+    }
+
+    #[test]
+    fn references_are_replaced_whole_and_in_one_pass() {
+        let readable = |pid: u32, _: u64| match pid {
+            1 => Some("proc-00000002".to_owned()),
+            2 => Some("Real Program".to_owned()),
+            3 => Some("My editor.exe".to_owned()),
+            _ => None,
+        };
+        let processes = [
+            process("proc-00000001", 1, "fake.exe"),
+            process("proc-00000002", 2, "real.exe"),
+            process("proc-00000003", 3, "x.exe"),
+            process("proc-00000004", 4, "editor.exe"),
+        ];
+        let l = |text: &str| localize(text, &processes, &readable);
+        // A readable name that looks like a reference is shown as written, never replaced again.
+        assert_eq!(
+            l("proc-00000001 and proc-00000002"),
+            "proc-00000002 and Real Program"
+        );
+        // An inserted name is never taken for the model's own "name (reference)".
+        assert_eq!(
+            l("proc-00000003 (proc-00000004)"),
+            "My editor.exe (editor.exe)"
+        );
+        // Whole references only: not inside a longer token, and not a draft's partial reference.
+        assert_eq!(
+            l("proc-000000011, xproc-00000001, proc-0000000"),
+            "proc-000000011, xproc-00000001, proc-0000000"
+        );
+        assert_eq!(
+            l("Évité : **proc-00000002**, déjà fermé."),
+            "Évité : **Real Program**, déjà fermé."
+        );
+        assert_eq!(l("No process here."), "No process here.");
+    }
+
+    #[test]
+    fn an_answer_names_programs_locally_and_its_context_keeps_the_model_text() {
+        use pcagent_agent::{Answer, Citation, Issue};
+        let mut inv = pcagent_agent::local_report(&fixture());
+        inv.local_processes.extend([
+            process("proc-0000000a", 40, "browser.exe"),
+            process("proc-0000000b", 41, "browser.exe"),
+        ]);
+        let mut source = observed("get_processes", serde_json::json!({}));
+        source.observation_id = "obs-1".into();
+        source.facts = vec![
+            "proc-0000000a used 2.00 GiB.".into(),
+            "proc-0000000b used 1.00 GiB.".into(),
+        ];
+        inv.observations.push(source);
+        inv.observation_refs.push("obs-1".into());
+        let text = "Close browser.exe (proc-0000000a) to free 2 GiB [O1]; proc-00000001 can stay.";
+        inv.answer = Some(Answer {
+            text: text.into(),
+            confidence: Confidence::Medium,
+            category: Category::Memory,
+            citations: vec![Citation {
+                reference: "O1".into(),
+                kind: CitationKind::Observation,
+                target: "obs-1".into(),
+            }],
+            action_refs: Vec::new(),
+            follow_ups: vec!["Why does proc-0000000a grow?".into()],
+            unverified: vec![Issue {
+                kind: IssueKind::UnsupportedNumber,
+                excerpt: "proc-0000000a to free 2 GiB".into(),
+            }],
+            repairs: 0,
+        });
+        let r = report(&inv, "Why is my PC slow?", &names);
+        let answer = r.answer.as_ref().unwrap();
+        // One browser process in the text: no PID there, though its source cites two. The text
+        // is exactly what its streamed draft showed.
+        assert_eq!(
+            answer.text,
+            "Close Example Browser to free 2 GiB [O1]; Example Editor can stay."
+        );
+        assert_eq!(answer.text, localize(text, &inv.local_processes, &names));
+        assert_eq!(
+            answer.unverified[0].excerpt,
+            "Example Browser to free 2 GiB"
+        );
+        // The source reads as one block: its two browser processes are told apart.
+        assert_eq!(
+            answer.citations[0].facts,
+            [
+                "Example Browser (PID 40) used 2.00 GiB.",
+                "Example Browser (PID 41) used 1.00 GiB."
+            ]
+        );
+        assert_eq!(r.observations[0].facts, answer.citations[0].facts);
+        // A follow-up is sent as the next question when clicked: it keeps the model's reference.
+        assert_eq!(answer.follow_ups, ["Why does proc-0000000a grow?"]);
+        // The next turns' context keeps the model's own text: no readable name leaves the PC.
+        assert_eq!(r.context.answer, text);
+        let context = serde_json::to_string(&r.context).unwrap();
+        assert!(!context.contains("Example"), "{context}");
+    }
+
+    #[test]
+    fn a_process_target_reads_as_its_program_with_a_pid_only_to_tell_two_apart() {
+        let target = |reference: &str, pid: u32, exe: Option<&str>| {
+            serde_json::json!({"target_ref":reference,"target":{"kind":"process",
+                "identity":{"pid":pid,"creation_time_filetime":u64::from(pid),"boot_id":"boot"},
+                "executable_name":exe}})
+        };
+        let proposal: pcagent_actions::ActionPlan = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"plan_id":"plan-1","state":"awaiting_approval",
+            "action_kind":"request_normal_close","target_refs":["proc-a","proc-b","proc-c","proc-d"],
+            "items":[target("proc-a",40,Some("browser.exe")),target("proc-b",41,Some("browser.exe")),
+                target("proc-c",4242,Some("editor.exe")),target("proc-d",77,None)],
+            "evidence_refs":[],"estimated_immediate_reclaim_bytes":null,
+            "recovery":"user_can_restart_application","preconditions":["same_process_instance"],
+            "requires_local_approval":true,"created_at_unix_ms":0,"expires_at_unix_ms":1,
+            "fingerprint":"fixture"
+        }))
+        .unwrap();
+        let shown = |view: &PlanView| -> Vec<(String, Option<String>)> {
+            view.targets
+                .iter()
+                .map(|t| (t.label.clone(), t.executable_name.clone()))
+                .collect()
+        };
+        let named = |label: &str, exe: Option<&str>| (label.to_owned(), exe.map(str::to_owned));
+        assert_eq!(
+            shown(&plan(&proposal, None, &names)),
+            [
+                named("Example Browser (PID 40)", Some("browser.exe")),
+                named("Example Browser (PID 41)", Some("browser.exe")),
+                named("Example Editor", Some("editor.exe")),
+                named("process (PID 77)", None),
+            ]
+        );
+        // Without readable names: executable names, with no tooltip repeating them.
+        assert_eq!(
+            shown(&plan(&proposal, None, &no_readable_names))[1..3],
+            [
+                named("browser.exe (PID 41)", None),
+                named("editor.exe", None)
+            ]
         );
     }
 
@@ -2134,7 +2645,7 @@ mod tests {
     #[test]
     fn admin_hints_come_only_from_needs_admin_coverage_of_offered_checks() {
         let mut inv = pcagent_agent::local_report(&fixture());
-        assert!(report(&inv, "q").admin_hints.is_empty());
+        assert!(report(&inv, "q", &no_readable_names).admin_hints.is_empty());
         inv.observations.push(observed(
             "get_approved_elevated_inspection",
             serde_json::json!({"task":"disk_reliability","coverage":[{"status":"needs_admin"}]}),
@@ -2162,7 +2673,7 @@ mod tests {
             serde_json::json!({"coverage":[{"scope":"x","status":"needs_admin"}]}),
         ));
         assert_eq!(
-            report(&inv, "q").admin_hints,
+            report(&inv, "q", &no_readable_names).admin_hints,
             vec!["system_caches".to_owned(), "disk_reliability".to_owned()]
         );
     }

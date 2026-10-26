@@ -227,7 +227,8 @@ function applicationsView(live, { sort = "memory", onSort, expanded, onToggle })
         h(
           "button",
           { type: "button", class: "app-main", "aria-expanded": String(open), onclick: () => onToggle?.(open ? null : app.entity_ref) },
-          h("span", { class: "app-name", title: app.name }, app.name),
+          // The readable name when known ("Google Chrome"); the executable name stays as the tooltip.
+          h("span", { class: "app-name", title: app.name }, app.readable_name || app.name),
           h("span", { class: "app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
           h("span", { class: "app-value" }, sort === "cpu" ? measureText(app.cpu, "cpu") : measureText(app.working_set, "bytes")),
           h("div", { class: "meter" }, h("span", { style: { width: `${share * 100}%` } })),
@@ -259,7 +260,8 @@ function applicationsView(live, { sort = "memory", onSort, expanded, onToggle })
                   h(
                     "div",
                     { class: "member" },
-                    h("span", { class: "member-name" }, `${m.name} · PID ${m.pid}`),
+                    // Members share one executable: the PID tells them apart here.
+                    h("span", { class: "member-name", title: m.name }, `${m.readable_name || m.name} · PID ${m.pid}`),
                     h("span", null, measureText(m.cpu, "cpu")),
                     h("span", null, measureText(m.working_set, "bytes")),
                   ),
