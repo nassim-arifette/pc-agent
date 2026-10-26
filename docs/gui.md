@@ -636,6 +636,12 @@ It lives outside `ui/`, so the app never embeds it.
   per model in Sources › Requests and cost; the CLI prints the same breakdown. 11 Node checks on
   `usage.js`, 73 app tests and the CLI's routed-turn tests; the tour in English, light and dark
   (steps 16a and 16b), with no page errors.
+- Capability registry on 2026-10-26 (phase 1), with the mock (`?pc=desktop`, `?ntfs=none`,
+  `?helper=missing`): `app_info.capabilities` drives the Storage view (helper note instead of the
+  administrator cards, battery check disabled without a battery, quick drive analysis only with a
+  fixed NTFS drive) and the deeper-checks card of the chat; 224 agent tests cover the per-turn
+  toolbox, the variants and the system prompt; the tour in English, light and dark, with no page
+  errors.
 
 ## Known gaps
 
