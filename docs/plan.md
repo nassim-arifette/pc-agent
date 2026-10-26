@@ -164,7 +164,33 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
   exacte épinglée) dans `%APPDATA%\pcagent\pcagent.sqlite`. Tables `conversations`, `turns` (JSON
   versionné) et `samples` (chantier 5). Tout reste local ; rétention par défaut de 90 jours,
   suppression par conversation et « tout effacer ».
-- Surveillances : leurs tables (migration 6) et leur rétention sont décrites en C7.
+- Surveillances : leurs tables et leur rétention sont décrites en C7 ; le numéro de migration
+  suit les migrations effectivement livrées, sans réserver celui du prochain chantier.
+
+#### Complément du 26 octobre — image jointe (#55)
+
+- Un tour peut porter **une image au maximum**, choisie ou collée explicitement par la personne.
+  Le brouillon reste en mémoire, dans une capacité et une durée bornées. Retirer ou remplacer
+  l'image révoque les aperçus qui l'utilisaient ; aucun original n'est copié dans un dossier
+  temporaire de l'application.
+- Seuls les octets **préparés localement et effectivement approuvés pour ce tour** sont
+  conservés avec le tour, avec `{mime_type, width, height, bytes, sha256}`. Le chemin et le nom du
+  fichier original, l'EXIF et les autres métadonnées d'entrée ne sont pas conservés.
+- L'image est liée au tour dans SQLite par une référence avec suppression en cascade. Le tour
+  et sa pièce jointe sont enregistrés atomiquement. Une conversation supprimée pendant une
+  réponse ne peut pas être recréée par la fin du tour.
+- `conversation_get` permet de revoir localement l'image associée au tour. La rétention de
+  90 jours, la suppression de conversation et « tout effacer » couvrent aussi ses octets ; les
+  aperçus et brouillons associés sont invalidés. Il ne s'agit pas d'une promesse d'effacement
+  forensique des supports ou de sauvegardes externes.
+- Le contexte des **tours suivants** reste textuel : aucune ancienne image, donnée encodée ou
+  adresse locale d'image ne part automatiquement. La personne doit joindre une nouvelle image
+  explicitement pour un nouveau tour. Dans le même tour, les requêtes d'outils et corrections
+  peuvent conserver l'image initiale inchangée.
+- Les captures de rejeu qui incluent volontairement un tour avec image conservent ses octets
+  préparés et son empreinte comme contexte privé. Ni les étapes, ni les erreurs, ni les journaux
+  ordinaires ne contiennent les pixels, le base64 ou le chemin original. Ces captures ne sont
+  pas publiées comme fixtures sans consentement distinct.
 
 ### C3 — Commandes et événements de l'app
 
@@ -184,6 +210,43 @@ Ils remplacent `inv:*`. Les commandes existantes du stockage et des réglages re
 les compléments du 6 octobre ci-dessous leur ajoutent des lectures pour les vues Stockage et
 Historique. Le réglage « recherche web » et la clé Tavily sont décrits en C6, les commandes et
 événements des surveillances en C7.
+
+#### Complément du 26 octobre — préparation et envoi d'une image (#55)
+
+| Commande / résultat | Rôle |
+| --- | --- |
+| `image_prepare(data_base64)` | valide les octets côté Rust, décode et ré-encode localement ; renvoie une référence opaque et l'image préparée pour l'aperçu, avec son type, dimensions, taille et SHA-256 ; aucun appel réseau |
+| `image_discard(image_id)` | retire le brouillon correspondant et révoque son aperçu ; ne touche pas à une image différente préparée entre-temps |
+| `cloud_preview(..., image_id?)` | fige l'image préparée avec la question, le contexte, le partage et le modèle du tour ; retourne l'aperçu exact et un ticket à usage unique |
+| `send_message(..., preview_id, image_id?)` | consomme uniquement le ticket correspondant ; utilise les octets déjà figés, sans relire un fichier ni reconstruire l'image depuis la page |
+
+- Les arguments IPC suivent la convention camelCase de la page. Ni chemin de fichier, ni URL
+  distante, ni modèle arbitraire ne sont acceptés comme autorité sur la pièce jointe.
+- Premier lot : PNG et JPEG statiques ; au plus 8 Mio d'entrée, 24 millions de pixels et
+  16 384 pixels sur un axe, avec limite d'allocation du décodeur. Les formats non pris en charge,
+  images animées, données tronquées et dépassements sont refusés avant tout envoi.
+- La préparation applique l'orientation de l'image, compose les pixels transparents sur fond
+  blanc, réduit le côté le plus long à 1 600 pixels au maximum, puis produit un JPEG sans
+  métadonnées, de 2 Mio maximum. En cas de dépassement, elle échoue avec une erreur explicite.
+  L'aperçu utilise ces octets finaux, jamais une miniature différente qui masquerait le résultat.
+- Le ticket lie l'identité et l'empreinte de l'image, la question, l'historique, les bascules,
+  le dossier joint, les paramètres de raisonnement et le routage. Tout changement, retrait,
+  remplacement ou expiration impose un nouvel aperçu. L'envoi ne réutilise pas un ticket.
+- Une image impose le mode **Complet** et `nvidia/Nemotron-3.5-Super-VL`, visible avant envoi.
+  Elle n'active pas Complet silencieusement. Local/Anonymisé, modèle absent du compte ou
+  capacité explicitement incompatible donnent une erreur ; aucun repli textuel ni escalade
+  vers Super/Ultra n'est autorisé. Le réglage habituel du modèle reste inchangé pour les autres
+  tours. Les capacités publiées par le catalogue sont distinguées des capacités non renseignées ;
+  le nom d'un modèle ne suffit pas à affirmer une capacité.
+- Le bouton de pièce jointe, le collage, l'aperçu et le retrait sont accessibles au clavier.
+  L'avertissement indique que les informations personnelles visibles dans les pixels seront
+  envoyées à Nebius. Le lien « Voir ce qui part » reste disponible ; aucun nouveau dialogue
+  obligatoire n'est ajouté avant chaque envoi.
+- La pièce jointe concerne la saisie du Chat. Les parcours de sélection Expliquer/Enquêter
+  conservent leur contrat actuel et ne récupèrent pas implicitement un brouillon image du Chat.
+- Les tests couvrent les limites et métadonnées, l'égalité aperçu/envoi, les tickets modifiés,
+  les modes interdits, l'absence d'escalade, les suivis sans image, la suppression/rétention et
+  le rejeu. Un test réel du modèle et le parcours Windows restent distincts des tests synthétiques.
 
 #### Compléments backend du 4 octobre : sélection et routage
 
@@ -424,9 +487,11 @@ personnelles (nom d'utilisateur, chemin du profil, contenu d'une fenêtre) et au
 n'est exigé. L'aperçu exact montre l'image telle qu'elle part (réduite et ré-encodée localement,
 sans métadonnées). Une image n'est jamais envoyée en mode Anonymisé ou Local, ni renvoyée dans les
 suivis. Côté C1, l'image est un contexte, comme la question, jamais une preuve mesurée : un chiffre
-lu sur l'image doit être mesuré par un outil avant d'être cité, sinon il reste « non vérifié ». Les
-commandes et le stockage de la pièce jointe (C2, C3) sont précisés dans ce plan avec
-l'implémentation.
+lu sur l'image doit être mesuré par un outil avant d'être cité, sinon il reste « non vérifié ».
+Les compléments C2 et C3 ci-dessus précisent le stockage, les bornes et le ticket d'envoi avant
+l'implémentation. L'exception porte uniquement sur les pixels explicitement joints : elle
+n'autorise pas l'envoi de chemins, secrets ou identités supplémentaires dans le texte, les
+outils ou les métadonnées.
 
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
@@ -531,7 +596,8 @@ Windows. C7 fait foi pour les seuils, les durées et les limites ; le code et le
   ses notifications du centre de notifications de Windows, et « Effacer l'historique » retire
   toutes celles de PC Agent. La page ne reçoit aucune permission de notification ; tout passe par
   les commandes Rust ci-dessous.
-- **Stockage (C2).** Migration 6 de `pcagent.sqlite` : `watches` (règle JSON versionnée, activée,
+- **Stockage (C2).** Migration dédiée de `pcagent.sqlite`, numérotée après les migrations déjà
+  livrées (notamment #55 si les images sont livrées d'abord) : `watches` (règle JSON versionnée, activée,
   dates, dernière notification), `watch_alerts` (règle au moment de l'alerte, début, fin et
   raison, observation de la valeur qui a déclenché sous la forme C4 des observations
   d'événements, valeur extrême, état de la notification, vue ou non), `watch_settings` (langue des
@@ -1355,11 +1421,16 @@ sérialisées, permissions, actions et contrats ne changent pas. Les étapes sui
 organisent l'interface par fonctionnalité puis séparent cœur agent, outils et client Nebius,
 sans conflit avec #55. Chaque étape reste validée avant fusion.
 
+**Validation et CI, précision du 26 octobre :** à la demande explicite du porteur, GitHub
+Actions reste suspendu pour le quota du dépôt privé. Les fusions sont autorisées après revue
+et validation locale documentée, sans contourner une protection GitHub. Une validation Windows
+ne vaut pas validation Linux ni acceptation sur un second PC ; ces limites restent affichées.
+
 ### Phase 0 — Remise en route (17–18 oct.)
 
 | Tâche | Pourquoi | Fait quand |
 | --- | --- | --- |
-| Réactiver la CI GitHub Actions et la remettre au vert (Ubuntu + Windows) | Derniers runs en échec, CI désactivée depuis le 10 | `main` vert sur les deux OS |
+| Réactiver la CI GitHub Actions et la remettre au vert (Ubuntu + Windows), après accord du porteur | Suspendue pour le quota ; décision du 26 octobre : conserver la pause, valider localement avant fusion | `main` vert sur les deux OS lorsque la CI sera réactivée ; ne pas confondre avec les contrôles Windows locaux |
 | Fermer les issues déjà traitées (#50–#54, #57, #68 ; #56 après vérification) | Le suivi #72 reflète l'état réel | issues fermées avec renvoi à la PR |
 | Décider du sort de la branche `wp8-mft-memory` (fusion ou suppression) | Une seule branche durable | branche fusionnée ou supprimée |
 | Scanner tout l'historique git à la recherche de secrets (gitleaks) | Pré-requis avant de rendre le dépôt public | rapport vide, ou secrets révoqués et purgés |
@@ -1450,7 +1521,8 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | 0 — Plan, archives, licence | — | fait | #18 |
-| 6 — Inspiration Orb (26 octobre) | C | référence documentée : [note et deux captures](orb-ui-reference.md), dossiers, connecteurs à définir, barre de choix sous la saisie ; exploration future uniquement, aucun changement de l'interface actuelle | wp6-orb-design-roadmap |
+| 6 — Inspiration Orb (26 octobre) | C | fusionné : [note et deux captures](orb-ui-reference.md), dossiers, connecteurs à définir, barre de choix sous la saisie ; exploration future uniquement, aucun changement de l'interface actuelle | [#92](https://github.com/nassim-arifette/pc-agent/pull/92) |
+| 6, 10 — Image jointe (#55) | A, C | contrat C2/C3/C5 précisé avant code ; une image PNG/JPEG, mode Complet, Super VL sans escalade, aperçu figé, suppression et suivis sans image ; appel réel synthétique image + outil confirmé le 26 octobre ; intégration applicative à réaliser | plan/image-attachment-contract |
 | Contrats C1–C5 | toutes | implémentés côté backend ; intégration des écrans C3/C5 à terminer au chantier 6 | wp1-phase1-logic |
 | 1 — Le LLM rédige | A | logique terminée : réponse, vérification des mesures C4, contexte multi-tour, stockage et identifiants stables, flux et arrêt testés ; comparaison de qualité à faire au chantier 7 ; #66 : consigne de vouvoiement ajoutée, évaluation à réaliser | #19, #23, wp1-stream, wp1-phase1-logic |
 | 2 — Tous les processus, sans admin | B | logique terminée : fenêtres, regroupement, services et GPU par processus ; couverture et coût mesurés sans admin (voir docs/telemetry.md) | #22, wp1-phase1-logic |
@@ -1485,16 +1557,16 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Build Linux (26 octobre) | B | fait (26 oct.) : liste complète des commandes rejouée sur Ubuntu 22.04 x86_64 en utilisateur non root (formatage, Clippy, 741 tests Rust dont 3 ignorés, 56 tests Node, 3 tests Python, quatre binaires release) ; stubs Linux sondés en lecture seule : statuts `unsupported` avec valeurs nulles, jamais de zéro ni de panique, fenêtre et helper refusent proprement ; taille d'entrée non convertible signalée en erreur au lieu de 0 dans le repli Unix du stockage ; collecteurs natifs, fenêtre et helper restent Windows ; même correctif rejoué sur l'arbre du refactor (760 tests Rust, 100 tests Node) | fix/linux-build |
 | 14 — Escalade visible et coût des deux modèles (#69) | C | fait (26 oct.) : étape « Ultra reprend la question », en-tête « Super → Ultra · total », note durable sous la réponse avec la raison (et la vérité quand Ultra n'a rien écrit), une ligne par modèle dans Sources › Requêtes et coût, même détail dans la CLI ; jamais le prix d'un modèle appliqué aux jetons de l'autre ; Auto proposé dès qu'une calibration relue existe ; fmt, Clippy, tests, tour | wp14-escalation-visible |
 | 6 — Interface en français (#65) | A, C | fait (26 oct.) : phrases du cœur envoyées comme clés fermées à valeurs typées (`Phrase`, `phrases.js` : constats, étapes suivantes, limites, faits des sources, réponse locale, GPU, couverture admin, processus sans nom) et erreurs des commandes avec code fermé traduit (`failure.rs`, `failure.js`), le texte anglais restant la référence pour le modèle, la CLI et le vérificateur ; menu de la barre d'état et dialogue de dossier dans la langue de Windows ; tests, tour FR | wp6-french-ui, wp6-french-errors |
-| Q3 — Interface organisée par fonctionnalité | C | implémenté et validé (26 oct.), en attente de fusion : `chat/`, `selection/`, `settings/`, `live/`, `storage/`, `elevation/`, `history/` ; décisions de santé séparées du DOM ; 40 modules liés sans exécution, 56 tests Node, fmt, Clippy, 16 exécutables de test sous compte standard, doctests et release des 4 programmes ; pas de changement visuel, parcours natif non rejoué dans ce lot | wp6-ui-feature-modules |
+| Q3 — Interface organisée par fonctionnalité | C | fusionné et validé (26 oct.) : `chat/`, `selection/`, `settings/`, `live/`, `storage/`, `elevation/`, `history/` ; décisions de santé séparées du DOM ; 40 modules liés sans exécution, 56 tests Node ; intégration avec #90 : 809 tests Rust sous compte standard, fmt, Clippy et release des 4 programmes ; pas de changement visuel, parcours natif non rejoué dans ce lot | [#91](https://github.com/nassim-arifette/pc-agent/pull/91) |
 | Registre des capacités (phase 1) | A, B, C | fait (26 oct.) : `crates/agent/src/capabilities.rs` (9 capacités, table REQUIREMENTS, variantes constantes), outils indisponibles absents du catalogue envoyé et du prompt système, `app_info.capabilities` pilote la vue Stockage et la carte des vérifications ; 224 tests agent, tour ; identité de calibration et replays inchangés | wp4-capability-registry |
-| Q3 — Séparation inspections / worker élevé / MFT | A, B | implémenté et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; aucun test existant supprimé, 18 exécutables de test sous compte standard sans échec, fmt/Clippy/release/doctests, 46 tests Node et 3 Python | wp8-inspection-crate-split |
+| Q3 — Séparation inspections / worker élevé / MFT | A, B | fusionné et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; intégration avec #91 : 18 exécutables, 809 tests réussis et 3 ignorés sous compte standard, fmt/Clippy/release/doctests, 56 tests Node et 3 Python | [#90](https://github.com/nassim-arifette/pc-agent/pull/90) |
 | 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) | wp12-docs |
 | Compilation macOS | B | fait (26 oct.) : le scanner portable (`crates/storage/src/portable.rs`) convertit `st_dev` et `st_nlink` depuis les types Darwin (`dev_t` signé 32 bits, `nlink_t` 16 bits) ; sur macOS 26.6.2 Apple silicon : formatage, Clippy, 741 tests (3 ignorés), release des 4 programmes, 3 tests Python, 56 tests Node ; fenêtre et helper élevé restent des bouchons Windows seulement, collecteurs natifs `unsupported`, aucun changement de comportement Windows ; pas de cible produit macOS | fix/macos-build |
 
-Arrêt demandé le 10 octobre après la validation de ce lot, avant la nouvelle vue Stockage et sans
-commencer un autre chantier. L'évaluation réelle des réponses et la livraison restent reportées.
-La CI GitHub Actions est temporairement désactivée à la demande du porteur du projet ; les
-contrôles ci-dessus ont été exécutés localement. Aucune fusion vers `main` n'est effectuée.
+État historique du 10 octobre : arrêt demandé après la validation de ce lot, avant la nouvelle
+vue Stockage, sans commencer un autre chantier ni fusionner. Cette suspension du développement
+est remplacée par la décision du 26 octobre en section 7 quinquies. La CI GitHub Actions reste
+désactivée à la demande du porteur ; les contrôles récents ci-dessus ont été exécutés localement.
 
 Le lot de corrections des chantiers 1, 3 et 6 distingue les limites couvertes, les choix volontaires
 et les écarts restants dans [answer-verification.md](answer-verification.md). Les parcours testés
