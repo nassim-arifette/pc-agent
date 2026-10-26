@@ -11,6 +11,7 @@ mod tests;
 use clap::{Parser, Subcommand};
 use files::OutputFile;
 use pcagent_agent::{
+    capabilities::Probes,
     credentials::Credentials,
     replay::{ModelView, RecordedRun, Recorder, ReplayTools, Scenario, SCENARIO_VERSION},
     routing::{CalibrationRuntime, REPLAY_HARNESS_VERSION},
@@ -347,6 +348,16 @@ fn run(cli: Cli) -> Result<u8> {
             let mut workstation = Workstation::new(&mut collector, storage, &policy, &prefs);
             workstation.set_sharing(scenario.sharing);
             attach_history(&mut workstation, history)?;
+            if model.is_some() {
+                // The model is offered what works on this PC, as in the CLI; the scenario keeps
+                // that list for its replays. Sweeps and call lists still reach every tool.
+                workstation.offer_available(Probes::without_helper(&scenario.initial));
+                scenario.tool_names = workstation
+                    .specs()
+                    .iter()
+                    .map(|spec| spec.name.into())
+                    .collect();
+            }
             let mut recorder = Recorder::new(workstation);
             let mut success = true;
             if let Some((model, id)) = &mut model {
@@ -554,6 +565,8 @@ fn run(cli: Cli) -> Result<u8> {
                     Sharing::Complete
                 });
                 attach_history(&mut tools, None)?;
+                // The client is offered what works on this PC, like PC Agent's own model.
+                tools.offer_available(Probes::without_helper(&initial));
                 mcp::serve(
                     &mut tools,
                     &initial,

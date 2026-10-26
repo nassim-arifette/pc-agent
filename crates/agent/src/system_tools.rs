@@ -34,6 +34,14 @@ pub const TOOLS:&[ToolSpec]=&[
         Param{name:"query",description:"Named fixed inspection.",kind:ParamKind::OneOf(QUERY_NAMES),required:true},
         Param{name:"limit",description:"Maximum WMI rows or event occurrences (default 50).",kind:ParamKind::Integer{min:1,max:100},required:false}]},
 ];
+/// `get_power_and_thermal` on a PC where Windows lists no system battery
+/// (`capabilities::VARIANTS`).
+pub(crate) const POWER_WITHOUT_BATTERY: ToolSpec = ToolSpec {
+    name: "get_power_and_thermal",
+    class: ToolClass::Inspection,
+    description: "Read AC/saver state, active plan, CPU frequency/limits and supported thermal/GPU sensors. Windows lists no system battery on this PC, so there is no battery capacity, wear, charge or runtime to read. Unknown values/units stay null.",
+    params: &[],
+};
 
 pub fn run(spec: &ToolSpec, args: &Args, sharing: Sharing) -> Option<ToolOutput> {
     run_with_inspection(spec, args, sharing, |_| {})

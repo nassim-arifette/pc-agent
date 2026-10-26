@@ -46,6 +46,7 @@ import { namesShared } from "./ask.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
 import { mark } from "./brand.js";
 import { refreshRouting } from "./picker.js";
+import { watchCapabilities } from "./capabilities.js";
 import { keepFocus } from "./actionbar.js";
 import * as chat from "./views/chat.js";
 import * as history from "./views/history.js";
@@ -529,6 +530,8 @@ async function boot() {
   });
   route(true);
   startLive();
+  // The hardware probes answer with the first measurements: read the capabilities again then.
+  watchCapabilities();
   refreshConversations();
   // A turn still running after a reload is shown again, with Stop and any pending question.
   const restored = refreshPrivacy().finally(async () => {

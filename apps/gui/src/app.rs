@@ -12,6 +12,7 @@ use crate::{
     view,
 };
 use pcagent_agent::{
+    capabilities::Probes,
     converse_with_privacy, converse_with_selection,
     credentials::{self, Credentials},
     local_report, AgentError, Config, ExtensionRequest, Investigation, Nebius, PastTurn,
@@ -111,6 +112,10 @@ struct AppState {
     /// The last finished turn's action proposals; they run only after a click in this window.
     actions: Arc<actions::Slot>,
     elevation: Arc<elevation::Slot>,
+    /// What this PC offers (`pcagent_agent::capabilities`), from the probes the window already
+    /// runs: the helper next to the app at start, NVIDIA GPUs and NTFS volumes from the live
+    /// measurements, the battery from the live battery read. Turns and `app_info` read it.
+    probes: Arc<Mutex<Probes>>,
     /// Readable program names for the window, read and cached on the threads that measure or
     /// investigate, never on the window's thread. They stay local (C5, note of 26 October).
     program_names: Arc<ProgramNames>,
@@ -545,6 +550,7 @@ fn battery_thread(
     pokes: mpsc::Receiver<()>,
     latest: Arc<Mutex<view::LiveBattery>>,
     selections: Arc<Mutex<SelectionRegistry>>,
+    probes: Arc<Mutex<Probes>>,
 ) {
     for () in pokes {
         let mut read = view::battery_read(pcagent_inspect::live_battery());
@@ -553,6 +559,9 @@ fn battery_thread(
             .source
             .take()
             .and_then(|source| retain_capture(&selections, SelectionSource::Battery(source)));
+        if let Some(listed) = read.battery_listed() {
+            lock(&probes).battery = Some(listed);
+        }
         lock(&latest).record(read, source_id, Instant::now());
     }
 }
@@ -562,10 +571,13 @@ fn measure_thread(
     selections: Arc<Mutex<SelectionRegistry>>,
     battery: Arc<Mutex<view::LiveBattery>>,
     poke: mpsc::SyncSender<()>,
+    probes: Arc<Mutex<Probes>>,
     names: Arc<ProgramNames>,
 ) {
     let mut collector = Collector::new();
     let mut volumes: Option<(Instant, Vec<view::VolumeView>)> = None;
+    // NVML lists the NVIDIA GPUs in every snapshot this thread takes anyway.
+    let nvidia = |snapshot: &Snapshot| lock(&probes).nvidia_gpu = Some(!snapshot.gpus.is_empty());
     for request in requests {
         match request {
             Measure::Dashboard(reply) => {
@@ -579,6 +591,7 @@ fn measure_thread(
                     }
                 }
                 let snapshot = collector.snapshot(true, 8);
+                nvidia(&snapshot);
                 let mut dashboard = view::dashboard(&snapshot);
                 dashboard.selection_source_id =
                     retain_capture(&selections, SelectionSource::Snapshot(snapshot));
@@ -586,10 +599,15 @@ fn measure_thread(
                     .as_ref()
                     .is_none_or(|(at, _)| at.elapsed() > VOLUMES_MAX_AGE)
                 {
-                    volumes = Some((
-                        Instant::now(),
-                        view::volumes(&collector.hardware_inventory()),
-                    ));
+                    let inventory = collector.hardware_inventory();
+                    // One file-system name per shown volume (GetVolumeInformationW).
+                    let list = view::volumes(&inventory, |root| {
+                        pcagent_storage::volume_space(Path::new(root)).filesystem
+                    });
+                    if inventory.volumes.value.is_some() {
+                        lock(&probes).ntfs_volumes = view::ntfs_volumes(&list);
+                    }
+                    volumes = Some((Instant::now(), list));
                 }
                 if let Some((_, list)) = &volumes {
                     dashboard.volumes = list.clone();
@@ -613,6 +631,7 @@ fn measure_thread(
             }
             Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);
+                nvidia(&snapshot);
                 let _ = retain_capture(&selections, SelectionSource::Snapshot(snapshot.clone()));
                 let _ = reply.send(snapshot);
             }
@@ -637,8 +656,12 @@ async fn ask_measure<T: Send + 'static>(
 }
 
 #[tauri::command]
-fn app_info() -> view::AppInfo {
-    view::app_info(&Credentials::load())
+fn app_info(state: State<'_, AppState>) -> view::AppInfo {
+    let probes = *lock(&state.probes);
+    view::app_info(
+        &Credentials::load(),
+        view::capabilities(state.sampler.is_some(), probes),
+    )
 }
 
 #[tauri::command]
@@ -962,6 +985,8 @@ struct Ask<'a> {
     elevated_evidence: Vec<pcagent_agent::elevated_tools::ApprovedInspection>,
     /// The person consented to web lookups (C6); a key is still required.
     web_search: bool,
+    /// What this PC offered when the turn started: the model is offered only what works.
+    probes: Probes,
 }
 
 enum ApprovedCapture {
@@ -1238,6 +1263,7 @@ fn launch_investigation(
     let proposals = state.actions.clone();
     let elevated_evidence = state.elevation.completed_evidence();
     let web_search = cloud && lock(&state.privacy).web_search;
+    let probes = *lock(&state.probes);
     let program_names = state.program_names.clone();
     let saved_in = conversation_id.clone();
     let worker_turn_id = turn_id.clone();
@@ -1259,6 +1285,7 @@ fn launch_investigation(
                 routing: prepared.as_ref().and_then(ApprovedCapture::routing),
                 elevated_evidence,
                 web_search,
+                probes,
             };
             let outcome = investigation(&app, id, &ask, storage, &stop, &answer, &extension, sampler.as_ref(), &proposals, &program_names);
             let stored_report = match &outcome {
@@ -1492,6 +1519,9 @@ fn investigation(
         if let Some(desk) = actions::desk() {
             workstation.enable_action_proposals(desk);
         }
+        // Only the tools that work on this PC and in this turn are declared, before Investigate
+        // copies the list.
+        workstation.offer_available(ask.probes);
         let (report, mut workstation) = if let Some(selected) = ask.selected {
             let selected_tools =
                 pcagent_agent::selection::SelectedTools::new(&mut workstation, selected);
@@ -2110,11 +2140,24 @@ pub fn run() {
     let (battery_poke, battery_pokes) = mpsc::sync_channel(1);
     let battery = Arc::new(Mutex::new(view::LiveBattery::default()));
     let (battery_latest, battery_selections) = (battery.clone(), selections.clone());
+    // One file check, no launch: the helper is only ever started from the app's own folder.
+    let probes = Arc::new(Mutex::new(Probes {
+        elevated_helper: pcagent_inspect::elevation::helper_installed(),
+        ..Probes::default()
+    }));
+    let (battery_probes, measured_probes) = (probes.clone(), probes.clone());
     let program_names = Arc::new(ProgramNames::new());
     let measured_names = program_names.clone();
     thread::Builder::new()
         .name("battery".into())
-        .spawn(move || battery_thread(battery_pokes, battery_latest, battery_selections))
+        .spawn(move || {
+            battery_thread(
+                battery_pokes,
+                battery_latest,
+                battery_selections,
+                battery_probes,
+            )
+        })
         .expect("the battery thread starts");
     thread::Builder::new()
         .name("measurements".into())
@@ -2124,6 +2167,7 @@ pub fn run() {
                 measured_selections,
                 battery,
                 battery_poke,
+                measured_probes,
                 measured_names,
             )
         })
@@ -2146,6 +2190,7 @@ pub fn run() {
             selection_context_revision: AtomicU64::new(0),
             selections,
             model_routing: Mutex::new(ModelRouting::load()),
+            probes,
             program_names,
         })
         .invoke_handler(tauri::generate_handler![

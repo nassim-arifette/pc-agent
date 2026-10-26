@@ -7,6 +7,7 @@ use pcagent_actions::{
     approve_locally, recover, ActionCancellation, ActionKind, Journal, LocalSession,
     ResolvedTarget, SyntheticDemoCache, MAX_APPROVAL_TTL,
 };
+use pcagent_agent::capabilities::{Capabilities, Flows, Probes};
 use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_agent::{
     converse_with_privacy, initial_message_with_privacy, local_report, verify_action, ActionDesk,
@@ -257,6 +258,41 @@ fn cli_sampler(path: Option<PathBuf>) -> Result<pcagent_store::sampler::Sampler>
     Ok(pcagent_store::sampler::Sampler::start(&history_path(
         path,
     )?)?)
+}
+
+/// Why a registered tool is not declared here: the capabilities it lacks (`capabilities`).
+fn unavailable_tool(tool: &str, capabilities: Option<Capabilities>) -> String {
+    let needs = capabilities
+        .and_then(|capabilities| pcagent_agent::capabilities::missing(tool, &capabilities))
+        .unwrap_or_default();
+    if needs.is_empty() {
+        return "Unknown read-only tool.".into();
+    }
+    let needs: Vec<&str> = needs.iter().map(|c| c.name()).collect();
+    format!(
+        "The tool {tool} is unavailable here: it needs {}.",
+        needs.join(", ")
+    )
+}
+
+/// The tools a cloud diagnosis declares on this PC (`capabilities`): the history sampler starts
+/// with the run; the CLI has no helper flow and no web lookups.
+fn declared_tools(initial: &Snapshot, scopes: bool, proposals: bool) -> Vec<&'static str> {
+    let mut specs = Workstation::tool_specs();
+    if proposals {
+        specs.push(PREPARE_ACTION_PLAN);
+    }
+    let flows = Flows {
+        history_sampler: true,
+        storage_scopes: scopes,
+        web_search: false,
+        action_proposals: proposals,
+    };
+    let capabilities = Capabilities::of_turn(cfg!(windows), flows, Probes::without_helper(initial));
+    pcagent_agent::capabilities::catalog(&specs, &capabilities)
+        .iter()
+        .map(|spec| spec.name)
+        .collect()
 }
 
 /// No reading stdin or emitting an extra report in machine-readable/batch mode.
@@ -793,7 +829,7 @@ fn run(args: Args) -> Result<u8> {
                 .iter()
                 .find(|spec| spec.name == tool)
                 .ok_or("Unknown read-only tool.")?;
-            let arguments = spec.validate(&arguments)?;
+            spec.validate(&arguments)?;
             let sampler = if pcagent_agent::history_tools::TOOLS
                 .iter()
                 .any(|spec| spec.name == tool)
@@ -805,6 +841,13 @@ fn run(args: Args) -> Result<u8> {
             if let Some(sampler) = &sampler {
                 workstation.set_history(sampler.clone(), Arc::new(AtomicBool::new(false)));
             }
+            // Only what works here, as for the model: no approved scope, helper flow, web
+            // lookup or proposal in this command.
+            workstation.offer_available(Probes::default());
+            let Some(spec) = workstation.specs().iter().find(|s| s.name == tool).copied() else {
+                return Err(unavailable_tool(&tool, workstation.capabilities()).into());
+            };
+            let arguments = spec.validate(&arguments)?;
             let output = workstation.run(&spec, &arguments);
             write_json(&output.cloud)?;
             Ok(if matches!(output.status, Status::Ok | Status::Partial) {
@@ -1095,7 +1138,7 @@ fn run(args: Args) -> Result<u8> {
                     &json!({"sent":false,"notice":"The sanitized question is sent only with --allow-cloud. Later tool samples may differ; the same allowlist applies.",
                     "message":initial_message_with_privacy(&question, &initial, sharing, &privacy),
                     "model_routing":routing.preview(),
-                    "tools":Workstation::tool_specs().iter().chain(propose_actions.then_some(&PREPARE_ACTION_PLAN)).map(|t| t.name).collect::<Vec<_>>(),
+                    "tools":declared_tools(&initial, !storage.scopes().is_empty(), propose_actions),
                     "authorized_scopes":storage.scopes().len(),
                     "file_name_sharing":prepared.context.sharing_preview(),
                     "storage_tool_previews":prepared.preview}),
@@ -1133,6 +1176,8 @@ fn run(args: Args) -> Result<u8> {
                 recovery = Some(recovered);
                 workstation.enable_action_proposals(ActionDesk::native(journal));
             }
+            // The model is offered only what works on this PC and in this run.
+            workstation.offer_available(Probes::without_helper(&initial));
             let mut report = match &mut model {
                 Some(model) => {
                     if io::stderr().is_terminal() {
@@ -1273,6 +1318,7 @@ fn run(args: Args) -> Result<u8> {
                     Workstation::new(&mut collector, storage.clone(), &policy, &prefs);
                 workstation.set_sharing(sharing);
                 workstation.set_history(sampler.clone(), Arc::new(AtomicBool::new(false)));
+                workstation.offer_available(Probes::without_helper(&initial));
                 let report = converse_with_privacy(
                     &mut model,
                     &past,

@@ -3,7 +3,9 @@
 // only then does Windows ask for administrator consent. The helper changes nothing; the result
 // stays on this PC, and for five minutes the chat's AI answers can read it as a measurement
 // (elevated_tools RETENTION) with the person's sharing choice applied. One elevated task can be
-// prepared or run at a time across this card and the quick drive analysis (elevated.js).
+// prepared or run at a time across this card and the quick drive analysis (elevated.js). A check
+// this PC cannot run (battery use without a system battery, capabilities.js) stays listed,
+// disabled, with the reason.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
@@ -12,10 +14,14 @@ import { askWithAi, cloudReady } from "./ask.js";
 import { badge, button, toast } from "./ui.js";
 import { bytes, clock, duration, number, percent } from "./format.js";
 import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
+import { capable } from "./capabilities.js";
+import { subscribe } from "./store.js";
 
 /** The checks offered here, in display order. Each is a closed ElevatedTask without fields. */
 export const CHECKS = ["system_caches", "shadow_storage", "disk_reliability", "battery_energy"];
 const ICONS = { system_caches: "folder", shadow_storage: "history", disk_reliability: "disk", battery_energy: "battery" };
+/** What a check needs beyond the helper (capabilities.js); without it the row says why. */
+const NEEDS = { battery_energy: "battery" };
 /**
  * Budget asked for: the helper's maximum (MAX_BUDGET_MS). It counts from the local click, so the
  * time Windows' consent prompt stays open is included; the reads themselves take seconds.
@@ -346,11 +352,12 @@ function resultView(kind, entry, { onAsk, askLabel } = {}) {
 function checkRow(kind, { busy, blocked }) {
   const entry = admin.results[kind];
   const preparing = admin.status === "preparing" && admin.kind === kind;
+  const missing = NEEDS[kind] && !capable(NEEDS[kind]) ? NEEDS[kind] : null;
   return h(
     "div",
     { class: "admin-check" },
     h("span", { class: "metric-icon" }, icon(ICONS[kind])),
-    h("div", { class: "admin-check-text" }, h("strong", null, t(`admin.check.${kind}`)), h("span", { class: "hint" }, t(`admin.lead.${kind}`))),
+    h("div", { class: "admin-check-text" }, h("strong", null, t(`admin.check.${kind}`)), h("span", { class: "hint" }, missing ? t(`admin.unavailable.${missing}`) : t(`admin.lead.${kind}`))),
     h(
       "div",
       { class: "admin-check-actions" },
@@ -368,7 +375,7 @@ function checkRow(kind, { busy, blocked }) {
             t("admin.resultAt", { at: clock(entry.finishedAt) }),
           )
         : null,
-      button(t(preparing ? "admin.preparing" : "admin.prepare"), { size: "sm", disabled: busy || blocked, title: t("admin.prepareHint"), onClick: () => prepare(kind) }),
+      button(t(preparing ? "admin.preparing" : "admin.prepare"), { size: "sm", disabled: busy || blocked || Boolean(missing), title: missing ? t(`admin.unavailable.${missing}`) : t("admin.prepareHint"), onClick: () => prepare(kind) }),
     ),
   );
 }
@@ -463,6 +470,8 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
   };
   listeners.add(renderAll);
   const stopSlot = onSlotChange(renderAll);
+  // The battery probe answers with the first measurements (capabilities.js).
+  const stopInfo = subscribe((topic) => topic === "info" && renderAll());
   renderAll();
   recoverAdminChecks();
   return {
@@ -470,6 +479,7 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
     dispose: () => {
       listeners.delete(renderAll);
       stopSlot();
+      stopInfo();
       window.clearTimeout(expiry);
     },
   };
