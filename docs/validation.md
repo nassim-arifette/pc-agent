@@ -41,6 +41,13 @@ node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs 
   exits 2, and `pcagent-elevated` answers `InvalidArguments` or `Unsupported` without
   touching the system. No credentials were present. Linux still has no native collector, no
   window and no elevated helper: these are stubs, not a port.
+- On macOS (26 October 2026: macOS 26.6.2 on Apple silicon, Rust 1.90.0, branch
+  `fix/macos-build`) the same commands pass: formatting, Clippy, 741 tests in 30 test executables
+  (3 ignored: the paid live tests; no doctests), the four release binaries, 3 Python and 56 Node
+  checks. Node 24 rejects `--experimental-default-type`; use Node 22. `pcagent-gui` prints its
+  Windows-only notice and exits with code 2, `pcagent-elevated` answers `Unsupported`, native
+  collectors return `unsupported` and `pcagent storage` runs on the portable scanner. These are
+  compilation and portable-logic checks, not a macOS product target.
 - What the tests cover, by area: the closed tool schemas and batch validation, the C1 verifier
   (wrong source, wrong process or metric, uncited quantity, question used as evidence,
   historical wording, web prices and versions), repairs, budgets and extensions, streaming and
@@ -227,6 +234,8 @@ Never put a key, a user name or personal measurements in screenshots, issues or 
 - **Linux.** Only the portable core is validated (26 October, see above); collectors, the window
   and the elevated helper are intentional `unsupported` stubs. The CI's Ubuntu job has been
   disabled since 10 October, so the Linux commands are replayed by hand.
+- **macOS.** Only the compilation and portable-logic checks above; there is no native collector,
+  window or elevated helper for it, and no acceptance run.
 - **Administrator helper.** Windows' consent prompt (accept, decline, cancel) has not been through
   an acceptance run; MFT totals have not been compared with a controlled NTFS volume, so every
   result keeps `native_accuracy_unvalidated`; the ETW performance trace stays unavailable on
@@ -251,6 +260,9 @@ Short dated pointers; the details stay where they were recorded.
   (`fix/linux-build`): 741 Rust tests, 56 Node tests, release binaries and read-only probes of
   the Linux stubs; the same patch replayed on the agent-boundaries refactor tree gave 760 Rust
   and 100 Node tests.
+- **26 October 2026.** First macOS run (Apple silicon): the portable scanner's device and link
+  counts are converted from Darwin's `dev_t` and `nlink_t` types; formatting, Clippy, 741 tests,
+  release builds, Python and Node checks pass (`fix/macos-build`).
 - **10 October 2026.** Review corrections and the history performance work: formatting, Clippy,
   715 then 732 tests, browser and native checks ([gui.md](gui.md#validation-status),
   [history-performance.md](history-performance.md)). GitHub Actions has been disabled since then.
