@@ -14,6 +14,7 @@ mod mft_native;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod native;
+mod notes;
 mod projection;
 mod protocol;
 pub mod system;
@@ -28,6 +29,7 @@ mod worker;
 
 pub use job::{ElevationApproval, PreparedElevation};
 pub use lifecycle::ElevationCompletion;
+pub use notes::{coverage_notes, CoverageNote, CoverageReason};
 pub use protocol::{
     CacheCategory, CacheCoverage, CacheSummary, DriveLetter, ElevatedTask, ElevationError,
     ElevationLimit, ElevationRequest, ElevationResponse, ElevationStatus, WorkerArguments,
@@ -56,6 +58,15 @@ pub fn elevated_host_notice(french: bool) -> (&'static str, &'static str) {
 pub fn notify_elevated_host() {
     #[cfg(windows)]
     native::show_elevated_host_notice();
+}
+
+/// Whether Windows shows its own interface in French, for the few texts drawn outside the page
+/// (the notice above, the tray menu and the folder dialog's title). False on other systems.
+pub fn windows_ui_is_french() -> bool {
+    #[cfg(windows)]
+    return native::ui_language_is_french();
+    #[cfg(not(windows))]
+    false
 }
 
 /// Convert only validated aggregate measurements to C4. Job paths, identities and nonce stay local.

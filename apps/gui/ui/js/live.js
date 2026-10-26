@@ -3,6 +3,7 @@
 import { h, s } from "./dom.js";
 import { icon } from "./icons.js";
 import { t } from "./i18n.js";
+import { applicationName, missingReason, processName } from "./phrases.js";
 import { ago, basisPoints, bytes, percent } from "./format.js";
 import { batteryFacts, batteryItems, lowBattery, trendCaption } from "./battery.js";
 
@@ -43,7 +44,7 @@ export function sparkline(values, tone) {
 }
 
 function unknown(measure) {
-  return h("span", { class: "unknown", title: measure?.note || "" }, t("metric.notMeasured"));
+  return h("span", { class: "unknown", title: missingReason(measure) }, t("metric.notMeasured"));
 }
 
 /** A value the source did not give, in the same words as the deeper checks. */
@@ -107,7 +108,7 @@ export function liveView(live, options) {
     metric({
       iconName: "cpu",
       label: t("metric.cpu"),
-      value: busy.value != null ? basisPoints(busy.value) : h("span", { class: "pending", title: busy.note || "" }, "…"),
+      value: busy.value != null ? basisPoints(busy.value) : h("span", { class: "pending", title: missingReason(busy) }, "…"),
       detail: dash.cpu.busiest_core.value != null ? t("metric.cpu.core", { value: basisPoints(dash.cpu.busiest_core.value) }) : "",
       tone: busy.value >= 9000 ? "warn" : "",
       history: history.map((d) => (d.cpu.busy.value != null ? d.cpu.busy.value / 10000 : null)),
@@ -186,7 +187,7 @@ function rankValue(app, sort) {
 }
 
 export function measureText(measure, kind) {
-  if (measure?.value == null) return h("span", { class: "unknown", title: measure?.note || "" }, "—");
+  if (measure?.value == null) return h("span", { class: "unknown", title: missingReason(measure) }, "—");
   return kind === "bytes" ? bytes(measure.value) : basisPoints(measure.value);
 }
 
@@ -227,7 +228,7 @@ function applicationsView(live, { sort = "memory", onSort, expanded, onToggle })
         h(
           "button",
           { type: "button", class: "app-main", "aria-expanded": String(open), onclick: () => onToggle?.(open ? null : app.entity_ref) },
-          h("span", { class: "app-name", title: app.name }, app.name),
+          h("span", { class: "app-name", title: applicationName(app) }, applicationName(app)),
           h("span", { class: "app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
           h("span", { class: "app-value" }, sort === "cpu" ? measureText(app.cpu, "cpu") : measureText(app.working_set, "bytes")),
           h("div", { class: "meter" }, h("span", { style: { width: `${share * 100}%` } })),
@@ -259,7 +260,7 @@ function applicationsView(live, { sort = "memory", onSort, expanded, onToggle })
                   h(
                     "div",
                     { class: "member" },
-                    h("span", { class: "member-name" }, `${m.name} · PID ${m.pid}`),
+                    h("span", { class: "member-name" }, `${processName(m)} · PID ${m.pid}`),
                     h("span", null, measureText(m.cpu, "cpu")),
                     h("span", null, measureText(m.working_set, "bytes")),
                   ),

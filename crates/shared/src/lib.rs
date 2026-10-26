@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+mod phrase;
+pub use phrase::{Phrase, Quantity};
+
 pub const SCHEMA_VERSION: u32 = 1;
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
@@ -133,19 +136,38 @@ pub const NVML_SLOWDOWN_MASK: u64 = NVML_SW_POWER_CAP
     | NVML_SW_THERMAL_SLOWDOWN
     | NVML_HW_THERMAL_SLOWDOWN
     | NVML_HW_POWER_BRAKE_SLOWDOWN;
+/// Each slowdown reason bit with its closed code and its English name.
+const GPU_SLOWDOWN_REASONS: [(u64, &str, &str); 5] = [
+    (NVML_SW_POWER_CAP, "power_cap", "power cap"),
+    (NVML_HW_SLOWDOWN, "hardware_slowdown", "hardware slowdown"),
+    (
+        NVML_SW_THERMAL_SLOWDOWN,
+        "thermal_driver",
+        "thermal (driver)",
+    ),
+    (
+        NVML_HW_THERMAL_SLOWDOWN,
+        "thermal_hardware",
+        "thermal (hardware)",
+    ),
+    (NVML_HW_POWER_BRAKE_SLOWDOWN, "power_brake", "power brake"),
+];
 /// Names of the active slowdown reasons, in bit order.
 pub fn gpu_slowdown_reasons(bits: u64) -> Vec<&'static str> {
-    [
-        (NVML_SW_POWER_CAP, "power cap"),
-        (NVML_HW_SLOWDOWN, "hardware slowdown"),
-        (NVML_SW_THERMAL_SLOWDOWN, "thermal (driver)"),
-        (NVML_HW_THERMAL_SLOWDOWN, "thermal (hardware)"),
-        (NVML_HW_POWER_BRAKE_SLOWDOWN, "power brake"),
-    ]
-    .into_iter()
-    .filter(|(bit, _)| bits & bit != 0)
-    .map(|(_, name)| name)
-    .collect()
+    GPU_SLOWDOWN_REASONS
+        .into_iter()
+        .filter(|(bit, _, _)| bits & bit != 0)
+        .map(|(_, _, name)| name)
+        .collect()
+}
+/// Closed codes of the active slowdown reasons, in bit order, for a window to name them in its
+/// own language.
+pub fn gpu_slowdown_codes(bits: u64) -> Vec<&'static str> {
+    GPU_SLOWDOWN_REASONS
+        .into_iter()
+        .filter(|(bit, _, _)| bits & bit != 0)
+        .map(|(_, code, _)| code)
+        .collect()
 }
 impl Metric {
     pub fn unit(self) -> &'static str {

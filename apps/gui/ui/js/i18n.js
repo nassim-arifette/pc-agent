@@ -1,5 +1,5 @@
-// Interface text in English and French. Findings computed by the core are in English for now;
-// their headings are translated here.
+// Interface text in English and French. Finding headings are translated here; the core's other
+// sentences (findings, measurement facts, limitations, coverage reasons) are worded in phrases.js.
 const en = {
   "onboarding.title": "Welcome to PC Agent",
   "onboarding.lead": "Set up AI analysis with your own Nebius account, or use the local tools without a key.",
@@ -551,6 +551,7 @@ const en = {
 
   "answer.next": "Suggested next step",
   "answer.limits": "Limits of this analysis",
+  "answer.limits.english": "Technical notes in English ({count})",
   "answer.copy": "Copy as Markdown",
   "copy.question": "Question",
   "copy.sources": "Sources",
@@ -1490,6 +1491,7 @@ const fr = {
 
   "answer.next": "Prochaine étape suggérée",
   "answer.limits": "Limites de cette analyse",
+  "answer.limits.english": "Notes techniques en anglais ({count})",
   "answer.copy": "Copier en Markdown",
   "copy.question": "Question",
   "copy.sources": "Sources",

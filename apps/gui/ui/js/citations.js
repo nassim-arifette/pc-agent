@@ -1,6 +1,6 @@
 // Citations as people see them: each answer numbers its sources 1, 2, 3 in the order the model
 // lists them, whatever their internal references (O2, F1, W1).
-import { t } from "./i18n.js";
+import { t, classificationLabel } from "./i18n.js";
 import { date } from "./format.js";
 
 export function toolLabel(name) {
@@ -21,7 +21,9 @@ export function isWeb(citation) {
 
 export function citationTitle(citation) {
   if (isWeb(citation)) return citation.title || citation.web?.domain || citation.reference;
-  return citation.kind === "observation" ? toolLabel(citation.title) : citation.title;
+  if (citation.kind === "observation") return toolLabel(citation.title);
+  // A finding is titled by its classification; earlier and older sources keep their stored title.
+  return classificationLabel({ classification: citation.classification, label: citation.title });
 }
 
 /**
