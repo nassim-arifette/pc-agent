@@ -2874,7 +2874,7 @@ mod tests {
                 &mut SnapshotTools::new(|_, _| snapshot()),
                 |_| {},
             );
-            report(&inv, "Inspect")
+            report(&inv, "Inspect", &no_readable_names)
         }
         /// Super's low-confidence answer hands the question to Ultra.
         fn escalated(ultra: Replies) -> Report {
