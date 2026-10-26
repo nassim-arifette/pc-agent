@@ -1,8 +1,9 @@
 // Screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, history,
-// storage with the deeper checks, settings, the Live PC view with Explain, web search, the action
-// bar under a selected item in Live PC, History and Storage, and the battery: its card and
-// inspector discharging and plugged in, then the status pill of a critically low battery) in light
-// and dark themes, against the mock (dev/mock.js).
+// storage with the deeper checks, settings, the Live PC view with Explain and its summary, web
+// search, the action bar under a selected item in Live PC, History and Storage, the battery: its
+// card and inspector discharging and plugged in, then the status pill of a critically low battery,
+// and the Storage inspector: a folder, a file, its summary, a narrow window and the administrator
+// cards after the results) in light and dark themes, against the mock (dev/mock.js).
 // Usage, with `python -m http.server 5173 --bind 127.0.0.1` running in apps/gui:
 //   node dev/tour.mjs <output folder> [chrome.exe path] [language: en|fr]
 // TOUR_BASE and TOUR_DEBUG_PORT override the page URL and Chrome's debugging port, for a server
@@ -23,12 +24,17 @@ const prefs = JSON.stringify({ language, mode: "cloud" });
 // The pill's words for a critically low battery (health.battery in ui/js/i18n.js).
 const lowBatteryPill = language === "fr" ? "Batterie très faible" : "Battery critically low";
 const batteryCard = ".livepage-card[data-key^='resource:battery:']";
+// A page of the same origin that does not run the app: preferences written there are read by the
+// next load, never overwritten by an app still starting (it saves its own once its status is known).
+const quietPage = new URL("styles/tokens.css", base).href;
+// Explain's answer is the summary in the panel's inspector, once the draft is replaced and checked.
+const summaryAnswer = "document.querySelector('.panel.open .selection-summary .summary-answer:not(.draft)') && document.querySelector('.panel.open .selection-summary .verified-line, .panel.open .selection-summary .unverified')";
 try {
   await page.viewport(1280, 800);
   for (const dark of [false, true]) {
     const theme = dark ? "dark" : "light";
     await page.scheme(dark);
-    await page.goto(`${base}#/chat`);
+    await page.goto(quietPage);
     await page.eval(`localStorage.setItem('pcagent.prefs.v1', ${JSON.stringify(prefs)}); sessionStorage.clear()`);
     await page.goto(`${base}?cloud=ready&privacy=complete#/chat`);
     await page.waitFor("document.querySelector('.welcome') && document.querySelector('.status-text.warn')");
@@ -97,7 +103,7 @@ try {
     await page.sleep(300);
     await shot(`10-live-${theme}`);
     await page.click(".actbar .actbar-primary");
-    await page.waitFor("document.querySelector('.answer-foot')", 20000);
+    await page.waitFor(summaryAnswer, 20000);
     await page.sleep(300);
     await shot(`12-explain-answer-${theme}`);
     // Web search (C6): the settings card with a saved key, the consent note, the exact query
@@ -155,6 +161,42 @@ try {
     await page.waitFor(`document.querySelector('.status-text.warn')?.textContent === ${JSON.stringify(lowBatteryPill)}`, 10000);
     await page.sleep(300);
     await shot(`21-pill-battery-${theme}`);
+    // Storage (steps 22 to 29): the inspector beside the results for a folder, then for a file
+    // whose size on disk is unknown, the summary Explain writes in its place, the inspector under
+    // the selected row in a narrow window, and the administrator cards after the results.
+    await page.goto(`${base}?cloud=ready&privacy=complete#/storage`);
+    await page.waitFor("document.querySelectorAll('.chip').length >= 6");
+    await page.click(".chip", 0);
+    await page.waitFor("document.querySelector('.item-select')", 10000);
+    await page.click(".item-select", 0);
+    await page.waitFor("document.querySelector('.storage-layout.beside .storage-insp:not(.insp-empty)') && document.querySelector('.item-row.selected .actbar .actbar-primary:not([aria-disabled])')");
+    await page.eval("document.querySelector('.storage-results').scrollIntoView({ block: 'start' })");
+    await page.sleep(400);
+    await shot(`22-storage-insp-folder-${theme}`);
+    await page.click(".storage-results .tabs [role='tab']", 1);
+    await page.waitFor("!document.querySelector('.item-row.selected')");
+    await page.click(".item-select", 1);
+    await page.waitFor("document.querySelector('.storage-insp:not(.insp-empty) .insp-kv .unknown')");
+    await page.eval("document.querySelector('.storage-results').scrollIntoView({ block: 'start' })");
+    await page.sleep(400);
+    await shot(`23-storage-insp-file-${theme}`);
+    // The inspector is sticky: clicked in place, without the helper's scrolling.
+    await page.eval(`document.querySelector(".storage-insp [data-key='insp:explain']").click()`);
+    await page.waitFor(`${summaryAnswer} && !document.querySelector('.storage-insp')`, 20000);
+    await page.sleep(300);
+    await shot(`24-storage-insp-summary-${theme}`);
+    await page.click(".panel.open .panel-top .icon-btn");
+    await page.waitFor("document.querySelector('.storage-insp:not(.insp-empty)')");
+    await page.viewport(860, 640);
+    await page.waitFor("document.querySelector('.item-row.selected + .storage-insp-under')");
+    await page.eval("document.querySelector('.item-row.selected').scrollIntoView({ block: 'start' })");
+    await page.sleep(400);
+    await shot(`25-storage-insp-narrow-${theme}`);
+    await page.viewport(1280, 800);
+    await page.waitFor("document.querySelector('.storage-layout.beside')");
+    await page.eval("document.querySelector('.storage-admin').scrollIntoView({ block: 'start' })");
+    await page.sleep(300);
+    await shot(`26-storage-admin-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {
