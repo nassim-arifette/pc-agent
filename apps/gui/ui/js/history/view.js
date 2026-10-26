@@ -1,17 +1,17 @@
 // History: what the local sampler measured over time, gaps included, the anomalies it detected,
 // a recording taken during a problem, and what the collection itself costs. Nothing here is sent
 // anywhere; selecting an event or a finished recording shows the action bar under it, whose
-// Explain and Investigate go through the selected-evidence preview (select.js).
+// Explain and Investigate go through the selected-evidence preview.
 import { h, s, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
-import { findReference, runSelection } from "../select.js";
+import { findReference, runSelection } from "../selection/actions.js";
 import { actionBar, keepFocus, selectionKeys } from "../actionbar.js";
 import { subscribe } from "../store.js";
 import { button, segmented, toast, toggle, dialog } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
-import { hoursMinutes, watts } from "../battery.js";
+import { hoursMinutes, watts } from "../live/battery.js";
 import { failureDetail, failureText } from "../failure.js";
 
 const PERIODS = [

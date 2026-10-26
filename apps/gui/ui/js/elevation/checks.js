@@ -3,20 +3,20 @@
 // only then does Windows ask for administrator consent. The helper changes nothing; the result
 // stays on this PC, and for five minutes the chat's AI answers can read it as a measurement
 // (elevated_tools RETENTION) with the person's sharing choice applied. One elevated task can be
-// prepared or run at a time across this card and the quick drive analysis (elevated.js). A check
+// prepared or run at a time across this card and the quick drive analysis (slot.js). A check
 // this PC cannot run (battery use without a system battery, capabilities.js) stays listed,
 // disabled, with the reason.
-import { h, fill } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { call } from "./api.js";
-import { askWithAi, cloudReady } from "./ask.js";
-import { badge, button, toast } from "./ui.js";
-import { bytes, clock, duration, number, percent } from "./format.js";
-import { holdSlot, onSlotChange, slotHeldElsewhere } from "./elevated.js";
-import { failureDetail, failureText } from "./failure.js";
-import { capable } from "./capabilities.js";
-import { subscribe } from "./store.js";
+import { h, fill } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { call } from "../api.js";
+import { askWithAi, cloudReady } from "../chat/composer.js";
+import { badge, button, toast } from "../ui.js";
+import { bytes, clock, duration, number, percent } from "../format.js";
+import { holdSlot, onSlotChange, slotHeldElsewhere } from "./slot.js";
+import { failureDetail, failureText } from "../failure.js";
+import { capable } from "../capabilities.js";
+import { subscribe } from "../store.js";
 
 /** The checks offered here, in display order. Each is a closed ElevatedTask without fields. */
 export const CHECKS = ["system_caches", "shadow_storage", "disk_reliability", "battery_energy"];

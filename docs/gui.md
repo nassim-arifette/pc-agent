@@ -154,7 +154,7 @@ errors and slowest responses as each disk reports them) and *Battery use by app*
 flow is the quick analysis's: *Prepare* calls `elevation_prepare` with the 120 s budget (which also
 counts the time the Windows consent prompt stays open), the review says exactly what the check
 reads, that it changes nothing and that Windows will ask for consent, and only *Allow and start*
-calls `elevation_run`. The result is drawn generically from the inspection (`adminchecks.js`):
+calls `elevation_run`. The result is drawn generically from the inspection (`elevation/checks.js`):
 observations grouped by entity, a label per metric, values formatted by unit, a value the source
 did not give shown as not reported, and incomplete coverage under *Limits of this check*. For five
 minutes after it completes, the chat's AI answers can read the result through
@@ -459,9 +459,29 @@ The interface is plain HTML, CSS and JavaScript modules served from `ui/` (no No
 npm dependencies), a deliberate departure from the React/TypeScript suggested in spec 15.1 to keep
 the build to `cargo` and the supply chain small. Text is always inserted as text, never as HTML.
 
+### Feature modules
+
+The native ES modules under `ui/js/` are grouped by responsibility:
+
+| Directory | Owns |
+| --- | --- |
+| `chat/` | conversation view, composer, model picker, citations, costs and web sources |
+| `selection/` | selected-item actions, inspector and local selection metadata |
+| `settings/` | preferences view, first-launch setup and its testable state transitions |
+| `live/` | live view and panel, battery presentation and health hints |
+| `storage/` | storage view, item facts and quick drive analysis |
+| `elevation/` | deeper-check cards and the shared helper slot |
+| `history/` | history view, charts and recording controls |
+
+Shared infrastructure stays at the root: the shell (`main.js`), router, store, Tauri bridge,
+preferences, localization, DOM helpers and common controls. Each view imports the modules it
+needs directly; there are no compatibility wrappers for the old paths. In `live/`, `model.js`
+owns the health priorities and labels without importing the store, DOM or Tauri; `panel.js`
+renders them. This lets Node test the decisions without mounting the interface.
+
 ### Views and the view bar
 
-`ui/js/main.js` mounts one view of `ui/js/views/` at a time with `mount(page, shell)`; the view
+`ui/js/main.js` mounts one feature view at a time with `mount(page, shell)`; the view
 may return an unmount function. `shell` lends the view the sidebar slot that the chat uses for its
 conversation list, and does nothing once the view is unmounted:
 
@@ -503,6 +523,21 @@ new conversation, `Ctrl+K` jumps to the question box, `Ctrl+J` shows or hides th
 sends and `Shift+Enter` adds a line, `Esc` closes a dialog or clears the selection. With an item
 selected in Live PC, History or Storage, `E` explains it and `Enter` investigates it; the arrow
 keys move between the action bar's buttons.
+
+### Frontend regression checks
+
+Node is needed only for development checks, not to build or run the application:
+
+```powershell
+node --experimental-default-type=module --test apps/gui/dev/*.test.mjs
+node --experimental-vm-modules apps/gui/dev/check-modules.mjs
+```
+
+The suite checks the presentation and state helpers and runs the module checker in a separate
+process with `--experimental-vm-modules`. It parses **every** UI module and links static imports,
+catching missing files, missing named exports and duplicate declarations. It does not evaluate
+application code, create a DOM or invoke Tauri. This complements, not replaces, the browser
+tour and native app validation.
 
 ## Design review without the app
 

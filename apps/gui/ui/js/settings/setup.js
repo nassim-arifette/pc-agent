@@ -5,8 +5,8 @@ import { call } from "../api.js";
 import { state, subscribe, setPrivacy } from "../store.js";
 import { getPrefs, setPref } from "../prefs.js";
 import { navigate } from "../router.js";
-import { leaveOnboarding } from "../onboarding.js";
-import { aiCard, privacyCard, clearCloudDraft } from "./settings.js";
+import { leaveOnboarding } from "./onboarding.js";
+import { aiCard, privacyCard, clearCloudDraft } from "./view.js";
 import { button, segmented, toast } from "../ui.js";
 import { keepFocus } from "../actionbar.js";
 

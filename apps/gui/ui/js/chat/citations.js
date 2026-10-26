@@ -1,7 +1,7 @@
 // Citations as people see them: each answer numbers its sources 1, 2, 3 in the order the model
 // lists them, whatever their internal references (O2, F1, W1).
-import { t, classificationLabel } from "./i18n.js";
-import { date } from "./format.js";
+import { t, classificationLabel } from "../i18n.js";
+import { date } from "../format.js";
 
 export function toolLabel(name) {
   const key = `tool.${name}`;

@@ -1,9 +1,9 @@
 // The live battery read (view::BatteryView): words and numbers for the Live PC card, the panel
 // row, the inspector and the PC status pill. Values arrive raw from the host; an unknown value
 // stays null and is shown as not reported, never as zero. Each system battery is shown on its
-// own: batteries are never summed. Data and text only, no DOM, so live.js and the views share it.
-import { t } from "./i18n.js";
-import { ago, duration, number, percent } from "./format.js";
+// own: batteries are never summed. Data and text only, no DOM, shared by the panel and views.
+import { t } from "../i18n.js";
+import { ago, duration, number, percent } from "../format.js";
 
 /**
  * A battery read older than this, against the dashboard it came with, shows its age and no longer

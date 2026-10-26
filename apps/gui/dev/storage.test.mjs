@@ -2,7 +2,7 @@
 // node --experimental-default-type=module --test apps/gui/dev/storage.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { coverageNote, driveLetter, driveShare, folderName, folderShare, isDriveRoot, itemCoverage, itemFacts, itemNotes, shareShown } from "../ui/js/storage-item.js";
+import { coverageNote, driveLetter, driveShare, folderName, folderShare, isDriveRoot, itemCoverage, itemFacts, itemNotes, shareShown } from "../ui/js/storage/items.js";
 
 const GiB = 1024 ** 3;
 // A scan view as the host sends it (view.rs StorageView), reduced to what the inspector reads.

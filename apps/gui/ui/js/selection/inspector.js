@@ -1,18 +1,18 @@
 // A summary stays beside the selected measurements. Its run is owned by store.js, so changing
 // views or opening a citation never starts another request or replaces its frozen evidence.
-import { h, fill } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { citationFacts, findingFacts, findingSummary } from "./phrases.js";
-import { state, subscribe, stopInvestigation } from "./store.js";
-import { continueSummary, retrySummary } from "./select.js";
-import { markdown } from "./markdown.js";
-import { numbering, citationTitle, isWeb } from "./citations.js";
-import { webSourceCard, webDescriber } from "./web.js";
-import { date, duration } from "./format.js";
-import { costText, modelsLabel, routingNote, usedModelIds } from "./usage.js";
-import { keepFocus } from "./actionbar.js";
-import { failureDetail, turnFailureText } from "./failure.js";
+import { h, fill } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { citationFacts, findingFacts, findingSummary } from "../phrases.js";
+import { state, subscribe, stopInvestigation } from "../store.js";
+import { continueSummary, retrySummary } from "./actions.js";
+import { markdown } from "../markdown.js";
+import { numbering, citationTitle, isWeb } from "../chat/citations.js";
+import { webSourceCard, webDescriber } from "../chat/web.js";
+import { date, duration } from "../format.js";
+import { costText, modelsLabel, routingNote, usedModelIds } from "../chat/usage.js";
+import { keepFocus } from "../actionbar.js";
+import { failureDetail, turnFailureText } from "../failure.js";
 
 function sourceCard(citation, number, focused, inv) {
   if (isWeb(citation)) {

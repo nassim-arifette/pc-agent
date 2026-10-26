@@ -3,13 +3,13 @@
 // from the most capable to the lightest. A model is saved with save_cloud_settings; Auto is the
 // engine's calibrated Super → Ultra routing (model_routing_set), offered only once a reviewed
 // calibration exists. Both commands invalidate any reviewed preview on the Rust side.
-import { h, fill } from "./dom.js";
-import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { call } from "./api.js";
-import { state, notify } from "./store.js";
-import { toast } from "./ui.js";
-import { failureText } from "./failure.js";
+import { h, fill } from "../dom.js";
+import { icon } from "../icons.js";
+import { t } from "../i18n.js";
+import { call } from "../api.js";
+import { state, notify } from "../store.js";
+import { toast } from "../ui.js";
+import { failureText } from "../failure.js";
 import { modelName, familyId as listedFamily, startModelId } from "./models.js";
 
 export const REASONING = ["on", "low", "off"];

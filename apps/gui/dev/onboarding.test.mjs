@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { shouldOfferOnboarding, leaveOnboarding, cloudError, createCloudCheck, cloudModelSelection } from "../ui/js/onboarding.js";
+import { shouldOfferOnboarding, leaveOnboarding, cloudError, createCloudCheck, cloudModelSelection } from "../ui/js/settings/onboarding.js";
 
 test("first launch offers setup only for an unconfigured profile", () => {
   assert.equal(shouldOfferOnboarding(null), false);
