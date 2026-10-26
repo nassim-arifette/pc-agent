@@ -6,6 +6,7 @@ pub(super) mod pdh;
 pub(crate) mod services;
 mod sysproc;
 mod tree;
+pub(crate) mod version_info;
 pub(super) use inventory::hardware_inventory;
 pub(super) use tree::process_tree;
 
@@ -347,14 +348,21 @@ fn io_counters(handle: &OwnedHandle) -> Result<[u64; 3], Status> {
         ])
     }
 }
-fn image_name(handle: &OwnedHandle) -> Option<String> {
+/// The full Win32 path of a process's executable, in UTF-16 units.
+fn image_path_units(handle: &OwnedHandle) -> Option<Vec<u16>> {
     let mut path = vec![0_u16; 32768];
     let mut len = path.len() as u32;
-    // SAFETY: the buffer is writable for len UTF-16 units; only the image path is read.
+    // SAFETY: the handle is valid for the call and the buffer is writable for len UTF-16 units;
+    // only the image path is written into it.
     if unsafe { QueryFullProcessImageNameW(handle.0, 0, path.as_mut_ptr(), &mut len) } == 0 {
         return None;
     }
-    let text = String::from_utf16_lossy(path.get(..len as usize)?);
+    let len = usize::try_from(len).ok().filter(|&len| len <= path.len())?;
+    path.truncate(len);
+    Some(path)
+}
+fn image_name(handle: &OwnedHandle) -> Option<String> {
+    let text = String::from_utf16_lossy(&image_path_units(handle)?);
     text.rsplit('\\').next().map(str::to_owned)
 }
 fn window_since(prev: &CounterSample, now: &CounterSample) -> Window {

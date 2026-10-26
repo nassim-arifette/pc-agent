@@ -7,7 +7,7 @@ use crate::{
     preview::{self, PreparedTurn, Reviewed},
     protocol,
     selection::{PreparedSelection, ReviewedSelection, SelectionPreview, SelectionRegistry},
-    session::{ObservedModel, ObservedTools, Step},
+    session::{ObservedModel, ObservedTools, SeenProcesses, Step},
     settings::{self, PrivacyMode, PrivacySettings},
     view,
 };
@@ -33,7 +33,7 @@ use pcagent_store::{
     HistoryQuery, HistorySeries, Recording,
 };
 use pcagent_store::{Conversation, ConversationSummary, Store, DEFAULT_RETENTION_DAYS};
-use pcagent_telemetry::Collector;
+use pcagent_telemetry::{Collector, ProgramNames};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -111,6 +111,9 @@ struct AppState {
     /// The last finished turn's action proposals; they run only after a click in this window.
     actions: Arc<actions::Slot>,
     elevation: Arc<elevation::Slot>,
+    /// Readable program names for the window, read and cached on the threads that measure or
+    /// investigate, never on the window's thread. They stay local (C5, note of 26 October).
+    program_names: Arc<ProgramNames>,
 }
 
 /// The history file next to the settings file, with conversations older than the retention
@@ -559,6 +562,7 @@ fn measure_thread(
     selections: Arc<Mutex<SelectionRegistry>>,
     battery: Arc<Mutex<view::LiveBattery>>,
     poke: mpsc::SyncSender<()>,
+    names: Arc<ProgramNames>,
 ) {
     let mut collector = Collector::new();
     let mut volumes: Option<(Instant, Vec<view::VolumeView>)> = None;
@@ -596,7 +600,13 @@ fn measure_thread(
             Measure::Activity(reply) => {
                 // Two seconds between samples: long enough for rates, short enough to feel live.
                 let activity = collector.process_activity(2, 50);
-                let mut shown = view::activity(&activity);
+                // Readable names are read here, once per process and per executable, and only
+                // for the view: the selection source keeps the activity as measured.
+                let mut shown = view::activity(
+                    &activity,
+                    |reference| collector.instance(reference).cloned(),
+                    &|pid, created| names.name(pid, created),
+                );
                 shown.selection_source_id =
                     retain_capture(&selections, SelectionSource::ProcessActivity(activity));
                 let _ = reply.send(shown);
@@ -650,8 +660,11 @@ async fn startup_restore_prepare(
     item_index: usize,
 ) -> Result<actions::StartupRestoration, String> {
     let slot = state.actions.clone();
+    let names = state.program_names.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        actions::prepare_startup_restore(&slot, &source_plan_id, item_index)
+        actions::prepare_startup_restore(&slot, &source_plan_id, item_index, &|pid, created| {
+            names.name(pid, created)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1225,6 +1238,7 @@ fn launch_investigation(
     let proposals = state.actions.clone();
     let elevated_evidence = state.elevation.completed_evidence();
     let web_search = cloud && lock(&state.privacy).web_search;
+    let program_names = state.program_names.clone();
     let saved_in = conversation_id.clone();
     let worker_turn_id = turn_id.clone();
     thread::Builder::new()
@@ -1246,11 +1260,11 @@ fn launch_investigation(
                 elevated_evidence,
                 web_search,
             };
-            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, &extension, sampler.as_ref(), &proposals);
+            let outcome = investigation(&app, id, &ask, storage, &stop, &answer, &extension, sampler.as_ref(), &proposals, &program_names);
             let stored_report = match &outcome {
                 Ok(report) => report.clone(),
                 Err((code, message)) => {
-                    let mut report = view::report(&local_report(&Snapshot::empty("failed-turn")), &question);
+                    let mut report = view::report(&local_report(&Snapshot::empty("failed-turn")), &question, &view::no_readable_names);
                     report.execution = pcagent_agent::ExecutionStatus::Failed;
                     report.mode = if cloud { "nebius" } else { "local_rules" }.into();
                     report.error = Some(view::ErrorView {code:code.clone(),message:message.clone()});
@@ -1317,9 +1331,16 @@ fn investigation(
     extension: &Mutex<Option<Value>>,
     sampler: Option<&Sampler>,
     proposals: &actions::Slot,
+    names: &ProgramNames,
 ) -> Result<view::Report, (String, String)> {
-    let emit = |step: Step| {
+    let readable = |pid: u32, created: u64| names.name(pid, created);
+    // Every process the turn sees, so its draft names programs as its answer will.
+    let seen = SeenProcesses::default();
+    let emit = |mut step: Step| {
         let at_unix_ms = unix_ms();
+        if let Step::AnswerDraft { text, .. } = &mut step {
+            *text = seen.localize(text, &readable);
+        }
         let _ = app.emit("turn:step", protocol::step(ask.turn_id, at_unix_ms, &step));
         if let Step::AnswerDraft { request, text } = &step {
             let _ = app.emit(
@@ -1356,6 +1377,12 @@ fn investigation(
             .expect("ordinary turn owns a collector")
             .snapshot(true, 10)
     });
+    // What the investigation starts from, then each tool output (`record`), in its own order.
+    seen.add(&initial.processes);
+    if let Some(selected) = ask.selected {
+        seen.add(&selected.output().processes);
+    }
+    let record = |output: &pcagent_agent::ToolOutput| seen.add(&output.processes);
     if ask.selected.is_none() {
         emit(Step::SnapshotFinished {
             duration_ms: started.elapsed().as_millis() as u64,
@@ -1401,9 +1428,11 @@ fn investigation(
                 SnapshotTools::new(|_, _| Snapshot::empty("unavailable-collector"));
             let selected_tools =
                 pcagent_agent::selection::SelectedTools::new(&mut no_collectors, selected);
-            let mut tools = ObservedTools::new(selected_tools, |tool: &str| {
-                emit(Step::ToolStarted { tool: tool.into() })
-            });
+            let mut tools = ObservedTools::new(
+                selected_tools,
+                |tool: &str| emit(Step::ToolStarted { tool: tool.into() }),
+                record,
+            );
             let report = converse_with_selection(
                 &mut model,
                 ask.past,
@@ -1432,7 +1461,7 @@ fn investigation(
                     )
                 },
             );
-            return Ok(view::report(&report, question));
+            return Ok(view::report(&report, question, &readable));
         }
         let (policy, prefs) = (Policy::from_env(), Preferences::default());
         let mut workstation = Workstation::new(
@@ -1466,9 +1495,11 @@ fn investigation(
         let (report, mut workstation) = if let Some(selected) = ask.selected {
             let selected_tools =
                 pcagent_agent::selection::SelectedTools::new(&mut workstation, selected);
-            let mut tools = ObservedTools::new(selected_tools, |tool: &str| {
-                emit(Step::ToolStarted { tool: tool.into() })
-            });
+            let mut tools = ObservedTools::new(
+                selected_tools,
+                |tool: &str| emit(Step::ToolStarted { tool: tool.into() }),
+                record,
+            );
             let report = converse_with_selection(
                 &mut model,
                 ask.past,
@@ -1500,9 +1531,11 @@ fn investigation(
             drop(tools);
             (report, workstation)
         } else {
-            let mut tools = ObservedTools::new(workstation, |tool: &str| {
-                emit(Step::ToolStarted { tool: tool.into() })
-            });
+            let mut tools = ObservedTools::new(
+                workstation,
+                |tool: &str| emit(Step::ToolStarted { tool: tool.into() }),
+                record,
+            );
             let report = converse_with_privacy(
                 &mut model,
                 ask.past,
@@ -1534,7 +1567,7 @@ fn investigation(
             (report, tools.into_inner())
         };
         if let Some((_, pending)) = workstation.take_actions() {
-            actions::keep(proposals, ask.turn_id, pending);
+            actions::keep(proposals, ask.turn_id, pending, &readable);
         }
         let jobs = workstation.take_jobs();
         for job in &jobs {
@@ -1555,7 +1588,7 @@ fn investigation(
         }
         report
     };
-    Ok(view::report(&report, question))
+    Ok(view::report(&report, question, &readable))
 }
 
 fn build_routed_model(review: &RoutingReview) -> Result<RoutedModel<Nebius>, AgentError> {
@@ -2077,13 +2110,23 @@ pub fn run() {
     let (battery_poke, battery_pokes) = mpsc::sync_channel(1);
     let battery = Arc::new(Mutex::new(view::LiveBattery::default()));
     let (battery_latest, battery_selections) = (battery.clone(), selections.clone());
+    let program_names = Arc::new(ProgramNames::new());
+    let measured_names = program_names.clone();
     thread::Builder::new()
         .name("battery".into())
         .spawn(move || battery_thread(battery_pokes, battery_latest, battery_selections))
         .expect("the battery thread starts");
     thread::Builder::new()
         .name("measurements".into())
-        .spawn(move || measure_thread(rx, measured_selections, battery, battery_poke))
+        .spawn(move || {
+            measure_thread(
+                rx,
+                measured_selections,
+                battery,
+                battery_poke,
+                measured_names,
+            )
+        })
         .expect("the measurement thread starts");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -2103,6 +2146,7 @@ pub fn run() {
             selection_context_revision: AtomicU64::new(0),
             selections,
             model_routing: Mutex::new(ModelRouting::load()),
+            program_names,
         })
         .invoke_handler(tauri::generate_handler![
             app_info,

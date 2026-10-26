@@ -803,18 +803,21 @@ function items(kind, root, count, offset = 0) {
     const size = Math.round((kind === "dirs" ? 48 : 9) * GiB * Math.pow(0.72, n));
     const name = n < names.length ? names[n] : `${kind === "dirs" ? "Folder" : "file"}-${n}${kind === "dirs" ? "" : ".bin"}`;
     const parent = kind === "dirs" ? "" : ["", "Videos", "Installers", "Backups"][n % 4];
+    // The size on disk is a little above the data; the second file's could not be read, so it is
+    // ranked by its data and marked partial, as the scanner does (Storage inspector).
+    const unallocated = kind === "files" && n === 1;
     return {
       item_ref: `scan-${scanId}:${n + 1}`,
       name,
       parent,
       path: `${root}\\${parent ? `${parent}\\` : ""}${name}`,
-      logical_bytes: size,
-      allocated_bytes: size,
+      logical_bytes: unallocated ? size : Math.round(size * 0.995),
+      allocated_bytes: unallocated ? null : size,
       size,
       size_text: fmt(size),
       files: kind === "dirs" ? 1200 - n * 90 : null,
       modified_unix_ms: Date.now() - (n + 1) * 86400000 * 9,
-      status: n === 3 && kind === "dirs" ? "partial" : "ok",
+      status: (n === 3 && kind === "dirs") || unallocated ? "partial" : "ok",
     };
   });
 }
@@ -852,10 +855,10 @@ async function scan(scopeId, root) {
     root,
     status: scanCancel ? "partial" : "partial",
     duration_ms: Date.now() - started,
-    scanned: { logical_bytes: 212 * GiB, allocated_bytes: 208 * GiB, allocation_unknown_files: 0, files: entries },
+    scanned: { logical_bytes: 212 * GiB, allocated_bytes: 208 * GiB, allocation_unknown_files: 1, files: entries },
     scanned_text: "208.00 GiB",
     volume: { total_bytes: 476 * GiB, free_bytes: 61 * GiB, total_text: "476.00 GiB", free_text: "61.00 GiB", filesystem: "NTFS" },
-    coverage: { files: entries, dirs: Math.round(entries / 9), denied_dirs: 3, denied_files: 0, reparse_skipped: 12, placeholders: 41, placeholder_logical_bytes: 3 * GiB, other_volume_skipped: 0, special_skipped: 0, vanished: 0, changed_during_scan: 5, errors: scanCancel ? 0 : 2, hard_link_aliases: 0, allocation_unknown_files: 0, truncated: null, cancelled: scanCancel },
+    coverage: { files: entries, dirs: Math.round(entries / 9), denied_dirs: 3, denied_files: 0, reparse_skipped: 12, placeholders: 41, placeholder_logical_bytes: 3 * GiB, other_volume_skipped: 0, special_skipped: 0, vanished: 0, changed_during_scan: 5, errors: scanCancel ? 0 : 2, hard_link_aliases: 0, allocation_unknown_files: 1, truncated: null, cancelled: scanCancel },
     denied: [`${root}\\Private`],
     dirs: publishPage(scopeId, page("dirs", root, 0), (scanFinishedAt = Date.now())),
     files: publishPage(scopeId, page("files", root, 0), scanFinishedAt),
@@ -991,13 +994,15 @@ export function createMock() {
       await wait(600);
       const now = Date.now();
       const window = { started_at_unix_ms: now - 2000, finished_at_unix_ms: now, duration_ms: 2000 };
+      // Readable names as the executables' version resources give them; svchost.exe has none.
+      const READABLE = { "chrome.exe": "Google Chrome", "Code.exe": "Visual Studio Code", "Teams.exe": "Microsoft Teams" };
       const app = (ref, name, count, cpu, ws, members, services = []) => ({
-        entity_ref: ref, name, process_count: count, members_truncated: false,
+        entity_ref: ref, name, readable_name: READABLE[name] ?? null, process_count: count, members_truncated: false,
         cpu: m(cpu, `${(cpu / 100).toFixed(1)}%`), working_set: m(ws * GiB, fmt(ws * GiB)), private_commit: m(ws * 0.8 * GiB, fmt(ws * 0.8 * GiB)),
         working_set_increase: ref === "app-1" ? m(0.2 * GiB, fmt(0.2 * GiB)) : m(0, "0"), io_read: m(120000, "117 KiB/s"), io_write: m(40000, "39 KiB/s"),
         gpu: ref === "app-1" ? m(310, "3.1%") : missing("unsupported", "No GPU counter instance for these processes."),
         services,
-        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
+        members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, readable_name: READABLE[name] ?? null, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
       });
       const applications = [
           app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),
