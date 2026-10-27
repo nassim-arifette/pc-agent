@@ -1,6 +1,7 @@
 //! Bounded, read-only native inspections. No commands, file contents or machine identifiers.
 //! Display names are kept separately and are never serialized implicitly.
 #![deny(unsafe_code)]
+use os::Inspector;
 use pcagent_shared::{new_id, unix_ms, Origin, Status, Window};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,11 +15,11 @@ use std::time::Duration;
 pub mod autostart;
 pub mod elevation;
 
+mod os;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod parse;
 #[cfg(windows)]
-#[allow(unsafe_code)]
-mod windows;
+use os::windows;
 
 pub const QUERY_NAMES: &[&str] = &[
     "operating_system",
@@ -219,34 +220,12 @@ impl Inspection {
 /// The two-letter country of the Windows region setting, for country-specific web lookups
 /// (C6). It is a setting, not an identifier of the machine.
 pub fn region_country() -> Option<String> {
-    #[cfg(windows)]
-    {
-        windows::region_country()
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    os::Native::region_country()
 }
 
 /// The caller cannot supply SQL, WQL, registry paths, event filters or executable commands.
 pub fn inspect(query: Query<'_>) -> Inspection {
-    #[cfg(windows)]
-    {
-        windows::inspect(query)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = query;
-        let mut result = Inspection::new();
-        result.coverage(
-            "windows",
-            CoverageStatus::Unsupported,
-            "Windows APIs",
-            "Native inspection is available on Windows only.",
-        );
-        result.finish()
-    }
+    os::Native::inspect(query)
 }
 
 /// Battery-only C4 read for the live window: the same observations as `Query::Battery`, run on
@@ -255,21 +234,7 @@ pub fn inspect(query: Query<'_>) -> Inspection {
 /// battery. A second call while a read is still running (for example a driver that stalled past
 /// the time bound) returns at once with `collector` partial coverage and no values.
 pub fn live_battery() -> Inspection {
-    #[cfg(windows)]
-    {
-        windows::live_battery()
-    }
-    #[cfg(not(windows))]
-    {
-        let mut result = Inspection::new();
-        result.coverage(
-            "windows",
-            CoverageStatus::Unsupported,
-            "Windows APIs",
-            "Native inspection is available on Windows only.",
-        );
-        result.finish()
-    }
+    os::Native::live_battery()
 }
 
 /// Runs `work` on one named thread at a time per `guard` and waits at most `timeout`. The guard
