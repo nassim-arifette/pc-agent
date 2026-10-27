@@ -337,7 +337,7 @@ mod tests {
         assert!(result.observations[2].value.is_null());
         assert_eq!(WindowsUpdateMode::default(), WindowsUpdateMode::Offline);
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     #[test]
     fn drivers_on_other_hosts_return_unsupported_without_fixture_measurements() {
         let result = inspect(Query::Drivers {
@@ -347,14 +347,14 @@ mod tests {
         assert_eq!(result.status, Status::Unsupported);
         assert!(result.observations.is_empty());
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     #[test]
     fn battery_on_other_hosts_is_unknown_without_synthetic_live_measurements() {
         let result = inspect(Query::Battery);
         assert_eq!(result.status, Status::Unsupported);
         assert!(result.observations.is_empty());
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     #[test]
     fn live_battery_on_other_hosts_is_unsupported_without_observations() {
         let result = live_battery();

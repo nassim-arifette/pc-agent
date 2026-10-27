@@ -1,5 +1,5 @@
 //! Compile-time inspection boundary. Each backend owns its native calls and coverage.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 use crate::CoverageStatus;
 use crate::{Inspection, Query};
 
@@ -19,7 +19,7 @@ pub(crate) trait Inspector {
 
 pub(crate) struct Native;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 impl Inspector for Native {
     fn inspect(_: Query<'_>) -> Inspection {
         let mut result = Inspection::new();
