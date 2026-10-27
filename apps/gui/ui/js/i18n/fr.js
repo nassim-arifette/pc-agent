@@ -1,5 +1,7 @@
 // French interface dictionary and finding headings; measurement phrases live in phrases.js.
+import { watchesFr } from "./watches.js";
 export const fr = {
+  ...watchesFr,
   "image.attach": "Joindre une image (PNG ou JPEG)",
   "image.preview": "Aperçu exact de l’image",
   "image.alt": "Pièce jointe préparée, exactement telle qu’envoyée à Nebius",

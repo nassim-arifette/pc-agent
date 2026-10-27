@@ -1,5 +1,7 @@
 // English interface dictionary; core measurement phrases live in phrases.js.
+import { watchesEn } from "./watches.js";
 export const en = {
+  ...watchesEn,
   "image.attach": "Attach an image (PNG or JPEG)",
   "image.preview": "Exact image preview",
   "image.alt": "Prepared attachment, exactly as sent to Nebius",
