@@ -18,8 +18,13 @@ use std::collections::BTreeSet;
 /// What a tool can need. A closed set: a new capability changes this module, its table and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {
-    /// The native Windows collectors; other systems only build with stubs that measure nothing.
+    /// Windows-only integrations (MFT, VSS, ETW, Windows Update).
     Windows,
+    Linux,
+    Macos,
+    LiveTelemetry,
+    SystemInspection,
+    NativeActions,
     /// A persistent local sampler: stored history and one-second recordings.
     HistorySampler,
     /// At least one storage scope the person approved for this turn.
@@ -41,8 +46,13 @@ pub enum Capability {
 use Capability::*;
 
 impl Capability {
-    pub const ALL: [Capability; 9] = [
+    pub const ALL: [Capability; 14] = [
         Windows,
+        Linux,
+        Macos,
+        LiveTelemetry,
+        SystemInspection,
+        NativeActions,
         HistorySampler,
         StorageScopes,
         ElevatedHelper,
@@ -56,6 +66,11 @@ impl Capability {
     pub fn name(self) -> &'static str {
         match self {
             Windows => "windows",
+            Linux => "linux",
+            Macos => "macos",
+            LiveTelemetry => "live_telemetry",
+            SystemInspection => "system_inspection",
+            NativeActions => "native_actions",
             HistorySampler => "history_sampler",
             StorageScopes => "storage_scopes",
             ElevatedHelper => "elevated_helper",
@@ -65,6 +80,30 @@ impl Capability {
             Battery => "battery",
             NtfsVolumes => "ntfs_volumes",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Windows,
+    Linux,
+    Macos,
+    Unsupported,
+}
+impl Platform {
+    pub const fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "linux") {
+            Self::Linux
+        } else if cfg!(target_os = "macos") {
+            Self::Macos
+        } else {
+            Self::Unsupported
+        }
+    }
+    pub const fn has_native_backend(self) -> bool {
+        matches!(self, Self::Windows | Self::Linux)
     }
 }
 
@@ -101,16 +140,34 @@ impl Capabilities {
     /// A turn's capabilities: the platform, the optional flows of its toolbox and the host's
     /// probes of this PC.
     pub fn of_turn(windows: bool, flows: Flows, probes: Probes) -> Self {
+        Self::for_platform(
+            if windows {
+                Platform::Windows
+            } else {
+                Platform::Unsupported
+            },
+            flows,
+            probes,
+        )
+    }
+    pub fn for_platform(platform: Platform, flows: Flows, probes: Probes) -> Self {
+        let windows = platform == Platform::Windows;
+        let native = platform.has_native_backend();
         Self::none()
             .with(Windows, windows)
+            .with(Linux, platform == Platform::Linux)
+            .with(Macos, platform == Platform::Macos)
+            .with(LiveTelemetry, native)
+            .with(SystemInspection, native)
+            .with(NativeActions, native)
             .with(HistorySampler, flows.history_sampler)
             .with(StorageScopes, flows.storage_scopes)
-            .with(ElevatedHelper, probes.elevated_helper)
+            .with(ElevatedHelper, native && probes.elevated_helper)
             .with(WebSearch, flows.web_search)
             .with(ActionProposals, flows.action_proposals)
             .with_probe(NvidiaGpu, probes.nvidia_gpu)
             .with_probe(Battery, probes.battery)
-            .with_probe(NtfsVolumes, probes.ntfs_volumes)
+            .with(NtfsVolumes, windows && probes.ntfs_volumes != Some(false))
     }
 }
 
@@ -141,7 +198,7 @@ impl Probes {
     pub fn without_helper(initial: &Snapshot) -> Self {
         Self {
             elevated_helper: false,
-            nvidia_gpu: Some(!initial.gpus.is_empty()),
+            nvidia_gpu: Some(initial.gpus.iter().any(|gpu| gpu.source.contains("NVML"))),
             battery: None,
             ntfs_volumes: None,
         }
@@ -151,22 +208,21 @@ impl Probes {
 /// Every tool the agent can offer, with the capabilities it needs. `submit_answer` needs nothing
 /// and is always declared by the controller.
 pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
-    // Live collectors (pcagent-telemetry, pcagent-inspect) measure on Windows only.
-    ("get_system_snapshot", &[Windows]),
-    ("get_processes", &[Windows]),
-    ("get_process_details", &[Windows]),
-    ("get_process_tree", &[Windows]),
-    ("get_process_activity", &[Windows]),
-    ("get_startup_programs", &[Windows]),
-    ("get_services", &[Windows]),
-    ("get_recent_events", &[Windows]),
-    ("get_system_state", &[Windows]),
-    ("get_power_and_thermal", &[Windows]),
-    ("get_installed_apps", &[Windows]),
-    ("get_hardware_inventory", &[Windows]),
-    ("get_drivers", &[Windows]),
-    ("get_cleanup_opportunities", &[Windows]),
-    ("query_system", &[Windows]),
+    ("get_system_snapshot", &[LiveTelemetry]),
+    ("get_processes", &[LiveTelemetry]),
+    ("get_process_details", &[LiveTelemetry]),
+    ("get_process_tree", &[LiveTelemetry]),
+    ("get_process_activity", &[LiveTelemetry]),
+    ("get_startup_programs", &[SystemInspection]),
+    ("get_services", &[SystemInspection]),
+    ("get_recent_events", &[SystemInspection]),
+    ("get_system_state", &[SystemInspection]),
+    ("get_power_and_thermal", &[SystemInspection]),
+    ("get_installed_apps", &[SystemInspection]),
+    ("get_hardware_inventory", &[SystemInspection]),
+    ("get_drivers", &[SystemInspection]),
+    ("get_cleanup_opportunities", &[SystemInspection]),
+    ("query_system", &[SystemInspection]),
     // Storage scans run on every system, but only on scopes approved for this turn.
     ("list_storage_scopes", &[StorageScopes]),
     ("get_storage_overview", &[StorageScopes]),
@@ -177,21 +233,29 @@ pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
     ("get_user_preferences", &[]),
     ("get_selected_evidence", &[]),
     // The persistent sampler stores Windows measurements.
-    ("get_metric_history", &[Windows, HistorySampler]),
-    ("get_activity_events", &[Windows, HistorySampler]),
-    ("record_activity", &[Windows, HistorySampler]),
+    ("get_metric_history", &[LiveTelemetry, HistorySampler]),
+    ("get_activity_events", &[LiveTelemetry, HistorySampler]),
+    ("record_activity", &[LiveTelemetry, HistorySampler]),
     // Results of helper tasks the person approves in the desktop app.
     (
         "get_approved_elevated_inspection",
         &[Windows, ElevatedHelper],
     ),
     // Proposals act on Windows targets: Settings pages, Explorer, Run entries, processes.
-    ("prepare_action_plan", &[Windows, ActionProposals]),
+    (
+        "prepare_action_plan",
+        &[
+            NativeActions,
+            LiveTelemetry,
+            SystemInspection,
+            ActionProposals,
+        ],
+    ),
     // Web lookups compose their queries from Windows inspections of this turn.
-    ("lookup_driver_notes", &[Windows, WebSearch]),
-    ("lookup_known_issue", &[Windows, WebSearch]),
-    ("lookup_upgrade_price", &[Windows, WebSearch]),
-    ("lookup_pc_specs", &[Windows, WebSearch]),
+    ("lookup_driver_notes", &[SystemInspection, WebSearch]),
+    ("lookup_known_issue", &[SystemInspection, WebSearch]),
+    ("lookup_upgrade_price", &[SystemInspection, WebSearch]),
+    ("lookup_pc_specs", &[SystemInspection, WebSearch]),
 ];
 
 /// Helper tasks `get_approved_elevated_inspection` offers, with what each needs beyond the tool
@@ -271,6 +335,12 @@ pub fn missing(tool: &str, capabilities: &Capabilities) -> Option<Vec<Capability
 pub fn offered(spec: &ToolSpec, capabilities: &Capabilities) -> Option<ToolSpec> {
     if !missing(spec.name, capabilities)?.is_empty() {
         return None;
+    }
+    if capabilities.contains(Linux) && !capabilities.contains(Windows) {
+        return Some(crate::catalog::linux::offered(
+            *spec,
+            capabilities.contains(StorageScopes),
+        ));
     }
     Some(
         VARIANTS
@@ -420,8 +490,13 @@ mod tests {
     }
 
     #[test]
-    fn other_systems_get_no_windows_only_tool() {
-        for capabilities in every_combination().filter(|c| !c.contains(Windows)) {
+    fn systems_without_native_backends_get_no_native_tools() {
+        for capabilities in every_combination().filter(|c| {
+            !c.contains(Windows)
+                && !c.contains(LiveTelemetry)
+                && !c.contains(SystemInspection)
+                && !c.contains(NativeActions)
+        }) {
             let offered = offered_names(&capabilities);
             assert!(
                 offered.iter().all(|name| !WINDOWS_ONLY.contains(name)),
@@ -429,13 +504,52 @@ mod tests {
             );
             assert!(offered.contains(&"get_user_preferences"));
         }
-        let elsewhere = Capabilities::all().with(Windows, false);
+        let elsewhere = Capabilities::all()
+            .with(Windows, false)
+            .with(LiveTelemetry, false)
+            .with(SystemInspection, false)
+            .with(NativeActions, false);
         let mut expected = vec!["get_user_preferences", "get_selected_evidence"];
         expected.extend(SCOPES);
         let mut offered = offered_names(&elsewhere);
         offered.sort_unstable();
         expected.sort_unstable();
         assert_eq!(offered, expected);
+    }
+
+    #[test]
+    fn linux_has_native_tools_but_no_windows_integrations_or_uninstalled_helper() {
+        let set = Capabilities::for_platform(
+            Platform::Linux,
+            Flows {
+                history_sampler: true,
+                storage_scopes: true,
+                web_search: true,
+                action_proposals: true,
+            },
+            Probes::default(),
+        );
+        for cap in [
+            Linux,
+            LiveTelemetry,
+            SystemInspection,
+            NativeActions,
+            HistorySampler,
+        ] {
+            assert!(set.contains(cap));
+        }
+        for cap in [Windows, Macos, NtfsVolumes, ElevatedHelper] {
+            assert!(!set.contains(cap));
+        }
+        let offered = offered_names(&set);
+        assert!(offered.contains(&"get_system_snapshot"));
+        assert!(offered.contains(&"get_services"));
+        assert!(offered.contains(&"prepare_action_plan"));
+        assert!(!offered.contains(&"get_approved_elevated_inspection"));
+        assert!(
+            !Capabilities::for_platform(Platform::Macos, Flows::default(), Probes::default())
+                .contains(LiveTelemetry)
+        );
     }
 
     #[test]

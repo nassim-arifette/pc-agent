@@ -57,17 +57,20 @@ pub(super) fn print_doctor(
         ("This PC", String::new()),
         (
             "  Native collector",
-            if cfg!(windows) {
+            if pcagent_agent::capabilities::Platform::current().has_native_backend() {
                 "available".to_owned()
             } else {
-                "not available on this platform (Windows only)".to_owned()
+                "not available on this platform".to_owned()
             },
         ),
         (
             "  Build",
             format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
         ),
-        ("  Windows version check", "not implemented yet".to_owned()),
+        (
+            "  OS version check",
+            "see the native hardware inventory".to_owned(),
+        ),
         ("Cloud (Nebius)", String::new()),
         ("  Credentials file", file),
         ("  NEBIUS_API_KEY", key),
@@ -164,14 +167,14 @@ pub(super) fn doctor(options: options::Doctor, json: bool) -> Result<u8> {
     };
     let cloud_failed = cloud_result.as_ref().is_some_and(|r| r.is_err());
     let limits = [
-        "Doctor does not yet validate Windows build, storage capabilities or a local database.",
+        "Collector availability is platform support, not a claim that all devices and permissions are available; every measurement reports coverage.",
         "A catalog check does not validate tool calling, diagnostic quality or latency.",
     ];
     if json {
-        let report = json!({"schema_version":1,"native_collector_available":cfg!(windows),
+        let report = json!({"schema_version":1,"native_collector_available":pcagent_agent::capabilities::Platform::current().has_native_backend(),
             "compiled_os":std::env::consts::OS,"compiled_arch":std::env::consts::ARCH,
-            "product_target":"Windows 11 x64","windows_version_check":"not_implemented",
-            "read_only":true,"persistent_history":false,"actions_available":cfg!(windows),
+            "product_target":"Windows 11 / Ubuntu 22.04+","windows_version_check":"not_implemented",
+            "read_only":true,"persistent_history":false,"actions_available":pcagent_agent::capabilities::Platform::current().has_native_backend(),
             "nebius_key_configured":creds.get("NEBIUS_API_KEY").is_some(),"nebius_model_configured":creds.get("NEBIUS_MODEL_ID").is_some(),
             "credentials_file_found":creds.file_found(),
             "cloud_check":match &cloud_result { None=>"not_requested".to_string(),Some(Ok(_))=>"catalog_ok".to_string(),Some(Err(e))=>e.to_string() },
@@ -181,5 +184,11 @@ pub(super) fn doctor(options: options::Doctor, json: bool) -> Result<u8> {
     } else {
         print_doctor(&creds, cloud_result.as_ref(), &limits)?;
     }
-    Ok(if cfg!(windows) && !cloud_failed { 0 } else { 3 })
+    Ok(
+        if pcagent_agent::capabilities::Platform::current().has_native_backend() && !cloud_failed {
+            0
+        } else {
+            3
+        },
+    )
 }

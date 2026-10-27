@@ -1,5 +1,5 @@
 //! Provider configuration, model choices and local capabilities for settings.
-use pcagent_agent::capabilities::{Capability, Probes};
+use pcagent_agent::capabilities::{Capability, Platform, Probes};
 use pcagent_agent::credentials::{Credentials, Source};
 use pcagent_nebius::Config;
 use serde::Serialize;
@@ -78,6 +78,7 @@ pub struct ModelChoice {
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub version: &'static str,
+    pub platform: &'static str,
     pub cloud: Cloud,
     pub models: Vec<ModelChoice>,
     /// What this PC and installation offer (`pcagent_agent::capabilities`), see [`capabilities`].
@@ -89,6 +90,7 @@ pub fn app_info(
 ) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION"),
+        platform: std::env::consts::OS,
         cloud: cloud(creds),
         models: MODELS
             .iter()
@@ -102,15 +104,28 @@ pub fn app_info(
 /// like the model's catalog, the page counts an unknown capability as present. The capabilities
 /// of a turn (approved storage scopes, web lookups, action proposals) are decided when it starts.
 pub fn capabilities(history_sampler: bool, probes: Probes) -> BTreeMap<&'static str, Option<bool>> {
+    let native = Platform::current().has_native_backend();
     BTreeMap::from([
         (Capability::Windows.name(), Some(cfg!(windows))),
+        (Capability::Linux.name(), Some(cfg!(target_os = "linux"))),
+        (Capability::Macos.name(), Some(cfg!(target_os = "macos"))),
+        (Capability::LiveTelemetry.name(), Some(native)),
+        (Capability::SystemInspection.name(), Some(native)),
+        (Capability::NativeActions.name(), Some(native)),
         (Capability::HistorySampler.name(), Some(history_sampler)),
         (
             Capability::ElevatedHelper.name(),
-            Some(probes.elevated_helper),
+            Some(native && probes.elevated_helper),
         ),
         (Capability::NvidiaGpu.name(), probes.nvidia_gpu),
         (Capability::Battery.name(), probes.battery),
-        (Capability::NtfsVolumes.name(), probes.ntfs_volumes),
+        (
+            Capability::NtfsVolumes.name(),
+            if cfg!(windows) {
+                probes.ntfs_volumes
+            } else {
+                Some(false)
+            },
+        ),
     ])
 }

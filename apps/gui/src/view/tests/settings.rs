@@ -18,9 +18,14 @@ fn app_info_lists_the_capabilities_of_this_pc_with_unknown_probes_as_null() {
     let shown = serde_json::to_value(&info).unwrap();
     assert_eq!(
         shown["capabilities"],
-        serde_json::json!({"windows": cfg!(windows), "history_sampler": false,
-            "elevated_helper": true, "nvidia_gpu": false, "battery": null, "ntfs_volumes": true})
+        serde_json::json!({"windows": cfg!(windows), "linux": cfg!(target_os="linux"),"macos": cfg!(target_os="macos"),
+            "live_telemetry":pcagent_agent::capabilities::Platform::current().has_native_backend(),
+            "system_inspection":pcagent_agent::capabilities::Platform::current().has_native_backend(),
+            "native_actions":pcagent_agent::capabilities::Platform::current().has_native_backend(),
+            "history_sampler": false,
+            "elevated_helper": pcagent_agent::capabilities::Platform::current().has_native_backend(), "nvidia_gpu": false, "battery": null, "ntfs_volumes": cfg!(windows)})
     );
+    assert_eq!(shown["platform"], std::env::consts::OS);
     // The existing fields keep their shape.
     assert!(shown["version"].is_string() && shown["cloud"].is_object());
     assert_eq!(shown["models"].as_array().map(Vec::len), Some(MODELS.len()));
