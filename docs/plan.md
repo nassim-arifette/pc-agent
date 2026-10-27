@@ -62,7 +62,7 @@ Principes de la spec v0.1 qui restent valables :
 | Le modèle ne renvoie que des identifiants (`{"finding_ids":…,"observation_ids":…}`) et n'a pas le droit d'écrire ; le texte affiché vient de modèles de phrases locaux. | [`SYSTEM`](../crates/agent/src/lib.rs) |
 | Les réponses possibles se limitent à 12 catégories locales. | [`Classification`](../crates/diagnostics/src/lib.rs) |
 | Noms d'exécutables et chemins ne partent jamais : le modèle voit `proc-00000001`, `file-3`. | [`workstation.rs`](../crates/tools/src/workstation.rs) |
-| Sans admin, 155 processus sur 332 refusent `OpenProcess` : mesures « partielles » presque toujours, et Defender, Memory Compression ou dwm invisibles. | [`windows/mod.rs`](../crates/telemetry/src/windows/mod.rs) |
+| Sans admin, 155 processus sur 332 refusent `OpenProcess` : mesures « partielles » presque toujours, et Defender, Memory Compression ou dwm invisibles. | [`os/windows/mod.rs`](../crates/telemetry/src/os/windows/mod.rs) |
 | Une mesure d'une seconde au moment de la question ; l'historique de métriques n'existe qu'en mémoire. | [`history.rs`](../crates/telemetry/src/history.rs) |
 | Une question donne un rapport : ni suivi ni historique. L'interface s'ouvre sur un tableau de bord, en mode local par défaut. | [`investigate`](../crates/agent/src/lib.rs), [`prefs.js`](../apps/gui/ui/js/prefs.js) |
 | L'interface n'affiche aucune proposition d'action : « que puis-je supprimer ? » n'a pas de réponse concrète. | [docs/gui.md](gui.md) |
@@ -149,6 +149,12 @@ Le schéma de `submit_answer` reste fermé :
 - `action_refs` : uniquement des propositions créées pendant le tour par `prepare_action_plan` ou,
   pour une analyse approfondie, par `propose_elevated_check` (chantier 8). Rien ne s'exécute sans
   clic.
+- **Analyse approfondie (#62/#83, 27 octobre)** : `propose_elevated_check(tasks)` accepte
+  uniquement une liste non vide, sans doublon, parmi `system_caches`, `shadow_storage`,
+  `disk_reliability`, `battery_energy`, `mft_inventory`, `process_images`. La proposition créée
+  pendant le tour ne contient aucun chemin, PID, commande, budget ni autorisation. Sa référence
+  dans `action_refs` ouvre la revue locale ; les volumes NTFS fixes et identités de processus
+  sont résolus sur le PC, jamais par le modèle. ETW n'est pas proposé par ce catalogue.
 - `follow_ups` : affichées comme boutons sous la réponse.
 - Sources web (chantier 15) : citations `[W1]` et vérification décrites en C6.
 
@@ -199,8 +205,41 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
   exacte épinglée) dans `%APPDATA%\pcagent\pcagent.sqlite`. Tables `conversations`, `turns` (JSON
   versionné) et `samples` (chantier 5). Tout reste local ; rétention par défaut de 90 jours,
   suppression par conversation et « tout effacer ».
-- Surveillances : leurs tables et leur rétention sont décrites en C7 ; le numéro de migration
-  suit les migrations effectivement livrées, sans réserver celui du prochain chantier.
+- Surveillances : leurs tables et leur rétention sont décrites en C7. Coordination du 27 octobre :
+  le schéma livré est 6 (`turn_images`) ; Surveillances prend 7, Historique 8, les résultats
+  approfondis persistants 9. Les migrations sont séquentielles : aucun saut de version ni
+  migration vide à la place d'un autre lot. Chaque PR de code dépend de ses prédécesseurs
+  fusionnés, ou d'un unique socle de migrations relu et fusionné en premier.
+- **Résultats approfondis (#62/#83, 27 octobre)** : SQLite conserve localement les inspections
+  approuvées, leur section et leur fenêtre réelle pendant 24 h, y compris après redémarrage.
+  La purge à l'écriture et à la lecture et « tout effacer » les couvrent ; l'expiration se calcule
+  depuis la mesure, jamais depuis la dernière lecture. La sélection `elevated_inspection` fige
+  une de ces inspections pour Expliquer / Enquêter, sans remettre sa date à maintenant.
+  Le modèle reçoit la projection C4/C5 déjà utilisée pour les outils, avec son âge et la
+  consigne de parler au passé. Les identités du protocole, chemins, SID et arbres MFT locaux ne
+  partent pas. L'aperçu exact inclut ces mêmes mesures avant l'envoi. Ni le cache en mémoire ni
+  une limite de huit entrées ne doivent faire disparaître les sections d'un lot encore valide.
+
+#### Complément du 27 octobre — historique système et budget disque (#58, #59)
+
+- Une migration transactionnelle ajoute `system_samples` : une ligne par échantillon brut ou
+  résumé minute, horodatage et colonnes pour les métriques système, avec leurs métadonnées de
+  mesure (origine, statut, couverture, fenêtres, poids et extrema). Aucun JSON de processus
+  n'est nécessaire pour lire une courbe système. La migration reprend les anciennes lignes,
+  compactes ou non, sans inventer une mesure absente ; les écritures suivantes et les
+  agrégations maintiennent les deux représentations atomiquement.
+- Les noms locaux des contributeurs d'événements sont conservés séparément des charges
+  d'échantillons, avec la même rétention. Ils ne quittent le PC que par la projection C5.
+- Budget de collecte par défaut : 256 Mio de données d'historique actives (échantillons,
+  métadonnées système, noms, événements et enregistrements), hors conversations et images.
+  La maintenance compacte d'abord les relevés bruts hors enregistrement en cours puis
+  supprime les périodes les plus anciennes si nécessaire. Les sept jours sont une durée
+  maximale, pas une promesse lorsque le budget est atteint ; lacunes et dates réellement
+  conservées sont explicites. Aucun échec de collecte n'est transformé en zéro.
+- La vue Collecte montre les octets actifs imputés à l'historique, le budget, la taille
+  physique SQLite/WAL, la période conservée et les suppressions dues au budget. Les pages
+  libres réutilisables ne sont pas assimilées à des données actives. Les conversations
+  et les pièces jointes ne sont jamais supprimées pour satisfaire le budget de collecte.
 
 #### Complément du 26 octobre — image jointe (#55)
 
@@ -229,6 +268,25 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 
 ### C3 — Commandes et événements de l'app
 
+#### Complément du 27 octobre — textes fermés et accessibilité (piste C, #71)
+
+Les textes produits par le cœur et présentés à la personne (constats, faits, couverture,
+limites, étapes, erreurs, propositions d'action et vérifications administrateur) sont rendus
+depuis des codes fermés et des valeurs typées, avec dictionnaires français/anglais. Ce contrat
+s'applique à la fenêtre et aux rendus humains CLI/évaluation ; les objets JSON de mesure et les
+phrases libres du modèle ne sont pas traduits par substitution. Les archives anciennes sans code
+restent lisibles et sont explicitement distinguées des nouveaux textes localisables. Aucun nouveau
+texte ni identifiant personnel n'est ajouté aux envois C5. Le vérificateur continue à signaler,
+sans rédiger ni traduire la réponse.
+
+La fenêtre expose noms accessibles, navigation clavier, focus visible et annonces des étapes et
+réponses en cours. Elle respecte la réduction des animations et les couleurs contrastées de
+Windows. La validation couvre le parcours simulé complet en français/anglais, clair/sombre et
+contraste élevé, axe, puis Narrateur et NVDA dans l'application native sous compte standard ;
+les résultats et limites réellement constatés sont consignés dans `docs/accessibility.md`.
+Les autorisations d'action et d'élévation restent inchangées : proposition, revue locale, clic
+explicite et UAC pour une vérification élevée ; jamais de modèle ni réseau dans le programme élevé.
+
 | Commande | Rôle |
 | --- | --- |
 | `conversations_list()` | titres, dates, état du dernier tour |
@@ -245,6 +303,55 @@ Ils remplacent `inv:*`. Les commandes existantes du stockage et des réglages re
 les compléments du 6 octobre ci-dessous leur ajoutent des lectures pour les vues Stockage et
 Historique. Le réglage « recherche web » et la clé Tavily sont décrits en C6, les commandes et
 événements des surveillances en C7.
+
+#### Complément du 27 octobre — vocabulaire neutre multi-OS (phase 5)
+
+Les contrats C1 à C7 ont été écrits pour Windows ; leurs notions restent valables sur Linux et
+macOS une fois nommées de façon neutre. À partir de cette date, le code, les outils et les textes
+emploient les termes de gauche ; la colonne de droite dit ce que chaque OS lit ou fait. Aucune
+commande C3 ne change de nom : seuls les lectures natives derrière changent d'OS.
+
+| Terme neutre (outils, C4, C5) | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| **mémoire engagée** (`system_commit_bytes`, `system_commit_limit_bytes`) | charge de validation et limite (`PERFORMANCE_INFORMATION`) | `Committed_AS` et `CommitLimit` de `/proc/meminfo` (sémantique Linux, pas l'usage RAM) | `unsupported` sans équivalent ; pages câblées, compression et swap restent des métriques distinctes |
+| **éléments de démarrage** (`get_startup_programs`, actions `DisableUserStartup` / `RestoreUserStartup`) | `HKCU\…\Run`, dossier Démarrage, `StartupApproved` | fichiers `.desktop` de `~/.config/autostart` (clé `Hidden=true` pour désactiver), unités systemd utilisateur activées | agents `launchd` de l'utilisateur, « Ouvrir avec la session » |
+| **services** (`get_services`, attribution service → processus) | gestionnaire de services (SCM) | unités systemd (`systemd1` via D-Bus ou `systemctl --output=json`), pid principal et état | démons et agents `launchd` |
+| **événements système** (`get_recent_events`) | journal des événements (System, Application) | journald (`journalctl --output=json`, priorités 0–4, 7 jours) | journal unifié (`log show`) |
+| **pages de réglages** (`OpenSettingsPage`) | URI `ms-settings:` sur liste finie | commandes de réglages du bureau sur liste finie (`gnome-control-center <panneau>`, `systemsettings`), sinon `xdg-open` d'un URI connu | `x-apple.systempreferences:` sur liste finie |
+| **gestionnaire de fichiers** (`OpenInExplorer`) | Explorateur | `xdg-open` du dossier parent | Finder |
+| **corbeille** (`RecycleSelectedFiles`) | corbeille Windows | corbeille XDG (`~/.local/share/Trash` : `files/` + `info/`) | corbeille macOS |
+| **invite d'élévation** (chantier 8) | UAC (`runas`) | polkit (`pkexec`) vers le même helper borné, sans réseau ni modèle | autorisation macOS |
+| **mises à jour en attente** (`get_drivers`, offres) | Windows Update | apt/dnf/flatpak : caches locaux par défaut ; rafraîchissement réseau uniquement sur demande explicite | `softwareupdate -l` sur demande explicite |
+
+Les champs sérialisés gardent leur nom actuel (`working_set`, `commit`, `startup_item`…) pour ne
+pas casser les traces, les snapshots et l'évaluation ; la source (`source`) de chaque observation
+nomme la lecture réelle (`/proc/meminfo`, `journalctl`, `NtQuerySystemInformation`…). Ce qui n'a
+pas d'équivalent sur un OS reste `unsupported` avec sa raison (C4) : MFT, VSS, ETW et Windows
+Update restent Windows ; les capteurs LHM/HWiNFO aussi.
+
+#### Complément du 27 octobre — dictée locale au microphone
+
+- `voice_start(options)` démarre uniquement sur un geste local, sans élévation ; renvoie un
+  identifiant de session. `voice_stop(session_id, cancel)` arrête la capture et finalise le texte,
+  ou détruit le brouillon si `cancel=true`. `voice_state()` expose l'état courant, le niveau,
+  le texte partiel/final, la langue détectée et un code d'erreur fermé ; aucun octet audio.
+- `voice_devices()`, `voice_settings_get/set()` choisissent le périphérique et le moteur :
+  whisper.cpp multilingue local en priorité, SAPI confirmé hors ligne en repli si le modèle
+  manque. Le repli ne doit jamais utiliser la dictée cloud `Windows.Media.SpeechRecognition` ; une grammaire locale
+  ou un moteur hors ligne indisponible donne une erreur explicite, jamais un envoi implicite.
+- `voice_model_download(consent)` n'accepte que le modèle multilingue épinglé par l'application :
+  source HTTPS fixe, taille et empreinte SHA-256 affichées avant le clic, progression et
+  annulation, contrôle de taille et d'empreinte avant installation dans les données de l'app.
+  `voice_model_delete()` supprime le modèle local. Aucun URL ou chemin arbitraire fourni par la
+  page. Réglages et fichiers de modèle restent distincts de l'historique.
+- Les événements `voice:state` portent l'identifiant de session ; une ancienne session ne peut
+  remplir un autre brouillon. Un seul microphone actif, libéré à l'arrêt, à l'annulation, en
+  quittant la conversation, en masquant ou fermant la fenêtre et à la fermeture de l'app.
+  Aucune limite de durée de dictée : traitement par morceaux en mémoire, sans fichier audio.
+- Consentement micro et téléchargement séparés, périphérique choisi et niveau visibles,
+  erreurs explicites (absence de périphérique, autorisation refusée, modèle absent/corrompu,
+  moteur indisponible). Windows standard uniquement ; autres OS compilent avec un statut
+  `unsupported` tant que leur capture native n'est pas disponible.
 
 #### Complément du 26 octobre — préparation et envoi d'une image (#55)
 
@@ -364,8 +471,23 @@ gardent leur nom ; elles gagnent des champs ou des valeurs.
   approfondie » et la référence d'une proposition `propose_elevated_check` (chantier 8). Une
   proposition ne fait que préremplir l'écran de revue ; `elevation_run` reste déclenché par le seul
   clic local, suivi de l'invite de Windows.
+- **Précision #62/#83 (27 octobre)** : la revue énumère toutes les sections et tous les volumes
+  concernés, permet de décocher, et indique ce qui reste seulement local. Le temps passé à lire
+  n'entame ni la validité du consentement ni le budget de lecture : la requête exécutable est
+  scellée au clic d'autorisation. Une seule invite UAC couvre le lot, avec un résultat et un
+  statut par section, même en cas d'échec partiel. L'historique local des analyses est
+  sélectionnable ; « Demander à l'IA » et « Reposer la question avec ce résultat » reprennent
+  le fil courant (un nouveau fil seulement s'il n'y en a pas). Le bouton complet est disponible
+  dans Chat (accueil et réponses), PC en direct, Stockage et le guide de premier lancement.
 
 #### Complément du 6 octobre : Stockage en carte, arbre et liste
+
+Mise en œuvre approuvée le 27 octobre (#67, item 2) : le lot livre ce complément
+intégralement, sans nouveau plafond de navigation ni lecture de contenu. Les pages de 50 éléments
+sont une pagination, pas une limite du scan. La nouvelle sélection annule le calcul de faits
+précédent ; une sélection déjà invalide est refusée avant de lancer ce calcul. L'annulation ne
+met jamais des faits incomplets dans le cache. Les analyses récentes de la session gardent
+uniquement le chemin local et la date ; le dernier index seul reste autorisé et conservé.
 
 Ce complément sert la vue Stockage de la phase 2 (chantier 6, branche `wp6-storage-map`) : deux
 commandes de lecture locale et des faits figés pour un élément de scan. Il ne change ni
@@ -436,25 +558,32 @@ Preuves).
 
 #### Complément du 6 octobre : vue Historique
 
-Ces deux commandes servent la barre secondaire et l'inspecteur de la vue Historique (chantier 6,
-phase 2, branche `wp6-history`). Elles ne modifient ni C1, ni ce qui quitte le PC (C5), ni le
-schéma de la base (la migration 6 appartient à C7). Les commandes existantes gardent leur forme ;
-seul le contenu de `metric_history` change (voir Noms).
+Ces commandes servent la barre secondaire et l'inspecteur de la vue Historique (chantier 6,
+phase 2). Le complément du 27 octobre (#58, #59) remplace les cinq lectures de courbes par une
+lecture commune sur la table système de C2. Il ne modifie ni C1 ni ce qui quitte le PC (C5).
+Les commandes existantes gardent leur forme ; seul le contenu de `metric_history` change
+(voir Noms et événements).
 
 | Commande ajoutée | Rôle |
 | --- | --- |
+| `history_chart(from_unix_ms, to_unix_ms, buckets)` | toutes les courbes système en une passe SQL, environ 300 seaux moyenne/minimum/maximum (densité demandée selon la largeur, un point pour 2–3 px), couverture et lacunes conservées ; événements et noms envoyés une fois, total exact ; cache par fenêtre, densité et révision des données/dernier échantillon ; une seule source de sélection publiée par chargement |
 | `history_overview(day_start_unix_ms)` | nombre d'événements détectés sur la dernière heure, depuis le minuit local fourni par la page (au plus 25 h avant maintenant, sinon refusé) et sur les 7 derniers jours (`periods`) ; fin du dernier événement (`latest_event_ended_at_unix_ms`) ; les 20 derniers enregistrements, celui en cours compris, du plus récent au plus ancien, et s'il en existe d'autres (`more_recordings`). Comptes indexés du stockage local : aucune collecte, aucune source de sélection publiée |
 | `recording_detail(recording_id)` | un enregistrement avec, sur sa durée, les 10 plus hauts pics de processeur par processus, les pics GPU, lecture et écriture (10 par métrique), sa courbe de processeur (120 points au plus) et ses relevés de batterie. Un identifiant mal formé est refusé ; un identifiant inconnu ou effacé renvoie `null`. Une seule lecture sert la réponse et la source `recording` publiée, la même que celle de `battery_recording`, qui compte dans le registre de 96 sources |
+| `history_recordings(offset, limit)` | accès paginé à tous les enregistrements conservés, total exact ; la limite est une taille de page, jamais une limite de consultation |
+| `history_collection()` | occupation mesurée, budget disque et rétention effective de C2, sans collecte ni publication de source |
 
 - Appel depuis la page : `{dayStartUnixMs}` et `{recordingId}`.
 - Un événement compte dans une période s'il la chevauche, comme dans `metric_history`. Les
-  décomptes ne sont pas plafonnés ; une lecture de `metric_history` reste limitée à 100
-  événements.
+  décomptes et les événements conservés ne sont plus plafonnés à 100 ; la liste visible est
+  progressive (« +N »), sans masquer l'existence du reste. La réponse cible environ 100 Ko
+  pour les courbes ; les événements réels s'y ajoutent sans troncature silencieuse.
 - Rechargement : la page interroge `history_overview` toutes les 60 s au plus et ne relit les
-  courbes (`metric_history`) que si un décompte ou la fin du dernier événement change ; les
-  7 jours ne se relisent qu'à la demande. Aucun rechargement pendant une boîte de dialogue ou un
+  courbes (`history_chart`) que si un décompte, la fin du dernier événement ou le dernier
+  échantillon change ; les 7 jours ne se relisent qu'à la demande. L'aperçu inclut donc le
+  dernier échantillon et une révision détectant aussi effacement et rétention. Aucun
+  rechargement pendant une boîte de dialogue ou un
   aperçu de partage ouverts, pour ne pas évincer du registre la source en cours de relecture.
-  Avant d'activer ce minuteur, le coût d'une lecture `metric_history` sur 24 h et sur 7 jours et
+  Avant d'activer ce minuteur, le coût d'une lecture `history_chart` sur 24 h et sur 7 jours et
   la taille des sources publiées sont mesurés dans l'app Windows.
 - Noms : `metric_history` inclut toujours le nom des programmes cités par les événements renvoyés
   (`contributor_ref`), même au-delà des 200 noms qu'il garde ; le contenu change, pas la forme. Un
@@ -481,10 +610,78 @@ seul le contenu de `metric_history` change (voir Noms).
 
 Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la période (instant ou
 fenêtre en secondes), l'entité, la métrique, la valeur, l'unité, un statut (`ok`, `partial`,
-`denied`, `unsupported`, `needs_admin`) et la source (API Windows utilisée). S'y ajoute une
-couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format actuel, on ne le
+`denied`, `unsupported`, `needs_admin`) et la source (API native ou fichier système utilisé : Win32/WMI/ETW sous
+Windows, Mach/libproc/IOKit/launchd sous macOS, `/proc`/`/sys`/systemd sous Linux). S'y ajoute une
+couverture qui dit ce qui n'a pas pu être lu et pourquoi. Sur chaque OS, un capteur que le système
+réserve à l'administrateur (par exemple `powermetrics` sous macOS) est déclaré `needs_admin` ou
+`unsupported` avec sa raison ; aucune valeur n'est substituée. Les métriques gardent le même nom
+d'un OS à l'autre (mémoire résidente, CPU en points de base, E/S cumulées) et une note de source
+précise ce que l'OS mesure réellement derrière ce nom. On étend le format actuel, on ne le
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
+
+#### Complément du 27 octobre — ETW et fluidité en jeu (E06)
+
+Les mesures ETW approuvées localement rejoignent les observations C4, jamais une réponse
+rédigée par le collecteur. La fenêtre porte sa durée réellement observée, les événements
+perdus, le nombre d'échantillons et les causes de couverture partielle. Une absence d'événement
+ou de capteur donne une valeur absente avec son statut, jamais zéro.
+
+E06 mesure les intervalles de présentation par processus et par chaîne de présentation :
+fréquence moyenne = nombre d'intervalles / somme des intervalles ; « 1 % low » = inverse de
+la moyenne du centile des intervalles les plus longs (arrondi supérieur, au moins un) ;
+saccades = intervalles strictement supérieurs à deux fois la médiane. Ce sont des
+présentations de l'application, pas une promesse d'images effectivement affichées. Les
+processus réutilisant un PID et les chaînes distinctes ne sont pas fusionnés. Occupation GPU,
+pression VRAM et indicateurs NVML de bridage thermique/puissance gardent leur source, période
+et portée (GPU global ou processus) ; un indice CPU/GPU reste une hypothèse locale, pas une
+causalité prouvée. Tous les nombres citables passent par le même vérificateur C1.
+
+Les identifiants ETW, PID, adresses, pointeurs de fichiers et chaînes de présentation restent
+locaux ; les entités projetées sont opaques. Les E/S par fichier utilisent des références
+opaques, sans contenu ni chemin collecté ou envoyé. Aucun nom de fichier supplémentaire
+n'est autorisé par ce complément. Les noms de programmes et toutes les mesures suivent C5
+et l'aperçu exact « Voir ce qui part ». Le modèle ne démarre aucune capture.
+
+**Complément du 27 octobre — registre des capacités par OS (phase 5).** Le registre
+(`crates/agent/src/capabilities.rs`) ne porte plus une capacité « Windows » unique : il déclare la
+**plateforme** du tour (`windows`, `linux`, `macos`) et des capacités sondées sur ce PC, chacune
+avec une raison quand elle manque. Les outils du catalogue n'exigent plus « Windows » mais la
+capacité qu'ils utilisent réellement :
+
+| Capacité | Sens | Windows | Linux | macOS |
+| --- | --- | --- | --- | --- |
+| `live_metrics` | mémoire, processeur, processus, disques à l'instant | API natives | `/proc`, `/sys` | `libproc`, `host_statistics` |
+| `system_inspection` | démarrage, services, événements, état, matériel, nettoyage | API Windows | XDG, systemd, journald, `/sys` | launchd, `log show` |
+| `native_actions` | actions locales approuvées (démarrage, corbeille, dossiers, réglages, nettoyage) | oui | oui | oui |
+| `elevated_helper` | helper borné installé à côté de l'app | UAC | polkit (`pkexec`) | autorisation |
+| `history_sampler`, `storage_scopes`, `web_search`, `action_proposals` | inchangés | | | |
+| `nvidia_gpu` | NVML lisible | oui | oui si `libnvidia-ml.so.1` | non |
+| `battery` | batterie lisible | API d'alimentation | `/sys/class/power_supply` | IOKit |
+| `fixed_volumes` (ex-`ntfs_volumes`) | volumes fixes mesurables | NTFS | `statvfs` + `/proc/diskstats` | APFS |
+| `disk_counters` | latence/file/occupation disque | PDH | `/proc/diskstats` (deltas) | non |
+| `gpu_engines` | moteurs GPU agrégés | PDH | non (NVML seul) | non |
+| `pending_updates` | mises à jour en attente lisibles | Windows Update | apt/dnf/flatpak présent | `softwareupdate` |
+| `mft_scan`, `vss`, `etw`, `hardware_sensors` | réservés Windows | oui | `unsupported` | `unsupported` |
+
+Chaque vue de l'app lit ce registre : une vue dont la capacité manque est masquée ou affiche la
+raison (« non disponible sur Linux : … », « helper non installé »), jamais un zéro ni une liste
+vide silencieuse. `pcagent doctor` liste les capacités de ce PC et renvoie 0 dès que `live_metrics`
+est disponible sur l'OS courant.
+
+**Complément du 27 octobre — navigateurs (#60).** Le type de processus est dérivé localement
+dans un ensemble fermé : principal du navigateur, onglet/site, extension, GPU, réseau, stockage,
+audio, décodage média, utilitaire, gestionnaire de crash, inconnu. La ligne de commande n'est
+ni gardée ni envoyée. Firefox, Chromium (Chrome, Edge), Electron et WebView2 sont couverts ;
+les hôtes WebView2 gardent l'attribution par parents validés du #61. Chaque application expose
+les comptes et les sommes mesurées par type (mémoire résidente, mémoire privée, CPU et E/S),
+avec les mêmes identifiants de preuve, unités, fenêtre et couverture que les autres mesures.
+Ces agrégats sont calculés avant tout classement de l'affichage. Les working sets peuvent se
+recouper : ni leur somme ni le nombre de renderers ne représente la mémoire ou le nombre des
+onglets. Une lecture refusée, une identité périmée ou un type inconnu reste explicitement inconnu.
+Le modèle reçoit ces types et totaux selon C5, jamais les arguments, sites ni titres. Aucun lien
+onglet→processus ou mémoire par onglet n'est inventé ; les extensions Firefox peuvent partager
+le type onglet/site. Le gestionnaire du navigateur donne le détail qu'il est seul à connaître.
 
 ### C5 — Ce qui quitte le PC
 
@@ -503,6 +700,15 @@ contenu de notification ni règle arbitraire n'est envoyé. En mode Local, aucun
 
 Jamais, quel que soit le mode : le nom d'utilisateur, le chemin du profil en clair, les lignes de
 commande, le contenu des fichiers, les clés et secrets, les identifiants de la machine.
+
+**Complément du 27 octobre — navigateurs (#60).** Le type de processus est dérivé localement ;
+la ligne de commande n'est ni gardée ni envoyée (pas de cache, journal, SQLite ou capture
+d'évaluation). Seuls le type fermé, sa couverture et les totaux mesurés rejoignent les preuves
+C4. Les titres d'onglets sont locaux seulement : titre actif par fenêtre et liste des titres par
+UI Automation, uniquement à la demande de l'utilisateur. Ils vivent dans la vue locale, hors
+des sources de sélection, de l'historique SQLite, des journaux, des captures d'évaluation et de
+tous les aperçus/envois modèle. « Voir ce qui part » conserve la même projection exacte, sans
+aucun titre. Les comptes et libellés de type ne sont pas des titres ni des noms de sites.
 
 « Complet » est le mode par défaut. Décision du 9 octobre : aucun dialogue avant l'envoi, ni au
 premier usage, ni à chaque question. Sous la zone de saisie, des bascules montrent ce qui part et se
@@ -540,8 +746,22 @@ l'implémentation. L'exception porte uniquement sur les pixels explicitement joi
 n'autorise pas l'envoi de chemins, secrets ou identités supplémentaires dans le texte, les
 outils ou les métadonnées.
 
+Complément du 27 octobre — voix : **l'audio ne quitte jamais le PC ; seul le texte reconnu,
+relu par l'utilisateur, part** après son clic Envoyer, par le même aperçu exact que la saisie
+clavier. La reconnaissance n'effectue aucun appel réseau, y compris avec le moteur Windows :
+pas de grammaire de dictée cloud. Les échantillons restent en mémoire pendant la capture et
+l'inférence, puis sont abandonnés ; aucun enregistrement audio, journal de transcription,
+historique audio ou pièce jointe audio. Seul le texte effectivement envoyé rejoint l'historique
+ordinaire C2. Le téléchargement du modèle envoie une requête HTTPS sans contenu utilisateur.
+Le catalogue Nebius relu le 27 octobre n'annonce aucun modèle Omni/audio et ne fournit pas de
+champ `capabilities` ni `supported_features` sur cette réponse : l'absence de métadonnées ne
+prouve pas une capacité audio. Si un modèle audio apparaît ultérieurement, sa sélection
+explicite et un aperçu exact des données audio nécessiteront un nouveau complément C5 ;
+aucune détection de catalogue ne peut activer un envoi audio dans ce lot.
+
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
-Les surveillances (C7) n'envoient rien hors du PC.
+Les surveillances (C7) n'envoient rien automatiquement hors du PC ; leur explication explicite
+suit la projection C5 et l'aperçu exact décrits en C7.
 
 ### C6 — Sources externes (proposé le 3 octobre ; chantier 15)
 
@@ -578,6 +798,21 @@ identifiant de la machine.
 La recherche en ligne de Windows Update et le téléchargement des pages release health partent
 vers Microsoft sans passer par le modèle, comme les mises à jour de Windows elles-mêmes. Les docs
 de confidentialité le disent.
+
+**Complément C6 — cache local et release health (27 octobre).** Les résultats réussis sont
+conservés localement, indexés par outil et requête normalisée (espaces/casse, domaines triés et
+pays inclus). Durée de validité : 24 h pour les prix et notes de pilotes, 7 jours pour les
+problèmes connus et les fiches constructeur ; pages release health : 24 h. Ni erreurs, ni
+refus, ni clés ne sont mis en cache. Un résultat périmé n'est jamais présenté comme frais ;
+une horloge revenue avant la consultation invalide l'entrée. Le cache ne contourne pas la
+bascule web ni le mode local. Les identifiants `[W…]` sont réattribués à chaque tour ;
+l'observation conserve la date de consultation d'origine et la date de réutilisation, et les
+Sources affichent « résultat en cache du … ». Un replay relit exclusivement sa capture, jamais
+le cache courant ni le réseau. Les crédits Tavily effectivement facturés sont affichés à part
+du coût des modèles (zéro sur un cache), sans transformer le tarif indicatif par crédit en
+facture certaine. Les pages Microsoft proviennent d'une liste locale d'URL officielles HTTPS,
+sans redirection ni identifiant envoyé dans l'URL ; les identifiants de blocage mesurés sont
+cherchés dans leur texte en local. Leur téléchargement reste soumis au choix web visible.
 
 ### C7 — Surveillances (adopté le 6 octobre ; chantier 6, phase 2)
 
@@ -743,6 +978,21 @@ qui évalue ; `watch:open` au clic sur une notification.
 - GPU par processus : instances `pid_…` du compteur PDH `GPU Engine`.
 - Regroupement par application (navigateur, IDE, Docker…) : somme des processus d'une même image et
   de ses enfants.
+- **Lot #60, approuvé le 27 octobre :** lire la ligne de commande par
+  `NtQueryInformationProcess(ProcessCommandLineInformation)` avec
+  `PROCESS_QUERY_LIMITED_INFORMATION` (repli WMI), vérifier PID et création, classifier puis
+  jeter la chaîne immédiatement. Aucun droit administrateur et aucune commande exécutée.
+  PC en direct et l'inspecteur affichent le résumé par navigateur et un détail triable par type,
+  avec la note sur les mémoires partagées ; le modèle reçoit exactement les agrégats C4.
+  `EnumWindows`/`GetWindowTextW` fournit les titres actifs des fenêtres ; UI Automation fournit
+  tous les titres disponibles à la demande, strictement dans la vue locale (C5).
+  Une action fermée « Ouvrir le gestionnaire de processus du navigateur » ouvre le gestionnaire
+  Chrome/Edge ou `about:processes` de Firefox, après préparation locale, revue puis clic explicite.
+  Elle n'accepte ni URL ni commande libre du modèle, revérifie l'instance cible, reste sans
+  élévation et n'effectue aucune fermeture de processus. Electron/WebView2 sont classés mais ne
+  prétendent pas offrir un gestionnaire de navigateur lorsqu'ils n'en exposent pas.
+  Validation : jeux synthétiques et régressions de confidentialité ; tour EN/FR clair/sombre ;
+  Firefox et Edge/Chrome réels sous compte standard, aperçu exact et analyse Nebius.
 - **Fait quand :** sans admin sur le PC de dev, mémoire et CPU sont lus pour au moins 99 % des
   processus, et les pseudo-processus restants sont étiquetés. Defender, Memory Compression et dwm
   sont visibles, et le coût de la collecte est mesuré.
@@ -865,7 +1115,13 @@ recherche du chantier 15.
 - Échantillonnage en arrière-plan tant que l'app est ouverte :
   - toutes les 5 s, le système et les 20 premiers processus, dans la table `samples` ;
   - 7 jours conservés, agrégés à la minute au-delà de 24 h ;
-  - `get_metric_history` lit cette table et survit aux redémarrages.
+  - `get_metric_history` lit le chemin système étroit de C2 pour les courbes système, le détail
+    des processus seulement pour une requête de processus, et survit aux redémarrages.
+- Lot complet du 27 octobre (#58, #59, autorisé avant la soumission) : migration système,
+  commande groupée, budget disque actif de 256 Mio et rétention qui l'applique, vue Historique
+  complète du complément C3, intégration du bouton Surveiller par la cible événement C7.
+  Mesurer les changements de période (1 h, 24 h, 7 j), octets transférés et croissance par jour,
+  avant/après, dans `history-performance.md` ; afficher le coût disque dans Collecte.
 - « Enregistrer pendant le problème » : bouton dans la zone de saisie et outil `record_activity`.
   L'enregistrement prend un relevé par seconde pendant 30 à 120 s, avec des marqueurs de début et de
   fin, puis l'analyse suit. Le modèle peut le proposer dans `follow_ups`.
@@ -898,6 +1154,13 @@ recherche du chantier 15.
   5. les suggestions de suivi.
 - Accueil : la zone de saisie, quatre suggestions et une ligne d'état (« Mémoire 81 % · Processeur
   17 % · C: plein à 92 % »). Plus de tableau de bord en page d'accueil.
+- **Décision du 27 octobre (#71)** : quatre suggestions en grille 2 × 2 (une colonne uniquement
+  quand la largeur l'impose). La ligne d'état affiche ensemble mémoire, processeur et remplissage
+  de C:, issus de la dernière mesure ; une valeur absente reste inconnue, jamais zéro. Les alertes
+  de batterie et autres ressources restent visibles en complément, sans masquer ces trois mesures.
+  Le tour simulé couvre aussi une proposition d'action, sa revue, sa validation et son résultat
+  avant/après ; son nombre d'échantillons est cohérent avec la période annoncée. L'audit français
+  du tour et les tests de dictionnaires détectent les régressions de traduction et clés dupliquées.
 - Stockage : un dossier se joint à la conversation ; l'explorateur s'ouvre dans le panneau, avec une
   vue plein écran possible.
 - Refonte visuelle :
@@ -910,6 +1173,12 @@ recherche du chantier 15.
   dans la CI et le résultat reste embarqué dans l'exe.
 - Les données simulées (`apps/gui/dev/mock.js`) et les captures (`apps/gui/dev/tour.mjs`) couvrent
   les conversations pour la QA visuelle, ou leurs équivalents si la technique change.
+- Dictée locale (27 octobre) : bouton micro à bascule ou maintien, raccourci clavier, niveau
+  d'entrée, texte partiel puis insertion du texte final dans le brouillon **sans envoi automatique**,
+  langue FR/EN détectée, annulation et erreurs traduites. Une section Réglages permet de choisir
+  moteur et périphérique, consentir au téléchargement multilingue avec taille/progression,
+  l'annuler et supprimer le modèle. Tests synthétiques Rust et Node, mock EN/FR clair/sombre,
+  essai natif non-admin avec vraie entrée ou câble virtuel alimenté par WAV, `docs/voice.md`.
 - [docs/gui.md](gui.md) est réécrit à la fin du chantier.
 - **Fait quand :**
   - le parcours question → réponse → suivi → fermeture → réouverture avec l'historique fonctionne ;
@@ -977,6 +1246,11 @@ chantiers 5 et 8.
   citée, au clic comme au clavier, et la QA visuelle passe comme pour la phase 1.
 
 #### Phase 2 — Stockage, Historique et Surveillances (6 octobre)
+
+Lot Stockage repris le 27 octobre (#67, item 2) : hiérarchie et faits synthétiquement testés,
+carte/arbre/liste accessibles, inspecteur et sources figées, parcours de C: sans admin et d'un
+grand dossier, mock et tour anglais/français clair/sombre. Le défaut commun de la barre d'actions
+qui recouvre la ligne suivante (#68, Stockage et PC en direct) est corrigé dans ce lot.
 
 Le porteur du projet a demandé ces trois vues maintenant. Contrats : compléments du 6 octobre en
 C3 (Stockage, Historique) et C7 (Surveillances). Trois branches parallèles, `wp6-storage-map`,
@@ -1114,15 +1388,27 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   - 120 s au plus pour une tâche, annulable.
 - Lot « Analyse approfondie » (décision du 9 octobre) :
   - une seule invite UAC lance, l'une après l'autre, une liste fermée et versionnée : caches
-    système, points de restauration, santé des disques, énergie par application et MFT du disque
-    système. Ni le modèle ni la page ne composent la liste : l'écran de revue permet seulement de
-    décocher une tâche ou d'ajouter la MFT d'un autre disque NTFS du PC ;
+    système, points de restauration, santé des disques, énergie par application, MFT de **chaque
+    volume NTFS fixe** et images des processus. Le modèle propose seulement les familles de
+    sections du catalogue fermé ; le PC résout les cibles réelles et la revue les montre.
+    La revue permet de décocher, pas d'ajouter un chemin ou une commande arbitraire ;
   - protocole du helper en version 3 : une requête porte une tâche ou ce lot ; la réponse porte une
     section par tâche, avec son statut et sa couverture. Une tâche en échec ou hors délai n'annule
     pas les autres ;
-  - budget du lot plafonné, mesuré avant d'être fixé ; l'expiration de la requête laisse le temps
-    de lire l'écran de revue ; taille de réponse plafonnée par section ;
-  - les résultats rejoignent le cache de `get_approved_elevated_inspection`, une entrée par tâche.
+  - chaque section garde une lecture bornée (120 s au plus), un statut propre et une taille
+    de réponse bornée ; le budget du lot couvre toutes les sections choisies et la supervision,
+    sans tronquer la liste des volumes. Les mesures et délais réels sont consignés à l'acceptation.
+    Aucune expiration pendant la lecture de la revue : les identifiants exécutables et leur
+    expiration sont créés au clic local, séparément du temps laissé pour le consentement Windows ;
+  - les résultats rejoignent SQLite pour 24 h et `get_approved_elevated_inspection` les relit avec
+    leur âge réel (C2), une entrée par section ; ils deviennent des sources de sélection ;
+  - l'élévation par-dessus l'épaule est prise en charge sans élargir la DACL : le helper vérifie
+    le propriétaire de la requête contre le jeton du processus demandeur encore vivant, son
+    heure de création (contre la réutilisation d'un PID) et sa session Windows, identique à celle
+    du helper. Le SID n'est pas déduit du compte administrateur qui saisit ses identifiants.
+    La requête immuable est liée au digest et au nonce, consommée une seule fois ; réponses et
+    annulation restent dans le répertoire privé épinglé. Les comptes d'autres sessions, les
+    requêtes altérées, expirées ou rejouées sont refusés. Aucun service ni tâche planifiée ;
 - Tâches, par ordre d'intérêt (ordre revu le 1er octobre : la MFT passe avant la santé des disques) :
   1. tailles des caches système (`Windows.old`, cache Windows Update, Optimisation de la
      distribution, points de restauration) : souvent les plus gros éléments récupérables, invisibles
@@ -1133,6 +1419,35 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   3. santé des disques (compteurs de fiabilité, SMART) ;
   4. chemins complets des processus protégés ;
   5. trace ETW de 30 à 60 s pendant le problème (latence DPC/ISR, E/S disque par fichier).
+- **Activation ETW (27 octobre)** : session privée liée au job et à son secret ; aucune
+  autorité sur une session préexistante (`AlreadyExists`). Un gardien privilégié temporaire et
+  borné, sans réseau ni modèle, est armé avant `StartTrace`, détient le handle du contrôleur et survit à la mort du
+  contrôleur/GUI, y compris à la fermeture de leur job Windows kill-on-close. Il possède
+  `StartTrace` et le nettoyage ; il n'est pas lui-même dans ce job. Le parent non élevé peut
+  interroger et arrêter uniquement la session privée approuvée, avec les droits temporaires
+  `EventAccessControl` limités à son GUID. Le retrait de ces droits est délégué au gardien
+  privilégié, même après la terminaison du contrôleur/GUI : l'acceptation Windows 20348 a
+  montré que le compte standard ne peut pas appeler `EventAccessRemove`. Cette délégation
+  a été explicitement approuvée par le porteur le 27 octobre. Aucun groupe, fournisseur,
+  privilège global ni droit permanent n'est modifié. Aucun résultat numérique n'est livré
+  avant l'acquittement du nettoyage réussi. L'activation reste conditionnée aux quatre preuves
+  documentées dans `docs/etw.md`, dont le point 2 est remplacé par la délégation approuvée
+  ci-dessus (QUERY/STOP au parent, retrait des permissions au gardien). La documentation
+  technique et `scripts/etw-acceptance.ps1` devront refléter ce contrat et prouver :
+  fin normale, annulation, consommateur bloqué, watchdog, `TerminateProcess` du parent et
+  échec de démarrage. Aucun réglage ni variable d'environnement ne contourne ce prérequis.
+- **E06 — fluidité mesurée (avancé avant la soumission, 27 octobre)** : depuis PC en direct
+  et le chat, « Mesurer la fluidité pendant 30 s » ouvre une revue expliquant les processus,
+  les événements de présentation, les métriques C4 ci-dessus, les données locales et ce qui
+  peut partir au modèle. Le clic de validation puis l'invite UAC sont obligatoires ; la fenêtre
+  et le LLM restent standard. La capture se termine après 30 s (ETW approfondi : choix 30/60 s),
+  s'annule localement, puis alimente les sources et constats FR/EN. La durée est une fenêtre
+  de mesure explicite, pas une limitation du nombre de questions ou de captures. Une nouvelle
+  capture est toujours possible. Les adaptateurs sans événements/support NVML sont signalés
+  honnêtement ; aucune simulation n'est présentée comme mesure native.
+  Acceptation : charge graphique synthétique sous compte standard, invite administrateur,
+  question réelle Nebius « pourquoi mon jeu saccade ? » avec chiffres cités et vérifiés ;
+  timings, captures et limites matérielles réellement constatées accompagnent la PR.
 - Interface : un bouton « Analyse approfondie (administrateur) » dans Stockage, PC en direct,
   l'accueil du Chat et le premier lancement. Les tâches sont expliquées avant l'invite de Windows.
   Il est aussi proposé depuis le chat :
@@ -1261,6 +1576,23 @@ vérifiés parce que le modèle recopie des valeurs brutes (octets, compteurs `_
 - **Fait quand :** sur la campagne d'évaluation, la qualité approche celle d'Ultra seul pour un
   coût moyen nettement inférieur.
 
+**Lot automatique (27 octobre).** Le mode automatique conserve le prérequis d'un étalonnage
+humain de traces réelles : les scores du vérificateur ou d'un juge modèle ne remplacent jamais
+cette annotation. Un paquet aveugle minimal est préparé pour l'évaluateur humain. La campagne comprend les huit questions de
+`scripts/questions.txt` et quatre cas difficiles, chacun joué en Super, Ultra et automatique
+sur captures identiques lorsque possible. Le rapport distingue les mesures (passages non
+vérifiés, réparations, complétude, durée, coût connu et usage manquant) des appréciations de
+qualité ; aucune annotation de l'agent n'est appelée « humaine ». Les trois familles de
+déclencheurs restent explicites : échec de vérification après réparations, confiance faible /
+pas assez d'éléments, et budget primaire épuisé avec réserve pour la reprise. Une seule reprise
+conserve preuves, consentements et budget global ; ni annulation ni refus de consentement
+ne déclenchent Ultra. Les seuils finaux et la décision de défaut seront consignés avec les
+chiffres datés dans `docs/eval.md` et ici. Critère de décision annoncé avant mesure : complétude
+à au plus un cas d'écart sur douze, pas plus de passages non vérifiés qu'Ultra, et coût moyen
+au moins 25 % inférieur (comparaison seulement si les usages sont complets et les tarifs connus).
+Sinon Super reste le défaut ; l'automatique n'est activé que pour les déclencheurs validés
+par l'étalonnage humain, sans gain prétendu.
+
 ### Chantier 15 — Sources externes (pistes A et C ; E08, proposé le 3 octobre)
 
 Démarre seulement si l'évaluation le justifie (chantier 7, scénarios « pilotes, mises à jour et
@@ -1287,9 +1619,9 @@ garde sa marque et sa propre clé API.
   - dates de publication demandées, `include_usage` pour le coût ;
   - jamais `include_answer` (réponse invérifiable d'un autre LLM), ni `include_raw_content`, ni
     `extract` sur une URL fournie par le modèle.
-- Cache dans `crates/store` : 24 h pour les prix et les notes de pilotes, 7 jours pour les
-  problèmes connus. Plafond de recherches par tour, réglé d'après les traces. Le coût Tavily
-  s'ajoute à celui du tour
+- Cache dans `crates/store` selon le complément C6 ci-dessus, pages release health comprises.
+  Plafond de recherches réseau par tour, réglé d'après les traces ; une réutilisation valide ne
+  consomme ni recherche réseau ni crédit. Le coût Tavily est présenté à côté de celui du tour
   (tarifs relevés le 3 octobre : 1 crédit par recherche basic, 1 000 crédits gratuits par mois,
   puis 0,008 $ le crédit).
 - Sans clé ou sans consentement : statut `unsupported` ou `denied`, et tout le reste fonctionne.
@@ -1326,6 +1658,64 @@ garde sa marque et sa propre clé API.
   - les captures du chantier 7 enregistrent les résultats web, et le rejeu ne relance aucune
     recherche.
 
+### Chantier 16 — macOS natif (pistes B et C ; phase 5, item 5, décision du 27 octobre)
+
+Objectif : qu'un juré sur Mac dispose de la même application que sur Windows — mesures réelles,
+inspections, actions revues localement, aide élevée bornée, fenêtre Tauri — sans valeur fabriquée
+ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent sous
+`#[cfg(target_os = "macos")]` (`crates/*/src/macos/`) et se rangeront derrière les traits
+`os/{windows,linux,macos}` du chantier Linux dès qu'ils seront fusionnés.
+
+- **Télémétrie.** Mémoire par `host_statistics64` (`vm_statistics64` : libre + inactive +
+  récupérable disponibles, sans compter deux fois les pages spéculatives ; `hw.memsize` pour le
+  total). `vm.swapusage` mesure le swap et ne remplace pas le commit Windows : une métrique sans
+  équivalent reste explicitement indisponible ; CPU par `host_statistics` (`HOST_CPU_LOAD_INFO`, fenêtre
+  d'une seconde ou réemploi de l'échantillon précédent comme sous Windows) ; processus par libproc
+  (`proc_listallpids`, `proc_pidinfo` TASKINFO/BSDINFO, `proc_pid_rusage` pour les E/S et le temps
+  CPU, `proc_name`) : nom, RSS, CPU, E/S, parent, date de création pour l'identité
+  `(pid, création)`. Le type de processus est dérivé localement des arguments quand ceux-ci sont
+  lisibles ; seuls les types fermés sont conservés, jamais les arguments ni leur contenu. Les
+  processus d'autres utilisateurs sont comptés `permission_denied` dans la couverture.
+- **Matériel et volumes.** `sysctl` (`kern.osproductversion`, `hw.machine`, `hw.ncpu`,
+  `hw.memsize`), `getmntinfo`/`statfs` pour les volumes montés (type APFS/HFS/réseau, total,
+  libre, disponible), IOKit pour les disques physiques, `diskutil info -plist` en repli borné.
+  GPU et thermique par IOKit (`IOAccelerator` : nom, mémoire ; `AppleSMC` lisible sans
+  privilège quand il l'est) ; `powermetrics` demande root : couverture `needs_admin`, jamais
+  lancé. Batterie par `IOPSCopyPowerSourcesInfo` (charge, état, santé quand exposée).
+- **Inspections.** Démarrage : Login Items (`sfltool`/`osascript System Events`) et LaunchAgents
+  (`~/Library/LaunchAgents`, `/Library/LaunchAgents`, état `launchctl print`) ; services : launchd
+  (`launchctl list`, domaine système et utilisateur, PID associé) ; événements : journal unifié par
+  `log show --style json --last Nd --predicate …` borné en durée et en nombre d'entrées, messages
+  réduits à sous-système, catégorie, niveau et compteur ; mises à jour : `softwareupdate --list`
+  (délai borné, hors ligne toléré). Les sous-processus reçoivent des arguments fixes ; aucune
+  entrée du modèle ou de l'utilisateur ne devient argument de commande.
+- **Actions.** Même catalogue, même revue locale : désactiver/réactiver un LaunchAgent utilisateur
+  (`launchctl bootout`/`bootstrap gui/<uid>` sur un plist identifié par chemin + inode + date de
+  modification), nettoyage de `~/Library/Caches` (adaptateur de nettoyage
+  utilisateur, mêmes garde-fous que `%TEMP%`), Corbeille par `NSFileManager trashItemAtURL`
+  (vérification que l'élément est bien dans `~/.Trash` après coup), ouvrir dans le Finder,
+  ouvrir Réglages Système (URL `x-apple.systempreferences:`). Les racines protégées macOS
+  (`/System`, `/Library`, `/usr`, `/bin`, `/sbin`, `/private`, `/Applications`, `/Volumes`) sont
+  refusées comme `C:\Windows` l'est.
+- **Élévation.** `pcagent-elevated` sur macOS exécute la même liste fermée de tâches, lancé une
+  fois par `osascript -e 'do shell script … with administrator privileges'` (invite système,
+  équivalent de l'UAC) ; pas de réseau, pas de modèle, protocole et durée de vie inchangés
+  (`crates/elevation`). Tâches : caches système (`/Library/Caches`, `/private/var/folders`
+  d'autres utilisateurs en taille seulement), métriques énergie/thermique par `powermetrics`
+  borné à quelques secondes, fiabilité disque (`diskutil info` S.M.A.R.T.), images de processus
+  d'autres utilisateurs. Les tâches Windows (MFT, VSS, ETW) restent `unsupported` sur macOS avec
+  leur raison.
+- **Interface.** `pcagent-gui` compile et tourne sur macOS (WKWebView), même page, même CSP, mêmes
+  capacités Tauri ; le registre des capacités expose la plateforme (`windows`, `macos`, `linux`) à
+  la place du seul drapeau `windows`, et les outils réservés à Windows (MFT, ETW, Windows Update)
+  sont absents du catalogue et de l'interface sur Mac. `.app` non signée construite par
+  `cargo tauri build` (ou `cargo build` + `Contents/` documenté), étapes Gatekeeper dans les notes
+  de release (`xattr -dr com.apple.quarantine`, clic droit → Ouvrir).
+- **Validation.** Tests sur fixtures synthétiques (plists, sorties `log show`/`softwareupdate`/
+  `launchctl`, listes libproc rejouées) exécutés partout ; workspace vert sur macOS (fmt, clippy
+  `-D warnings`, tests, build release des quatre binaires) ; GUI native lancée sur le Mac de la
+  session avec captures EN/FR, clair/sombre ; `docs/macos.md` et section plateformes du README.
+
 ## 5. Calendrier
 
 | Semaine | Travail |
@@ -1345,7 +1735,6 @@ Repoussé après la soumission :
 - index persistant et journal USN (S10) ;
 - export expurgé (U01) ;
 - coffre Windows pour la clé (U04) ;
-- fluidité en jeu mesurée (E06) ;
 - réseau (E07) ;
 - recherche documentaire libre (E08) ; le chantier 15 n'en avance que des outils typés ;
 - alertes au-delà des règles C7 (E09) ;
@@ -1515,9 +1904,10 @@ Implementation » est un critère de jugement).
 | Test complet sur un second PC Windows 11 (installation depuis la release, clé, parcours vidéo) | fait par le porteur depuis la release `v0.1.0` (27 oct.) |
 | Mesurer l'empreinte de l'app (RAM, CPU, disque de l'historique) pour le README | chiffres datés |
 
-**Repoussé après la soumission :** vue Historique complète, #58/#59 au-delà du
-premier lot, #60 (navigateurs), #62 (lot UAC unique), #55 (images), ETW, validation des capteurs
-actifs (chantier 9), cache Tavily.
+**Ancien report, remplacé pour les lots autorisés le 27 octobre :** vue Historique complète,
+#58/#59 au-delà du premier lot, #60 (navigateurs), #62 (lot UAC unique) et cache Tavily.
+#55 est livré ; ETW reste bloqué par la décision et les preuves de nettoyage ci-dessous.
+La validation des capteurs actifs (chantier 9) reste à établir.
 
 ### Phase 4 — Gel et soumission (27–29 oct.)
 
@@ -1547,14 +1937,34 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 30 octobre va sur `next`.
 
 1. PR du plan : contrats renommés de façon neutre (commit, startup, services, events, settings
-   pages), registre des capacités étendu par OS.
+   pages), registre des capacités étendu par OS — **fait le 27 octobre** (compléments C3 et C4
+   ci-dessus).
 2. Refactor `os/{windows,linux,macos}` derrière un trait commun dans `telemetry`, `inspect`,
    `storage` et `actions` ; les fonctions Windows restent réservées à Windows (MFT, élévation, ETW,
-   Windows Update).
-3. Backend Linux (`/proc`, `/sys`, systemd, journald, XDG autostart) avec la CI Ubuntu.
-4. GUI Tauri sur les trois OS, pilotée par le registre des capacités.
-5. Backend macOS (libproc, host_statistics, IOKit, launchd), testé sur un vrai Mac, avec un job CI
-   macOS.
+   Windows Update). Traits : `telemetry::os::Backend` (système, processus, inventaire, compteurs,
+   GPU), `inspect::os::Inspector` (une fonction par requête `Query`), `storage::os::Platform`
+   (racines, volumes, dossier profil) et `actions::os::Effects` (effets natifs approuvés). Chaque
+   backend déclare ses capacités ; le code Windows est déplacé sans changement de comportement.
+   La PR de traits est petite et fusionnée en premier pour que Linux et macOS s'y branchent.
+3. Backend Linux : mémoire, processeur et pression (`/proc/meminfo`, `/proc/stat`,
+   `/proc/pressure`), processus (`/proc/<pid>` : nom, type dérivé localement de la ligne de
+   commande puis oublié, RSS, processeur, E/S, parent, session), disques et volumes
+   (`/proc/diskstats`, `statvfs`, `/sys/block`, modèles udev, SMART via `smartctl` s'il est
+   présent), GPU (NVML si présent, sinon `/sys/class/drm`), batterie (`/sys/class/power_supply`),
+   démarrage (XDG autostart, unités systemd utilisateur), services (systemd), événements
+   (journald), mises à jour (apt/dnf/flatpak), scanner de stockage déjà portable, actions (bascule
+   XDG autostart, nettoyage de `~/.cache`, corbeille) avec le même écran de revue, vérifications
+   élevées via `pkexec` vers le helper borné. Couverture honnête par collecteur (C4), tests sur
+   fixtures `/proc` synthétiques, `docs/linux.md`, section plateformes du README et notes
+   d'empaquetage (`.tar.gz`, `.deb`/AppImage).
+4. GUI Tauri sur les trois OS (webkit2gtk sur Linux), pilotée par le registre des capacités :
+   les vues masquent ce qui manque avec la raison ; `pcagent doctor` rapporte un système
+   exploitable.
+5. Backend macOS complet (chantier 16) : `host_statistics64`/`sysctl`, libproc, `statfs`/IOKit/
+   `diskutil`, IOKit batterie et GPU, Login Items/LaunchAgents, launchd, journal unifié, `softwareupdate`,
+   actions (LaunchAgents, `~/Library/Caches`, Corbeille), aide élevée bornée par `osascript … with
+   administrator privileges`, GUI Tauri (WKWebView) et `.app` non signé ; à valider sur un vrai Mac Apple
+   Silicon. La CI macOS reste suspendue comme les autres : la validation locale fait foi.
 6. Reprendre ce qui a été repoussé en phase 3, par ordre de priorité.
 
 ### Décisions encore ouvertes
@@ -1565,6 +1975,29 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 
 ## 8. Suivi
 
+**Coordination de revue du 27 octobre :** les plans fusionnés définissent le travail, pas sa
+réalisation ni sa validation native. Les PR de code conservent leurs preuves par plateforme
+à la révision finale intégrée ; la CI reste suspendue. Un conflit documentaire purement
+additif peut être combiné ; tout conflit substantiel de contrat ou de code remonte au porteur
+avant résolution.
+
+- Le périmètre complet ne supprime pas les budgets de ressources sûrs, les expirations,
+  les contrôles contre le rejeu ni l'obligation d'indiquer la couverture réelle.
+- #71 reste ouvert jusqu'aux mesures d'empreinte du parent et aux preuves d'évaluation réelle ;
+  une PR d'interface ou de documentation ne suffit pas à le clore.
+- L'automatique Super → Ultra reste soumis à l'étalonnage humain compatible ; une notation
+  automatisée n'est pas une preuve humaine.
+- #111 (ETW/E06) : le porteur a approuvé le 27 octobre la délégation du retrait des permissions
+  temporaires au gardien privilégié séparé, armé avant `StartTrace`, avec acquittement du
+  nettoyage avant livraison du résultat. `EventAccessRemove` reste administrateur seulement
+  dans l'acceptation Windows 20348 ; aucune suppression par le parent non élevé n'est promise.
+  L'accord ne dispense pas des preuves complètes de nettoyage avant activation/fusion du code.
+  Sur la VM WARP, GPU matériel et NVML restent non testés.
+
+| Lot voix | Pistes | État | Branche |
+| --- | --- | --- | --- |
+| 6 — Dictée locale au microphone | B, C | en cours : complément C3/C5 adopté dans cette PR de plan ; whisper.cpp local, repli Windows hors ligne, capture cpal, composer et réglages ; catalogue Nebius relu sans capacité audio déclarée ; validation native et preuves à livrer dans la PR code | feature/voice-plan puis feature/local-voice |
+
 **19 octobre 2026 — essai C1 / #85 :** exception de correction finale autorisée par le porteur,
 définie ci-dessus avant l'implémentation dans une PR distincte. À mesurer sur des parcours Nebius
 réels avant adoption ; le choix nommé ne constitue pas une garantie de latence ni de réponse unique.
@@ -1573,6 +2006,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
+| Textes français, accessibilité et finitions #71 | C | contrat approuvé par le porteur ; implémentation et preuves Windows standard, Narrateur/NVDA, axe et parcours FR/EN clair/sombre/contraste élevé en cours ; aucune validation non exécutée n'est considérée acquise | PR plan puis PR code séparées |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Réorganisation C — cœur / outils / Nebius | A, B | client Nebius, catalogue déclaratif, projections pures et implémentations `pcagent-tools` séparés ; apps raccordées ; validation locale : 828 tests Rust réussis, 3 ignorés, sur 22 exécutables sous compte standard (intégrité moyenne, hors groupe administrateurs), fmt, Clippy, doctests et quatre builds release ; 46 constantes de catalogue comparées à leur définition avant refactor sans changement de valeur ; aucun parcours GUI natif ni test Linux rejoué ; découpage des gros fichiers détaillé ci-dessous | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
 | Réorganisation C — gros fichiers du cœur | A | réponse et sélections figées séparées en modules par responsabilité, API conservées et sources ajoutées à l'identité de calibration ; 41 tests déplacés et 68 corps de fonctions comparés sans changement de comportement (l'adaptateur de sélection utilise ses accesseurs existants) ; 828 tests Rust réussis sous compte standard, 3 ignorés, Clippy et quatre builds release validés ; 51 tests d'orchestration ensuite regroupés par comportement sans modifier leurs corps, 184 tests du cœur et Clippy repassés ; aucun changement visuel | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
@@ -1594,6 +2028,8 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) ; #65 : formats localisés sur les champs numériques, résumé scanné désormais couvert | #23, #24, #36 |
 | 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
 | 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; carte par règle locale sous la réponse du chat livrée le 18 octobre ; lot sous une seule invite et proposition par le modèle (`propose_elevated_check`, 9 octobre) à faire | #33, #36, #62 |
+| 8 — Activation ETW et fluidité E06 | B, A, C | en cours (27 oct.) : contrat C4 et consentement définis ; gardien privilégié avant création, acceptation des quatre preuves de nettoyage, E/S par fichier opaque, présentations par processus, observations/constats et action 30 s depuis PC en direct/chat ; aucune activation déclarée avant preuve Windows, aucune mesure matérielle simulée | feature/etw-e06-plan, feature/etw-e06 |
+| 8 — Lot approfondi et proposition chat (#62/#83) | A, B, C | en cours (27 oct.) : contrat précisé dans cette PR du plan, avant le code ; protocole v3 à sections fermées sous un seul UAC, comptes standard avec autre administrateur, revue sans expiration, six familles proposées, persistance 24 h et sélection dans le même fil ; validation native standard + Nebius + UAC et captures EN/FR clair/sombre requises avant livraison | feature/deep-checks-plan ; #62, #83 |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
@@ -1601,21 +2037,24 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6, 12 — Premier lancement | C | réalisé localement : guide Nebius reprenable, catalogue du compte, test explicite et mode local ; saisie masquée clarifiée avec accord du porteur ; tests JS/Rust et build Windows validés ; QA native non-admin et catalogue/test Nebius réels validés, révélation WebView2 et casse des modèles du mock corrigées ; ouverture du portail non validée dans le bureau isolé ; PR vers main, contrats C1–C7 inchangés | #63, wp12-onboarding |
 | 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; #84 : réparations regroupées, lecture SSE complète et borne de coût uniquement à tarif vérifié ; exception C1 définie dans #86 : outil final nommé en correction après mesures utilisables, validé par un test live contrôlé (1 appel accepté, 61 s) ; 745 tests locaux passent ; #85 reste ouvert : campagne du 19 oct. sur main (41 appels réels) : la réponse finale est complète en 18–45 s puis le modèle continue 70–90 s (balises, seconde copie) jusqu'au plafond ; raisonnement léger sans gain ; correctif wp13-stream-early-close : fermeture du flux dès que l'appel final nommé est complet (usage inconnu pour cette requête, coût en borne basse), fusionné le 26 oct. après validation locale (formatage, Clippy, 746 tests sous compte standard, build release) ; campagne du 26 oct. sur `main` (`87e1da0`, binaire release, compte standard, 8 questions de `scripts/questions.txt`, Super) : 8/8 terminées, 49–203 s (médiane 94 s, moyenne 108 s), 2 à 5 requêtes par question, coût connu ≥ 0,021 $ au total ; la queue de 70–90 s a disparu (49 s pour 2 requêtes dont l'inspection) et chaque requête dure ~40–50 s ; la latence restante vient des corrections (1 à 3 dans 7 questions sur 8, chacune une requête entière) et du raisonnement ; défaut relevé : les 2 questions en anglais ont reçu une réponse en français malgré la consigne « langue de la question » ; prochaines pistes : réduire les corrections (schéma de citations, exemples) et exposer la durée par requête et les motifs de correction dans `--json` ; C2–C7 inchangés ; #98 (26 oct.) : `submit_answer` n'est déclaré qu'après une inspection aux mesures utilisables (ou une capture « Expliquer » lisible), le prompt système énonce la langue de la question quand ses mots courants la rangent clairement en anglais ou en français, les statistiques exposent `duration_ms` par requête et `repair_requests` (lus en local seulement) ; fusionné après validation locale (formatage, Clippy, 4 builds release, 100 tests JavaScript, 3 Python, 831 tests Rust / 0 échec / 3 ignorés sous compte standard, 22 exécutables) ; #99 (26 oct.) : une phrase aux chiffres sans source dont chaque chiffre figure dans une mesure citable du tour est acceptée et marquée « chiffres mesurés dont la source n'est pas citée » (`uncited_number`) au lieu de coûter une requête de correction, un chiffre qu'aucune mesure ne contient reste renvoyé ; fusionné après validation locale (formatage, Clippy, 4 builds release, 100 tests JavaScript, 3 Python, 833 tests Rust / 0 échec / 3 ignorés sous compte standard, 22 exécutables) | #33, wp13-agent-reliability, #84, #85, #86, #89, [#98](https://github.com/nassim-arifette/pc-agent/pull/98) fusionné (26 oct., `89fe592`), [#99](https://github.com/nassim-arifette/pc-agent/pull/99) fusionné (26 oct., `9f134d0`) |
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
+| 14, 15 — Cache et automatique, lot du 27 octobre | A | en cours : complément C6 ci-dessus, cache local à TTL typé et pages officielles ; campagne réelle 12 × 3, paquet aveugle pour annotation humaine et décision de défaut fondée sur les résultats ; validation native standard et coûts séparés requis avant revue du code | feature/plan-cache-auto-escalation, feature/cache-auto-escalation |
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
 | 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
-| 6 — Stockage en carte, arbre et liste | B, A, C | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
-| 6 — Vue Historique | C, A | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
+| 6 — Stockage en carte, arbre et liste | B, A, C | en cours (27 oct.) : #67 item 2, complément C3 du 6 octobre (C4, C5) intégral ; hiérarchie et faits annulables en cache dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur ; validation locale complète et captures avant revue | feature/storage-map-plan, feature/storage-map |
+| 6 — Vue Historique | C, A, B | en cours (27 octobre) : lot complet autorisé, remplace le report de la section 7 quinquies pour ce lot ; C2 table système et budget, C3 commande groupée/aperçu/détail, barre secondaire, frise numérotée, inspecteurs, Expliquer/Enquêter et cible Surveiller C7 ; tests, mesures avant/après et validation native sous compte standard prévues | feature/history-contract, feature/history-complete ; #58, #59 |
 | 6 — Surveillances | B, A, C | en cours (27 oct.) : lot complet C7, migration 7, moteur avec bail, notifications Windows, barre secondaire et boutons Surveiller, sélection `watch_alert`, outil de lecture C1 et bilan local ; suppression des plafonds arbitraires de règles/alertes, lecture paginée | feature/wp6-watches |
 | 6 — Barre secondaire par vue | C | livré : une vue peut déclarer sa barre dans l'emplacement de la liste des conversations (`shell.setViewBar`), redessinée sur ses sujets, avec repli, fenêtre étroite, focus et repère accessibles ; aucune vue ne l'utilise encore (Stockage, Historique, Surveillances) | wp6-viewbar |
 | Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater ; #50 à #54, #57 et #68 traités côté interface le 10 octobre (branches `wp6-chat-polish`, `wp6-views-polish`, `wp3-composer-toggles`) ; reprise terminée : corrections de revue, confidentialité et envois concurrents, 52 contrôles navigateur et 9 contrôles natifs locaux réussis, release reconstruite sur D:, formatage/Clippy et 715 tests réussis (2 ignorés) ; parcours avec modèle réel encore à vérifier | #72 |
 | 6 — Résumé dans l'inspecteur et recherche de cause | C | implémenté et validé localement (10 octobre) : #56, résumé sans quitter la vue, poursuite du même fil et étiquettes de sélection ; 57 contrôles rendus, 28 régressions du contrôleur et 12 contrôles natifs réussis ; formatage/Clippy et 715 tests réussis (2 ignorés), binaire reconstruit sur D: ; évaluation réelle des réponses et livraison reportées à la demande du porteur du projet | wp6-selection-inspector |
 | 5, 6 — Historique : lectures et volume | B, C | premier lot implémenté et validé localement (10 octobre) : format compact compatible en lecture avec les anciennes mesures, lecture partagée et cache invalidé après écriture, chargement et tracé réduits préservant lacunes, extrema et couvertures ; formatage/Clippy, 732 tests Rust (2 ignorés), 42 contrôles navigateur et 12 contrôles natifs réussis, CLI et GUI release reconstruits sur D: ; mesures et limites dans [history-performance.md](history-performance.md) ; #58/#59 restent partiels : commande dédiée, table système, comptes d'événements et budget disque demandent un lot de contrats distinct | wp5-history-performance |
 | 2 — WebView2 par application (#61) | B | fait (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents validée (jamais par le nom d'image), sans ligne de commande ; un arbre sans hôte attribuable forme son propre groupe ; 3 tests synthétiques (dont un contrôle par mutation) ; fusionné après validation locale (formatage, Clippy, 749 tests sous compte standard, build release) ; pas encore vu avec de vrais hôtes WebView2 (aucun sur la VM) | wp2-webview2-groups |
+| 2 — Détail des navigateurs (#60) | B/C | en cours (27 oct.) : contrats C4/C5 approuvés ; types locaux fermés et agrégats mesurés, titres strictement locaux, action de gestionnaire après revue ; validation native et de confidentialité requise avant livraison | feature/browser-process-plan, feature/browser-process-details, #60 |
 | 14 — Escalade visible (#69) | A, C | en cours (26 oct.) : changement de modèle affiché sur la réponse, coût par modèle dans l'app et la CLI | wp14-escalation-visible |
 | 6 — Stockage minimal (#67) | C | fait (26 oct.) : résultats d'abord (totaux, liste), inspecteur de l'élément sélectionné à côté de la liste ou sous la ligne quand la fenêtre est étroite, cartes admin regroupées après les résultats ; 11 tests Node, tour en/fr clair/sombre sans erreur ; carte et arbre restent en P2 | wp6-storage-minimal |
 | 2 — Noms lisibles des programmes (#70) | B/C | fait (26 oct.) : `ProgramNames` (FileDescription puis ProductName de la ressource de version, cache par chemin, lecture sans admin), nom lisible dans PC en direct, l'inspecteur, les réponses, les constats, les sources et les revues d'action ; exécutable en infobulle, PID seulement dans l'inspecteur ou pour distinguer deux processus ; jamais envoyé au modèle (C5) ; fmt, Clippy, tests, tour | wp2-app-names |
+| Phase 5 — Backend Linux et GUI Tauri sur Linux (27 octobre) | B, C | en cours : plan (compléments C3/C4 du 27 octobre, registre des capacités par OS) ; traits `os/{windows,linux,macos}` dans `telemetry`, `inspect`, `storage`, `actions` (Windows inchangé) ; backend Linux `/proc`, `/sys`, systemd, journald, XDG, polkit ; GUI webkit2gtk et `doctor` sur Ubuntu 22.04 ; validation : liste complète des commandes en utilisateur non root, captures EN/FR | feature/plan-linux-backend, feature/os-backend-traits, feature/linux-backend |
 | Build Linux (26 octobre) | B | fait (26 oct.) : liste complète des commandes rejouée sur Ubuntu 22.04 x86_64 en utilisateur non root (formatage, Clippy, 741 tests Rust dont 3 ignorés, 56 tests Node, 3 tests Python, quatre binaires release) ; stubs Linux sondés en lecture seule : statuts `unsupported` avec valeurs nulles, jamais de zéro ni de panique, fenêtre et helper refusent proprement ; taille d'entrée non convertible signalée en erreur au lieu de 0 dans le repli Unix du stockage ; collecteurs natifs, fenêtre et helper restent Windows ; même correctif rejoué sur l'arbre du refactor (760 tests Rust, 100 tests Node) | fix/linux-build |
 | 14 — Escalade visible et coût des deux modèles (#69) | C | fait (26 oct.) : étape « Ultra reprend la question », en-tête « Super → Ultra · total », note durable sous la réponse avec la raison (et la vérité quand Ultra n'a rien écrit), une ligne par modèle dans Sources › Requêtes et coût, même détail dans la CLI ; jamais le prix d'un modèle appliqué aux jetons de l'autre ; Auto proposé dès qu'une calibration relue existe ; fmt, Clippy, tests, tour | wp14-escalation-visible |
 | 6 — Interface en français (#65) | A, C | fait (26 oct.) : phrases du cœur envoyées comme clés fermées à valeurs typées (`Phrase`, `phrases.js` : constats, étapes suivantes, limites, faits des sources, réponse locale, GPU, couverture admin, processus sans nom) et erreurs des commandes avec code fermé traduit (`failure.rs`, `failure.js`), le texte anglais restant la référence pour le modèle, la CLI et le vérificateur ; menu de la barre d'état et dialogue de dossier dans la langue de Windows ; tests, tour FR | wp6-french-ui, wp6-french-errors |
@@ -1624,6 +2063,8 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Q3 — Séparation inspections / worker élevé / MFT | A, B | fusionné et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; intégration avec #91 : 18 exécutables, 809 tests réussis et 3 ignorés sous compte standard, fmt/Clippy/release/doctests, 56 tests Node et 3 Python | [#90](https://github.com/nassim-arifette/pc-agent/pull/90) |
 | 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) ; `v0.1.1` (27 oct.) : lien de la release et test sur un second PC ajoutés au README, restent l'empreinte mesurée et les résultats de l'évaluation | wp12-docs, `release/v0.1.1` |
 | Compilation macOS | B | fait (26 oct.) : le scanner portable (`crates/storage/src/portable.rs`) convertit `st_dev` et `st_nlink` depuis les types Darwin (`dev_t` signé 32 bits, `nlink_t` 16 bits) ; sur macOS 26.6.2 Apple silicon : formatage, Clippy, 741 tests (3 ignorés), release des 4 programmes, 3 tests Python, 56 tests Node ; fenêtre et helper élevé restent des bouchons Windows seulement, collecteurs natifs `unsupported`, aucun changement de comportement Windows ; pas de cible produit macOS | fix/macos-build |
+| 16 — macOS natif (phase 5, item 5) | B, C | en cours (27 oct.) : plan fusionné ; code à suivre — télémétrie (Mach/libproc), inspections (launchd, journal unifié, `softwareupdate`), actions (LaunchAgents, caches, Corbeille), aide élevée `osascript`, GUI Tauri WKWebView, `.app` non signée, `docs/macos.md`, README ; validation locale sur Mac Apple Silicon requise | [#102](https://github.com/nassim-arifette/pc-agent/pull/102) |
+| 12 — Empreinte native au repos (#71) | D | mesurée (27 oct.) sur la GUI publiée v0.1.1, sous compte standard, VM Windows Server 2022 (8 processeurs logiques, 32 Gio) : GUI + six processus WebView2, deux phases d'environ 3 min ; ensembles de travail moyens 316 Mio ouverte / 204 Mio masquée, octets privés 131–132 Mio ; CPU moyen 0,05 % / 0,02 % de la VM ; 80 relevés, fichiers SQLite + WAL + SHM 3,28 Mio après environ 6 min 34 s. Protocole, interprétation mémoire et limites dans [footprint.md](footprint.md) ; aucun pic, gain de masquage ni volume journalier revendiqué. #71 reste ouverte pour ses autres critères. | docs/footprint-measurements |
 
 État historique du 10 octobre : arrêt demandé après la validation de ce lot, avant la nouvelle
 vue Stockage, sans commencer un autre chantier ni fusionner. Cette suspension du développement

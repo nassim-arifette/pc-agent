@@ -6,11 +6,11 @@ fn notes_and_missing_reasons_match_their_producers() {
     let sources = [
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/telemetry/src/windows/mod.rs"
+            "/../../crates/telemetry/src/os/windows/mod.rs"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/telemetry/src/windows/services.rs"
+            "/../../crates/telemetry/src/os/windows/services.rs"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

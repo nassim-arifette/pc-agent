@@ -611,7 +611,7 @@ fn protected_locations_are_refused() {
 
 #[test]
 fn no_elevation_termination_shell_or_permanent_delete_code() {
-    let native = include_str!("windows.rs");
+    let native = include_str!("os/windows/mod.rs");
     for banned in [
         "TerminateProcess",
         "runas",
