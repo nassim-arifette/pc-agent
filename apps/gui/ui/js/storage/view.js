@@ -22,7 +22,7 @@ import { hierarchyBrowser } from "./browser.js";
 import { watchProposal } from "./treemap.js";
 
 let requestWatch = null;
-import("../../watches-controller.js").then((module) => { requestWatch = module.requestWatch; }).catch(() => {});
+import("../watches-controller.js").then((module) => { requestWatch = module.requestWatch; }).catch(() => {});
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];

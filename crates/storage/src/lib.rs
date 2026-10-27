@@ -24,7 +24,7 @@ pub fn volume_space(root: &Path) -> VolumeSpace {
 }
 /// Local-only mount point and fixed-drive classification, never part of cloud projections.
 pub fn volume_location(root: &Path) -> Option<(String, bool)> {
-    platform::volume_location(root)
+    Native::volume_location(root)
 }
 pub use scan::{
     classify_attributes, AttributeClass, ClassicBackend, ATTR_COMPRESSED, ATTR_DIRECTORY,

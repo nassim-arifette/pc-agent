@@ -136,7 +136,7 @@ formatting follows the selected interface language. Scan completion time and the
 read-only notice distinguish metadata measurement from current use or deletion.
 
 Recent scans are summaries for this session only; selecting an old root explicitly rescans it.
-Watch proposes volume-free-below through `ui/watches-controller.js`'s `requestWatch(rule)`.
+Watch proposes volume-free-below through `ui/js/watches-controller.js`'s `requestWatch(rule)`.
 The threshold is 10 GiB, bounded by capacity and at least 1 GiB. An absent form, non-fixed
 volume or unknown/too-small capacity has a visible disabled reason, never a fake success.
 
