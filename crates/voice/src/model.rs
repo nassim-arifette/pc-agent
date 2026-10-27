@@ -1,9 +1,11 @@
 use crate::{ErrorCode, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+#[cfg(any(windows, test))]
+use std::io::Read;
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -42,6 +44,7 @@ pub fn path(root: &Path) -> PathBuf {
     root.join("ggml-base.bin")
 }
 
+#[cfg(windows)]
 pub fn verify(path: &Path, cancelled: &AtomicBool) -> Result<()> {
     let file = File::open(path).map_err(|_| ErrorCode::ModelMissing)?;
     if file
@@ -55,6 +58,7 @@ pub fn verify(path: &Path, cancelled: &AtomicBool) -> Result<()> {
     check_digest(file, MODEL_BYTES, MODEL_SHA256, cancelled, |_| {})
 }
 
+#[cfg(any(windows, test))]
 fn check_digest(
     mut reader: impl Read,
     expected_bytes: u64,
