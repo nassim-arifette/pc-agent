@@ -196,6 +196,27 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 - Surveillances : leurs tables et leur rétention sont décrites en C7 ; le numéro de migration
   suit les migrations effectivement livrées, sans réserver celui du prochain chantier.
 
+#### Complément du 27 octobre — historique système et budget disque (#58, #59)
+
+- Une migration transactionnelle ajoute `system_samples` : une ligne par échantillon brut ou
+  résumé minute, horodatage et colonnes pour les métriques système, avec leurs métadonnées de
+  mesure (origine, statut, couverture, fenêtres, poids et extrema). Aucun JSON de processus
+  n'est nécessaire pour lire une courbe système. La migration reprend les anciennes lignes,
+  compactes ou non, sans inventer une mesure absente ; les écritures suivantes et les
+  agrégations maintiennent les deux représentations atomiquement.
+- Les noms locaux des contributeurs d'événements sont conservés séparément des charges
+  d'échantillons, avec la même rétention. Ils ne quittent le PC que par la projection C5.
+- Budget de collecte par défaut : 256 Mio de données d'historique actives (échantillons,
+  métadonnées système, noms, événements et enregistrements), hors conversations et images.
+  La maintenance compacte d'abord les relevés bruts hors enregistrement en cours puis
+  supprime les périodes les plus anciennes si nécessaire. Les sept jours sont une durée
+  maximale, pas une promesse lorsque le budget est atteint ; lacunes et dates réellement
+  conservées sont explicites. Aucun échec de collecte n'est transformé en zéro.
+- La vue Collecte montre les octets actifs imputés à l'historique, le budget, la taille
+  physique SQLite/WAL, la période conservée et les suppressions dues au budget. Les pages
+  libres réutilisables ne sont pas assimilées à des données actives. Les conversations
+  et les pièces jointes ne sont jamais supprimées pour satisfaire le budget de collecte.
+
 #### Complément du 26 octobre — image jointe (#55)
 
 - Un tour peut porter **une image au maximum**, choisie ou collée explicitement par la personne.
@@ -425,25 +446,32 @@ Preuves).
 
 #### Complément du 6 octobre : vue Historique
 
-Ces deux commandes servent la barre secondaire et l'inspecteur de la vue Historique (chantier 6,
-phase 2, branche `wp6-history`). Elles ne modifient ni C1, ni ce qui quitte le PC (C5), ni le
-schéma de la base (la migration 6 appartient à C7). Les commandes existantes gardent leur forme ;
-seul le contenu de `metric_history` change (voir Noms).
+Ces commandes servent la barre secondaire et l'inspecteur de la vue Historique (chantier 6,
+phase 2). Le complément du 27 octobre (#58, #59) remplace les cinq lectures de courbes par une
+lecture commune sur la table système de C2. Il ne modifie ni C1 ni ce qui quitte le PC (C5).
+Les commandes existantes gardent leur forme ; seul le contenu de `metric_history` change
+(voir Noms et événements).
 
 | Commande ajoutée | Rôle |
 | --- | --- |
+| `history_chart(from_unix_ms, to_unix_ms, buckets)` | toutes les courbes système en une passe SQL, environ 300 seaux moyenne/minimum/maximum (densité demandée selon la largeur, un point pour 2–3 px), couverture et lacunes conservées ; événements et noms envoyés une fois, total exact ; cache par fenêtre, densité et révision des données/dernier échantillon ; une seule source de sélection publiée par chargement |
 | `history_overview(day_start_unix_ms)` | nombre d'événements détectés sur la dernière heure, depuis le minuit local fourni par la page (au plus 25 h avant maintenant, sinon refusé) et sur les 7 derniers jours (`periods`) ; fin du dernier événement (`latest_event_ended_at_unix_ms`) ; les 20 derniers enregistrements, celui en cours compris, du plus récent au plus ancien, et s'il en existe d'autres (`more_recordings`). Comptes indexés du stockage local : aucune collecte, aucune source de sélection publiée |
 | `recording_detail(recording_id)` | un enregistrement avec, sur sa durée, les 10 plus hauts pics de processeur par processus, les pics GPU, lecture et écriture (10 par métrique), sa courbe de processeur (120 points au plus) et ses relevés de batterie. Un identifiant mal formé est refusé ; un identifiant inconnu ou effacé renvoie `null`. Une seule lecture sert la réponse et la source `recording` publiée, la même que celle de `battery_recording`, qui compte dans le registre de 96 sources |
+| `history_recordings(offset, limit)` | accès paginé à tous les enregistrements conservés, total exact ; la limite est une taille de page, jamais une limite de consultation |
+| `history_collection()` | occupation mesurée, budget disque et rétention effective de C2, sans collecte ni publication de source |
 
 - Appel depuis la page : `{dayStartUnixMs}` et `{recordingId}`.
 - Un événement compte dans une période s'il la chevauche, comme dans `metric_history`. Les
-  décomptes ne sont pas plafonnés ; une lecture de `metric_history` reste limitée à 100
-  événements.
+  décomptes et les événements conservés ne sont plus plafonnés à 100 ; la liste visible est
+  progressive (« +N »), sans masquer l'existence du reste. La réponse cible environ 100 Ko
+  pour les courbes ; les événements réels s'y ajoutent sans troncature silencieuse.
 - Rechargement : la page interroge `history_overview` toutes les 60 s au plus et ne relit les
-  courbes (`metric_history`) que si un décompte ou la fin du dernier événement change ; les
-  7 jours ne se relisent qu'à la demande. Aucun rechargement pendant une boîte de dialogue ou un
+  courbes (`history_chart`) que si un décompte, la fin du dernier événement ou le dernier
+  échantillon change ; les 7 jours ne se relisent qu'à la demande. L'aperçu inclut donc le
+  dernier échantillon et une révision détectant aussi effacement et rétention. Aucun
+  rechargement pendant une boîte de dialogue ou un
   aperçu de partage ouverts, pour ne pas évincer du registre la source en cours de relecture.
-  Avant d'activer ce minuteur, le coût d'une lecture `metric_history` sur 24 h et sur 7 jours et
+  Avant d'activer ce minuteur, le coût d'une lecture `history_chart` sur 24 h et sur 7 jours et
   la taille des sources publiées sont mesurés dans l'app Windows.
 - Noms : `metric_history` inclut toujours le nom des programmes cités par les événements renvoyés
   (`contributor_ref`), même au-delà des 200 noms qu'il garde ; le contenu change, pas la forme. Un
@@ -843,7 +871,13 @@ recherche du chantier 15.
 - Échantillonnage en arrière-plan tant que l'app est ouverte :
   - toutes les 5 s, le système et les 20 premiers processus, dans la table `samples` ;
   - 7 jours conservés, agrégés à la minute au-delà de 24 h ;
-  - `get_metric_history` lit cette table et survit aux redémarrages.
+  - `get_metric_history` lit le chemin système étroit de C2 pour les courbes système, le détail
+    des processus seulement pour une requête de processus, et survit aux redémarrages.
+- Lot complet du 27 octobre (#58, #59, autorisé avant la soumission) : migration système,
+  commande groupée, budget disque actif de 256 Mio et rétention qui l'applique, vue Historique
+  complète du complément C3, intégration du bouton Surveiller par la cible événement C7.
+  Mesurer les changements de période (1 h, 24 h, 7 j), octets transférés et croissance par jour,
+  avant/après, dans `history-performance.md` ; afficher le coût disque dans Collecte.
 - « Enregistrer pendant le problème » : bouton dans la zone de saisie et outil `record_activity`.
   L'enregistrement prend un relevé par seconde pendant 30 à 120 s, avec des marqueurs de début et de
   fin, puis l'analyse suit. Le modèle peut le proposer dans `follow_ups`.
@@ -1587,7 +1621,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
 | 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
 | 6 — Stockage en carte, arbre et liste | B, A, C | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
-| 6 — Vue Historique | C, A | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
+| 6 — Vue Historique | C, A, B | en cours (27 octobre) : lot complet autorisé, remplace le report de la section 7 quinquies pour ce lot ; C2 table système et budget, C3 commande groupée/aperçu/détail, barre secondaire, frise numérotée, inspecteurs, Expliquer/Enquêter et cible Surveiller C7 ; tests, mesures avant/après et validation native sous compte standard prévues | feature/history-contract, feature/history-complete ; #58, #59 |
 | 6 — Surveillances | B, A, C | à faire, aucune branche ouverte au 9 octobre : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
 | 6 — Barre secondaire par vue | C | livré : une vue peut déclarer sa barre dans l'emplacement de la liste des conversations (`shell.setViewBar`), redessinée sur ses sujets, avec repli, fenêtre étroite, focus et repère accessibles ; aucune vue ne l'utilise encore (Stockage, Historique, Surveillances) | wp6-viewbar |
 | Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater ; #50 à #54, #57 et #68 traités côté interface le 10 octobre (branches `wp6-chat-polish`, `wp6-views-polish`, `wp3-composer-toggles`) ; reprise terminée : corrections de revue, confidentialité et envois concurrents, 52 contrôles navigateur et 9 contrôles natifs locaux réussis, release reconstruite sur D:, formatage/Clippy et 715 tests réussis (2 ignorés) ; parcours avec modèle réel encore à vérifier | #72 |
