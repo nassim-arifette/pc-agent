@@ -1,18 +1,18 @@
 //! The only unsafe boundary: documented, read-only Windows API calls.
 pub(crate) mod activity;
 mod inventory;
-pub(super) mod nvml;
-pub(super) mod pdh;
+pub(crate) mod nvml;
+pub(crate) mod pdh;
 pub(crate) mod services;
 mod sysproc;
 mod tree;
 pub(crate) mod version_info;
-pub(super) use inventory::hardware_inventory;
-pub(super) use tree::process_tree;
+pub(crate) use inventory::hardware_inventory;
+pub(crate) use tree::process_tree;
 
-use super::{cpu_busy_basis_points, process_cpu_basis_points, Collector, TickSample};
 use crate::counters::{counter_evidence, CounterReadings, Instances, Sampled, MIN_RATE_WINDOW};
 use crate::identity::{CounterSample, Key};
+use crate::{cpu_busy_basis_points, process_cpu_basis_points, Collector, TickSample};
 use pcagent_shared::{
     unix_ms, Evidence, GpuDevice, InstanceState, Metric, ProcessCoverage, Snapshot, Status, Window,
 };
@@ -42,6 +42,39 @@ use windows_sys::Win32::{
 };
 
 const FILETIME_UNIX_EPOCH_MS: u64 = 11_644_473_600_000;
+pub(crate) struct Native;
+impl super::Backend for Native {
+    fn boot_id() -> Option<String> {
+        boot_id()
+    }
+    fn resource_usage() -> crate::ResourceUsage {
+        resource_usage()
+    }
+    fn collect(
+        c: &mut Collector,
+        processes: bool,
+        limit: usize,
+        fast: bool,
+        sort: crate::ProcessSort,
+    ) -> Snapshot {
+        collect(c, processes, limit, fast, sort)
+    }
+    fn collect_recording(c: &mut Collector, limit: usize, sort: crate::ProcessSort) -> Snapshot {
+        collect_recording(c, limit, sort)
+    }
+    fn activity(c: &mut Collector, seconds: u64, limit: usize) -> crate::ProcessActivity {
+        activity::collect(c, seconds, limit)
+    }
+    fn process_tree(c: &mut Collector) -> pcagent_shared::ProcessTree {
+        process_tree(c)
+    }
+    fn revalidate(pid: u32, created: u64) -> InstanceState {
+        revalidate(pid, created)
+    }
+    fn hardware_inventory() -> pcagent_shared::HardwareInventory {
+        hardware_inventory()
+    }
+}
 const BOOT_NOTE: &str = "boot_id is an estimate (GetSystemTimeAsFileTime minus GetTickCount64, rounded to one minute), fixed per collector; clock changes can shift it between sessions.";
 
 struct OwnedHandle(HANDLE);
@@ -69,7 +102,7 @@ fn filetime(t: FILETIME) -> u64 {
     (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)
 }
 
-pub(super) fn resource_usage() -> crate::ResourceUsage {
+pub(crate) fn resource_usage() -> crate::ResourceUsage {
     // SAFETY: current-thread/process pseudo-handles are borrowed, never closed; outputs are
     // valid plain-data structures with the declared lengths. Both APIs are read-only.
     unsafe {
@@ -118,7 +151,7 @@ fn processor_count() -> u32 {
     // SAFETY: no pointer arguments.
     unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) }
 }
-pub(super) fn boot_id() -> Option<String> {
+pub(crate) fn boot_id() -> Option<String> {
     // SAFETY: FILETIME is plain data and the output pointer is valid; GetTickCount64 has no arguments.
     let (now, uptime) = unsafe {
         let mut now: FILETIME = zeroed();
@@ -126,7 +159,7 @@ pub(super) fn boot_id() -> Option<String> {
         (filetime(now), GetTickCount64())
     };
     let now_ms = (now / 10_000).checked_sub(FILETIME_UNIX_EPOCH_MS)?;
-    super::boot_estimate_id(now_ms, uptime)
+    crate::boot_estimate_id(now_ms, uptime)
 }
 struct ProcessTimes {
     created: u64,
@@ -169,7 +202,7 @@ fn handle_state(handle: &OwnedHandle, expected_created: u64) -> InstanceState {
         .map(|times| (times.created, times.exited));
     crate::activity::handle_instance_state(expected_created, times, exit_code, STILL_ACTIVE as u32)
 }
-pub(super) fn revalidate(pid: u32, created: u64) -> InstanceState {
+pub(crate) fn revalidate(pid: u32, created: u64) -> InstanceState {
     // The system list answers for every process, including those that refuse to be opened.
     if let Ok(list) = sysproc::query() {
         return match list.iter().find(|p| p.pid == pid) {
@@ -448,7 +481,7 @@ const PROCESS_HANDLES: Sources = Sources {
 
 /// First readings of every process at the start of the measurement window, so that the first
 /// snapshot of an instance already has its CPU and I/O rates.
-pub(super) struct Baseline {
+pub(crate) struct Baseline {
     at: Duration,
     unix_ms: u64,
     readings: HashMap<Key, (u64, [u64; 3])>,
@@ -723,7 +756,7 @@ fn collect_processes(
     ]);
 }
 
-pub(super) fn collect(
+pub(crate) fn collect(
     collector: &mut Collector,
     include_processes: bool,
     limit: usize,
@@ -748,7 +781,7 @@ pub(super) fn collect(
     result
 }
 
-pub(super) struct RecordingGpuBaseline {
+pub(crate) struct RecordingGpuBaseline {
     at: Duration,
     identities: HashSet<Key>,
 }
@@ -760,7 +793,7 @@ struct RecordingGpuCapture {
 
 /// The retained process list precedes the next PDH baseline. Query-only handle checks after
 /// the current PDH read bracket its PID-only counters without another full enumeration.
-pub(super) fn collect_recording(
+pub(crate) fn collect_recording(
     collector: &mut Collector,
     limit: usize,
     sort: crate::ProcessSort,

@@ -5,12 +5,12 @@ pub mod counters;
 pub mod gpu;
 pub mod history;
 mod identity;
+mod os;
 mod program_names;
 pub mod services;
 pub mod tree;
 #[cfg(windows)]
-#[allow(unsafe_code)]
-mod windows;
+use os::windows;
 
 pub use activity::{
     ActivityCoverage, ActivityProcess, ApplicationActivity, ProcessActivity, ProcessRole,
@@ -18,6 +18,7 @@ pub use activity::{
 };
 pub use history::{HistoryConfig, MetricHistory, Reading, RecordError, SystemSample};
 use identity::{Lookup, Registry};
+use os::Backend;
 use pcagent_shared::{
     new_id, unix_ms, HardwareInventory, InstanceState, Metric, MetricSeries, Origin,
     ProcessDetails, ProcessInstance, ProcessTree, Snapshot, Status, SCHEMA_VERSION,
@@ -37,18 +38,7 @@ pub struct ResourceUsage {
 }
 
 pub fn current_resource_usage() -> ResourceUsage {
-    #[cfg(windows)]
-    {
-        windows::resource_usage()
-    }
-    #[cfg(not(windows))]
-    {
-        ResourceUsage {
-            thread_cpu_100ns: None,
-            process_working_set_bytes: None,
-            logical_processors: None,
-        }
-    }
+    os::Selected::resource_usage()
 }
 
 /// Evidence older than this is reported `stale` by `process_details`.
@@ -141,10 +131,7 @@ impl Collector {
         Self {
             session_id: new_id("session"),
             started: Instant::now(),
-            #[cfg(windows)]
-            boot_id: windows::boot_id(),
-            #[cfg(not(windows))]
-            boot_id: None,
+            boot_id: os::Selected::boot_id(),
             registry: Registry::default(),
             history: MetricHistory::new(config, Origin::Live),
             #[cfg(windows)]
@@ -176,49 +163,29 @@ impl Collector {
         limit: usize,
         sort: ProcessSort,
     ) -> Snapshot {
-        #[cfg(windows)]
-        let result = windows::collect(self, include_processes, limit.clamp(1, 50), false, sort);
-        #[cfg(not(windows))]
-        let result = {
-            let _ = (include_processes, limit, sort);
-            unsupported_snapshot(&self.session_id)
-        };
+        let result =
+            os::Selected::collect(self, include_processes, limit.clamp(1, 50), false, sort);
         self.record(&result);
         result
     }
     /// System-only sample. Reuses the previous CPU tick sample when it is 250 ms to 60 s old,
     /// avoiding the one-second sleep; otherwise behaves like `snapshot(false, _)`.
     pub fn sample_system(&mut self) -> Snapshot {
-        #[cfg(windows)]
-        let result = windows::collect(self, false, 1, true, ProcessSort::WorkingSet);
-        #[cfg(not(windows))]
-        let result = unsupported_snapshot(&self.session_id);
+        let result = os::Selected::collect(self, false, 1, true, ProcessSort::WorkingSet);
         self.record(&result);
         result
     }
     /// Background sample with bounded process rows. The first call warms up CPU/PDH counters;
     /// later calls reuse their previous readings and do not sleep for a measurement window.
     pub fn sample_processes(&mut self, limit: usize, sort: ProcessSort) -> Snapshot {
-        #[cfg(windows)]
-        let result = windows::collect(self, true, limit.clamp(1, 50), true, sort);
-        #[cfg(not(windows))]
-        let result = {
-            let _ = (limit, sort);
-            unsupported_snapshot(&self.session_id)
-        };
+        let result = os::Selected::collect(self, true, limit.clamp(1, 50), true, sort);
         self.record(&result);
         result
     }
     /// Recording sample that reuses the existing PDH window for bounded process GPU evidence.
     /// Warm-up and unverifiable identities stay unknown; there is no extra measurement sleep.
     pub fn sample_recording_processes(&mut self, limit: usize, sort: ProcessSort) -> Snapshot {
-        #[cfg(windows)]
-        let result = windows::collect_recording(self, limit.clamp(1, 50), sort);
-        #[cfg(not(windows))]
-        let result = {
-            let _ = (limit, sort);
-            unsupported_snapshot(&self.session_id)
-        };
+        let result = os::Selected::collect_recording(self, limit.clamp(1, 50), sort);
         self.record(&result);
         result
     }
@@ -233,19 +200,11 @@ impl Collector {
     /// Fresh CPU, memory growth, I/O and GPU observations for processes and applications.
     /// The requested window is bounded to 1..=30 seconds; callers default to 3 seconds.
     pub fn process_activity(&mut self, window_seconds: u64, limit: usize) -> ProcessActivity {
-        #[cfg(windows)]
-        {
-            windows::activity::collect(
-                self,
-                window_seconds.clamp(1, activity::MAX_ACTIVITY_WINDOW_SECONDS),
-                limit.clamp(1, 50),
-            )
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (window_seconds, limit);
-            ProcessActivity::unavailable(&self.session_id, Status::Unsupported, UNSUPPORTED)
-        }
+        os::Selected::activity(
+            self,
+            window_seconds.clamp(1, activity::MAX_ACTIVITY_WINDOW_SECONDS),
+            limit.clamp(1, 50),
+        )
     }
     fn record(&mut self, snapshot: &Snapshot) {
         let sample = SystemSample::from_snapshot(
@@ -268,25 +227,7 @@ impl Collector {
     }
     /// Observed parent relations, validated by creation time. Observation, never authorization.
     pub fn process_tree(&mut self) -> ProcessTree {
-        #[cfg(windows)]
-        {
-            windows::process_tree(self)
-        }
-        #[cfg(not(windows))]
-        {
-            ProcessTree {
-                schema_version: SCHEMA_VERSION,
-                id: new_id("tree"),
-                session_id: self.session_id.clone(),
-                origin: Origin::Live,
-                status: Status::Unsupported,
-                window: pcagent_shared::Window::instant(),
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                truncated: false,
-                limitations: vec![UNSUPPORTED.into()],
-            }
-        }
+        os::Selected::process_tree(self)
     }
     /// Looks up an instance by an opaque `entity_ref` issued by this collector; bare PIDs never match.
     pub fn process_details(&mut self, entity_ref: &str) -> ProcessDetails {
@@ -307,10 +248,7 @@ impl Collector {
             Lookup::Retired(r) => (r.state, r.tracked.clone()),
             Lookup::Live(key, t) => {
                 let tracked = t.clone();
-                #[cfg(windows)]
-                let state = windows::revalidate(key.0, key.1);
-                #[cfg(not(windows))]
-                let state = InstanceState::Unverified;
+                let state = os::Selected::revalidate(key.0, key.1);
                 if matches!(state, InstanceState::Exited | InstanceState::PidReused) {
                     self.registry.retire(key, state);
                 }
@@ -365,31 +303,7 @@ impl Collector {
     }
     /// Local capability inventory without serial numbers or machine identifiers.
     pub fn hardware_inventory(&self) -> HardwareInventory {
-        #[cfg(windows)]
-        {
-            windows::hardware_inventory()
-        }
-        #[cfg(not(windows))]
-        {
-            use pcagent_shared::Observed;
-            fn m<T>() -> Observed<T> {
-                Observed::missing("platform", Status::Unsupported)
-            }
-            HardwareInventory {
-                schema_version: SCHEMA_VERSION,
-                id: new_id("inventory"),
-                origin: Origin::Live,
-                status: Status::Unsupported,
-                collected_at_unix_ms: unix_ms(),
-                os_version: m(),
-                architecture: m(),
-                logical_processors: m(),
-                installed_memory_bytes: m(),
-                volumes: m(),
-                gpu_adapters: m(),
-                limitations: vec![UNSUPPORTED.into()],
-            }
-        }
+        os::Selected::hardware_inventory()
     }
 }
 
