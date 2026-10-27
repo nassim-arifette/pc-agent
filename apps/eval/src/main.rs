@@ -5,6 +5,7 @@ mod capture;
 mod files;
 mod mcp;
 mod mcp_trace;
+mod routing;
 #[cfg(test)]
 mod tests;
 
@@ -118,6 +119,13 @@ enum Command {
         allow_cloud: bool,
         #[arg(long, requires = "allow_cloud")]
         model: Option<String>,
+        /// Measure automatic continuation using an existing human-reviewed calibration.
+        #[arg(long, requires_all = ["allow_cloud", "super_model", "ultra_model"], conflicts_with = "model")]
+        calibration: Option<PathBuf>,
+        #[arg(long, requires = "calibration")]
+        super_model: Option<String>,
+        #[arg(long, requires = "calibration")]
+        ultra_model: Option<String>,
         #[arg(long)]
         anonymize: bool,
         /// Show the initial message and all recorded model-facing outputs. Sends nothing.
@@ -399,10 +407,23 @@ fn run(cli: Cli) -> Result<u8> {
             calls,
             allow_cloud,
             model: id,
+            calibration,
+            super_model,
+            ultra_model,
             anonymize,
             preview_cloud,
             out,
         } => {
+            let automatic = calibration
+                .as_deref()
+                .map(|path| {
+                    routing::Automatic::load(
+                        path,
+                        super_model.expect("required with calibration"),
+                        ultra_model.expect("required with calibration"),
+                    )
+                })
+                .transpose()?;
             let scenario = load_scenario(&path)?;
             let asked = question(asked, scenario.question.as_deref())?;
             let sharing = if anonymize {
@@ -444,10 +465,14 @@ fn run(cli: Cli) -> Result<u8> {
                 "offline_replay"
             });
             if allow_cloud {
-                let (mut model, id) = model(id)?;
                 let mut recorder = Recorder::new(replay);
-                let (run, ok) =
-                    investigate(&mut model, id, &asked, &scenario.initial, &mut recorder);
+                let (run, ok) = if let Some(automatic) = automatic {
+                    let (mut model, id) = automatic.model()?;
+                    investigate(&mut model, id, &asked, &scenario.initial, &mut recorder)
+                } else {
+                    let (mut model, id) = model(id)?;
+                    investigate(&mut model, id, &asked, &scenario.initial, &mut recorder)
+                };
                 result["run"] = serde_json::to_value(run)?;
                 let (tools, actual_calls) = recorder.into_parts();
                 replay = tools;
