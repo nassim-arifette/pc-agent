@@ -15,6 +15,7 @@ pub enum ParamKind {
         max: u64,
     },
     OneOf(&'static [&'static str]),
+    UniqueChoices(&'static [&'static str]),
     /// A locally issued opaque reference such as `proc-…`; never a path, name or PID.
     OpaqueRef {
         prefix: &'static str,
@@ -46,6 +47,7 @@ pub struct ToolSpec {
 pub enum ArgValue {
     Integer(u64),
     Text(String),
+    TextList(Vec<String>),
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Args(BTreeMap<&'static str, ArgValue>);
@@ -62,6 +64,12 @@ impl Args {
             _ => None,
         }
     }
+    pub fn texts(&self, name: &str) -> Option<&[String]> {
+        match self.0.get(name) {
+            Some(ArgValue::TextList(values)) => Some(values),
+            _ => None,
+        }
+    }
     /// The validated arguments as a JSON object, keys in a stable order.
     pub fn to_value(&self) -> Value {
         Value::Object(
@@ -71,6 +79,7 @@ impl Args {
                     let value = match v {
                         ArgValue::Integer(n) => Value::from(*n),
                         ArgValue::Text(t) => Value::from(t.as_str()),
+                        ArgValue::TextList(values) => json!(values),
                     };
                     ((*k).to_owned(), value)
                 })
@@ -88,6 +97,10 @@ impl ToolSpec {
                     json!({"type":"integer","minimum":min,"maximum":max})
                 }
                 ParamKind::OneOf(values) => json!({"type":"string","enum":values}),
+                ParamKind::UniqueChoices(values) => json!({
+                    "type":"array","items":{"type":"string","enum":values},
+                    "minItems":1,"maxItems":values.len(),"uniqueItems":true
+                }),
                 ParamKind::OpaqueRef { prefix } => {
                     json!({"type":"string","pattern":format!("^{prefix}[A-Za-z0-9:-]+$"),"maxLength":MAX_REF_BYTES})
                 }
@@ -131,6 +144,20 @@ impl ToolSpec {
                     .as_str()
                     .filter(|s| values.contains(s))
                     .map(|s| ArgValue::Text(s.into())),
+                ParamKind::UniqueChoices(allowed) => v.as_array().and_then(|values| {
+                    if values.is_empty() || values.len() > allowed.len() {
+                        return None;
+                    }
+                    let mut choices = Vec::new();
+                    for value in values {
+                        let value = value.as_str()?;
+                        if !allowed.contains(&value) || choices.iter().any(|item| item == value) {
+                            return None;
+                        }
+                        choices.push(value.to_owned());
+                    }
+                    Some(ArgValue::TextList(choices))
+                }),
                 ParamKind::OpaqueRef { prefix } => v
                     .as_str()
                     .filter(|s| {

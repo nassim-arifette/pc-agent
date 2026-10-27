@@ -61,6 +61,23 @@ pub fn run(
     sharing: Sharing,
     privacy: &PrivacyContext,
 ) -> Option<ToolOutput> {
+    if spec.name == pcagent_agent::catalog::elevated::PROPOSE_ELEVATED_CHECK.name {
+        let tasks = args.texts("tasks")?;
+        return Some(ToolOutput {
+            status: Status::Ok,
+            cloud: json!({"status":"ok", "plan":{
+                "plan_id":pcagent_shared::new_id("plan"),
+                "kind":"elevated_check", "tasks":tasks,
+                "requires_local_review":true, "executed":false
+            }}),
+            evidence: Vec::new(),
+            processes: Vec::new(),
+            findings: Vec::new(),
+            storage_items: Vec::new(),
+            limitations: Vec::new(),
+            inspection_complete: false,
+        });
+    }
     if spec.name != GET_APPROVED_INSPECTION.name {
         return None;
     }
@@ -89,6 +106,47 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn proposal_is_closed_unique_local_review_only_and_never_an_inspection() {
+        use pcagent_agent::catalog::elevated::PROPOSE_ELEVATED_CHECK as spec;
+        for invalid in [
+            r#"{"tasks":[]}"#,
+            r#"{"tasks":["system_caches","system_caches"]}"#,
+            r#"{"tasks":["performance_trace"]}"#,
+            r#"{"tasks":["cmd.exe"]}"#,
+            r#"{"tasks":["deep_analysis"]}"#,
+            r#"{"tasks":[{"kind":"system_caches"}]}"#,
+            r#"{"tasks":["system_caches"],"approve":true}"#,
+            r#"{"tasks":["system_caches"],"budget_ms":1}"#,
+            r#"{"tasks":"system_caches"}"#,
+            r#"{"tasks":[null]}"#,
+        ] {
+            assert!(spec.validate(invalid).is_err(), "{invalid}");
+        }
+        let args = spec
+            .validate(r#"{"tasks":["system_caches","process_images","mft_inventory"]}"#)
+            .unwrap();
+        let output = run(
+            &spec,
+            &args,
+            &[],
+            Sharing::Anonymized,
+            &PrivacyContext::local(),
+        )
+        .unwrap();
+        assert_eq!(args.to_value()["tasks"].as_array().unwrap().len(), 3);
+        assert_eq!(output.cloud["plan"]["tasks"], args.to_value()["tasks"]);
+        assert_eq!(output.cloud["plan"]["requires_local_review"], true);
+        assert_eq!(output.cloud["plan"]["executed"], false);
+        assert!(output.cloud["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("plan-"));
+        assert!(!output.inspection_complete);
+        assert!(
+            output.evidence.is_empty() && output.processes.is_empty() && output.findings.is_empty()
+        );
+    }
     #[test]
     fn missing_approval_is_coverage_only_and_schema_cannot_launch_commands() {
         let args = GET_APPROVED_INSPECTION

@@ -112,6 +112,7 @@ fn a_turn_sends_its_declared_tools_and_the_matching_answer_schema() {
             .with(Capability::ElevatedHelper, false)
             .with(Capability::StorageScopes, false),
         Capabilities::none(),
+        Capabilities::all().with(Capability::ActionProposals, false),
     ] {
         let declared = catalog(&registry(), &capabilities);
         let inspects = declared.iter().any(|s| s.name == "get_system_snapshot");
@@ -147,8 +148,9 @@ fn a_turn_sends_its_declared_tools_and_the_matching_answer_schema() {
             .as_str()
             .unwrap();
         assert_eq!(
-            action_refs.contains("prepare_action_plan"),
-            capabilities.contains(Capability::ActionProposals)
+            action_refs.contains("locally declared proposal tool"),
+            (capabilities.contains(Capability::ActionProposals)
+                || capabilities.contains(Capability::ElevatedHelper))
                 && capabilities.contains(Capability::Windows)
         );
         // Only that description changes: the answer schema stays the same (C1).

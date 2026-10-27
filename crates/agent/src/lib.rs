@@ -673,7 +673,10 @@ impl Investigation {
     fn plans(&self) -> Vec<String> {
         self.observations
             .iter()
-            .filter(|o| o.tool == PREPARE_ACTION_PLAN.name)
+            .filter(|o| {
+                o.tool == PREPARE_ACTION_PLAN.name
+                    || o.tool == catalog::elevated::PROPOSE_ELEVATED_CHECK.name
+            })
             .filter_map(|o| o.observation["plan"]["plan_id"].as_str().map(str::to_owned))
             .collect()
     }
@@ -898,7 +901,7 @@ const SELECTED: &str = "\nThe first message's initial_observation, cited as [O0]
 const EXPLAIN: &str = "\nThis turn explains the selected evidence and takes no new measurement. The selection already counts as the inspection: answer by calling submit_answer directly, from [O0] and its findings. get_selected_evidence only returns the same evidence again.";
 const WEB: &str = "\nThe lookup_* tools search a few official or shopping websites with a query composed on this PC from measured references. Use them only when the measurements raise a question the web can answer: driver notes, a known issue for a measured update number or stop code, a compatible memory price, this PC model's specification sheet. Their results are web snippets cited [W1], [W2]: they are not measurements of this PC and may be outdated or wrong. Cite a web fact right after it with its [W…]; never cite a PC number with [W…] or a web number with [O…]. A match with a known issue is a hint, not proof: say so and keep confidence at most medium. A price is a dated range from its source. Suggest a newer driver only if its notes fix the measured symptom or a security issue.";
 const NO_ACTIONS: &str =
-    "\nNo actions can be proposed here: describe the steps the user can take themselves.";
+    "\nNo state-changing actions can be proposed here: describe the steps the user can take themselves. Any separately declared administrator-check proposal only requests a local read-only review.";
 const MAY_PROPOSE: &str = "\nTo offer a remedy the evidence supports, call prepare_action_plan (at most three times) before answering and list the returned plan_id values in action_refs. Never write a plan_id in the answer text: the app shows each proposal as a card. The user reviews each plan locally after the investigation; nothing runs without their explicit approval. Never claim that an action was performed.";
 /// The instructions follow the declared tools: proposals are only mentioned when the controller
 /// actually offers `prepare_action_plan`, approved helper results only when it offers
@@ -1001,6 +1004,14 @@ fn system_prompt(
     follow_up: bool,
     selected: Option<selection::SelectionIntent>,
 ) -> String {
+    let elevated_proposals = if specs
+        .iter()
+        .any(|spec| spec.name == catalog::elevated::PROPOSE_ELEVATED_CHECK.name)
+    {
+        "\nWhen a question needs administrator-only readings, propose_elevated_check can prepare a closed selection of available checks. Put its returned plan_id in action_refs. It never runs or approves anything: the person reviews exact local targets, can deselect sections and approves a single Windows prompt. A needs_admin result is missing coverage, not a successful reading."
+    } else {
+        ""
+    };
     let proposals = specs.iter().any(|s| s.name == PREPARE_ACTION_PLAN.name);
     let web = specs.iter().any(|s| matches!(s.class, ToolClass::External));
     let elevated = specs
@@ -1018,7 +1029,7 @@ fn system_prompt(
         })
         .unwrap_or(NO_ELEVATED);
     format!(
-        "{SYSTEM}{elevated}{SYSTEM_RULES}{CURRENT_FINDINGS}{}{}{}{}{}{}",
+        "{SYSTEM}{elevated}{SYSTEM_RULES}{CURRENT_FINDINGS}{elevated_proposals}{}{}{}{}{}{}",
         match sharing {
             Sharing::Complete => NAMES_SHARED,
             Sharing::Anonymized => NAMES_HIDDEN,
@@ -1276,10 +1287,10 @@ fn converse_inner(
     let inspection_only = toolbox.definitions();
     let mut definitions = inspection_only.clone();
     if let Some(list) = definitions.as_array_mut() {
-        let proposals = toolbox
-            .specs()
-            .iter()
-            .any(|s| s.name == PREPARE_ACTION_PLAN.name);
+        let proposals = toolbox.specs().iter().any(|s| {
+            s.name == PREPARE_ACTION_PLAN.name
+                || s.name == catalog::elevated::PROPOSE_ELEVATED_CHECK.name
+        });
         list.push(answer::definition_for(proposals));
     }
     let mut seen_ids = HashSet::new();
