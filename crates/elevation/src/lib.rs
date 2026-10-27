@@ -8,6 +8,9 @@ pub mod energy;
 mod energy_native;
 mod job;
 mod lifecycle;
+#[cfg(unix)]
+#[allow(unsafe_code)]
+mod unix_host;
 pub use pcagent_mft as mft;
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -55,14 +58,25 @@ pub fn ensure_unelevated_host() -> Result<(), ElevationError> {
     if native::is_elevated()? {
         return Err(ElevationError::ElevatedHost);
     }
+    #[cfg(unix)]
+    if unix_host::is_privileged() {
+        return Err(ElevationError::ElevatedHost);
+    }
     Ok(())
 }
 
 pub fn elevated_host_notice(french: bool) -> (&'static str, &'static str) {
+    #[cfg(not(unix))]
     let body = if french {
         "Pour votre sécurité, PC Agent ne s'exécute pas en tant qu'administrateur.\n\nFermez ce message, puis relancez PC Agent normalement (double-clic, sans « Exécuter en tant qu'administrateur »).\n\nLes analyses qui demandent des droits administrateur se lancent depuis l'application, avec l'invite de Windows."
     } else {
         "For your safety, PC Agent does not run as administrator.\n\nClose this message, then start PC Agent normally (double-click, without \"Run as administrator\").\n\nChecks that need administrator rights are started from inside the app, through the Windows prompt."
+    };
+    #[cfg(unix)]
+    let body = if french {
+        "Pour votre sécurité, PC Agent ne s'exécute pas avec les privilèges root ou setuid.\n\nFermez ce message, puis relancez PC Agent depuis votre session utilisateur, sans sudo.\n\nSeul le helper d'une vérification explicitement approuvée peut être élevé."
+    } else {
+        "For your safety, PC Agent does not run with root or setuid privileges.\n\nClose this message, then start PC Agent from your regular user session, without sudo.\n\nOnly the helper for an explicitly approved check may be elevated."
     };
     ("PC Agent", body)
 }

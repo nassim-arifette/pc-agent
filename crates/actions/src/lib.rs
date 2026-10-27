@@ -39,6 +39,8 @@ pub use native::{
 };
 #[cfg_attr(not(windows), allow(unused_imports))]
 pub(crate) use native::{same_object, verify_recycled, RecycleEvidence};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use os::desktop::{open_web_page, show_in_explorer};
 pub use plan::{
     ActionIntent, ActionKind, ActionPlan, CleanupTarget, FileIdentity, FileTarget, PlanItem,
     PlanModelView, PlanState, Precondition, ProcessIdentity, ProcessTarget, Recovery,

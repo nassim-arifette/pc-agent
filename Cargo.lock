@@ -2487,6 +2487,7 @@ dependencies = [
 name = "pcagent-elevation"
 version = "0.1.1"
 dependencies = [
+ "libc",
  "pcagent-mft",
  "pcagent-shared",
  "pcagent-storage",

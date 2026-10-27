@@ -1,6 +1,8 @@
 fn main() {
-    // Tauri only runs on Windows here; other targets build a stub that points to the CLI.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    if matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("windows" | "linux" | "macos")
+    ) {
         tauri_build::build();
     }
 }
