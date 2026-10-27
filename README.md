@@ -129,10 +129,10 @@ page excerpt.
 
 ## Install
 
-<!-- TODO(release): link "the GitHub release" below to the published release page (tag v0.1.0), and name its version and commit. -->
-
-1. Download `pcagent-gui.exe` and `pcagent-elevated.exe` from the GitHub release, and keep them
-   in the same folder: the app only launches the helper that sits next to it. `pcagent.exe` is
+1. Download `pcagent-gui.exe` and `pcagent-elevated.exe` from the
+   [GitHub release](https://github.com/nassim-arifette/pc-agent/releases/latest) (current version:
+   `v0.1.1`; each release names the commit it was built from and lists SHA-256 checksums), and
+   keep them in the same folder: the app only launches the helper that sits next to it. `pcagent.exe` is
    the optional command line and `pcagent-eval.exe` the evaluation tool
    ([docs/eval.md](docs/eval.md)). There is no installer.
 2. The executables are not code-signed, so on first launch Microsoft Defender SmartScreen shows
@@ -357,7 +357,9 @@ As of 26 October 2026:
   (measurements, conversations, sharing previews, Explain and Investigate, history), live
   investigations with Nemotron 3 Super and Ultra, a web lookup answered from NVIDIA's site, and
   the first-launch guide with a real account catalog and connection test.
-- **Not yet:** a full test on a second Windows 11 PC installed from the release; an evaluation
+- **Second PC:** the project owner installed `v0.1.0` from the GitHub release on a second
+  Windows 11 PC and ran the full path (key entry, measurements, investigation).
+- **Not yet:** an evaluation
   campaign against Claude and ChatGPT on the same situations (the harness exists, scored results
   do not); Windows 10; an acceptance run of the administrator helper's consent prompts; the
   accuracy of the quick drive analysis against a controlled volume.
