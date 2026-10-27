@@ -74,7 +74,7 @@ fn chart_uses_one_system_projection_and_never_decodes_process_payloads() {
         .execute("UPDATE samples SET payload='not JSON'", [])
         .unwrap();
     let chart = store.history_chart(0, 601_000, 300).unwrap();
-    assert_eq!(chart.series.len(), 5);
+    assert_eq!(chart.series.len(), SYSTEM_CHARTS.len());
     assert!(chart.series.iter().all(|s| s.points.len() <= 300));
     let cpu = &chart.histories[0];
     assert_eq!(cpu.points.iter().filter_map(|p| p.max).max(), Some(9_999));

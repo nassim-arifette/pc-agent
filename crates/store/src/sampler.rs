@@ -108,16 +108,7 @@ impl Sampler {
         }
     }
     pub fn history(&self, query: &HistoryQuery) -> Result<HistorySeries, StoreError> {
-        if query.entity_ref == "system"
-            && [
-                pcagent_shared::Metric::CpuBusyBasisPoints,
-                pcagent_shared::Metric::PhysicalAvailableBytes,
-                pcagent_shared::Metric::PhysicalTotalBytes,
-                pcagent_shared::Metric::DiskIdleBasisPoints,
-                pcagent_shared::Metric::GpuBusiestEngineBasisPoints,
-            ]
-            .contains(&query.metric)
-        {
+        if query.entity_ref == "system" && crate::samples::SYSTEM_CHARTS.contains(&query.metric) {
             let chart = self.history_chart(query.from_unix_ms, query.to_unix_ms, 300)?;
             let mut series = chart
                 .histories

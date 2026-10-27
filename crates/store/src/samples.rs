@@ -5,6 +5,7 @@ mod collection;
 mod history;
 mod overview;
 pub use collection::{HistoryCollection, DEFAULT_COLLECTION_BUDGET_BYTES};
+pub(crate) use history::SYSTEM_CHARTS;
 pub use history::{ChartPoint, ChartSeries, HistoryChart};
 pub use overview::{HistoryOverview, HistoryPeriod, HistoryRecordings, RecordingDetail};
 pub(crate) mod system;
