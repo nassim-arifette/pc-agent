@@ -1,9 +1,45 @@
 //! macOS collectors; missing Windows-only semantics are not replaced by unrelated counters.
 pub(crate) mod activity;
+#[allow(unsafe_code)]
 mod native;
 
 use crate::{identity::CounterSample, Collector, ProcessSort, TickSample};
 pub(crate) use native::{boot_id, resource_usage};
+
+pub(crate) struct Native;
+
+impl super::Backend for Native {
+    fn boot_id() -> Option<String> {
+        boot_id()
+    }
+    fn resource_usage() -> crate::ResourceUsage {
+        resource_usage()
+    }
+    fn collect(
+        collector: &mut Collector,
+        processes: bool,
+        limit: usize,
+        fast: bool,
+        sort: ProcessSort,
+    ) -> Snapshot {
+        collect(collector, processes, limit, fast, sort)
+    }
+    fn collect_recording(collector: &mut Collector, limit: usize, sort: ProcessSort) -> Snapshot {
+        collect(collector, true, limit, true, sort)
+    }
+    fn activity(collector: &mut Collector, seconds: u64, limit: usize) -> crate::ProcessActivity {
+        activity::collect(collector, seconds, limit)
+    }
+    fn process_tree(collector: &mut Collector) -> ProcessTree {
+        process_tree(collector)
+    }
+    fn revalidate(pid: u32, created: u64) -> InstanceState {
+        revalidate(pid, created)
+    }
+    fn hardware_inventory() -> HardwareInventory {
+        hardware_inventory()
+    }
+}
 use pcagent_shared::{
     new_id, unix_ms, Evidence, HardwareInventory, InstanceState, Metric, Observed, Origin,
     OsVersion, ProcessCoverage, ProcessTree, ProcessTreeNode, Snapshot, Status, Window,
@@ -42,7 +78,7 @@ pub(crate) fn collect(
             && (Duration::from_millis(250)..=Duration::from_secs(60))
                 .contains(&collector.started.elapsed().saturating_sub(sample.at))
     });
-    if processes && prior.is_none() {
+    if processes && prior.is_none() && !reuse {
         // Warm up every readable identity before the window, not just the previous top rows.
         let mut baseline = Snapshot::empty(&collector.session_id);
         collect_processes(collector, &mut baseline, limit, sort);
@@ -54,7 +90,7 @@ pub(crate) fn collect(
             unix_ms: unix_ms(),
         })
     });
-    if prior.is_none() {
+    if prior.is_none() && !reuse {
         std::thread::sleep(Duration::from_secs(1));
     }
     let last = native::cpu_ticks().map(|ticks| TickSample {
@@ -65,6 +101,13 @@ pub(crate) fn collect(
     collector.last_ticks = last.as_ref().ok().copied();
     let mut result = Snapshot::empty(&collector.session_id);
     result.evidence.push(match (first, last) {
+        _ if reuse && prior.is_none() => Evidence::missing(
+            Metric::CpuBusyBasisPoints,
+            "system",
+            "Mach.host_statistics(HOST_CPU_LOAD_INFO)",
+            Status::Partial,
+            "Counter warm-up: a later sample is needed for a measurable window.",
+        ),
         (Ok(a), Ok(b)) => match crate::cpu_busy_basis_points(a.ticks, b.ticks) {
             Some(value) => Evidence::measured(
                 Metric::CpuBusyBasisPoints,
@@ -366,6 +409,7 @@ pub(crate) fn hardware_inventory() -> HardwareInventory {
         inventory.logical_processors.status,
         inventory.installed_memory_bytes.status,
         inventory.volumes.status,
+        inventory.gpu_adapters.status,
     ]
     .iter()
     .any(|s| *s != Status::Ok)
@@ -378,6 +422,17 @@ pub(crate) fn hardware_inventory() -> HardwareInventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_warmup_is_unknown_and_keeps_the_counter_baseline() {
+        let mut collector = Collector::new();
+        let first = collector.sample_system();
+        assert!(first.system_value(Metric::CpuBusyBasisPoints).is_none());
+        assert!(collector.last_ticks.is_some());
+        assert!(first.system_value(Metric::PhysicalTotalBytes).is_some());
+        assert_eq!(crate::process_limit(usize::MAX), usize::MAX);
+        assert_eq!(crate::process_limit(0), 1);
+    }
 
     #[test]
     fn native_snapshot_and_details_preserve_identity_and_measurement_semantics() {

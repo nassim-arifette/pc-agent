@@ -401,11 +401,15 @@ pub(super) fn volumes() -> Result<Vec<VolumeInfo>, Status> {
         let bytes = |n: u64| n.checked_mul(u64::from(m.f_bsize));
         let local = m.f_flags & libc::MNT_LOCAL as u32 != 0;
         Some(VolumeInfo {
-            root, kind: if local { VolumeKind::Fixed } else { VolumeKind::Network },
+            root, kind: if local { VolumeKind::Unknown } else { VolumeKind::Network },
             total_bytes: bytes(m.f_blocks), free_bytes: bytes(m.f_bfree),
             available_to_caller_bytes: bytes(m.f_bavail),
             source: "Darwin.getfsstat(MNT_NOWAIT)".into(),
-            status: Status::Ok,
+            status: if local || [bytes(m.f_blocks), bytes(m.f_bfree), bytes(m.f_bavail)].contains(&None) {
+                Status::Partial
+            } else {
+                Status::Ok
+            },
             limitations: vec!["Cached mount statistics; APFS volumes can share container capacity. Local mount does not prove a non-removable physical device.".into()],
         })
     }).collect())

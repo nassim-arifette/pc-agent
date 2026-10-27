@@ -8,10 +8,10 @@ use std::{
 };
 
 pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> ProcessActivity {
-    let mut before = Snapshot::empty(&collector.session_id);
-    collect_processes(collector, &mut before, usize::MAX, ProcessSort::Cpu);
     let clock = Instant::now();
     let start = unix_ms();
+    let mut before = Snapshot::empty(&collector.session_id);
+    collect_processes(collector, &mut before, usize::MAX, ProcessSort::Cpu);
     std::thread::sleep(Duration::from_secs(seconds));
     let mut after = Snapshot::empty(&collector.session_id);
     collect_processes(collector, &mut after, usize::MAX, ProcessSort::Cpu);
@@ -33,13 +33,24 @@ pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> 
         .collect();
     out.coverage.stable_instances = current.keys().filter(|k| previous.contains_key(k)).count();
     out.coverage.new_instances = current.len() - out.coverage.stable_instances;
-    out.coverage.exited_instances = previous.keys().filter(|k| !current.contains_key(k)).count();
+    out.coverage.exited_instances = previous
+        .keys()
+        .filter(|k| {
+            !current.contains_key(k)
+                && matches!(
+                    super::revalidate(k.0, k.1),
+                    pcagent_shared::InstanceState::Exited
+                        | pcagent_shared::InstanceState::PidReused
+                )
+        })
+        .count();
     let by_pid: HashMap<_, _> = after.processes.iter().map(|p| (p.pid, p)).collect();
     for p in after.processes.iter().take(limit) {
         let metadata = match native::process(p.pid) {
             Ok(row) if row.created == p.creation_time_filetime => row,
             _ => {
                 out.coverage.processes.unavailable += 1;
+                out.coverage.processes.readable -= 1;
                 continue;
             }
         };
@@ -85,6 +96,11 @@ pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> 
             .iter()
             .find(|e| e.metric == Metric::ProcessWorkingSetBytes)
             .and_then(|e| e.usable_value());
+        let process_window = evidence
+            .iter()
+            .find(|e| e.metric == Metric::ProcessCpuBasisPoints && e.window.duration_ms > 0)
+            .map(|e| e.window.clone())
+            .unwrap_or_else(|| out.window.clone());
         for (metric, value) in [
             (
                 Metric::ProcessWorkingSetIncreaseBytes,
@@ -101,7 +117,7 @@ pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> 
                     &p.entity_ref,
                     v,
                     "libproc.PROC_PIDTASKINFO",
-                    out.window.clone(),
+                    process_window.clone(),
                 ),
                 None => Evidence::missing(
                     metric,
@@ -170,6 +186,7 @@ pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> 
     }
     out.coverage.applications_total = current.len();
     out.coverage.applications_returned = out.applications.len();
+    out.limitations.push("New means newly readable in this window, not proof of launch; only a failed creation-time lookup or changed identity is counted as an exit. Permission failures are never exits.".into());
     out.limitations.push("handles denotes open file descriptors and session denotes the POSIX session ID. Role is a local heuristic from application bundle/closed argument markers, falling back to system-vs-user UID; no arguments or UID are retained.".into());
     out
 }
