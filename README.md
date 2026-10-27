@@ -164,7 +164,15 @@ its driver; other graphics cards report their load only.
 **Continue locally without AI** skips the key: measurements, history, storage and the local rules
 keep working, and nothing is sent anywhere. Settings reopens the guide at any time.
 
-<!-- TODO(footprint): memory and processor use of PC Agent (window open, window hidden) and the size of pcagent.sqlite after a known duration, with the date and the PC they were measured on. -->
+**Measured idle footprint (27 October, v0.1.1).** On a Windows Server 2022 VM with 8 logical
+processors and 32 GiB RAM, the window and its six WebView2 descendants averaged 316 MiB of
+summed working sets with the window open, then 204 MiB hidden; private bytes averaged
+131–132 MiB. Average CPU use was 0.05% and 0.02% of the VM respectively. Each phase lasted
+about three minutes under a standard account, on a fresh profile with no cloud request or
+scan. After about 6 minutes 34 seconds of collection, SQLite plus its WAL and shared-memory
+files occupied 3.28 MiB (80 samples). These are short idle measurements, not peak usage or a
+daily disk-growth forecast; summed working sets can count shared pages more than once.
+See the [measurement protocol and limitations](docs/footprint.md).
 
 ### For judges
 
