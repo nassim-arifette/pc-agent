@@ -8,6 +8,7 @@ pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 mod process_peaks;
 pub mod sampler;
 mod samples;
+pub mod watches;
 pub use battery::{
     BatteryGap, BatteryHistory, BatteryPoint, BatteryRecording, BatteryRecordingCoverage,
     MAX_BATTERY_POINTS, MAX_RECORDING_BATTERIES,
@@ -25,7 +26,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -173,6 +174,9 @@ impl Store {
         }
         if version < 6 {
             conn.execute_batch(images::MIGRATION)?;
+        }
+        if version < 7 {
+            conn.execute_batch(watches::MIGRATION)?;
         }
         Ok(Self {
             conn,
