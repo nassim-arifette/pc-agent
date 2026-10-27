@@ -6,7 +6,7 @@ use crate::{failure, preview, protocol};
 use pcagent_agent::selection::SelectionSource;
 use pcagent_agent::{credentials, PastTurn};
 use pcagent_shared::unix_ms;
-use pcagent_store::sampler::{Sampler, SamplerStatus};
+use pcagent_store::sampler::{Sampler, SamplerStatus, WatchHooks};
 use pcagent_store::{
     Conversation, ConversationSummary, HistoryQuery, HistorySeries, Recording, Store,
     DEFAULT_RETENTION_DAYS,
@@ -26,9 +26,9 @@ pub(super) fn open_history() -> Option<Store> {
     Some(store)
 }
 
-pub(super) fn open_sampler() -> Option<Sampler> {
+pub(super) fn open_sampler(hooks: WatchHooks) -> Option<Sampler> {
     let dir = credentials::file_path()?.parent()?.to_path_buf();
-    Sampler::start(&dir.join("pcagent.sqlite")).ok()
+    Sampler::start_for_window(&dir.join("pcagent.sqlite"), hooks).ok()
 }
 
 pub(super) fn history_unavailable() -> Failure {
@@ -245,10 +245,15 @@ pub(super) fn record_activity_cancel(
 #[tauri::command]
 pub(super) async fn history_clear(state: State<'_, AppState>) -> Result<usize, Failure> {
     let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    let notifications = state.watches.notifications.clone();
+    *lock(&state.watches.activation) = None;
     let selections = state.selections.clone();
     lock(&selections).begin_history_clear();
     tauri::async_runtime::spawn_blocking(move || {
         let result = sampler.clear().map_err(failure::history);
+        if result.is_ok() {
+            let _ = notifications.clear();
+        }
         lock(&selections).finish_history_clear();
         result
     })
