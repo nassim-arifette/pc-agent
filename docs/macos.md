@@ -7,7 +7,7 @@ history and evidence types. It never makes a provider request.
 This document describes implementation checkpoints, not a completed macOS desktop
 release. The actual Tauri desktop target now compiles on macOS, including the command
 handlers; this is no longer an unsupported-platform entry point. A native WKWebView
-launch and visual validation are still required. Native startup, actions, elevation
+launch and visual validation are still required. Native actions, elevation
 and OS-aware capability integration are still in progress.
 
 ## Measurements and meaning
@@ -35,7 +35,8 @@ Mount capacity must not be summed as if every APFS volume had separate backing s
 ## Native inspection checkpoint
 
 The macOS inspector now reads battery sources through IOKit, the caller's launchd
-services through `launchctl list`, bounded error/fault counts through `log show`,
+services through `launchctl list`, system-domain services through `launchctl print system`,
+bounded error/fault counts through `log show`,
 and available updates through the read-only `softwareupdate --list` scan.
 The latter may contact Apple's update service; it never downloads or installs updates.
 Commands use absolute allowlisted executables, no shell, fixed locale, bounded
@@ -53,9 +54,20 @@ Battery capacity remains in relative native units; energy, wear and cycle count
 are unknown when the public power-source API cannot establish them. Missing or
 contradictory values never become measured zeros.
 
-Startup/Login Items, complete system state, cleanup, actions, elevation and the
-native desktop remain separate integration work. Targeted macOS inspection tests:
-71 passed, including fixture privacy, unknown/error states, time/output bounds,
+Startup inspection reads user, local and system LaunchAgent plists through Core
+Foundation and merges their Disabled key with current-GUI-domain launchctl overrides.
+Enabled does not mean running. It reads legacy Open at Login items through a fixed
+System Events script; Automation/TCC denial is explicit, not an empty list. Modern
+third-party SMAppService background permissions have no public enumeration API here
+and remain explicit partial coverage. Names stay in the local name map; plist
+commands, paths and content never enter observations.
+
+System state includes public OS version, uptime, active CPU count, physical memory,
+load averages and update offers. Load is not CPU percent; an update requiring a
+restart is not a system-wide pending-restart flag.
+
+Cleanup, actions, elevation and the native desktop remain separate integration work.
+Targeted macOS inspection tests: 77 passed, including fixture privacy, unknown/error states, time/output bounds,
 child cleanup and a live Metal/Foundation hardware projection.
 
 The shared desktop conversion also rejects root and mismatched real/effective Unix

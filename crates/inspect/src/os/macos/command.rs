@@ -9,6 +9,9 @@ use std::{
 
 pub(super) enum ReadOnly {
     Services,
+    SystemServices,
+    DisabledAgents,
+    LoginItems,
     Events {
         start_seconds: u64,
         end_seconds: u64,
@@ -23,6 +26,26 @@ pub(super) fn run(read: ReadOnly) -> Result<Vec<u8>, Failure> {
         ReadOnly::Services => {
             let mut command = Command::new("/bin/launchctl");
             command.arg("list");
+            command
+        }
+        ReadOnly::SystemServices => {
+            let mut command = Command::new("/bin/launchctl");
+            command.args(["print", "system"]);
+            command
+        }
+        ReadOnly::DisabledAgents => {
+            let mut command = Command::new("/bin/launchctl");
+            command
+                .arg("print-disabled")
+                .arg(format!("gui/{}", super::native::uid()));
+            command
+        }
+        ReadOnly::LoginItems => {
+            let mut command = Command::new("/usr/bin/osascript");
+            command.args([
+                "-l", "JavaScript", "-e",
+                "JSON.stringify(Application('System Events').loginItems().map(function(item) { return {name: item.name(), hidden: item.hidden()}; }))",
+            ]);
             command
         }
         ReadOnly::Events {
@@ -150,6 +173,8 @@ fn execute(mut command: Command, timeout: Duration, cap: usize) -> Result<Vec<u8
                         "permission denied",
                         "operation not permitted",
                         "not authorized",
+                        "not authorised",
+                        "-1743",
                     ]
                     .iter()
                     .any(|reason| detail.contains(reason))

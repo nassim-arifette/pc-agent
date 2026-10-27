@@ -9,16 +9,19 @@ mod hardware;
 #[allow(unsafe_code)]
 mod native;
 mod services;
+mod startup;
+mod system;
 mod updates;
 
 pub(super) fn inspect(query: Query<'_>) -> Inspection {
     match query {
+        Query::Startup => startup::collect(),
         Query::Battery => live_battery(),
         Query::Power => hardware::power(),
         Query::Hardware => hardware::collect(),
         Query::Services { limit } => services::collect(limit),
         Query::Events { days, limit } => events::collect(days, limit),
-        Query::SystemState => updates::collect(),
+        Query::SystemState => system::collect(),
         _ => {
             let mut out = Inspection::new();
             out.coverage(
