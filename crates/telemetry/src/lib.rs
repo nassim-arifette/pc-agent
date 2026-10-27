@@ -117,6 +117,8 @@ pub struct Collector {
     /// NVML, opened on the first snapshot and shut down with the collector.
     #[cfg(windows)]
     nvml: Option<Result<windows::nvml::Nvml, windows::nvml::OpenError>>,
+    #[cfg(target_os = "linux")]
+    linux: os::linux::State,
 }
 impl Default for Collector {
     fn default() -> Self {
@@ -142,6 +144,8 @@ impl Collector {
             recording_gpu_baseline: None,
             #[cfg(windows)]
             nvml: None,
+            #[cfg(target_os = "linux")]
+            linux: os::linux::State::default(),
         }
     }
     pub fn session_id(&self) -> &str {
@@ -307,11 +311,11 @@ impl Collector {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 const UNSUPPORTED: &str =
     "Native collection requires Windows; no host or synthetic data substituted.";
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn unsupported_snapshot(session_id: &str) -> Snapshot {
     use pcagent_shared::Evidence;
     let mut result = Snapshot::empty(session_id);
@@ -531,7 +535,7 @@ mod tests {
         assert_eq!(s.points.len(), 2);
         assert_eq!(s.origin, Origin::Live);
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     #[test]
     fn non_windows_never_masquerades_as_a_windows_sample() {
         let mut c = Collector::new();

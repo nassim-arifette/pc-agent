@@ -29,7 +29,9 @@ pub(crate) use windows::Native as Selected;
 pub(crate) mod linux;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod unsupported;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub(crate) use linux::Native as Selected;
+#[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) use unsupported::Native as Selected;
