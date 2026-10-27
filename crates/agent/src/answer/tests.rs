@@ -58,7 +58,7 @@ fn check(text: &str) -> Result<Answer, Rejection> {
 }
 fn kinds(text: &str) -> Vec<IssueKind> {
     match check(text) {
-        Ok(_) => Vec::new(),
+        Ok(answer) => answer.unverified.into_iter().map(|i| i.kind).collect(),
         Err((issues, _)) => issues.into_iter().map(|i| i.kind).collect(),
     }
 }

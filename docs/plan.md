@@ -102,6 +102,16 @@ anglais ou en français, le prompt système l'indique explicitement ; sinon la r
 question » s'applique. Les statistiques exposent désormais la durée de chaque requête (`duration_ms`) et
 chaque demande de correction avec ses motifs (`repair_requests`), lues en local seulement.
 
+**Chiffre mesuré sans citation (26 octobre 2026, décision du porteur) :** quand une phrase donne des
+chiffres sans source et que chacun figure dans une mesure citable de ce tour (observation ou
+constat, jamais une source web), la réponse est acceptée telle quelle et la phrase est marquée
+« chiffres mesurés dont la source n'est pas citée » (`uncited_number`) ; aucune requête de correction
+n'est envoyée pour cette seule raison. Un chiffre qu'aucune mesure ne contient, un chiffre faux sous
+une citation, un nom inconnu ou une commande restent renvoyés au modèle comme avant. Motif mesuré le
+26 octobre : à chaque question réelle, l'unique correction restante était un `[O1]` oublié dans une
+phrase aux chiffres exacts, soit ~30–50 s de requête supplémentaire visible par le jury. La consigne
+système donne désormais un exemple de phrase citée (une citation par chiffre, dans la phrase).
+
 **Fermeture du flux (26 octobre 2026, décision du porteur) :** quelle que soit la requête, dès que
 la réponse en flux contient un seul appel `submit_answer` dont les arguments forment un objet JSON
 complet, l'app cesse de lire : Nemotron continue sinon d'écrire des balises et une seconde copie de

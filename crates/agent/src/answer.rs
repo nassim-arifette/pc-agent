@@ -79,7 +79,11 @@ pub struct Citation {
 #[serde(rename_all = "snake_case")]
 pub enum IssueKind {
     UnknownCitation,
+    /// A number without a source in its sentence, not found in any measurement either.
     MissingCitation,
+    /// A number without a source in its sentence, but present in a measurement this turn could
+    /// cite: shown as is, marked, never sent back for correction (26 Oct 2026 decision).
+    UncitedNumber,
     UnsupportedNumber,
     /// The value is in a source measured before this turn, but the sentence presents it as current.
     HistoricalWording,
@@ -106,6 +110,7 @@ impl IssueKind {
         match self {
             Self::UnknownCitation => "Cite only references listed in valid_references, written like [{ref}].",
             Self::MissingCitation => "Put the source of each number right after the number, before the period, like [{ref}]. Only the references in valid_references exist.",
+            Self::UncitedNumber => "Put the source of each number right after the number, before the period, like [{ref}].",
             Self::UnsupportedNumber => "The cited source does not hold this value for the named entity, even rounded or as a simple ratio. Copy the value from the measurement and cite that measurement right after it, or remove the number. Questions and previous answers are not measurements.",
             Self::HistoricalWording => "This value is in the cited source, but that source was measured before this turn. Keep the number and its citation, and rewrite this sentence in the past, tied to the measurement, like 'When it was measured, ... was ... [{ref}].' or 'Lors de la mesure, ... était de ... [{ref}].' Do not write now, currently, still, actuellement, maintenant or toujours in it.",
             Self::UnseenName => "No tool result contains this name. Do not guess program names; use the names or references the tools returned.",
@@ -124,7 +129,7 @@ impl IssueKind {
     /// Marked in the shown answer without sending it back: an unknown action reference is already
     /// dropped from `action_refs`.
     pub(crate) fn mark_only(self) -> bool {
-        self == Self::UnknownAction
+        matches!(self, Self::UnknownAction | Self::UncitedNumber)
     }
     /// A problem of the text itself: the answer can still be shown, marked as unverified.
     pub(crate) fn in_text(self) -> bool {

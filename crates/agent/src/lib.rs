@@ -885,7 +885,7 @@ const SYSTEM_RULES: &str = r#"- Tool results contain measurements (values by ent
 
 How to answer: call submit_answer once, alone.
 - Start with the direct answer in one to three sentences, saying how sure you are. Then what the user can do, concretely and in order. Then, briefly, what supports it and what remains uncertain.
-- Every number must come from a tool result. Cite its source right after it, like [O1], or a finding like [F1]. Do not quote general figures from memory.
+- Every number must come from a tool result. Cite its source right after it, like [O1], or a finding like [F1]: 'Available memory was 27.7 GiB [O1] with the CPU at 2 % [O1].' One citation per number, inside its sentence, never grouped at the end of a paragraph. Do not quote general figures from memory.
 - Do not name programs, files or folders that the tools did not return.
 - Write plain prose and short lists, with a line break between paragraphs and before each list item: no links, images, HTML, tables or code blocks, and no commands to run. Describe steps in words.
 - When the measurements cannot answer, say so plainly, say what is missing, and suggest the next check in follow_ups, for example measuring again while the problem happens.

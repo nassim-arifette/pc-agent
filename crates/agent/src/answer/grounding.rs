@@ -1,9 +1,9 @@
 //! Resolve the citations next to a claim before looking for its measured quantities.
 //! Conversation prose is useful context, but cannot certify a measurement.
 use super::{
-    quantities::{claims, Dim, Known},
+    quantities::{claims, Claim, Dim, Known},
     text::is_reference,
-    Context, Issue, IssueKind,
+    CitationKind, Context, Issue, IssueKind,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,10 +15,6 @@ pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issu
             continue;
         }
         let groups = reference_groups(passage);
-        if groups.is_empty() {
-            issues.push(Issue::new(IssueKind::MissingCitation, passage.trim()));
-            continue;
-        }
         let mentioned = subjects(ctx.received, passage);
         // Several processes of one program named once ("une instance de Firefox"): the claim is
         // about one of them. Different programs keep strict attribution.
@@ -30,25 +26,48 @@ pub(super) fn check_numbers(text: &str, ctx: &Context<'_>, issues: &mut Vec<Issu
         } else {
             Vec::new()
         };
+        let supported_by = |claim: &Claim, references: &[&str], any_wording: bool| {
+            std::iter::once(&mentioned)
+                .chain(&instances)
+                .any(|subjects| {
+                    let query = Query {
+                        passage,
+                        subjects,
+                        topic: topic(passage, claim.dim),
+                        any_wording,
+                    };
+                    known(ctx, references, &query).supports(claim)
+                })
+        };
+        if groups.is_empty() {
+            // No source in the sentence. A number that a citable measurement of this turn holds
+            // is shown and marked; sending it back would cost a request for a missing tag.
+            // A number no measurement holds is sent back as before.
+            let citable: Vec<&str> = ctx
+                .references
+                .iter()
+                .filter(|(_, kind, _)| *kind != CitationKind::Web)
+                .map(|(reference, _, _)| reference.as_str())
+                .collect();
+            let kind = if !citable.is_empty()
+                && claims
+                    .iter()
+                    .all(|claim| supported_by(claim, &citable, false))
+            {
+                IssueKind::UncitedNumber
+            } else {
+                IssueKind::MissingCitation
+            };
+            issues.push(Issue::new(kind, passage.trim()));
+            continue;
+        }
         for claim in claims {
             let references = &groups
                 .iter()
                 .find(|(at, _)| *at >= claim.end)
                 .unwrap_or_else(|| groups.last().expect("non-empty groups"))
                 .1;
-            let supported = |any_wording: bool| {
-                std::iter::once(&mentioned)
-                    .chain(&instances)
-                    .any(|subjects| {
-                        let query = Query {
-                            passage,
-                            subjects,
-                            topic: topic(passage, claim.dim),
-                            any_wording,
-                        };
-                        known(ctx, references, &query).supports(&claim)
-                    })
-            };
+            let supported = |any_wording: bool| supported_by(&claim, references, any_wording);
             if supported(false) {
                 continue;
             }

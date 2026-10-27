@@ -607,6 +607,7 @@ export const en = {
   "issue.unsupported_number": "number not found in the measurements",
   "issue.historical_wording": "measured earlier, but written as if it were current",
   "issue.missing_citation": "numbers without a cited source",
+  "issue.uncited_number": "measured numbers without their source cited",
   "issue.unknown_citation": "cites a source that does not exist",
   "issue.unseen_name": "name not returned by any tool",
   "issue.command": "contains a command: check it before running anything",

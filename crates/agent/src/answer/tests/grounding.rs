@@ -102,8 +102,13 @@ fn grounding_question_text_is_not_a_measurement() {
 
 #[test]
 fn grounding_a_citation_in_another_sentence_is_insufficient() {
+    // The measured value is shown and marked, not sent back; an unmeasured one is sent back.
     assert!(
         kinds("La mémoire est presque pleine [O1]. Le CPU est à 17,4 %.")
+            .contains(&IssueKind::UncitedNumber)
+    );
+    assert!(
+        kinds("La mémoire est presque pleine [O1]. Le CPU est à 63,9 %.")
             .contains(&IssueKind::MissingCitation)
     );
 }

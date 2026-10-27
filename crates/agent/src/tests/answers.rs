@@ -367,3 +367,67 @@ fn protocol_and_text_problems_are_repaired_together_without_running_other_calls(
     assert_eq!(result.answer.unwrap().repairs, 1);
     assert!(model.choices.iter().all(|c| *c == ToolChoice::Required));
 }
+
+#[test]
+fn a_measured_number_without_its_citation_is_shown_marked_not_sent_back() {
+    let initial = fixture();
+    let mut next = fixture();
+    for (metric, value) in [
+        (Metric::PhysicalTotalBytes, 17_179_869_184),
+        (Metric::PhysicalAvailableBytes, 1_653_562_163),
+    ] {
+        next.evidence.push(Evidence::measured(
+            metric,
+            "system",
+            value,
+            "fixture",
+            Window::instant(),
+        ));
+    }
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        submit_with(
+            "uncited",
+            "Il ne reste que 1,54 Go de mémoire disponible sur 16 Go. La mémoire est presque pleine [O1].",
+        ),
+    ]);
+    let r = investigate(
+        &mut m,
+        "Pourquoi mon PC rame ?",
+        &initial,
+        &mut tb(|| next.clone()),
+        |_| {},
+    );
+    let answer = r.answer.expect("accepted without a repair");
+    assert_eq!(answer.repairs, 0);
+    assert_eq!(m.calls, 2);
+    assert!(r.stats.repair_requests.is_empty());
+    assert_eq!(answer.unverified.len(), 1);
+    assert_eq!(answer.unverified[0].kind, IssueKind::UncitedNumber);
+    assert!(answer.unverified[0]
+        .excerpt
+        .starts_with("Il ne reste que 1,54 Go"));
+}
+
+#[test]
+fn an_unmeasured_number_without_its_citation_is_still_sent_back() {
+    let mut m = script(vec![
+        tools(vec![call("a", "get_system_snapshot", "{}")]),
+        submit_with("invented", "Il ne reste que 3 Go de mémoire disponible."),
+        done("O1"),
+    ]);
+    let r = investigate(
+        &mut m,
+        "Pourquoi mon PC rame ?",
+        &fixture(),
+        &mut tb(usable_snapshot),
+        |_| {},
+    );
+    let answer = r.answer.expect("accepted after one repair");
+    assert_eq!(answer.repairs, 1);
+    assert_eq!(r.stats.repair_requests.len(), 1);
+    assert_eq!(
+        r.stats.repair_requests[0].issues[0].kind,
+        IssueKind::MissingCitation
+    );
+}
