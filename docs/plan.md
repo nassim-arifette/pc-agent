@@ -1318,13 +1318,14 @@ ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent
 `os/{windows,linux,macos}` du chantier Linux dès qu'ils seront fusionnés.
 
 - **Télémétrie.** Mémoire par `host_statistics64` (`vm_statistics64` : libre + inactive +
-  spéculative disponibles ; `hw.memsize` pour le total ; mémoire « swap used » via
-  `vm.swapusage` tient lieu de commit) ; CPU par `host_statistics` (`HOST_CPU_LOAD_INFO`, fenêtre
+  récupérable disponibles, sans compter deux fois les pages spéculatives ; `hw.memsize` pour le
+  total). `vm.swapusage` mesure le swap et ne remplace pas le commit Windows : une métrique sans
+  équivalent reste explicitement indisponible ; CPU par `host_statistics` (`HOST_CPU_LOAD_INFO`, fenêtre
   d'une seconde ou réemploi de l'échantillon précédent comme sous Windows) ; processus par libproc
   (`proc_listallpids`, `proc_pidinfo` TASKINFO/BSDINFO, `proc_pid_rusage` pour les E/S et le temps
   CPU, `proc_name`) : nom, RSS, CPU, E/S, parent, date de création pour l'identité
-  `(pid, création)`. Le type de processus (application, agent, service) est dérivé localement du
-  chemin exécutable et du domaine launchd ; les arguments ne sont ni conservés ni envoyés. Les
+  `(pid, création)`. Le type de processus est dérivé localement des arguments quand ceux-ci sont
+  lisibles ; seuls les types fermés sont conservés, jamais les arguments ni leur contenu. Les
   processus d'autres utilisateurs sont comptés `permission_denied` dans la couverture.
 - **Matériel et volumes.** `sysctl` (`kern.osproductversion`, `hw.machine`, `hw.ncpu`,
   `hw.memsize`), `getmntinfo`/`statfs` pour les volumes montés (type APFS/HFS/réseau, total,
@@ -1341,7 +1342,7 @@ ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent
   entrée du modèle ou de l'utilisateur ne devient argument de commande.
 - **Actions.** Même catalogue, même revue locale : désactiver/réactiver un LaunchAgent utilisateur
   (`launchctl bootout`/`bootstrap gui/<uid>` sur un plist identifié par chemin + inode + date de
-  modification), nettoyage de `~/Library/Caches` et `~/Library/Logs` (adaptateur de nettoyage
+  modification), nettoyage de `~/Library/Caches` (adaptateur de nettoyage
   utilisateur, mêmes garde-fous que `%TEMP%`), Corbeille par `NSFileManager trashItemAtURL`
   (vérification que l'élément est bien dans `~/.Trash` après coup), ouvrir dans le Finder,
   ouvrir Réglages Système (URL `x-apple.systempreferences:`). Les racines protégées macOS
