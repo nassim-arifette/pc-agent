@@ -143,6 +143,12 @@ Le schéma de `submit_answer` reste fermé :
 - `action_refs` : uniquement des propositions créées pendant le tour par `prepare_action_plan` ou,
   pour une analyse approfondie, par `propose_elevated_check` (chantier 8). Rien ne s'exécute sans
   clic.
+- **Analyse approfondie (#62/#83, 27 octobre)** : `propose_elevated_check(tasks)` accepte
+  uniquement une liste non vide, sans doublon, parmi `system_caches`, `shadow_storage`,
+  `disk_reliability`, `battery_energy`, `mft_inventory`, `process_images`. La proposition créée
+  pendant le tour ne contient aucun chemin, PID, commande, budget ni autorisation. Sa référence
+  dans `action_refs` ouvre la revue locale ; les volumes NTFS fixes et identités de processus
+  sont résolus sur le PC, jamais par le modèle. ETW n'est pas proposé par ce catalogue.
 - `follow_ups` : affichées comme boutons sous la réponse.
 - Sources web (chantier 15) : citations `[W1]` et vérification décrites en C6.
 
@@ -195,6 +201,15 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
   suppression par conversation et « tout effacer ».
 - Surveillances : leurs tables et leur rétention sont décrites en C7 ; le numéro de migration
   suit les migrations effectivement livrées, sans réserver celui du prochain chantier.
+- **Résultats approfondis (#62/#83, 27 octobre)** : SQLite conserve localement les inspections
+  approuvées, leur section et leur fenêtre réelle pendant 24 h, y compris après redémarrage.
+  La purge à l'écriture et à la lecture et « tout effacer » les couvrent ; l'expiration se calcule
+  depuis la mesure, jamais depuis la dernière lecture. La sélection `elevated_inspection` fige
+  une de ces inspections pour Expliquer / Enquêter, sans remettre sa date à maintenant.
+  Le modèle reçoit la projection C4/C5 déjà utilisée pour les outils, avec son âge et la
+  consigne de parler au passé. Les identités du protocole, chemins, SID et arbres MFT locaux ne
+  partent pas. L'aperçu exact inclut ces mêmes mesures avant l'envoi. Ni le cache en mémoire ni
+  une limite de huit entrées ne doivent faire disparaître les sections d'un lot encore valide.
 
 #### Complément du 27 octobre — historique système et budget disque (#58, #59)
 
@@ -418,6 +433,14 @@ gardent leur nom ; elles gagnent des champs ou des valeurs.
   approfondie » et la référence d'une proposition `propose_elevated_check` (chantier 8). Une
   proposition ne fait que préremplir l'écran de revue ; `elevation_run` reste déclenché par le seul
   clic local, suivi de l'invite de Windows.
+- **Précision #62/#83 (27 octobre)** : la revue énumère toutes les sections et tous les volumes
+  concernés, permet de décocher, et indique ce qui reste seulement local. Le temps passé à lire
+  n'entame ni la validité du consentement ni le budget de lecture : la requête exécutable est
+  scellée au clic d'autorisation. Une seule invite UAC couvre le lot, avec un résultat et un
+  statut par section, même en cas d'échec partiel. L'historique local des analyses est
+  sélectionnable ; « Demander à l'IA » et « Reposer la question avec ce résultat » reprennent
+  le fil courant (un nouveau fil seulement s'il n'y en a pas). Le bouton complet est disponible
+  dans Chat (accueil et réponses), PC en direct, Stockage et le guide de premier lancement.
 
 #### Complément du 6 octobre : Stockage en carte, arbre et liste
 
@@ -1261,15 +1284,27 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   - 120 s au plus pour une tâche, annulable.
 - Lot « Analyse approfondie » (décision du 9 octobre) :
   - une seule invite UAC lance, l'une après l'autre, une liste fermée et versionnée : caches
-    système, points de restauration, santé des disques, énergie par application et MFT du disque
-    système. Ni le modèle ni la page ne composent la liste : l'écran de revue permet seulement de
-    décocher une tâche ou d'ajouter la MFT d'un autre disque NTFS du PC ;
+    système, points de restauration, santé des disques, énergie par application, MFT de **chaque
+    volume NTFS fixe** et images des processus. Le modèle propose seulement les familles de
+    sections du catalogue fermé ; le PC résout les cibles réelles et la revue les montre.
+    La revue permet de décocher, pas d'ajouter un chemin ou une commande arbitraire ;
   - protocole du helper en version 3 : une requête porte une tâche ou ce lot ; la réponse porte une
     section par tâche, avec son statut et sa couverture. Une tâche en échec ou hors délai n'annule
     pas les autres ;
-  - budget du lot plafonné, mesuré avant d'être fixé ; l'expiration de la requête laisse le temps
-    de lire l'écran de revue ; taille de réponse plafonnée par section ;
-  - les résultats rejoignent le cache de `get_approved_elevated_inspection`, une entrée par tâche.
+  - chaque section garde une lecture bornée (120 s au plus), un statut propre et une taille
+    de réponse bornée ; le budget du lot couvre toutes les sections choisies et la supervision,
+    sans tronquer la liste des volumes. Les mesures et délais réels sont consignés à l'acceptation.
+    Aucune expiration pendant la lecture de la revue : les identifiants exécutables et leur
+    expiration sont créés au clic local, séparément du temps laissé pour le consentement Windows ;
+  - les résultats rejoignent SQLite pour 24 h et `get_approved_elevated_inspection` les relit avec
+    leur âge réel (C2), une entrée par section ; ils deviennent des sources de sélection ;
+  - l'élévation par-dessus l'épaule est prise en charge sans élargir la DACL : le helper vérifie
+    le propriétaire de la requête contre le jeton du processus demandeur encore vivant, son
+    heure de création (contre la réutilisation d'un PID) et sa session Windows, identique à celle
+    du helper. Le SID n'est pas déduit du compte administrateur qui saisit ses identifiants.
+    La requête immuable est liée au digest et au nonce, consommée une seule fois ; réponses et
+    annulation restent dans le répertoire privé épinglé. Les comptes d'autres sessions, les
+    requêtes altérées, expirées ou rejouées sont refusés. Aucun service ni tâche planifiée ;
 - Tâches, par ordre d'intérêt (ordre revu le 1er octobre : la MFT passe avant la santé des disques) :
   1. tailles des caches système (`Windows.old`, cache Windows Update, Optimisation de la
      distribution, points de restauration) : souvent les plus gros éléments récupérables, invisibles
@@ -1840,6 +1875,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) ; #65 : formats localisés sur les champs numériques, résumé scanné désormais couvert | #23, #24, #36 |
 | 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
 | 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; carte par règle locale sous la réponse du chat livrée le 18 octobre ; lot sous une seule invite et proposition par le modèle (`propose_elevated_check`, 9 octobre) à faire | #33, #36, #62 |
+| 8 — Lot approfondi et proposition chat (#62/#83) | A, B, C | en cours (27 oct.) : contrat précisé dans cette PR du plan, avant le code ; protocole v3 à sections fermées sous un seul UAC, comptes standard avec autre administrateur, revue sans expiration, six familles proposées, persistance 24 h et sélection dans le même fil ; validation native standard + Nebius + UAC et captures EN/FR clair/sombre requises avant livraison | feature/deep-checks-plan ; #62, #83 |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
