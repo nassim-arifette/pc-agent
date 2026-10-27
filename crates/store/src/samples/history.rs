@@ -41,7 +41,8 @@ pub struct ChartSeries {
     pub points: Vec<ChartPoint>,
 }
 
-/// [timestamp, mean, minimum, maximum, measured, expected, resolution, status, origin].
+/// [timestamp, mean, minimum, maximum, measured, expected, resolution, status, origin,
+/// observed_duration_ms, break_before]. Session identities stay on the host.
 /// Positions keep the transport compact without losing null values or bands.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChartPoint(
@@ -54,6 +55,8 @@ pub struct ChartPoint(
     pub u64,
     pub Status,
     pub Origin,
+    pub u64,
+    pub bool,
 );
 
 impl HistoryChart {
@@ -76,7 +79,14 @@ impl HistoryChart {
                 points: history
                     .points
                     .iter()
-                    .map(|p| {
+                    .enumerate()
+                    .map(|(index, p)| {
+                        let disconnected = index.checked_sub(1).is_some_and(|previous| {
+                            let previous = &history.points[previous];
+                            p.session_id != previous.session_id
+                                || p.origin != previous.origin
+                                || p.unix_ms <= previous.unix_ms
+                        });
                         ChartPoint(
                             p.unix_ms,
                             p.value,
@@ -87,6 +97,8 @@ impl HistoryChart {
                             p.resolution_ms,
                             p.status,
                             p.origin,
+                            p.observed_duration_ms,
+                            disconnected,
                         )
                     })
                     .collect(),

@@ -119,6 +119,10 @@ fn chart_preserves_disconnected_segments_and_unknowns_even_inside_one_bucket() {
     assert_eq!(chart.series[0].points[1].1, None);
     assert!(chart.gaps.iter().any(|g| g.reason == "collector_restarted"));
     assert_eq!(chart.series[0].points[3].1, Some(999));
+    assert!(chart.series[0].points[3].10);
+    assert!(!serde_json::to_string(&chart)
+        .unwrap()
+        .contains("session-one"));
 }
 
 #[test]
