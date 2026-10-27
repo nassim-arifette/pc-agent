@@ -475,6 +475,20 @@ couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format a
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
 
+**Complément du 27 octobre — navigateurs (#60).** Le type de processus est dérivé localement
+dans un ensemble fermé : principal du navigateur, onglet/site, extension, GPU, réseau, stockage,
+audio, décodage média, utilitaire, gestionnaire de crash, inconnu. La ligne de commande n'est
+ni gardée ni envoyée. Firefox, Chromium (Chrome, Edge), Electron et WebView2 sont couverts ;
+les hôtes WebView2 gardent l'attribution par parents validés du #61. Chaque application expose
+les comptes et les sommes mesurées par type (mémoire résidente, mémoire privée, CPU et E/S),
+avec les mêmes identifiants de preuve, unités, fenêtre et couverture que les autres mesures.
+Ces agrégats sont calculés avant tout classement de l'affichage. Les working sets peuvent se
+recouper : ni leur somme ni le nombre de renderers ne représente la mémoire ou le nombre des
+onglets. Une lecture refusée, une identité périmée ou un type inconnu reste explicitement inconnu.
+Le modèle reçoit ces types et totaux selon C5, jamais les arguments, sites ni titres. Aucun lien
+onglet→processus ou mémoire par onglet n'est inventé ; les extensions Firefox peuvent partager
+le type onglet/site. Le gestionnaire du navigateur donne le détail qu'il est seul à connaître.
+
 ### C5 — Ce qui quitte le PC
 
 | Mode | Contenu envoyé au modèle |
@@ -485,6 +499,15 @@ observations d'origine web sont décrites en C6.
 
 Jamais, quel que soit le mode : le nom d'utilisateur, le chemin du profil en clair, les lignes de
 commande, le contenu des fichiers, les clés et secrets, les identifiants de la machine.
+
+**Complément du 27 octobre — navigateurs (#60).** Le type de processus est dérivé localement ;
+la ligne de commande n'est ni gardée ni envoyée (pas de cache, journal, SQLite ou capture
+d'évaluation). Seuls le type fermé, sa couverture et les totaux mesurés rejoignent les preuves
+C4. Les titres d'onglets sont locaux seulement : titre actif par fenêtre et liste des titres par
+UI Automation, uniquement à la demande de l'utilisateur. Ils vivent dans la vue locale, hors
+des sources de sélection, de l'historique SQLite, des journaux, des captures d'évaluation et de
+tous les aperçus/envois modèle. « Voir ce qui part » conserve la même projection exacte, sans
+aucun titre. Les comptes et libellés de type ne sont pas des titres ni des noms de sites.
 
 « Complet » est le mode par défaut. Décision du 9 octobre : aucun dialogue avant l'envoi, ni au
 premier usage, ni à chaque question. Sous la zone de saisie, des bascules montrent ce qui part et se
@@ -721,6 +744,21 @@ qui évalue ; `watch:open` au clic sur une notification.
 - GPU par processus : instances `pid_…` du compteur PDH `GPU Engine`.
 - Regroupement par application (navigateur, IDE, Docker…) : somme des processus d'une même image et
   de ses enfants.
+- **Lot #60, approuvé le 27 octobre :** lire la ligne de commande par
+  `NtQueryInformationProcess(ProcessCommandLineInformation)` avec
+  `PROCESS_QUERY_LIMITED_INFORMATION` (repli WMI), vérifier PID et création, classifier puis
+  jeter la chaîne immédiatement. Aucun droit administrateur et aucune commande exécutée.
+  PC en direct et l'inspecteur affichent le résumé par navigateur et un détail triable par type,
+  avec la note sur les mémoires partagées ; le modèle reçoit exactement les agrégats C4.
+  `EnumWindows`/`GetWindowTextW` fournit les titres actifs des fenêtres ; UI Automation fournit
+  tous les titres disponibles à la demande, strictement dans la vue locale (C5).
+  Une action fermée « Ouvrir le gestionnaire de processus du navigateur » ouvre le gestionnaire
+  Chrome/Edge ou `about:processes` de Firefox, après préparation locale, revue puis clic explicite.
+  Elle n'accepte ni URL ni commande libre du modèle, revérifie l'instance cible, reste sans
+  élévation et n'effectue aucune fermeture de processus. Electron/WebView2 sont classés mais ne
+  prétendent pas offrir un gestionnaire de navigateur lorsqu'ils n'en exposent pas.
+  Validation : jeux synthétiques et régressions de confidentialité ; tour EN/FR clair/sombre ;
+  Firefox et Edge/Chrome réels sous compte standard, aperçu exact et analyse Nebius.
 - **Fait quand :** sans admin sur le PC de dev, mémoire et CPU sont lus pour au moins 99 % des
   processus, et les pseudo-processus restants sont étiquetés. Defender, Memory Compression et dwm
   sont visibles, et le coût de la collecte est mesuré.
@@ -1594,6 +1632,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Résumé dans l'inspecteur et recherche de cause | C | implémenté et validé localement (10 octobre) : #56, résumé sans quitter la vue, poursuite du même fil et étiquettes de sélection ; 57 contrôles rendus, 28 régressions du contrôleur et 12 contrôles natifs réussis ; formatage/Clippy et 715 tests réussis (2 ignorés), binaire reconstruit sur D: ; évaluation réelle des réponses et livraison reportées à la demande du porteur du projet | wp6-selection-inspector |
 | 5, 6 — Historique : lectures et volume | B, C | premier lot implémenté et validé localement (10 octobre) : format compact compatible en lecture avec les anciennes mesures, lecture partagée et cache invalidé après écriture, chargement et tracé réduits préservant lacunes, extrema et couvertures ; formatage/Clippy, 732 tests Rust (2 ignorés), 42 contrôles navigateur et 12 contrôles natifs réussis, CLI et GUI release reconstruits sur D: ; mesures et limites dans [history-performance.md](history-performance.md) ; #58/#59 restent partiels : commande dédiée, table système, comptes d'événements et budget disque demandent un lot de contrats distinct | wp5-history-performance |
 | 2 — WebView2 par application (#61) | B | fait (26 oct.) : processus `msedgewebview2` rattachés à leur application hôte par la chaîne des parents validée (jamais par le nom d'image), sans ligne de commande ; un arbre sans hôte attribuable forme son propre groupe ; 3 tests synthétiques (dont un contrôle par mutation) ; fusionné après validation locale (formatage, Clippy, 749 tests sous compte standard, build release) ; pas encore vu avec de vrais hôtes WebView2 (aucun sur la VM) | wp2-webview2-groups |
+| 2 — Détail des navigateurs (#60) | B/C | en cours (27 oct.) : contrats C4/C5 approuvés ; types locaux fermés et agrégats mesurés, titres strictement locaux, action de gestionnaire après revue ; validation native et de confidentialité requise avant livraison | feature/browser-process-plan, feature/browser-process-details, #60 |
 | 14 — Escalade visible (#69) | A, C | en cours (26 oct.) : changement de modèle affiché sur la réponse, coût par modèle dans l'app et la CLI | wp14-escalation-visible |
 | 6 — Stockage minimal (#67) | C | fait (26 oct.) : résultats d'abord (totaux, liste), inspecteur de l'élément sélectionné à côté de la liste ou sous la ligne quand la fenêtre est étroite, cartes admin regroupées après les résultats ; 11 tests Node, tour en/fr clair/sombre sans erreur ; carte et arbre restent en P2 | wp6-storage-minimal |
 | 2 — Noms lisibles des programmes (#70) | B/C | fait (26 oct.) : `ProgramNames` (FileDescription puis ProductName de la ressource de version, cache par chemin, lecture sans admin), nom lisible dans PC en direct, l'inspecteur, les réponses, les constats, les sources et les revues d'action ; exécutable en infobulle, PID seulement dans l'inspecteur ou pour distinguer deux processus ; jamais envoyé au modèle (C5) ; fmt, Clippy, tests, tour | wp2-app-names |
