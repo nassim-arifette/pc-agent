@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 pub enum StartupApproval {
     Missing,
     Binary([u8; 12]),
+    /// Hash of the desktop entry excluding Hidden; neither Exec nor other content is journaled.
+    Xdg {
+        hidden: Option<bool>,
+        content_sha256: String,
+    },
 }
 impl StartupApproval {
     pub fn from_bytes(bytes: Option<&[u8]>) -> Result<Self, Status> {
@@ -32,9 +37,21 @@ impl StartupApproval {
                 3 | 7 => Some(false),
                 _ => None,
             },
+            Self::Xdg {
+                hidden,
+                content_sha256,
+            } => (content_sha256.len() == 64
+                && content_sha256.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| !hidden.unwrap_or(false)),
         }
     }
     fn disabled(&self) -> Self {
+        if let Self::Xdg { content_sha256, .. } = self {
+            return Self::Xdg {
+                hidden: Some(true),
+                content_sha256: content_sha256.clone(),
+            };
+        }
         let state: u32 = if matches!(self, Self::Binary(data) if data[0] == 6) {
             7
         } else {
