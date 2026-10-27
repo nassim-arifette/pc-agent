@@ -24,17 +24,17 @@ pub(crate) fn region_country() -> Option<String> {
     registry::region_country()
 }
 
-pub(super) fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
-pub(super) fn error(code: u32) -> C {
+pub(crate) fn error(code: u32) -> C {
     match code {
         5 | 1314 => C::NeedsAdmin,
         2 | 3 | 50 | 1168 => C::Unsupported,
         _ => C::Error,
     }
 }
-pub(super) fn com_error(err: &::windows::core::Error) -> C {
+pub(crate) fn com_error(err: &::windows::core::Error) -> C {
     if err.code().0 as u32 == 0x80070005 || err.code().0 as u32 == 0x80041003 {
         C::NeedsAdmin
     } else if err.code().0 as u32 == 0x80041010 || err.code().0 as u32 == 0x8004100e {
@@ -47,7 +47,7 @@ pub(super) fn com_error(err: &::windows::core::Error) -> C {
 /// At most one shared native worker exists (the live battery read has its own, battery-only
 /// worker: `live_battery`). A hung provider cannot accumulate detached workers or hold the
 /// agent's turn indefinitely. Timeouts do not imply that a native call was cancelled.
-pub(super) fn inspect(query: Query<'_>) -> Inspection {
+pub(crate) fn inspect(query: Query<'_>) -> Inspection {
     static BUSY: AtomicBool = AtomicBool::new(false);
     let query = match query {
         Query::Allowlisted { name, limit } => {
@@ -156,7 +156,7 @@ pub(super) fn inspect(query: Query<'_>) -> Inspection {
 /// Battery-only read for the live window on a second, battery-only worker (see
 /// `crate::live_battery`). It needs no COM apartment: the battery adapter uses SetupAPI and
 /// DeviceIoControl only. Six seconds is the four-second scan budget plus a margin.
-pub(super) fn live_battery() -> Inspection {
+pub(crate) fn live_battery() -> Inspection {
     static LIVE: AtomicBool = AtomicBool::new(false);
     crate::bounded(&LIVE, "pcagent-battery", Duration::from_secs(6), || {
         let mut out = Inspection::new();
