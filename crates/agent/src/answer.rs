@@ -75,7 +75,7 @@ pub struct Citation {
     pub target: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueKind {
     UnknownCitation,
@@ -140,7 +140,8 @@ impl IssueKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Issue {
     pub kind: IssueKind,
     /// The part of the answer concerned, as written.

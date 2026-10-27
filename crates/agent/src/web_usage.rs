@@ -1,9 +1,10 @@
 //! Tavily list-price estimate, kept distinct from catalog-priced model inference and invoices.
 use crate::cost::{format_pico, parse_usd_pico};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebUsage {
     pub lookups: usize,
     pub cache_hits: usize,

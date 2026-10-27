@@ -415,7 +415,8 @@ pub struct ModelRequestUsage {
 /// One correction request sent to the model: the review issues of the rejected reply (with the
 /// passages concerned, which stay on this PC like the answer itself), or a reply cut at the
 /// output limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Repair {
     /// The inference request whose reply was rejected (1-based, as in `model_requests`).
     pub request: usize,
