@@ -11,14 +11,14 @@ mod cancellation;
 mod cleanup;
 mod journal;
 mod native;
+mod os;
 mod plan;
 mod startup;
 #[cfg(test)]
 mod tests;
 mod user_cleanup;
 #[cfg(windows)]
-#[allow(unsafe_code)]
-mod windows;
+use os::windows;
 
 pub use approval::{
     approve_locally, ApprovalRejection, ApprovalToken, LocalSession, MAX_APPROVAL_TTL,
