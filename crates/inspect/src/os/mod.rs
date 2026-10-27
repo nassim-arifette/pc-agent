@@ -1,5 +1,5 @@
 //! Compile-time inspection boundary. Each backend owns its native calls and coverage.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use crate::CoverageStatus;
 use crate::{Inspection, Query};
 
@@ -19,7 +19,7 @@ pub(crate) trait Inspector {
 
 pub(crate) struct Native;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl Inspector for Native {
     fn inspect(_: Query<'_>) -> Inspection {
         let mut result = Inspection::new();
@@ -33,6 +33,19 @@ impl Inspector for Native {
     }
     fn live_battery() -> Inspection {
         Self::inspect(Query::Battery)
+    }
+    fn region_country() -> Option<String> {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Inspector for Native {
+    fn inspect(query: Query<'_>) -> Inspection {
+        macos::inspect(query)
+    }
+    fn live_battery() -> Inspection {
+        macos::live_battery()
     }
     fn region_country() -> Option<String> {
         None

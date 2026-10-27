@@ -13,6 +13,13 @@ pcagent-elevation.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+chrono.workspace = true
+objc2-foundation.workspace = true
+objc2-metal.workspace = true
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
 windows-core.workspace = true

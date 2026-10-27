@@ -15,6 +15,7 @@ windows-sys.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
+objc2-metal.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

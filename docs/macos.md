@@ -26,10 +26,36 @@ still builds its unsupported-platform entry point; it does **not** prove a nativ
 
 Windows system/private commit and per-process GPU metrics remain `Unsupported`;
 swap usage, wired memory and virtual address-space size are not substituted.
-GPU adapter inventory is not implemented in this checkpoint, so the hardware
-inventory's aggregate status is `Partial`. A local mount is not evidence of a fixed
+GPU adapter names now come from `MTLCopyAllDevices`; dedicated VRAM remains unknown
+on unified-memory hardware. A local mount is not evidence of a fixed
 physical device: its kind remains `Unknown` until native storage discovery verifies it.
 Mount capacity must not be summed as if every APFS volume had separate backing storage.
+
+## Native inspection checkpoint
+
+The macOS inspector now reads battery sources through IOKit, the caller's launchd
+services through `launchctl list`, bounded error/fault counts through `log show`,
+and available updates through the read-only `softwareupdate --list` scan.
+The latter may contact Apple's update service; it never downloads or installs updates.
+Commands use absolute allowlisted executables, no shell, fixed locale, bounded
+stdout/stderr, a deadline and a dedicated child process group that is killed and
+reaped on failure. Raw logs, update titles, paths and command lines never enter evidence.
+
+Metal exposes GPU names (local display only), unified memory, removable/low-power
+flags and the recommended working-set budget. That budget is **not** VRAM usage
+or VRAM capacity. Foundation exposes thermal pressure, not a temperature; Apple
+returns nominal on unsupported devices, so nominal is explicitly ambiguous.
+Low-power-mode `false` can also mean unsupported. Stable public temperature
+sensors are unavailable and root-only `powermetrics` is not run by the inspector.
+
+Battery capacity remains in relative native units; energy, wear and cycle count
+are unknown when the public power-source API cannot establish them. Missing or
+contradictory values never become measured zeros.
+
+Startup/Login Items, complete system state, cleanup, actions, elevation and the
+native desktop remain separate integration work. Targeted macOS inspection tests:
+71 passed, including fixture privacy, unknown/error states, time/output bounds,
+child cleanup and a live Metal/Foundation hardware projection.
 
 ## Identity, coverage and privacy
 

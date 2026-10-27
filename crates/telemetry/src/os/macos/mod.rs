@@ -40,6 +40,7 @@ impl super::Backend for Native {
         hardware_inventory()
     }
 }
+use objc2_metal::MTLDevice;
 use pcagent_shared::{
     new_id, unix_ms, Evidence, HardwareInventory, InstanceState, Metric, Observed, Origin,
     OsVersion, ProcessCoverage, ProcessTree, ProcessTreeNode, Snapshot, Status, Window,
@@ -400,7 +401,16 @@ pub(crate) fn hardware_inventory() -> HardwareInventory {
         logical_processors: observed(native::processors(), "sysctl.hw.logicalcpu"),
         installed_memory_bytes: observed(native::memory_total(), "sysctl.hw.memsize"),
         volumes: observed(native::volumes(), "Darwin.getfsstat"),
-        gpu_adapters: Observed::missing("IOKit", Status::Unsupported),
+        gpu_adapters: Observed::ok(
+            objc2_metal::MTLCopyAllDevices()
+                .to_vec().into_iter()
+                .map(|device| pcagent_shared::GpuAdapter {
+                    description: device.name().to_string(),
+                    dedicated_video_memory_bytes: None,
+                })
+                .collect(),
+            "Metal.MTLCopyAllDevices",
+        ),
         limitations: vec!["OS build holds the product patch version, not an Apple build identifier. No serial numbers collected.".into()],
     };
     if [
