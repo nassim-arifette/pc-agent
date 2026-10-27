@@ -659,6 +659,21 @@ La recherche en ligne de Windows Update et le téléchargement des pages release
 vers Microsoft sans passer par le modèle, comme les mises à jour de Windows elles-mêmes. Les docs
 de confidentialité le disent.
 
+**Complément C6 — cache local et release health (27 octobre).** Les résultats réussis sont
+conservés localement, indexés par outil et requête normalisée (espaces/casse, domaines triés et
+pays inclus). Durée de validité : 24 h pour les prix et notes de pilotes, 7 jours pour les
+problèmes connus et les fiches constructeur ; pages release health : 24 h. Ni erreurs, ni
+refus, ni clés ne sont mis en cache. Un résultat périmé n'est jamais présenté comme frais ;
+une horloge revenue avant la consultation invalide l'entrée. Le cache ne contourne pas la
+bascule web ni le mode local. Les identifiants `[W…]` sont réattribués à chaque tour ;
+l'observation conserve la date de consultation d'origine et la date de réutilisation, et les
+Sources affichent « résultat en cache du … ». Un replay relit exclusivement sa capture, jamais
+le cache courant ni le réseau. Les crédits Tavily effectivement facturés sont affichés à part
+du coût des modèles (zéro sur un cache), sans transformer le tarif indicatif par crédit en
+facture certaine. Les pages Microsoft proviennent d'une liste locale d'URL officielles HTTPS,
+sans redirection ni identifiant envoyé dans l'URL ; les identifiants de blocage mesurés sont
+cherchés dans leur texte en local. Leur téléchargement reste soumis au choix web visible.
+
 ### C7 — Surveillances (adopté le 6 octobre ; chantier 6, phase 2)
 
 Avancées avant la soumission à la demande du porteur du projet (branche `wp6-watches`). Les
@@ -1359,6 +1374,23 @@ vérifiés parce que le modèle recopie des valeurs brutes (octets, compteurs `_
 - **Fait quand :** sur la campagne d'évaluation, la qualité approche celle d'Ultra seul pour un
   coût moyen nettement inférieur.
 
+**Lot automatique (27 octobre).** Le mode automatique conserve le prérequis d'un étalonnage
+humain de traces réelles : les scores du vérificateur ou d'un juge modèle ne remplacent jamais
+cette annotation. Un paquet aveugle minimal est préparé pour l'évaluateur humain. La campagne comprend les huit questions de
+`scripts/questions.txt` et quatre cas difficiles, chacun joué en Super, Ultra et automatique
+sur captures identiques lorsque possible. Le rapport distingue les mesures (passages non
+vérifiés, réparations, complétude, durée, coût connu et usage manquant) des appréciations de
+qualité ; aucune annotation de l'agent n'est appelée « humaine ». Les trois familles de
+déclencheurs restent explicites : échec de vérification après réparations, confiance faible /
+pas assez d'éléments, et budget primaire épuisé avec réserve pour la reprise. Une seule reprise
+conserve preuves, consentements et budget global ; ni annulation ni refus de consentement
+ne déclenchent Ultra. Les seuils finaux et la décision de défaut seront consignés avec les
+chiffres datés dans `docs/eval.md` et ici. Critère de décision annoncé avant mesure : complétude
+à au plus un cas d'écart sur douze, pas plus de passages non vérifiés qu'Ultra, et coût moyen
+au moins 25 % inférieur (comparaison seulement si les usages sont complets et les tarifs connus).
+Sinon Super reste le défaut ; l'automatique n'est activé que pour les déclencheurs validés
+par l'étalonnage humain, sans gain prétendu.
+
 ### Chantier 15 — Sources externes (pistes A et C ; E08, proposé le 3 octobre)
 
 Démarre seulement si l'évaluation le justifie (chantier 7, scénarios « pilotes, mises à jour et
@@ -1385,9 +1417,9 @@ garde sa marque et sa propre clé API.
   - dates de publication demandées, `include_usage` pour le coût ;
   - jamais `include_answer` (réponse invérifiable d'un autre LLM), ni `include_raw_content`, ni
     `extract` sur une URL fournie par le modèle.
-- Cache dans `crates/store` : 24 h pour les prix et les notes de pilotes, 7 jours pour les
-  problèmes connus. Plafond de recherches par tour, réglé d'après les traces. Le coût Tavily
-  s'ajoute à celui du tour
+- Cache dans `crates/store` selon le complément C6 ci-dessus, pages release health comprises.
+  Plafond de recherches réseau par tour, réglé d'après les traces ; une réutilisation valide ne
+  consomme ni recherche réseau ni crédit. Le coût Tavily est présenté à côté de celui du tour
   (tarifs relevés le 3 octobre : 1 crédit par recherche basic, 1 000 crédits gratuits par mois,
   puis 0,008 $ le crédit).
 - Sans clé ou sans consentement : statut `unsupported` ou `denied`, et tout le reste fonctionne.
@@ -1781,6 +1813,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6, 12 — Premier lancement | C | réalisé localement : guide Nebius reprenable, catalogue du compte, test explicite et mode local ; saisie masquée clarifiée avec accord du porteur ; tests JS/Rust et build Windows validés ; QA native non-admin et catalogue/test Nebius réels validés, révélation WebView2 et casse des modèles du mock corrigées ; ouverture du portail non validée dans le bureau isolé ; PR vers main, contrats C1–C7 inchangés | #63, wp12-onboarding |
 | 13 — Optimiser le harness | A | formes lisibles, réutilisation des résultats identiques et compaction livrées ; #84 : réparations regroupées, lecture SSE complète et borne de coût uniquement à tarif vérifié ; exception C1 définie dans #86 : outil final nommé en correction après mesures utilisables, validé par un test live contrôlé (1 appel accepté, 61 s) ; 745 tests locaux passent ; #85 reste ouvert : campagne du 19 oct. sur main (41 appels réels) : la réponse finale est complète en 18–45 s puis le modèle continue 70–90 s (balises, seconde copie) jusqu'au plafond ; raisonnement léger sans gain ; correctif wp13-stream-early-close : fermeture du flux dès que l'appel final nommé est complet (usage inconnu pour cette requête, coût en borne basse), fusionné le 26 oct. après validation locale (formatage, Clippy, 746 tests sous compte standard, build release) ; campagne du 26 oct. sur `main` (`87e1da0`, binaire release, compte standard, 8 questions de `scripts/questions.txt`, Super) : 8/8 terminées, 49–203 s (médiane 94 s, moyenne 108 s), 2 à 5 requêtes par question, coût connu ≥ 0,021 $ au total ; la queue de 70–90 s a disparu (49 s pour 2 requêtes dont l'inspection) et chaque requête dure ~40–50 s ; la latence restante vient des corrections (1 à 3 dans 7 questions sur 8, chacune une requête entière) et du raisonnement ; défaut relevé : les 2 questions en anglais ont reçu une réponse en français malgré la consigne « langue de la question » ; prochaines pistes : réduire les corrections (schéma de citations, exemples) et exposer la durée par requête et les motifs de correction dans `--json` ; C2–C7 inchangés ; #98 (26 oct.) : `submit_answer` n'est déclaré qu'après une inspection aux mesures utilisables (ou une capture « Expliquer » lisible), le prompt système énonce la langue de la question quand ses mots courants la rangent clairement en anglais ou en français, les statistiques exposent `duration_ms` par requête et `repair_requests` (lus en local seulement) ; fusionné après validation locale (formatage, Clippy, 4 builds release, 100 tests JavaScript, 3 Python, 831 tests Rust / 0 échec / 3 ignorés sous compte standard, 22 exécutables) ; #99 (26 oct.) : une phrase aux chiffres sans source dont chaque chiffre figure dans une mesure citable du tour est acceptée et marquée « chiffres mesurés dont la source n'est pas citée » (`uncited_number`) au lieu de coûter une requête de correction, un chiffre qu'aucune mesure ne contient reste renvoyé ; fusionné après validation locale (formatage, Clippy, 4 builds release, 100 tests JavaScript, 3 Python, 833 tests Rust / 0 échec / 3 ignorés sous compte standard, 22 exécutables) | #33, wp13-agent-reliability, #84, #85, #86, #89, [#98](https://github.com/nassim-arifette/pc-agent/pull/98) fusionné (26 oct., `89fe592`), [#99](https://github.com/nassim-arifette/pc-agent/pull/99) fusionné (26 oct., `9f134d0`) |
 | 14 — Escalade Super → Ultra | A | mécanisme backend livré : reprise unique, budgets et preuves conservés, coût par modèle, réglages locaux ; automatique désactivé sans étalonnage humain réel compatible avec outils/moteur/harness ; qualité hybride à valider | #34, #35, #36 |
+| 14, 15 — Cache et automatique, lot du 27 octobre | A | en cours : complément C6 ci-dessus, cache local à TTL typé et pages officielles ; campagne réelle 12 × 3, paquet aveugle pour annotation humaine et décision de défaut fondée sur les résultats ; validation native standard et coûts séparés requis avant revue du code | feature/plan-cache-auto-escalation, feature/cache-auto-escalation |
 | 4, lot 3 — Clés de recherche locales | B | côté backend sur main : SMBIOS (type, format, capacité), champs crash/bugcheck/KB des événements, `get_drivers` et offres Windows Update ; validation à faire | |
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
