@@ -234,6 +234,10 @@ pub(crate) fn volume_space(_root: &Path) -> VolumeSpace {
         ],
     }
 }
+
+pub(crate) fn volume_location(_root: &Path) -> Option<(String, bool)> {
+    None
+}
 pub(crate) fn profile_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())

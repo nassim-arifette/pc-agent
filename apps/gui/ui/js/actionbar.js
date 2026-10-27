@@ -38,17 +38,7 @@ export async function once(run) {
  */
 function place(bar, align) {
   if (!bar.isConnected) return;
-  const anchor = bar.parentElement;
-  const scroller = bar.closest(".main") || document.documentElement;
-  const view = scroller === document.documentElement ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
-  const bounds = (bar.closest("[data-actbar-bounds]") || bar.closest(".page") || scroller).getBoundingClientRect();
-  bar.classList.remove("actbar-end", "actbar-above");
-  if (align === "end") bar.classList.add("actbar-end");
-  const rect = bar.getBoundingClientRect();
-  if (align === "end" ? rect.left < bounds.left : rect.right > bounds.right) bar.classList.toggle("actbar-end");
-  const item = anchor.getBoundingClientRect();
-  const room = { below: view.bottom - item.bottom, above: item.top - view.top };
-  if (rect.bottom > view.bottom - 8 && room.above > room.below) bar.classList.add("actbar-above");
+  bar.classList.toggle("actbar-end", align === "end");
 }
 
 /**
@@ -57,7 +47,7 @@ function place(bar, align) {
  * `explain` and `investigate` are async functions; the bar runs one at a time. `align: "end"`
  * puts it under the item's right end, for full-width rows whose left side carries their names.
  */
-export function actionBar({ key, label, ready, unavailable, explain, investigate, align = "start" }) {
+export function actionBar({ key, label, ready, unavailable, explain, investigate, monitor, monitorUnavailable, align = "start" }) {
   const tool = (name, { iconName, text, tip, shortcut, enabled, run, tone }) =>
     h(
       "button",
@@ -79,8 +69,7 @@ export function actionBar({ key, label, ready, unavailable, explain, investigate
   const buttons = [
     tool("explain", { iconName: "sparkle", text: t("inspect.explain"), tip: ready ? t("actbar.explain.tip") : unavailable, shortcut: "E", enabled: ready, run: explain, tone: "primary" }),
     tool("investigate", { iconName: "search", text: t("inspect.investigate"), tip: ready ? t("actbar.investigate.tip") : unavailable, shortcut: "Enter", enabled: ready, run: investigate }),
-    // Watching a resource is not built yet: shown so the place is known, never faked.
-    tool("monitor", { iconName: "bell", text: t("actbar.monitor"), tip: t("actbar.monitor.soon"), enabled: false, tone: "muted" }),
+    tool("monitor", { iconName: "bell", text: t("actbar.monitor"), tip: monitor ? t("actbar.monitor") : monitorUnavailable || t("actbar.monitor.soon"), enabled: Boolean(monitor), run: monitor, tone: monitor ? null : "muted" }),
   ];
   const enabled = buttons.filter((b) => !b.hasAttribute("aria-disabled"));
   // One tab stop: the first enabled button, or Explain so its reason stays reachable.

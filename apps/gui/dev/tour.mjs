@@ -187,7 +187,15 @@ try {
     await page.eval("document.querySelector('.storage-results').scrollIntoView({ block: 'start' })");
     await page.sleep(400);
     await shot(`22-storage-insp-folder-${theme}`);
-    await page.click(".storage-results .tabs [role='tab']", 1);
+    await page.waitFor("document.querySelector('.storage-facts')");
+    await shot(`22a-storage-map-${theme}`);
+    await page.click("[data-key='mode:tree']");
+    await page.click(".storage-node-line > .chip", 0);
+    await page.waitFor("document.querySelector('.storage-branch .item-select')");
+    await shot(`22b-storage-tree-${theme}`);
+    await page.click("[data-key='mode:list']");
+    await shot(`22c-storage-list-${theme}`);
+    await page.click("[data-key='kind:files']");
     await page.waitFor("!document.querySelector('.item-row.selected')");
     await page.click(".item-select", 1);
     await page.waitFor("document.querySelector('.storage-insp:not(.insp-empty) .insp-kv .unknown')");

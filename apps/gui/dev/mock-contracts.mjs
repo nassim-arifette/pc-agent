@@ -83,10 +83,29 @@ export async function exerciseMock(bridge, clock, search) {
       const shown = await ok("selection_preview", { reference, intent: "explain", names: false });
       assert.equal(shown.selected_evidence.selection.target.alias, "file-1");
       assert.ok(!JSON.stringify(shown.message).includes(root));
+      const children = await ok("scan_children", { scopeId: scan.value.scope_id, itemRef: null, kind: "dirs", offset: 0 });
+      assert.equal(children.items.length, 50);
+      assert.equal(children.next_offset, 50);
+      assert.equal(children.selection_source_id, null);
+      const remaining = await ok("scan_children", { scopeId: scan.value.scope_id, kind: "dirs", offset: 50 });
+      assert.equal(remaining.items.length, 14);
+      assert.equal(remaining.next_offset, null);
+      const child = children.items[0];
+      const nested = await ok("scan_children", { scopeId: scan.value.scope_id, itemRef: child.item_ref, kind: "files" });
+      assert.equal(nested.parent.item_ref, child.item_ref);
+      assert.ok(nested.items.every(item => item.parent_ref === child.item_ref));
+      const facts = await ok("scan_item_facts", { scopeId: scan.value.scope_id, itemRef: child.item_ref });
+      assert.ok(facts.selection_source_id);
+      assert.equal(facts.rank_scope, "siblings_of_parent");
+      assert.equal(facts.parent_ref, children.parent.item_ref);
+      assert.equal(facts.item_facts.scanned_at_unix_ms - facts.item_facts.untouched_before_unix_ms, 182 * 86400000);
+      assert.ok(facts.item_facts.file_types.every(type => type.files_count >= 0));
+      await reject("scan_item_facts", { scopeId: scan.value.scope_id, itemRef: children.parent.item_ref }, "item_unavailable");
       await ok("start_scan", { path: root });
       await ok("cancel_scan");
       await clock.drain();
       await reject("selection_preview", { reference, intent: "explain", names: false }, "selection_expired");
+      await reject("scan_item_facts", { scopeId: scan.value.scope_id, itemRef: child.item_ref }, "scan_unavailable");
     }
   }
   await ok("reveal");

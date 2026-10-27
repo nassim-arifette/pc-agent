@@ -8,9 +8,9 @@ import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call, onDrop } from "../api.js";
 import { askWithAi, cloudReady } from "../chat/composer.js";
-import { findReference, runSelection } from "../selection/actions.js";
+import { runSelection } from "../selection/actions.js";
 import { actionBar, keepFocus, once, selectionKeys } from "../actionbar.js";
-import { state, subscribe, startScan, cancelScan, morePage } from "../store.js";
+import { state, subscribe, startScan, cancelScan } from "../store.js";
 import { badge, bar, button, iconButton, toast } from "../ui.js";
 import { bytes, date, duration, number, percent } from "../format.js";
 import { quickScanCard } from "./quickscan.js";
@@ -18,6 +18,11 @@ import { adminChecksCard } from "../elevation/checks.js";
 import { failureDetail, failureText } from "../failure.js";
 import { capable } from "../capabilities.js";
 import { folderName, isDriveRoot, itemCoverage, itemFacts, itemNotes, shareShown } from "./items.js";
+import { hierarchyBrowser } from "./browser.js";
+import { watchProposal } from "./treemap.js";
+
+let requestWatch = null;
+import("../../watches-controller.js").then((module) => { requestWatch = module.requestWatch; }).catch(() => {});
 
 const QUICK_ICONS = { downloads: "drop", desktop: "pc", documents: "file", temp: "clock", profile: "folder", system_drive: "drive" };
 const REASONS = ["denied_dirs", "denied_files", "errors", "placeholders", "reparse_skipped", "other_volume_skipped", "changed_during_scan", "vanished"];
@@ -34,11 +39,13 @@ const BESIDE = 920;
  */
 async function storageReference(view, kind, item) {
   const target = { kind: "storage", scope_id: view.scope_id, item_ref: item.item_ref };
-  const live = await findReference((x) => x.kind === "storage" && x.scope_id === target.scope_id && x.item_ref === target.item_ref);
-  if (live) return live;
   try {
-    const page = await call("scan_page", { scopeId: view.scope_id, kind, offset: item.page_offset ?? 0 });
-    return page.selection_source_id && page.items.some((x) => x.item_ref === item.item_ref) ? { source_id: page.selection_source_id, target } : null;
+    const sources = await call("selection_sources");
+    const existing = sources.find((source) => source.reference.source_id === item.selection_source_id);
+    if (existing) return existing.reference;
+    const facts = await call("scan_item_facts", { scopeId: view.scope_id, itemRef: item.item_ref });
+    item.selection_source_id = facts.selection_source_id;
+    return facts.selection_source_id ? { source_id: facts.selection_source_id, target } : null;
   } catch {
     return null;
   }
@@ -46,6 +53,8 @@ async function storageReference(view, kind, item) {
 
 /** What the action bar, the inspector and the shortcuts do for a scanned folder or file. */
 function storageItem(view, kind, item) {
+  const proposal = watchProposal(view);
+  const monitor = requestWatch && proposal.rule ? () => requestWatch(proposal.rule) : null;
   const run = async (intent) => {
     const reference = await storageReference(view, kind, item);
     if (!reference) {
@@ -60,10 +69,12 @@ function storageItem(view, kind, item) {
     key: `storage:${view.scope_id}:${item.item_ref}`,
     label: item.name,
     // The host publishes each page it returns; without a source the scan cannot be selected.
-    ready: Boolean("selection_source_id" in item ? item.selection_source_id : view[kind].selection_source_id),
+    ready: Boolean(item.selection_source_id),
     unavailable: t("storage.select.unavailable"),
     explain: () => run("explain"),
     investigate: () => run("investigate"),
+    monitor,
+    monitorUnavailable: t(proposal.reason || "storage.watch.unavailable"),
   };
 }
 
@@ -97,10 +108,10 @@ function summaryOpen() {
 
 export function mount(page) {
   const picker = h("section", { class: "dropzone" });
+  const recent = h("section", { class: "section storage-recent" });
   const body = h("div", { class: "section" });
-  let tab = "dirs";
   let quick = [];
-  // The selected result: { scope, kind, ref }; cleared by another tab or another scan.
+  // The selected result stays tied to its scan and exact host-issued facts source.
   let selected = null;
   // A redraw that only moves the selection keeps the size bars still.
   let still = false;
@@ -108,13 +119,18 @@ export function mount(page) {
   let inspectorHidden = false;
   // Whether the results are wide enough for the inspector's column (see BESIDE).
   let beside = true;
+  let factsRequest = 0;
+  let factsResult = null;
+  let factsError = null;
+  let disposed = false;
+  let other = false;
+  const browser = hierarchyBrowser(() => { if (!disposed) redraw(); }, () => { selected = null; other = false; factsRequest++; });
 
   /** The selected result of the current results: { view, kind, item }, or null. */
   const selectedEntry = () => {
     const view = state.scan.status === "done" ? state.scan.view : null;
-    if (!view || !selected || selected.scope !== view.scope_id || selected.kind !== tab) return null;
-    const item = view[tab].items.find((x) => x.item_ref === selected.ref);
-    return item ? { view, kind: tab, item } : null;
+    if (!view || !selected || selected.scope !== view.scope_id) return null;
+    return { view, kind: selected.kind, item: selected.item };
   };
   /** The selected item's actions, or null. */
   const selectedItem = () => {
@@ -131,7 +147,23 @@ export function mount(page) {
     }
   };
   const select = (item) => {
-    selected = item ? { scope: state.scan.view.scope_id, kind: tab, ref: item.item_ref } : null;
+    const request = ++factsRequest;
+    other = false;
+    factsResult = null;
+    factsError = null;
+    selected = item ? { scope: state.scan.view.scope_id, kind: item.kind, ref: item.item_ref, item } : null;
+    if (item) {
+      item.selection_source_id = null;
+      call("scan_item_facts", { scopeId: selected.scope, itemRef: selected.ref }).then((result) => {
+        if (disposed || request !== factsRequest || state.scan.view?.scope_id !== selected?.scope) return;
+        factsResult = result.item_facts;
+        item.selection_source_id = result.selection_source_id;
+        redraw();
+      }).catch((error) => {
+        if (disposed || request !== factsRequest) return;
+        factsError = error; redraw();
+      });
+    }
     redraw();
   };
   /** Clears the selection from the inspector; keyboard focus goes back to the item's row. */
@@ -190,7 +222,7 @@ export function mount(page) {
 
   const itemRow = (item, max, kind, view) => {
     const isSelected = Boolean(selected && selected.scope === view.scope_id && selected.kind === kind && selected.ref === item.item_ref);
-    const actions = isSelected ? storageItem(view, kind, item) : null;
+    const actions = isSelected ? storageItem(view, kind, selected.item) : null;
     return h(
       "div",
       { class: ["list-row", "item-row", "actbar-anchor", isSelected ? "selected" : ""] },
@@ -208,7 +240,8 @@ export function mount(page) {
           onclick: () => select(isSelected ? null : item),
         },
         icon(kind === "dirs" ? "folder" : "file"),
-        h("span", { class: "text" }, h("strong", null, item.name), h("span", null, item.parent ? `…\\${item.parent}` : folderName(view.root))),
+        h("span", { class: "text" }, h("strong", null, item.name), h("span", null, item.parent ? `…\\${item.parent}` : folderName(view.root)),
+          item.system ? h("span", { class: "hint" }, t("storage.system")) : null),
       ),
       bar(max ? item.size / max : 0, kind === "dirs" ? "" : "mint", { animate: !still }),
       h(
@@ -230,6 +263,7 @@ export function mount(page) {
    */
   const inspector = (entry, under = false) => {
     const safe = h("p", { class: "storage-insp-safe" }, icon("shield"), h("span", null, t("storage.insp.safe")));
+    if (other) return h("aside", { class: "insp storage-insp" }, h("h2", null, t("storage.other")), h("p", null, t("storage.other.detail")), safe);
     if (!entry) {
       return h(
         "aside",
@@ -269,6 +303,21 @@ export function mount(page) {
           facts.map((row) => [h("dt", null, t(row.key, row.vars)), h("dd", null, factValue(row.value))]),
         ),
         itemNotes(kind, item, view, facts).map((key) => h("p", { class: "note" }, t(key))),
+        factsResult ? h("div", { class: "storage-facts" },
+          h("p", { class: "note" }, t("storage.facts.at", { at: date(factsResult.scanned_at_unix_ms, true) })),
+          h("dl", { class: "insp-kv" },
+            h("dt", null, t("storage.facts.untouched")), h("dd", null, `${number(factsResult.untouched.files_count)} · ${factsResult.untouched.allocated_bytes == null ? t("storage.insp.unknown") : bytes(factsResult.untouched.allocated_bytes)}`),
+            h("dt", null, t("storage.facts.undated")), h("dd", null, number(factsResult.undated_files_count)),
+            h("dt", null, t("storage.facts.largest")), h("dd", null, factsResult.largest_file
+              ? `${folderName(factsResult.largest_file.path || factsResult.largest_file.alias)} · ${bytes(factsResult.largest_file.allocated_bytes ?? factsResult.largest_file.logical_bytes)}`
+              : t("storage.insp.unknown"))),
+          h("h3", null, t("storage.facts.types")),
+          h("dl", { class: "insp-kv" }, factsResult.file_types.map((type) => [
+            h("dt", null, t(`storage.type.${type.file_type}`)),
+            h("dd", null, `${number(type.files_count)} · ${type.allocated_bytes == null ? t("storage.insp.unknown") : bytes(type.allocated_bytes)}`)])),
+          factsResult.status !== "ok" ? h("p", { class: "note" }, t("storage.map.partial")) : null)
+          : h("div", { role: "status" }, factsError ? failureText(factsError) : t("storage.loading"),
+            factsError ? link("retry", "refresh", t("storage.retry"), () => select(item)) : null),
       ),
       h(
         "div",
@@ -289,7 +338,10 @@ export function mount(page) {
           { class: "storage-insp-actions" },
           link("explain", "sparkle", t("inspect.explain"), () => once(actions.explain), actions.ready),
           link("investigate", "search", t("inspect.investigate"), () => once(actions.investigate), actions.ready),
+          kind === "dirs" ? link("open", "folder", t("storage.open"), () => browser.zoom(item)) : null,
+          link("monitor", "bell", t("actbar.monitor"), () => once(actions.monitor), Boolean(actions.monitor)),
         ),
+        !actions.monitor ? h("p", { class: "note" }, actions.monitorUnavailable) : null,
       ),
       safe,
     );
@@ -301,19 +353,12 @@ export function mount(page) {
     const used = volume.total_bytes && volume.free_bytes != null ? 1 - volume.free_bytes / volume.total_bytes : null;
     const why = reasons(view.coverage);
     const complete = view.status === "ok";
-    const current = view[tab];
-    const max = current.items.reduce((m, i) => Math.max(m, i.size), 0);
     const askButton = cloudReady()
       ? button(t("storage.ask"), { iconName: "sparkle", variant: "primary", onClick: () => askWithAi(t("storage.askQuestion", { folder: folderName(view.root) }), { followUp: false }) })
       : button(t("storage.ask"), { iconName: "sparkle", disabled: true, title: t("mode.cloud.setup") });
     inspectorHidden = summaryOpen();
     const entry = inspectorHidden ? null : selectedEntry();
     const side = beside && !inspectorHidden;
-    const rows = current.items.map((item) => {
-      const row = itemRow(item, max, tab, view);
-      // Without room for its column, the inspector opens right under the selected row.
-      return !beside && entry?.item === item ? [row, inspector(entry, true)] : row;
-    });
     return h(
       "div",
       { class: ["storage-layout", side && "beside"] },
@@ -326,6 +371,7 @@ export function mount(page) {
           h("div", { class: "row", style: { "min-width": "0" } }, icon("folder"), h("strong", { style: { "word-break": "break-all" } }, view.root)),
           button(t("storage.again"), { iconName: "refresh", size: "sm", onClick: () => startScan(view.root) }),
         ),
+        h("p", { class: "hint" }, t("storage.facts.at", { at: date(view.scanned_at_unix_ms, true) })),
         h(
           "div",
           { class: "grid grid-metrics grid-stats" },
@@ -355,54 +401,18 @@ export function mount(page) {
             h("span", { class: "hint" }, t("storage.took", { time: duration(view.duration_ms) })),
           ),
         ),
-        // The action bar stays inside the list: near its right edge it aligns to the row's end.
         h(
           "section",
           { class: "card card-pad storage-results", "data-actbar-bounds": true },
-          h(
-            "div",
-            { class: "row wrap", style: { "justify-content": "space-between", "margin-bottom": "6px" } },
-            h(
-              "div",
-              { class: "tabs", role: "tablist" },
-              ["dirs", "files"].map((k) =>
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    role: "tab",
-                    "aria-selected": String(tab === k),
-                    onclick: () => {
-                      tab = k;
-                      selected = null;
-                      render();
-                    },
-                  },
-                  t(`storage.tab.${k}`),
-                ),
-              ),
-            ),
-            askButton,
-          ),
-          current.items.length
-            ? [h("p", { class: "hint storage-select-hint" }, t("storage.select.hint")), h("div", { class: "list" }, rows)]
-            : h("p", { class: "muted" }, t("storage.empty")),
-          current.next_offset != null
-            ? h(
-                "div",
-                { class: "row", style: { "justify-content": "center", "margin-top": "12px" } },
-                button(t("storage.more"), {
-                  iconName: "chevron",
-                  onClick: async () => {
-                    try {
-                      await morePage(tab);
-                    } catch (error) {
-                      toast(failureText(error), "bad");
-                    }
-                  },
-                }),
-              )
-            : null,
+          browser.render(view, {
+            selected: selected?.ref,
+            select,
+            other: () => { select(null); other = true; redraw(); },
+            row: (item, max, kind) => h("div", { class: "storage-browser-row" }, itemRow(item, max, kind, view),
+              !beside && entry?.item.item_ref === item.item_ref ? inspector(entry, true) : null),
+          }),
+          askButton,
+          !side && other ? inspector(null, true) : null,
         ),
       ),
       side ? inspector(entry) : null,
@@ -442,6 +452,12 @@ export function mount(page) {
     const scan = state.scan;
     const status = scan.status === "starting" ? "scanning" : scan.status;
     const locked = status === "scanning";
+    fill(recent, state.recentScans.length ? [
+      h("h2", { class: "caption" }, t("storage.recent")),
+      state.recentScans.map((entry) => h("div", { class: "row wrap" },
+        h("span", { class: "hint" }, `${entry.root} · ${date(entry.at, true)} · ${entry.size == null ? t("storage.insp.unknown") : bytes(entry.size)} · ${t(entry.status === "ok" ? "storage.complete" : "storage.partial")}`),
+        button(t("storage.recent.rescan"), { size: "sm", disabled: locked, onClick: () => startScan(entry.root) })))
+    ] : []);
     if (locked !== pickerLocked) {
       pickerLocked = locked;
       renderPicker();
@@ -489,7 +505,9 @@ export function mount(page) {
     page,
     h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("storage.title")), h("p", { class: "page-sub" }, t("storage.sub")))),
     picker,
+    h("p", { class: "note" }, t("storage.readOnly")),
     body,
+    recent,
     // After the results: what needs administrator consent, each card still complete.
     h(
       "section",
@@ -557,6 +575,9 @@ export function mount(page) {
     if (type === "drop" && event.paths?.length) startScan(event.paths[0]);
   });
   return () => {
+    disposed = true;
+    factsRequest++;
+    browser.dispose();
     unsubscribe();
     stopKeys();
     stopDrop?.();
