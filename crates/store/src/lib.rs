@@ -16,8 +16,9 @@ pub use battery::{
 pub use process_peaks::ProcessPeaks;
 use rusqlite::{params, Connection, OptionalExtension};
 pub use samples::{
-    ActivityEvent, EventObservation, HistoryPoint, HistoryQuery, HistorySeries, Recording,
-    StoredSample, SAMPLE_RETENTION_MS,
+    ActivityEvent, ChartPoint, ChartSeries, EventObservation, HistoryChart, HistoryCollection,
+    HistoryOverview, HistoryPeriod, HistoryPoint, HistoryQuery, HistoryRecordings, HistorySeries,
+    Recording, RecordingDetail, StoredSample, DEFAULT_COLLECTION_BUDGET_BYTES, SAMPLE_RETENTION_MS,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -26,7 +27,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -177,6 +178,9 @@ impl Store {
         }
         if version < 7 {
             conn.execute_batch(watches::MIGRATION)?;
+        }
+        if version < 8 {
+            samples::system::migrate(&conn)?;
         }
         Ok(Self {
             conn,

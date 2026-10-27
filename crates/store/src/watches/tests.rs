@@ -42,7 +42,8 @@ fn fresh_and_shipped_image_schema_upgrade_without_rewriting_history() {
     let store = Store::open_in_memory().unwrap();
     let id = store.create("Retain this conversation", 100).unwrap();
     store.conn.execute_batch(
-        "DROP TABLE watch_alerts; DROP TABLE watches; DROP TABLE watch_settings; DROP TABLE watch_lease; PRAGMA user_version=6;",
+        "DROP TABLE system_samples; DROP TABLE history_names; DROP TABLE collection_policy;
+         DROP TABLE watch_alerts; DROP TABLE watches; DROP TABLE watch_settings; DROP TABLE watch_lease; PRAGMA user_version=6;",
     ).unwrap();
     let store = Store::init(store.conn).unwrap();
     assert_eq!(
@@ -50,7 +51,7 @@ fn fresh_and_shipped_image_schema_upgrade_without_rewriting_history() {
             .conn
             .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        7
+        crate::SCHEMA_VERSION
     );
     assert_eq!(
         store
