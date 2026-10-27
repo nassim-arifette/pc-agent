@@ -3628,6 +3628,41 @@ details.more > div {
   text-align: right;
   font-size: 13px;
 }
+.browser-summary {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.browser-breakdown, .browser-local {
+  min-width: 0;
+  border-top: 1px solid var(--stroke);
+  padding-top: 10px;
+}
+.browser-controls, .browser-sorts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-block: 8px;
+}
+.browser-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.browser-table th, .browser-table td {
+  padding: 5px 3px;
+  border-bottom: 1px solid var(--stroke);
+  text-align: right;
+}
+.browser-table th:first-child { text-align: left; overflow-wrap: anywhere; }
+.browser-table th { font-weight: 560; }
+.browser-window { border-top: 1px solid var(--stroke); padding-block: 8px; }
+.browser-window .btn { white-space: normal; text-align: left; }
+.browser-caption, .browser-tabs { overflow-wrap: anywhere; font-size: 13px; }
+.browser-caption { font-weight: 560; }
+.browser-tabs { padding-left: 18px; }
 .insp {
   position: sticky;
   top: 8px;

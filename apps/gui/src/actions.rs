@@ -57,6 +57,41 @@ pub struct StartupRestoration {
 
 pub type Slot = Mutex<Option<ActionSlot>>;
 
+/// A local browser inspection can prepare an action without contacting the model.
+pub fn prepare_browser_manager(
+    slot: &Slot,
+    instance: &pcagent_shared::ProcessInstance,
+    readable: view::Readable<'_>,
+) -> Result<StartupRestoration, Failure> {
+    let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+    if slot.as_ref().is_some_and(|current| {
+        current.decided.values().any(|v| v == "running")
+            || current
+                .pending
+                .iter()
+                .any(|p| !current.decided.contains_key(p.plan.plan_id()))
+    }) {
+        return Err(Failure::refused(
+            Some(Refusal::Busy),
+            "Review or dismiss the pending actions before preparing a browser manager.",
+        ));
+    }
+    let desk = desk().ok_or_else(journal_unavailable)?;
+    let (policy, prefs) = (Policy::from_env(), Preferences::default());
+    let protection = PolicyProtection {
+        policy: &policy,
+        prefs: &prefs,
+    };
+    let pending = desk
+        .prepare_browser_manager(instance, &protection)
+        .map_err(|error| Failure::refused(Some(Refusal::Stale), error))?;
+    let turn_id = format!("local-browser-{}", pending.plan.plan_id());
+    let prepared = ActionSlot::new(&turn_id, vec![pending], readable);
+    let plan = prepared.views[0].clone();
+    *slot = Some(prepared);
+    Ok(StartupRestoration { turn_id, plan })
+}
+
 /// Where the action journal lives, as for the CLI.
 pub fn journal_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")

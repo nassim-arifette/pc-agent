@@ -41,10 +41,19 @@ export async function exerciseMock(bridge, clock, search) {
     assert.equal((await ok("dashboard")).cpu.busy.status, "ok");
   }
   await ok("process_activity");
+  const localWindows = await ok("local_browser_windows", { applicationRef: "app-7", includeTabs: false });
+  assert.equal(localWindows.windows[0].tabs.length, 0);
+  const localTabs = await ok("local_browser_windows", { applicationRef: "app-7", includeTabs: true });
+  assert.ok(localTabs.windows[0].tabs[0].title.includes("LOCAL-ONLY"));
+  const browserPlan = await ok("browser_manager_prepare", { applicationRef: "app-7", processRef: "proc-7p0" });
+  assert.equal(browserPlan.plan.kind, "open_browser_process_manager");
+  assert.equal(browserPlan.plan.decision, null);
+  await ok("action_decline", { turnId: browserPlan.turn_id, planId: browserPlan.plan.plan_id });
   const sources = await ok("selection_sources");
   assert.ok(sources.length);
   const selected = sources[0].reference;
   const preview = await ok("selection_preview", { reference: selected, intent: "explain", names: true });
+  assert.ok(!JSON.stringify(preview).includes("LOCAL-ONLY"));
   assert.equal(preview.selected_evidence.selection.fresh_collection, false);
   const sendSelection = { reference: selected, intent: "explain", previewId: preview.preview_id };
   if (params.get("preview") === "expired") await reject("selection_send", sendSelection, "preview_expired");

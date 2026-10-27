@@ -29,11 +29,23 @@ pub struct MemberView {
     pub services: Vec<ServiceView>,
     /// No executable name was read: `name` is the English fallback the window replaces.
     pub unnamed: bool,
+    pub browser: pcagent_telemetry::browser::BrowserClassification,
+}
+/// Closed types and measured sums only. Captions/tabs are returned by a separate local command.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowserTypeView {
+    pub process_type: pcagent_telemetry::browser::BrowserProcessType,
+    pub process_count: usize,
+    pub classified_count: usize,
+    pub working_set: Measure,
+    pub cpu: Measure,
 }
 /// An application group: its measurements are sums over its members during the window.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApplicationView {
     pub entity_ref: String,
+    /// Local UI identity across captures; never a model selection reference.
+    pub local_key: String,
     /// The executable the group is named after, as for `MemberView::name`.
     pub name: String,
     /// The readable name of the member the group is named after, as for `MemberView`.
@@ -52,6 +64,7 @@ pub struct ApplicationView {
     pub members: Vec<MemberView>,
     /// No application name was read: `name` is the English fallback the window replaces.
     pub unnamed: bool,
+    pub browser_types: Vec<BrowserTypeView>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityView {
@@ -100,6 +113,13 @@ pub(super) fn naming_member(
         .min_by_key(|p| (p.creation_time_filetime, p.pid))
 }
 
+pub fn application_key(
+    app: &pcagent_telemetry::ApplicationActivity,
+    instance: &impl Fn(&str) -> Option<ProcessInstance>,
+) -> String {
+    naming_member(app, instance).map_or_else(|| app.entity_ref.clone(), |p| p.entity_ref)
+}
+
 /// Application groups with their members and services, for the local Live PC view. `instance`
 /// resolves member references (the live collector's registry); `readable` gives readable names.
 pub fn activity(
@@ -117,6 +137,7 @@ pub fn activity(
                 .iter()
                 .filter(|p| p.application_ref == app.entity_ref)
                 .map(|p| MemberView {
+                    browser: p.browser,
                     entity_ref: p.instance.entity_ref.clone(),
                     name: process_name(&p.instance),
                     readable_name: readable_name(&p.instance, readable),
@@ -133,7 +154,19 @@ pub fn activity(
             all_services.dedup_by(|x, y| x.name == y.name);
             let named = app.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
             ApplicationView {
+                browser_types: app
+                    .browser_types
+                    .iter()
+                    .map(|t| BrowserTypeView {
+                        process_type: t.process_type,
+                        process_count: t.process_count,
+                        classified_count: t.classified_count,
+                        working_set: m(&t.entity_ref, Metric::ProcessWorkingSetBytes),
+                        cpu: m(&t.entity_ref, Metric::ProcessCpuBasisPoints),
+                    })
+                    .collect(),
                 entity_ref: app.entity_ref.clone(),
+                local_key: application_key(app, &instance),
                 unnamed: named.is_none(),
                 name: app
                     .name
@@ -145,7 +178,7 @@ pub fn activity(
                 readable_name: naming_member(app, &instance)
                     .and_then(|p| readable_name(&p, readable)),
                 process_count: app.process_count,
-                members_truncated: app.members_truncated,
+                members_truncated: app.members_truncated || members.len() < app.process_count,
                 cpu: m(&app.entity_ref, Metric::ProcessCpuBasisPoints),
                 working_set: m(&app.entity_ref, Metric::ProcessWorkingSetBytes),
                 private_commit: m(&app.entity_ref, Metric::ProcessPrivateCommitBytes),

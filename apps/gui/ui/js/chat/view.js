@@ -338,7 +338,7 @@ async function review(turn, plan) {
   const go = await dialog(
     (close) => [
       h("h2", { class: "dialog-title" }, planTitle(plan)),
-      h("p", null, t("action.review.lead")),
+      h("p", null, t(plan.kind === "open_browser_process_manager" ? "browser.review" : "action.review.lead")),
       h(
         "ul",
         { class: "plan-targets" },
