@@ -154,6 +154,7 @@ pub(crate) fn repair_request(
             i.kind,
             IssueKind::UnknownCitation
                 | IssueKind::MissingCitation
+                | IssueKind::UncitedNumber
                 | IssueKind::UnsupportedNumber
                 | IssueKind::HistoricalWording
         )

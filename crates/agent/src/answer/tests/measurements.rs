@@ -36,8 +36,9 @@ fn invented_numbers_and_missing_citations_are_reported() {
         kinds("La température atteint 85 °C [O1]."),
         [IssueKind::UnsupportedNumber]
     );
+    assert_eq!(kinds("Memory is 90 % in use."), [IssueKind::UncitedNumber]);
     assert_eq!(
-        kinds("Memory is 90 % in use."),
+        kinds("Memory is 42 % in use."),
         [IssueKind::MissingCitation]
     );
     // Counts, versions and identifiers carry no unit and are not checked.

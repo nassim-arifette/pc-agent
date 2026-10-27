@@ -605,6 +605,7 @@ export const fr = {
   "issue.unsupported_number": "chiffre absent des mesures",
   "issue.historical_wording": "mesuré plus tôt, mais présenté comme actuel",
   "issue.missing_citation": "chiffres sans source citée",
+  "issue.uncited_number": "chiffres mesurés dont la source n'est pas citée",
   "issue.unknown_citation": "cite une source qui n'existe pas",
   "issue.unseen_name": "nom renvoyé par aucun outil",
   "issue.command": "contient une commande : vérifiez-la avant d'exécuter quoi que ce soit",

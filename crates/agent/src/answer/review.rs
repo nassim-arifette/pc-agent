@@ -15,7 +15,9 @@ pub(crate) fn unverified_claims(answer: &Answer) -> usize {
         .unverified
         .iter()
         .map(|issue| match issue.kind {
-            IssueKind::MissingCitation => claims(&issue.excerpt).len().max(1),
+            IssueKind::MissingCitation | IssueKind::UncitedNumber => {
+                claims(&issue.excerpt).len().max(1)
+            }
             _ => 1,
         })
         .sum()

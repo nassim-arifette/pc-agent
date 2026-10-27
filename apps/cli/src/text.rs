@@ -575,6 +575,7 @@ fn issue_text(kind: IssueKind) -> String {
     match kind {
         IssueKind::UnsupportedNumber => "number not found in the measurements".into(),
         IssueKind::MissingCitation => "numbers without a cited source".into(),
+        IssueKind::UncitedNumber => "measured numbers without their source cited".into(),
         IssueKind::UnknownCitation => "cites a source that does not exist".into(),
         IssueKind::UnseenName => "name not returned by any tool".into(),
         IssueKind::Command => "contains a command; do not run it without checking".into(),
