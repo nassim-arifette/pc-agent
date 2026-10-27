@@ -356,6 +356,13 @@ gardent leur nom ; elles gagnent des champs ou des valeurs.
 
 #### Complément du 6 octobre : Stockage en carte, arbre et liste
 
+Mise en œuvre approuvée le 27 octobre (#67, item 2) : le lot livre ce complément
+intégralement, sans nouveau plafond de navigation ni lecture de contenu. Les pages de 50 éléments
+sont une pagination, pas une limite du scan. La nouvelle sélection annule le calcul de faits
+précédent ; une sélection déjà invalide est refusée avant de lancer ce calcul. L'annulation ne
+met jamais des faits incomplets dans le cache. Les analyses récentes de la session gardent
+uniquement le chemin local et la date ; le dernier index seul reste autorisé et conservé.
+
 Ce complément sert la vue Stockage de la phase 2 (chantier 6, branche `wp6-storage-map`) : deux
 commandes de lecture locale et des faits figés pour un élément de scan. Il ne change ni
 `get_largest_items`, ni les autres outils du modèle, ni les autorisations d'action ; les
@@ -955,6 +962,11 @@ chantiers 5 et 8.
   citée, au clic comme au clavier, et la QA visuelle passe comme pour la phase 1.
 
 #### Phase 2 — Stockage, Historique et Surveillances (6 octobre)
+
+Lot Stockage repris le 27 octobre (#67, item 2) : hiérarchie et faits synthétiquement testés,
+carte/arbre/liste accessibles, inspecteur et sources figées, parcours de C: sans admin et d'un
+grand dossier, mock et tour anglais/français clair/sombre. Le défaut commun de la barre d'actions
+qui recouvre la ligne suivante (#68, Stockage et PC en direct) est corrigé dans ce lot.
 
 Le porteur du projet a demandé ces trois vues maintenant. Contrats : compléments du 6 octobre en
 C3 (Stockage, Historique) et C7 (Surveillances). Trois branches parallèles, `wp6-storage-map`,
@@ -1586,7 +1598,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Contrat C6 — Sources externes | A, C | adopté avec cette PR du plan | #31 |
 | 15 — Sources externes | A, C | livré : client Tavily, quatre outils typés, citations `[W…]` vérifiées, consentement et clé ; cache et pages release health à faire | #44 |
 | 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
-| 6 — Stockage en carte, arbre et liste | B, A, C | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (C4, C5), sur le socle `wp6-view-sidebar` ; hiérarchie et faits dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur | wp6-storage-map |
+| 6 — Stockage en carte, arbre et liste | B, A, C | en cours (27 oct.) : #67 item 2, complément C3 du 6 octobre (C4, C5) intégral ; hiérarchie et faits annulables en cache dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur ; validation locale complète et captures avant revue | feature/storage-map-plan, feature/storage-map |
 | 6 — Vue Historique | C, A | à faire, aucune branche ouverte au 9 octobre : complément C3 du 6 octobre (`history_overview`, `recording_detail`), sur le socle `wp6-view-sidebar` ; barre secondaire, frise d'événements numérotés, inspecteur et rechargement mesuré | wp6-history |
 | 6 — Surveillances | B, A, C | à faire, aucune branche ouverte au 9 octobre : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
 | 6 — Barre secondaire par vue | C | livré : une vue peut déclarer sa barre dans l'emplacement de la liste des conversations (`shell.setViewBar`), redessinée sur ses sujets, avec repli, fenêtre étroite, focus et repère accessibles ; aucune vue ne l'utilise encore (Stockage, Historique, Surveillances) | wp6-viewbar |
