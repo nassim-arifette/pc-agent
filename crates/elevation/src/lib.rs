@@ -23,6 +23,9 @@ mod system_native;
 pub mod trace;
 #[cfg(windows)]
 #[allow(unsafe_code)]
+mod trace_guardian;
+#[cfg(windows)]
+#[allow(unsafe_code)]
 mod trace_native;
 mod worker;
 

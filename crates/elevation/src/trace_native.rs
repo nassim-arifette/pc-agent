@@ -23,8 +23,7 @@ use windows_sys::{
     core::GUID,
     Win32::{
         Foundation::{
-            ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS,
-            ERROR_WMI_INSTANCE_NOT_FOUND,
+            ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
         },
         System::{
             Diagnostics::Etw::*,
@@ -61,12 +60,12 @@ fn random_ref(value: &str, prefix: &str) -> bool {
         })
 }
 
-struct Identity {
-    name: Vec<u16>,
-    guid: GUID,
+pub(super) struct Identity {
+    pub(super) name: Vec<u16>,
+    pub(super) guid: GUID,
 }
 impl Identity {
-    fn request(request: &ElevationRequest) -> Result<Self, ElevationError> {
+    pub(super) fn request(request: &ElevationRequest) -> Result<Self, ElevationError> {
         if !random_ref(&request.job_id, "elevjob") || !random_ref(&request.nonce, "nonce") {
             return Err(ElevationError::InvalidRequest);
         }
@@ -104,11 +103,11 @@ fn proven_cleanup_for_operation(
     None
 }
 
-struct Properties {
+pub(super) struct Properties {
     words: Vec<u64>,
 }
 impl Properties {
-    fn new(identity: &Identity) -> Self {
+    pub(super) fn new(identity: &Identity) -> Self {
         let length = size_of::<EVENT_TRACE_PROPERTIES>() + 2 * 1024 * size_of::<u16>();
         let mut result = Self {
             words: vec![0; length.div_ceil(size_of::<u64>())],
@@ -133,19 +132,41 @@ impl Properties {
             | EVENT_TRACE_FLAG_NO_SYSCONFIG;
         result
     }
-    fn get_mut(&mut self) -> &mut EVENT_TRACE_PROPERTIES {
+    pub(super) fn get_mut(&mut self) -> &mut EVENT_TRACE_PROPERTIES {
         // SAFETY: u64 storage provides native alignment and enough initialized bytes; never resized.
         unsafe { &mut *self.words.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>() }
     }
 }
 
-struct OwnedSession {
+pub(super) struct OwnedSession {
     identity: Identity,
     handle: CONTROLTRACE_HANDLE,
 }
-static ACTIVE: Mutex<Option<OwnedSession>> = Mutex::new(None);
+impl OwnedSession {
+    pub(super) fn start(request: &ElevationRequest) -> Result<Self, ElevationError> {
+        let identity = Identity::request(request)?;
+        let mut properties = Properties::new(&identity);
+        let mut handle = CONTROLTRACE_HANDLE::default();
+        // SAFETY: fixed private identity and bounded properties; a non-success never owns anything.
+        let status =
+            unsafe { StartTraceW(&mut handle, identity.name.as_ptr(), properties.get_mut()) };
+        if status != ERROR_SUCCESS {
+            return Err(ElevationError::LaunchFailed(status));
+        }
+        let session = Self { identity, handle };
+        if properties.get_mut().BufferSize > TRACE_BUFFER_KIB
+            || properties.get_mut().NumberOfBuffers > TRACE_MAX_BUFFERS
+            || properties.get_mut().MaximumBuffers > TRACE_MAX_BUFFERS
+        {
+            stop_session(&session)?;
+            return Err(ElevationError::InsecureJob);
+        }
+        Ok(session)
+    }
+}
+static ACTIVE: Mutex<Option<super::trace_guardian::Client>> = Mutex::new(None);
 
-fn stop_session(session: &OwnedSession) -> Result<Option<(u64, u64)>, ElevationError> {
+pub(super) fn stop_session(session: &OwnedSession) -> Result<Option<(u64, u64)>, ElevationError> {
     let mut properties = Properties::new(&session.identity);
     // SAFETY: query only the handle/name returned for our successful StartTrace; bounded output.
     let queried = unsafe {
@@ -196,10 +217,10 @@ pub(crate) fn abort_owned_session() -> Result<(), ElevationError> {
 }
 fn finish_owned() -> Result<Option<(u64, u64)>, ElevationError> {
     let mut active = ACTIVE.lock().map_err(|_| ElevationError::InsecureJob)?;
-    let Some(session) = active.as_ref() else {
+    let Some(session) = active.as_mut() else {
         return Ok(None);
     };
-    let lost = stop_session(session)?;
+    let lost = session.finish()?;
     active.take();
     Ok(lost)
 }
@@ -217,10 +238,16 @@ pub(crate) fn cleanup_for_request(
     request: &ElevationRequest,
     owner_sid: &str,
 ) -> Result<TraceCleanupStatus, ElevationError> {
-    let identity = Identity::request(request)?;
     if proven_cleanup_for_operation(request, owner_sid).is_none() {
         return Ok(TraceCleanupStatus::Unvalidated);
     }
+    stop_private_request(request)
+}
+
+pub(super) fn stop_private_request(
+    request: &ElevationRequest,
+) -> Result<TraceCleanupStatus, ElevationError> {
+    let identity = Identity::request(request)?;
     let mut properties = Properties::new(&identity);
     // SAFETY: only the fixed name derived from this private approved job is queried, never enumeration.
     let queried = unsafe {
@@ -573,10 +600,11 @@ pub(crate) fn collect(
             TraceLimit::CleanupUnvalidated,
         ));
     };
-    collect_prevalidated(request, duration, cancel, proof)
+    collect_prevalidated(request, owner_sid, duration, cancel, proof)
 }
 fn collect_prevalidated(
     request: &ElevationRequest,
+    owner_sid: &str,
     duration: Duration,
     cancel: &mut dyn FnMut() -> Result<bool, ElevationError>,
     _proof: CleanupProof,
@@ -590,8 +618,6 @@ fn collect_prevalidated(
     }
     let identity = Identity::request(request)?;
     let name = identity.name.clone();
-    let mut properties = Properties::new(&identity);
-    let mut handle = CONTROLTRACE_HANDLE::default();
     // Include creation/consumer setup in the fixed duration instead of recording an extra window.
     let started = Instant::now();
     {
@@ -599,21 +625,7 @@ fn collect_prevalidated(
         if active.is_some() {
             return Err(ElevationError::InsecureJob);
         }
-        // SAFETY: only a new private system logger with fixed numeric flags and certified cleanup proof.
-        let status =
-            unsafe { StartTraceW(&mut handle, identity.name.as_ptr(), properties.get_mut()) };
-        if status != ERROR_SUCCESS {
-            return Ok(TraceSummary::unavailable(
-                duration,
-                ElevationStatus::Unsupported,
-                if status == ERROR_ALREADY_EXISTS {
-                    TraceLimit::SessionConflict
-                } else {
-                    TraceLimit::ProviderUnavailable
-                },
-            ));
-        }
-        *active = Some(OwnedSession { identity, handle });
+        *active = Some(super::trace_guardian::Client::start(request, owner_sid)?);
     }
     // Every subsequent return uses the guard, in addition to root's process::exit abort hook.
     struct Guard;
@@ -623,17 +635,6 @@ fn collect_prevalidated(
         }
     }
     let _guard = Guard;
-    if properties.get_mut().BufferSize > TRACE_BUFFER_KIB
-        || properties.get_mut().NumberOfBuffers > TRACE_MAX_BUFFERS
-        || properties.get_mut().MaximumBuffers > TRACE_MAX_BUFFERS
-    {
-        abort_owned_session()?;
-        return Ok(TraceSummary::unavailable(
-            duration,
-            ElevationStatus::Unsupported,
-            TraceLimit::BufferLimit,
-        ));
-    }
     let start = qpc(false)?;
     let frequency = qpc(true)?;
     let consumer = Arc::new(Consumer {
