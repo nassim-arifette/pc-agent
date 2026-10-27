@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 mod battery;
 mod images;
+pub mod web_cache;
 pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 mod process_peaks;
 pub mod sampler;

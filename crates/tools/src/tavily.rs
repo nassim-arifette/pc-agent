@@ -29,7 +29,7 @@ pub struct WebQuery {
     pub country: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct WebResult {
     pub title: String,
     /// Always `https://`.
@@ -38,9 +38,13 @@ pub struct WebResult {
     pub snippet: String,
     /// As the source states it; absent when Tavily does not know it.
     pub published_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_at_unix_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WebSearch {
     pub results: Vec<WebResult>,
     /// Tavily credits this search used, when reported.
@@ -65,11 +69,16 @@ pub enum WebError {
 /// The search service behind the external tools: Tavily, or a scripted stand-in in tests.
 pub trait WebSearcher {
     fn search(&mut self, query: &WebQuery) -> Result<WebSearch, WebError>;
+
+    fn lookup(&mut self, _tool: &str, query: &WebQuery) -> Result<WebSearch, WebError> {
+        self.search(query)
+    }
 }
 
 pub struct Tavily {
     api_key: String,
     client: Client,
+    release_health: crate::release_health::ReleaseHealth,
 }
 
 impl Tavily {
@@ -87,12 +96,35 @@ impl Tavily {
             .ok()?;
         Some(Self {
             api_key: api_key.to_owned(),
+            release_health: crate::release_health::ReleaseHealth::new(client.clone()),
             client,
         })
+    }
+
+    pub fn with_page_cache(mut self, cache: pcagent_store::web_cache::WebCache) -> Self {
+        self.release_health.set_cache(cache);
+        self
     }
 }
 
 impl WebSearcher for Tavily {
+    fn lookup(&mut self, tool: &str, query: &WebQuery) -> Result<WebSearch, WebError> {
+        if tool == "lookup_known_issue" {
+            // A missing identifier is not proof that Windows is unaffected. On a miss (or failed
+            // page download), retain the existing restricted documentation search.
+            if let Ok(results) = self.release_health.lookup(&query.query) {
+                if !results.is_empty() {
+                    return Ok(WebSearch {
+                        results,
+                        credits: Some(0.0),
+                        duration_ms: 0,
+                    });
+                }
+            }
+        }
+        self.search(query)
+    }
+
     fn search(&mut self, query: &WebQuery) -> Result<WebSearch, WebError> {
         let started = Instant::now();
         let response = self
@@ -156,6 +188,12 @@ pub(crate) fn parse_response(value: &Value, domains: &[String]) -> Result<WebSea
     let items = value["results"]
         .as_array()
         .ok_or(WebError::InvalidResponse)?;
+    if items
+        .iter()
+        .any(|item| !item["url"].is_string() || !item["content"].is_string())
+    {
+        return Err(WebError::InvalidResponse);
+    }
     let results = items
         .iter()
         .filter_map(|item| {
@@ -180,13 +218,16 @@ pub(crate) fn parse_response(value: &Value, domains: &[String]) -> Result<WebSea
                     .as_str()
                     .map(|d| clean(d, 40))
                     .filter(|d| !d.is_empty()),
+                ..WebResult::default()
             })
         })
         .take(MAX_RESULTS)
         .collect();
     Ok(WebSearch {
         results,
-        credits: value["usage"]["credits"].as_f64(),
+        credits: value["usage"]["credits"]
+            .as_f64()
+            .filter(|c| c.is_finite() && *c >= 0.0),
         duration_ms: 0,
     })
 }
@@ -283,6 +324,11 @@ mod tests {
         assert_eq!(search.results[1].published_date, None);
         assert_eq!(search.credits, Some(1.0));
         assert!(parse_response(&json!({"error":"x"}), &[]).is_err());
+        assert!(parse_response(&json!({"results":[{}]}), &[]).is_err());
+        assert!(parse_response(&json!({"results":[]}), &[])
+            .unwrap()
+            .results
+            .is_empty());
     }
 
     /// One real search with the saved key (1 credit): `cargo test -p pcagent-agent -- --ignored

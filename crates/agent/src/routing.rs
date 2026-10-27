@@ -78,6 +78,8 @@ impl CalibrationRuntime {
             include_str!("../../tools/src/action_targets.rs"),
             include_str!("../../tools/src/external_tools.rs"),
             include_str!("../../tools/src/tavily.rs"),
+            include_str!("../../tools/src/release_health.rs"),
+            include_str!("../../store/src/web_cache.rs"),
             include_str!("selection.rs"),
             include_str!("selection/projection.rs"),
             include_str!("selection/reference.rs"),

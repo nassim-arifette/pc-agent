@@ -896,6 +896,9 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
                 (cost, _) => writeln!(out, "{}", cost_line(cost))?,
             }
         }
+        if let Some(web_cost) = web_cost_line(s) {
+            writeln!(out, "{web_cost}")?;
+        }
     }
     Ok(())
 }
@@ -997,6 +1000,21 @@ fn model_line(model_id: Option<&str>, requests: &[&ModelRequestUsage]) -> String
 }
 
 /// The total of a turn served by several models, only when every request is priced.
+fn web_cost_line(s: &Stats) -> Option<String> {
+    if s.web_usage.lookups > 0 {
+        let web = &s.web_usage;
+        let cost = web
+            .estimated_usd()
+            .map_or_else(|| "unknown".to_owned(), |usd| format!("${usd}"));
+        let total = web
+            .with_model_usd(s.total_cost_usd.as_deref())
+            .map_or_else(|| "unknown".to_owned(), |usd| format!("${usd}"));
+        return Some(format!("Estimated combined cost: {total}; web: {} known Tavily credits, {} cache hits, {} requests with unknown usage, {cost} at $0.008/credit before free allowance/discounts (not an invoice)",
+            web.known_credits, web.cache_hits, web.unknown_requests));
+    }
+    None
+}
+
 fn total_cost_line(s: &Stats) -> String {
     if let Some(total) = s.total_cost_usd.as_deref().and_then(pico) {
         return format!(

@@ -7,6 +7,7 @@ pub mod elevated_tools;
 pub mod external_tools;
 pub mod history_tools;
 mod proposals;
+mod release_health;
 pub mod system_tools;
 pub mod tavily;
 mod workstation;

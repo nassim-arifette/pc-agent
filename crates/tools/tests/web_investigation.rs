@@ -118,6 +118,7 @@ impl tavily::WebSearcher for OneResult {
                 domain: "support.microsoft.com".into(),
                 snippet: "This update might fail with error 0x80070643 when the recovery partition is too small; 250 MB of free space is needed.".into(),
                 published_date: None,
+                ..tavily::WebResult::default()
             }],
             credits: Some(1.0),
             duration_ms: 5,
@@ -161,4 +162,7 @@ fn a_web_lookup_is_cited_as_a_web_source_and_its_query_is_reported() {
     assert!(system.contains("[W1]") && system.contains("not measurements of this PC"));
     // A web lookup is not an inspection of this PC.
     assert_eq!(r.stats.inspection_calls, 1);
+    assert_eq!(r.stats.web_usage.lookups, 1);
+    assert_eq!(r.stats.web_usage.known_credits, 1.0);
+    assert_eq!(r.stats.web_usage.estimated_usd().as_deref(), Some("0.008"));
 }

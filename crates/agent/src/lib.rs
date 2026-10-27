@@ -16,6 +16,7 @@ mod draft;
 pub use draft::draft_text;
 mod cost;
 pub mod replay;
+pub mod web_usage;
 pub use conversation::{
     conversation_message, conversation_message_with_privacy, PastTurn, MAX_PAST_CHARS,
 };
@@ -423,6 +424,7 @@ pub struct Repair {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
+    pub web_usage: web_usage::WebUsage,
     pub inference_calls: usize,
     pub tool_calls: usize,
     pub inspection_calls: usize,
@@ -455,6 +457,7 @@ pub struct Stats {
 impl Stats {
     fn none() -> Self {
         Self {
+            web_usage: web_usage::WebUsage::default(),
             inference_calls: 0,
             tool_calls: 0,
             inspection_calls: 0,
@@ -1659,6 +1662,9 @@ fn converse_inner(
             }
             let tool_started = Instant::now();
             let mut output = toolbox.run(&spec, &args);
+            if matches!(spec.class, ToolClass::External) {
+                result.stats.web_usage.record(&output.cloud["web_usage"]);
+            }
             result.stats.tool_calls += 1;
             if matches!(spec.class, ToolClass::Inspection)
                 && output.inspection_complete
