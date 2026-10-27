@@ -4,10 +4,11 @@ The telemetry backend is selected at compile time through `telemetry::os::Backen
 It uses read-only Darwin APIs, runs without elevation, and reuses the shared identity,
 history and evidence types. It never makes a provider request.
 
-This document currently describes the telemetry checkpoint, not a completed macOS
-desktop release. Native inspections, actions, elevation and the WKWebView application
-are separate integration work. Building the current `pcagent-gui` target on macOS
-still builds its unsupported-platform entry point; it does **not** prove a native GUI.
+This document describes implementation checkpoints, not a completed macOS desktop
+release. The actual Tauri desktop target now compiles on macOS, including the command
+handlers; this is no longer an unsupported-platform entry point. A native WKWebView
+launch and visual validation are still required. Native startup, actions, elevation
+and OS-aware capability integration are still in progress.
 
 ## Measurements and meaning
 
@@ -56,6 +57,11 @@ Startup/Login Items, complete system state, cleanup, actions, elevation and the
 native desktop remain separate integration work. Targeted macOS inspection tests:
 71 passed, including fixture privacy, unknown/error states, time/output bounds,
 child cleanup and a live Metal/Foundation hardware projection.
+
+The shared desktop conversion also rejects root and mismatched real/effective Unix
+credentials before starting the host. Existing GUI/actions/elevation unit tests run
+on macOS: 151 passed at this checkpoint, with targeted Clippy clean. This does not
+claim an interactive GUI run or a separately provisioned standard-account validation.
 
 ## Identity, coverage and privacy
 

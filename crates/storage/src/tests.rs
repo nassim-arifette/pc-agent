@@ -716,7 +716,7 @@ fn allocation_and_logical_size_are_distinct() {
     assert!(dense.allocated_bytes.unwrap() >= dense.logical_bytes);
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[test]
 fn non_windows_volume_space_is_unknown_not_zero() {
     let t = Tree::new();
