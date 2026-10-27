@@ -240,6 +240,31 @@ les compléments du 6 octobre ci-dessous leur ajoutent des lectures pour les vue
 Historique. Le réglage « recherche web » et la clé Tavily sont décrits en C6, les commandes et
 événements des surveillances en C7.
 
+#### Complément du 27 octobre — vocabulaire neutre multi-OS (phase 5)
+
+Les contrats C1 à C7 ont été écrits pour Windows ; leurs notions restent valables sur Linux et
+macOS une fois nommées de façon neutre. À partir de cette date, le code, les outils et les textes
+emploient les termes de gauche ; la colonne de droite dit ce que chaque OS lit ou fait. Aucune
+commande C3 ne change de nom : seuls les lectures natives derrière changent d'OS.
+
+| Terme neutre (outils, C4, C5) | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| **mémoire engagée** (`system_commit_bytes`, `system_commit_limit_bytes`) | charge de validation et limite (`PERFORMANCE_INFORMATION`) | `Committed_AS` et `CommitLimit` de `/proc/meminfo` | `host_statistics64` (pages câblées + swap utilisé) |
+| **éléments de démarrage** (`get_startup_programs`, actions `DisableUserStartup` / `RestoreUserStartup`) | `HKCU\…\Run`, dossier Démarrage, `StartupApproved` | fichiers `.desktop` de `~/.config/autostart` (clé `Hidden=true` pour désactiver), unités systemd utilisateur activées | agents `launchd` de l'utilisateur, « Ouvrir avec la session » |
+| **services** (`get_services`, attribution service → processus) | gestionnaire de services (SCM) | unités systemd (`systemd1` via D-Bus ou `systemctl --output=json`), pid principal et état | démons et agents `launchd` |
+| **événements système** (`get_recent_events`) | journal des événements (System, Application) | journald (`journalctl --output=json`, priorités 0–4, 7 jours) | journal unifié (`log show`) |
+| **pages de réglages** (`OpenSettingsPage`) | URI `ms-settings:` sur liste finie | commandes de réglages du bureau sur liste finie (`gnome-control-center <panneau>`, `systemsettings`), sinon `xdg-open` d'un URI connu | `x-apple.systempreferences:` sur liste finie |
+| **gestionnaire de fichiers** (`OpenInExplorer`) | Explorateur | `xdg-open` du dossier parent | Finder |
+| **corbeille** (`RecycleSelectedFiles`) | corbeille Windows | corbeille XDG (`~/.local/share/Trash` : `files/` + `info/`) | corbeille macOS |
+| **invite d'élévation** (chantier 8) | UAC (`runas`) | polkit (`pkexec`) vers le même helper borné, sans réseau ni modèle | autorisation macOS |
+| **mises à jour en attente** (`get_drivers`, offres) | Windows Update | `apt list --upgradable`, `dnf check-update`, `flatpak remote-ls --updates` (lecture seule) | `softwareupdate -l` |
+
+Les champs sérialisés gardent leur nom actuel (`working_set`, `commit`, `startup_item`…) pour ne
+pas casser les traces, les snapshots et l'évaluation ; la source (`source`) de chaque observation
+nomme la lecture réelle (`/proc/meminfo`, `journalctl`, `NtQuerySystemInformation`…). Ce qui n'a
+pas d'équivalent sur un OS reste `unsupported` avec sa raison (C4) : MFT, VSS, ETW et Windows
+Update restent Windows ; les capteurs LHM/HWiNFO aussi.
+
 #### Complément du 26 octobre — préparation et envoi d'une image (#55)
 
 | Commande / résultat | Rôle |
@@ -474,6 +499,32 @@ fenêtre en secondes), l'entité, la métrique, la valeur, l'unité, un statut (
 couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format actuel, on ne le
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
+
+**Complément du 27 octobre — registre des capacités par OS (phase 5).** Le registre
+(`crates/agent/src/capabilities.rs`) ne porte plus une capacité « Windows » unique : il déclare la
+**plateforme** du tour (`windows`, `linux`, `macos`) et des capacités sondées sur ce PC, chacune
+avec une raison quand elle manque. Les outils du catalogue n'exigent plus « Windows » mais la
+capacité qu'ils utilisent réellement :
+
+| Capacité | Sens | Windows | Linux | macOS |
+| --- | --- | --- | --- | --- |
+| `live_metrics` | mémoire, processeur, processus, disques à l'instant | API natives | `/proc`, `/sys` | `libproc`, `host_statistics` |
+| `system_inspection` | démarrage, services, événements, état, matériel, nettoyage | API Windows | XDG, systemd, journald, `/sys` | launchd, `log show` |
+| `native_actions` | actions locales approuvées (démarrage, corbeille, dossiers, réglages, nettoyage) | oui | oui | oui |
+| `elevated_helper` | helper borné installé à côté de l'app | UAC | polkit (`pkexec`) | autorisation |
+| `history_sampler`, `storage_scopes`, `web_search`, `action_proposals` | inchangés | | | |
+| `nvidia_gpu` | NVML lisible | oui | oui si `libnvidia-ml.so.1` | non |
+| `battery` | batterie lisible | API d'alimentation | `/sys/class/power_supply` | IOKit |
+| `fixed_volumes` (ex-`ntfs_volumes`) | volumes fixes mesurables | NTFS | `statvfs` + `/proc/diskstats` | APFS |
+| `disk_counters` | latence/file/occupation disque | PDH | `/proc/diskstats` (deltas) | non |
+| `gpu_engines` | moteurs GPU agrégés | PDH | non (NVML seul) | non |
+| `pending_updates` | mises à jour en attente lisibles | Windows Update | apt/dnf/flatpak présent | `softwareupdate` |
+| `mft_scan`, `vss`, `etw`, `hardware_sensors` | réservés Windows | oui | `unsupported` | `unsupported` |
+
+Chaque vue de l'app lit ce registre : une vue dont la capacité manque est masquée ou affiche la
+raison (« non disponible sur Linux : … », « helper non installé »), jamais un zéro ni une liste
+vide silencieuse. `pcagent doctor` liste les capacités de ce PC et renvoie 0 dès que `live_metrics`
+est disponible sur l'OS courant.
 
 ### C5 — Ce qui quitte le PC
 
@@ -1528,12 +1579,29 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 30 octobre va sur `next`.
 
 1. PR du plan : contrats renommés de façon neutre (commit, startup, services, events, settings
-   pages), registre des capacités étendu par OS.
+   pages), registre des capacités étendu par OS — **fait le 27 octobre** (compléments C3 et C4
+   ci-dessus).
 2. Refactor `os/{windows,linux,macos}` derrière un trait commun dans `telemetry`, `inspect`,
    `storage` et `actions` ; les fonctions Windows restent réservées à Windows (MFT, élévation, ETW,
-   Windows Update).
-3. Backend Linux (`/proc`, `/sys`, systemd, journald, XDG autostart) avec la CI Ubuntu.
-4. GUI Tauri sur les trois OS, pilotée par le registre des capacités.
+   Windows Update). Traits : `telemetry::os::Backend` (système, processus, inventaire, compteurs,
+   GPU), `inspect::os::Inspector` (une fonction par requête `Query`), `storage::os::Platform`
+   (racines, volumes, dossier profil) et `actions::os::Effects` (effets natifs approuvés). Chaque
+   backend déclare ses capacités ; le code Windows est déplacé sans changement de comportement.
+   La PR de traits est petite et fusionnée en premier pour que Linux et macOS s'y branchent.
+3. Backend Linux : mémoire, processeur et pression (`/proc/meminfo`, `/proc/stat`,
+   `/proc/pressure`), processus (`/proc/<pid>` : nom, type dérivé localement de la ligne de
+   commande puis oublié, RSS, processeur, E/S, parent, session), disques et volumes
+   (`/proc/diskstats`, `statvfs`, `/sys/block`, modèles udev, SMART via `smartctl` s'il est
+   présent), GPU (NVML si présent, sinon `/sys/class/drm`), batterie (`/sys/class/power_supply`),
+   démarrage (XDG autostart, unités systemd utilisateur), services (systemd), événements
+   (journald), mises à jour (apt/dnf/flatpak), scanner de stockage déjà portable, actions (bascule
+   XDG autostart, nettoyage de `~/.cache`, corbeille) avec le même écran de revue, vérifications
+   élevées via `pkexec` vers le helper borné. Couverture honnête par collecteur (C4), tests sur
+   fixtures `/proc` synthétiques, `docs/linux.md`, section plateformes du README et notes
+   d'empaquetage (`.tar.gz`, `.deb`/AppImage).
+4. GUI Tauri sur les trois OS (webkit2gtk sur Linux), pilotée par le registre des capacités :
+   les vues masquent ce qui manque avec la raison ; `pcagent doctor` rapporte un système
+   exploitable.
 5. Backend macOS (libproc, host_statistics, IOKit, launchd), testé sur un vrai Mac, avec un job CI
    macOS.
 6. Reprendre ce qui a été repoussé en phase 3, par ordre de priorité.
@@ -1597,6 +1665,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 14 — Escalade visible (#69) | A, C | en cours (26 oct.) : changement de modèle affiché sur la réponse, coût par modèle dans l'app et la CLI | wp14-escalation-visible |
 | 6 — Stockage minimal (#67) | C | fait (26 oct.) : résultats d'abord (totaux, liste), inspecteur de l'élément sélectionné à côté de la liste ou sous la ligne quand la fenêtre est étroite, cartes admin regroupées après les résultats ; 11 tests Node, tour en/fr clair/sombre sans erreur ; carte et arbre restent en P2 | wp6-storage-minimal |
 | 2 — Noms lisibles des programmes (#70) | B/C | fait (26 oct.) : `ProgramNames` (FileDescription puis ProductName de la ressource de version, cache par chemin, lecture sans admin), nom lisible dans PC en direct, l'inspecteur, les réponses, les constats, les sources et les revues d'action ; exécutable en infobulle, PID seulement dans l'inspecteur ou pour distinguer deux processus ; jamais envoyé au modèle (C5) ; fmt, Clippy, tests, tour | wp2-app-names |
+| Phase 5 — Backend Linux et GUI Tauri sur Linux (27 octobre) | B, C | en cours : plan (compléments C3/C4 du 27 octobre, registre des capacités par OS) ; traits `os/{windows,linux,macos}` dans `telemetry`, `inspect`, `storage`, `actions` (Windows inchangé) ; backend Linux `/proc`, `/sys`, systemd, journald, XDG, polkit ; GUI webkit2gtk et `doctor` sur Ubuntu 22.04 ; validation : liste complète des commandes en utilisateur non root, captures EN/FR | feature/plan-linux-backend, feature/os-backend-traits, feature/linux-backend |
 | Build Linux (26 octobre) | B | fait (26 oct.) : liste complète des commandes rejouée sur Ubuntu 22.04 x86_64 en utilisateur non root (formatage, Clippy, 741 tests Rust dont 3 ignorés, 56 tests Node, 3 tests Python, quatre binaires release) ; stubs Linux sondés en lecture seule : statuts `unsupported` avec valeurs nulles, jamais de zéro ni de panique, fenêtre et helper refusent proprement ; taille d'entrée non convertible signalée en erreur au lieu de 0 dans le repli Unix du stockage ; collecteurs natifs, fenêtre et helper restent Windows ; même correctif rejoué sur l'arbre du refactor (760 tests Rust, 100 tests Node) | fix/linux-build |
 | 14 — Escalade visible et coût des deux modèles (#69) | C | fait (26 oct.) : étape « Ultra reprend la question », en-tête « Super → Ultra · total », note durable sous la réponse avec la raison (et la vérité quand Ultra n'a rien écrit), une ligne par modèle dans Sources › Requêtes et coût, même détail dans la CLI ; jamais le prix d'un modèle appliqué aux jetons de l'autre ; Auto proposé dès qu'une calibration relue existe ; fmt, Clippy, tests, tour | wp14-escalation-visible |
 | 6 — Interface en français (#65) | A, C | fait (26 oct.) : phrases du cœur envoyées comme clés fermées à valeurs typées (`Phrase`, `phrases.js` : constats, étapes suivantes, limites, faits des sources, réponse locale, GPU, couverture admin, processus sans nom) et erreurs des commandes avec code fermé traduit (`failure.rs`, `failure.js`), le texte anglais restant la référence pour le modèle, la CLI et le vérificateur ; menu de la barre d'état et dialogue de dossier dans la langue de Windows ; tests, tour FR | wp6-french-ui, wp6-french-errors |
