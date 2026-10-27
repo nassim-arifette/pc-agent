@@ -63,9 +63,9 @@ export function webSourceCard(citation, n, focused, target) {
   return h(
     "article",
     { class: ["source-card", "web-source", focused ? "focused" : ""], dataset: { reference: citation.reference } },
-    h("div", { class: "source-head" }, h("span", { class: "num web-num" }, icon("globe"), String(n)), h("strong", { class: "web-title" }, citationTitle(citation))),
+    h("div", { class: "source-head" }, h("span", { class: "num web-num" }, icon("globe"), String(n)), h("strong", { class: "web-title", "data-i18n-source": "web" }, citationTitle(citation))),
     h("p", { class: "web-meta" }, meta.flatMap((part, i) => (i ? [h("span", { class: "web-dot", "aria-hidden": "true" }, "·"), part] : [part]))),
-    citation.facts.length ? h("blockquote", { class: "web-snippet" }, citation.facts.map((fact) => h("p", null, fact))) : null,
+    citation.facts.length ? h("blockquote", { class: "web-snippet", "data-i18n-source": "web" }, citation.facts.map((fact) => h("p", null, fact))) : null,
     web.query ? h("p", { class: "web-query" }, h("span", { class: "web-query-label" }, t("web.query")), h("q", null, web.query)) : null,
     h("p", { class: "web-note" }, icon("info"), h("span", null, t("web.notMeasured"))),
     h(

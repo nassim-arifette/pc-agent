@@ -43,8 +43,14 @@ export function createActionFixture(params) {
         fail("action_refused", "target t1 changed since it was resolved", "changed");
       }
       plan.decision = "completed";
-      const gained = plan.kind === "run_cleanup_adapter" ? 18.6 * GiB : null;
-      return { plan_id: planId, overall: "completed", items: [], verification: { volume: gained ? { gained_bytes: gained, status: "ok" } : null, comparisons: [] } };
+      const gained = plan.kind === "run_cleanup_adapter" ? Math.round(18.6 * GiB) : null;
+      const before = Math.round(4.1 * GiB);
+      return { plan_id: planId, overall: "completed", items: [], verification: {
+        volume: gained !== null ? {
+          gained_bytes: gained, free_before_bytes: before, free_after_bytes: before + gained,
+          reported_removed_bytes: gained, status: "ok",
+        } : null, comparisons: [],
+      } };
     }
   };
   return { commands, proposePlans };

@@ -208,7 +208,7 @@ export function mount(page) {
           onclick: () => select(isSelected ? null : item),
         },
         icon(kind === "dirs" ? "folder" : "file"),
-        h("span", { class: "text" }, h("strong", null, item.name), h("span", null, item.parent ? `…\\${item.parent}` : folderName(view.root))),
+        h("span", { class: "text", "data-i18n-source": "local_name" }, h("strong", null, item.name), h("span", null, item.parent ? `…\\${item.parent}` : folderName(view.root))),
       ),
       bar(max ? item.size / max : 0, kind === "dirs" ? "" : "mint", { animate: !still }),
       h(
@@ -274,7 +274,7 @@ export function mount(page) {
         "div",
         { class: "storage-insp-where" },
         h("span", { class: "caption" }, t("storage.insp.where")),
-        h("p", { class: "storage-insp-path" }, pathText(item.path)),
+        h("p", { class: "storage-insp-path", "data-i18n-source": "local_name" }, pathText(item.path)),
         h("p", { class: "note" }, t("storage.insp.whereNote")),
         link("reveal", "reveal", t("storage.reveal"), () => reveal(view, item)),
       ),
