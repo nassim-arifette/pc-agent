@@ -1,7 +1,7 @@
 use crate::{
     approval::LocalSession,
     cleanup::{SyntheticDemoCache, SYNTHETIC_DEMO_CACHE_ID},
-    is_windows_absolute,
+    is_native_absolute,
     journal::{Journal, JournalPhase, JournalRecord, PreState},
     plan::PlanParts,
     ActionError, ActionIntent, ActionKind, ActionPlan, ApprovalToken, FileIdentity, FileTarget,
@@ -402,7 +402,7 @@ impl Broker<'_> {
     }
 
     fn check_file(&self, file: &FileTarget) -> Result<FileIdentity, Refusal> {
-        if !is_windows_absolute(&file.path) || self.protection.is_protected(&file.path) {
+        if !is_native_absolute(&file.path) || self.protection.is_protected(&file.path) {
             return Err(Refusal::Protected);
         }
         if file.identity.is_reparse_point {

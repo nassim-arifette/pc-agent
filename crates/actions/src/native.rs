@@ -11,6 +11,19 @@ pub fn is_windows_absolute(path: &Path) -> bool {
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
 }
 
+/// Windows-shaped plans remain readable on other hosts; native guards reject foreign paths.
+pub fn is_native_absolute(path: &Path) -> bool {
+    is_windows_absolute(path) || cfg!(unix) && is_posix_absolute(path)
+}
+
+fn is_posix_absolute(path: &Path) -> bool {
+    path.to_str().is_some_and(|s| {
+        s.starts_with('/')
+            && !s.chars().any(char::is_control)
+            && s.split('/').skip(1).all(|p| !matches!(p, "." | ".."))
+    })
+}
+
 /// Single raw argument for `explorer.exe`. Characters that Windows forbids in file names (and that
 /// could change how Explorer splits its command line) are refused rather than escaped.
 pub fn explorer_select_arg(path: &Path) -> Option<String> {
@@ -27,6 +40,34 @@ pub fn explorer_select_arg(path: &Path) -> Option<String> {
 pub struct BaselineProtection;
 impl ProtectionCheck for BaselineProtection {
     fn is_protected(&self, path: &Path) -> bool {
+        if cfg!(unix) && path.is_absolute() {
+            const SYSTEM: &[&str] = &[
+                "bin",
+                "boot",
+                "dev",
+                "etc",
+                "lib",
+                "lib32",
+                "lib64",
+                "proc",
+                "root",
+                "run",
+                "sbin",
+                "sys",
+                "usr",
+                "var",
+                "System",
+                "Library",
+                "Applications",
+                "private",
+            ];
+            return !is_posix_absolute(path)
+                || path.parent().is_none_or(|p| p == Path::new("/"))
+                || path
+                    .components()
+                    .nth(1)
+                    .is_none_or(|part| SYSTEM.iter().any(|name| part.as_os_str() == *name));
+        }
         const ROOTS: [&str; 9] = [
             "windows",
             "program files",
@@ -138,4 +179,31 @@ pub(crate) fn verify_recycled(
         return Err("original path still refers to the identity-checked file");
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod posix_tests {
+    use super::*;
+
+    #[test]
+    fn posix_paths_are_case_sensitive_absolute_and_protect_system_roots() {
+        for value in ["/home/fixture/.cache/a", "/tmp/fixture/a"] {
+            assert!(is_native_absolute(Path::new(value)));
+            assert!(!BaselineProtection.is_protected(Path::new(value)));
+        }
+        for value in [
+            "/",
+            "/home",
+            "/etc/passwd",
+            "/proc/1/stat",
+            "/usr/share/a",
+            "/home/fixture/../secret",
+            "/home/fixture/./secret",
+        ] {
+            assert!(BaselineProtection.is_protected(Path::new(value)), "{value}");
+        }
+        assert!(!is_native_absolute(Path::new("relative/file")));
+        assert!(!is_native_absolute(Path::new("/tmp/a\nb")));
+        assert!(is_windows_absolute(Path::new(r"C:\Users\fixture\a")));
+    }
 }
