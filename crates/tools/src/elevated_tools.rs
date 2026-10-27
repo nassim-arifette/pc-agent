@@ -27,6 +27,7 @@ impl ApprovedInspection {
             ElevatedTask::ProcessImages { .. } => "process_images",
             ElevatedTask::BatteryEnergy => "battery_energy",
             ElevatedTask::PerformanceTrace { .. } => "performance_trace",
+            ElevatedTask::DeepAnalysis { .. } => "deep_analysis",
         };
         if serde_json::to_vec(&inspection)
             .map_err(|_| "invalid_inspection")?

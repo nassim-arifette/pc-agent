@@ -18,10 +18,14 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL_VERSION: u32 = 2;
-pub const MAX_BUDGET_MS: u64 = 120_000;
+pub const PROTOCOL_VERSION: u32 = 3;
+pub const MAX_SECTION_BUDGET_MS: u64 = 120_000;
+pub const MAX_SECTIONS: usize = 31;
+pub const MAX_BUDGET_MS: u64 = MAX_SECTIONS as u64 * (MAX_SECTION_BUDGET_MS + 5_000);
+pub const CONSENT_BUDGET_MS: u64 = 5 * 60 * 1000;
 pub const MAX_REQUEST_BYTES: usize = 8192;
-pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+pub const MAX_SECTION_RESPONSE_BYTES: usize = 512 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = MAX_SECTIONS * MAX_SECTION_RESPONSE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriveLetter(char);
@@ -59,6 +63,7 @@ pub enum ElevatedTask {
     ProcessImages { targets: Vec<ProcessImageTarget> },
     BatteryEnergy,
     PerformanceTrace { duration_seconds: u8 },
+    DeepAnalysis { tasks: Vec<ElevatedTask> },
 }
 
 impl<'de> Deserialize<'de> for ElevatedTask {
@@ -74,6 +79,7 @@ impl<'de> Deserialize<'de> for ElevatedTask {
             ProcessImages { targets: Vec<ProcessImageTarget> },
             BatteryEnergy {},
             PerformanceTrace { duration_seconds: u8 },
+            DeepAnalysis { tasks: Vec<ElevatedTask> },
         }
         Ok(match WireTask::deserialize(deserializer)? {
             WireTask::SystemCaches {} => Self::SystemCaches,
@@ -85,11 +91,35 @@ impl<'de> Deserialize<'de> for ElevatedTask {
             WireTask::PerformanceTrace { duration_seconds } => {
                 Self::PerformanceTrace { duration_seconds }
             }
+            WireTask::DeepAnalysis { tasks } => Self::DeepAnalysis { tasks },
         })
     }
 }
 impl ElevatedTask {
     fn validate(&self) -> Result<(), ElevationError> {
+        if let Self::DeepAnalysis { tasks } = self {
+            if tasks.is_empty() || tasks.len() > MAX_SECTIONS {
+                return Err(ElevationError::InvalidRequest);
+            }
+            for (index, task) in tasks.iter().enumerate() {
+                if matches!(
+                    task,
+                    Self::DeepAnalysis { .. } | Self::PerformanceTrace { .. }
+                ) || tasks[..index]
+                    .iter()
+                    .any(|previous| match (previous, task) {
+                        (
+                            Self::MftInventory { volume: left },
+                            Self::MftInventory { volume: right },
+                        ) => left == right,
+                        _ => std::mem::discriminant(previous) == std::mem::discriminant(task),
+                    })
+                {
+                    return Err(ElevationError::InvalidRequest);
+                }
+                task.validate()?;
+            }
+        }
         if matches!(self, Self::PerformanceTrace { duration_seconds } if !matches!(duration_seconds, 30 | 60))
         {
             return Err(ElevationError::InvalidRequest);
@@ -99,6 +129,20 @@ impl ElevatedTask {
         }
         Ok(())
     }
+    pub fn maximum_budget_ms(&self) -> u64 {
+        match self {
+            Self::DeepAnalysis { tasks } => tasks.len() as u64 * (MAX_SECTION_BUDGET_MS + 5_000),
+            _ => MAX_SECTION_BUDGET_MS,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Requester {
+    pub(crate) pid: u32,
+    pub(crate) created_at: u64,
+    pub(crate) session_id: u32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -111,6 +155,7 @@ pub struct ElevationRequest {
     pub(crate) created_at_unix_ms: u64,
     pub(crate) expires_at_unix_ms: u64,
     pub(crate) budget_ms: u64,
+    pub(crate) requester: Requester,
 }
 impl fmt::Debug for ElevationRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -126,7 +171,7 @@ impl ElevationRequest {
         task.validate()?;
         let budget_ms =
             u64::try_from(budget.as_millis()).map_err(|_| ElevationError::InvalidRequest)?;
-        if !(1..=MAX_BUDGET_MS).contains(&budget_ms) {
+        if !(1..=task.maximum_budget_ms()).contains(&budget_ms) {
             return Err(ElevationError::InvalidRequest);
         }
         if matches!(&task, ElevatedTask::PerformanceTrace { duration_seconds } if budget_ms < u64::from(*duration_seconds) * 1000 + 5000)
@@ -140,8 +185,16 @@ impl ElevationRequest {
             nonce: new_id("nonce"),
             task,
             created_at_unix_ms: now,
-            expires_at_unix_ms: now.saturating_add(MAX_BUDGET_MS),
+            expires_at_unix_ms: now.saturating_add(budget_ms + CONSENT_BUDGET_MS),
             budget_ms,
+            #[cfg(windows)]
+            requester: super::native::requester_identity()?,
+            #[cfg(not(windows))]
+            requester: Requester {
+                pid: std::process::id(),
+                created_at: 1,
+                session_id: 0,
+            },
         })
     }
     pub fn task(&self) -> ElevatedTask {
@@ -168,13 +221,23 @@ impl ElevationRequest {
         if self.protocol_version != PROTOCOL_VERSION
             || !random_ref(&self.job_id, "elevjob")
             || !random_ref(&self.nonce, "nonce")
-            || !(1..=MAX_BUDGET_MS).contains(&self.budget_ms)
-            || self.expires_at_unix_ms.checked_sub(self.created_at_unix_ms) != Some(MAX_BUDGET_MS)
+            || !(1..=self.task.maximum_budget_ms()).contains(&self.budget_ms)
+            || self.expires_at_unix_ms.checked_sub(self.created_at_unix_ms)
+                != Some(self.budget_ms + CONSENT_BUDGET_MS)
+            || self.requester.pid == 0
+            || self.requester.created_at == 0
             || now < self.created_at_unix_ms
         {
             return Err(ElevationError::InvalidRequest);
         }
         if now >= self.expires_at_unix_ms {
+            return Err(ElevationError::Expired);
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_launch_at(&self, now: u64) -> Result<(), ElevationError> {
+        self.validate_at(now)?;
+        if now >= self.created_at_unix_ms.saturating_add(CONSENT_BUDGET_MS) {
             return Err(ElevationError::Expired);
         }
         Ok(())
@@ -331,6 +394,8 @@ pub struct ElevationResponse {
     pub battery_energy: Option<EnergySummary>,
     pub performance_trace: Option<TraceSummary>,
     pub limitations: Vec<ElevationLimit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<ElevationResponse>,
 }
 impl fmt::Debug for ElevationResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -364,6 +429,7 @@ impl ElevationResponse {
             battery_energy: None,
             performance_trace: None,
             limitations: vec![limit],
+            sections: Vec::new(),
         }
     }
     pub fn from_bytes(bytes: &[u8], request: &ElevationRequest) -> Result<Self, ElevationError> {
@@ -446,6 +512,43 @@ impl ElevationResponse {
             + usize::from(self.process_images.is_some())
             + usize::from(self.battery_energy.is_some())
             + usize::from(self.performance_trace.is_some());
+        if let ElevatedTask::DeepAnalysis { tasks } = &self.task {
+            if payload_count != 0 || !self.caches.is_empty() || self.sections.len() != tasks.len() {
+                return Err(ElevationError::InvalidResponse);
+            }
+            for (section, task) in self.sections.iter().zip(tasks) {
+                let mut section_request = request.clone();
+                section_request.task = task.clone();
+                section_request.budget_ms = MAX_SECTION_BUDGET_MS.min(request.budget_ms);
+                section.validate(&section_request)?;
+                if section.window.started_at_unix_ms < self.window.started_at_unix_ms
+                    || section.window.finished_at_unix_ms > self.window.finished_at_unix_ms
+                    || serde_json::to_vec(section)
+                        .map_err(|_| ElevationError::InvalidResponse)?
+                        .len()
+                        > MAX_SECTION_RESPONSE_BYTES
+                {
+                    return Err(ElevationError::InvalidResponse);
+                }
+            }
+            let expected = if self
+                .sections
+                .iter()
+                .all(|section| section.status == ElevationStatus::Completed)
+            {
+                ElevationStatus::Completed
+            } else {
+                ElevationStatus::Partial
+            };
+            return if self.status == expected {
+                Ok(())
+            } else {
+                Err(ElevationError::InvalidResponse)
+            };
+        }
+        if !self.sections.is_empty() {
+            return Err(ElevationError::InvalidResponse);
+        }
         if payload_count > 1 || (self.task != ElevatedTask::SystemCaches && !self.caches.is_empty())
         {
             return Err(ElevationError::InvalidResponse);
@@ -595,18 +698,31 @@ pub struct WorkerArguments {
     pub(crate) job_dir: PathBuf,
     pub(crate) nonce: String,
     pub(crate) request_digest: String,
+    pub(crate) section: Option<usize>,
 }
 impl WorkerArguments {
     pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Self, ElevationError> {
         // Bound before allocation even for an adversarial programmatic caller.
-        let args: Vec<_> = args.into_iter().take(7).collect();
-        if args.len() != 6
+        let args: Vec<_> = args.into_iter().take(9).collect();
+        if !matches!(args.len(), 6 | 8)
             || args[0] != "--job-dir"
             || args[2] != "--nonce"
             || args[4] != "--request-digest"
         {
             return Err(ElevationError::InvalidArguments);
         }
+        let section = if args.len() == 8 {
+            let value = args[7].to_str().ok_or(ElevationError::InvalidArguments)?;
+            let index: usize = value
+                .parse()
+                .map_err(|_| ElevationError::InvalidArguments)?;
+            if args[6] != "--section" || index >= MAX_SECTIONS || value != index.to_string() {
+                return Err(ElevationError::InvalidArguments);
+            }
+            Some(index)
+        } else {
+            None
+        };
         let job_dir = PathBuf::from(&args[1]);
         let nonce = args[3]
             .to_str()
@@ -636,6 +752,7 @@ impl WorkerArguments {
             job_dir,
             nonce,
             request_digest,
+            section,
         })
     }
 }
@@ -674,6 +791,95 @@ impl From<std::io::Error> for ElevationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_is_closed_flat_unique_and_allows_distinct_volumes() {
+        let caches = ElevatedTask::SystemCaches;
+        for tasks in [
+            vec![],
+            vec![caches.clone(), caches.clone()],
+            vec![ElevatedTask::DeepAnalysis {
+                tasks: vec![caches.clone()],
+            }],
+            vec![ElevatedTask::PerformanceTrace {
+                duration_seconds: 5,
+            }],
+            vec![
+                ElevatedTask::MftInventory {
+                    volume: DriveLetter('C')
+                };
+                2
+            ],
+        ] {
+            assert!(ElevationRequest::new(
+                ElevatedTask::DeepAnalysis { tasks },
+                Duration::from_secs(1)
+            )
+            .is_err());
+        }
+        let tasks = vec![
+            caches,
+            ElevatedTask::MftInventory {
+                volume: DriveLetter('C'),
+            },
+            ElevatedTask::MftInventory {
+                volume: DriveLetter('D'),
+            },
+            ElevatedTask::BatteryEnergy,
+        ];
+        let batch = ElevatedTask::DeepAnalysis { tasks };
+        let budget = Duration::from_millis(batch.maximum_budget_ms());
+        let request = ElevationRequest::new(batch, budget).unwrap();
+        assert!(ElevationRequest::from_bytes(&request.encode().unwrap()).is_ok());
+        assert!(request
+            .validate_at(request.created_at_unix_ms + CONSENT_BUDGET_MS)
+            .is_ok());
+        assert_eq!(
+            request.validate_launch_at(request.created_at_unix_ms + CONSENT_BUDGET_MS),
+            Err(ElevationError::Expired)
+        );
+    }
+
+    #[test]
+    fn batch_response_requires_each_ordered_section_and_preserves_partial_status() {
+        let tasks = vec![ElevatedTask::SystemCaches, ElevatedTask::BatteryEnergy];
+        let request = ElevationRequest::new(
+            ElevatedTask::DeepAnalysis {
+                tasks: tasks.clone(),
+            },
+            Duration::from_secs(250),
+        )
+        .unwrap();
+        let mut batch = ElevationResponse::empty(
+            &request,
+            ElevationStatus::Partial,
+            ElevationLimit::MetadataSnapshot,
+        );
+        for task in tasks {
+            let mut section_request = request.clone();
+            section_request.task = task;
+            section_request.budget_ms = MAX_SECTION_BUDGET_MS;
+            let section = ElevationResponse::empty(
+                &section_request,
+                ElevationStatus::Unsupported,
+                ElevationLimit::SourceUnavailable,
+            );
+            batch.sections.push(section);
+        }
+        batch.window.finished_at_unix_ms = unix_ms();
+        assert!(batch.validate(&request).is_ok());
+        batch.status = ElevationStatus::Completed;
+        assert!(batch.validate(&request).is_err());
+        batch.status = ElevationStatus::Partial;
+        batch.sections.swap(0, 1);
+        assert!(batch.validate(&request).is_err());
+        batch.sections.swap(0, 1);
+        let nested = batch.sections[1].clone();
+        batch.sections[0].sections.push(nested);
+        assert!(batch.validate(&request).is_err());
+        batch.sections[0].sections.clear();
+        batch.sections.pop();
+        assert!(batch.validate(&request).is_err());
+    }
     #[test]
     fn response_dates_must_fit_the_approved_job_and_receipt_time() {
         let request =
@@ -783,6 +989,14 @@ mod tests {
             "0".repeat(64).into(),
         ];
         assert!(WorkerArguments::parse(args.clone()).is_ok());
+        for index in ["-1", "31", "01", "0;cmd.exe"] {
+            let mut section = args.clone();
+            section.extend(["--section".into(), index.into()]);
+            assert!(WorkerArguments::parse(section).is_err());
+        }
+        let mut section = args.clone();
+        section.extend(["--section".into(), "30".into()]);
+        assert_eq!(WorkerArguments::parse(section).unwrap().section, Some(30));
         let mut bad_nonce = args.clone();
         bad_nonce[3] = "nonce;cmd.exe".into();
         assert!(WorkerArguments::parse(bad_nonce).is_err());

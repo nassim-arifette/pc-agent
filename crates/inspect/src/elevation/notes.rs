@@ -65,6 +65,9 @@ fn note(
 /// One note per coverage entry that [`super::to_inspection`] writes for this response, with the
 /// same scopes, so the window can explain an incomplete entry without its English detail.
 pub fn coverage_notes(response: &ElevationResponse) -> Vec<CoverageNote> {
+    if matches!(response.task, super::ElevatedTask::DeepAnalysis { .. }) {
+        return response.sections.iter().flat_map(coverage_notes).collect();
+    }
     let mut notes = Vec::new();
     for cache in &response.caches {
         let mut reasons: Vec<CoverageReason> = cache
