@@ -62,7 +62,7 @@ Principes de la spec v0.1 qui restent valables :
 | Le modèle ne renvoie que des identifiants (`{"finding_ids":…,"observation_ids":…}`) et n'a pas le droit d'écrire ; le texte affiché vient de modèles de phrases locaux. | [`SYSTEM`](../crates/agent/src/lib.rs) |
 | Les réponses possibles se limitent à 12 catégories locales. | [`Classification`](../crates/diagnostics/src/lib.rs) |
 | Noms d'exécutables et chemins ne partent jamais : le modèle voit `proc-00000001`, `file-3`. | [`workstation.rs`](../crates/tools/src/workstation.rs) |
-| Sans admin, 155 processus sur 332 refusent `OpenProcess` : mesures « partielles » presque toujours, et Defender, Memory Compression ou dwm invisibles. | [`windows/mod.rs`](../crates/telemetry/src/windows/mod.rs) |
+| Sans admin, 155 processus sur 332 refusent `OpenProcess` : mesures « partielles » presque toujours, et Defender, Memory Compression ou dwm invisibles. | [`os/windows/mod.rs`](../crates/telemetry/src/os/windows/mod.rs) |
 | Une mesure d'une seconde au moment de la question ; l'historique de métriques n'existe qu'en mémoire. | [`history.rs`](../crates/telemetry/src/history.rs) |
 | Une question donne un rapport : ni suivi ni historique. L'interface s'ouvre sur un tableau de bord, en mode local par défaut. | [`investigate`](../crates/agent/src/lib.rs), [`prefs.js`](../apps/gui/ui/js/prefs.js) |
 | L'interface n'affiche aucune proposition d'action : « que puis-je supprimer ? » n'a pas de réponse concrète. | [docs/gui.md](gui.md) |
@@ -619,6 +619,29 @@ d'un OS à l'autre (mémoire résidente, CPU en points de base, E/S cumulées) e
 précise ce que l'OS mesure réellement derrière ce nom. On étend le format actuel, on ne le
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
+
+#### Complément du 27 octobre — ETW et fluidité en jeu (E06)
+
+Les mesures ETW approuvées localement rejoignent les observations C4, jamais une réponse
+rédigée par le collecteur. La fenêtre porte sa durée réellement observée, les événements
+perdus, le nombre d'échantillons et les causes de couverture partielle. Une absence d'événement
+ou de capteur donne une valeur absente avec son statut, jamais zéro.
+
+E06 mesure les intervalles de présentation par processus et par chaîne de présentation :
+fréquence moyenne = nombre d'intervalles / somme des intervalles ; « 1 % low » = inverse de
+la moyenne du centile des intervalles les plus longs (arrondi supérieur, au moins un) ;
+saccades = intervalles strictement supérieurs à deux fois la médiane. Ce sont des
+présentations de l'application, pas une promesse d'images effectivement affichées. Les
+processus réutilisant un PID et les chaînes distinctes ne sont pas fusionnés. Occupation GPU,
+pression VRAM et indicateurs NVML de bridage thermique/puissance gardent leur source, période
+et portée (GPU global ou processus) ; un indice CPU/GPU reste une hypothèse locale, pas une
+causalité prouvée. Tous les nombres citables passent par le même vérificateur C1.
+
+Les identifiants ETW, PID, adresses, pointeurs de fichiers et chaînes de présentation restent
+locaux ; les entités projetées sont opaques. Les E/S par fichier utilisent des références
+opaques, sans contenu ni chemin collecté ou envoyé. Aucun nom de fichier supplémentaire
+n'est autorisé par ce complément. Les noms de programmes et toutes les mesures suivent C5
+et l'aperçu exact « Voir ce qui part ». Le modèle ne démarre aucune capture.
 
 **Complément du 27 octobre — registre des capacités par OS (phase 5).** Le registre
 (`crates/agent/src/capabilities.rs`) ne porte plus une capacité « Windows » unique : il déclare la
@@ -1396,6 +1419,35 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   3. santé des disques (compteurs de fiabilité, SMART) ;
   4. chemins complets des processus protégés ;
   5. trace ETW de 30 à 60 s pendant le problème (latence DPC/ISR, E/S disque par fichier).
+- **Activation ETW (27 octobre)** : session privée liée au job et à son secret ; aucune
+  autorité sur une session préexistante (`AlreadyExists`). Un gardien privilégié temporaire et
+  borné, sans réseau ni modèle, est armé avant `StartTrace`, détient le handle du contrôleur et survit à la mort du
+  contrôleur/GUI, y compris à la fermeture de leur job Windows kill-on-close. Il possède
+  `StartTrace` et le nettoyage ; il n'est pas lui-même dans ce job. Le parent non élevé peut
+  interroger et arrêter uniquement la session privée approuvée, avec les droits temporaires
+  `EventAccessControl` limités à son GUID. Le retrait de ces droits est délégué au gardien
+  privilégié, même après la terminaison du contrôleur/GUI : l'acceptation Windows 20348 a
+  montré que le compte standard ne peut pas appeler `EventAccessRemove`. Cette délégation
+  a été explicitement approuvée par le porteur le 27 octobre. Aucun groupe, fournisseur,
+  privilège global ni droit permanent n'est modifié. Aucun résultat numérique n'est livré
+  avant l'acquittement du nettoyage réussi. L'activation reste conditionnée aux quatre preuves
+  documentées dans `docs/etw.md`, dont le point 2 est remplacé par la délégation approuvée
+  ci-dessus (QUERY/STOP au parent, retrait des permissions au gardien). La documentation
+  technique et `scripts/etw-acceptance.ps1` devront refléter ce contrat et prouver :
+  fin normale, annulation, consommateur bloqué, watchdog, `TerminateProcess` du parent et
+  échec de démarrage. Aucun réglage ni variable d'environnement ne contourne ce prérequis.
+- **E06 — fluidité mesurée (avancé avant la soumission, 27 octobre)** : depuis PC en direct
+  et le chat, « Mesurer la fluidité pendant 30 s » ouvre une revue expliquant les processus,
+  les événements de présentation, les métriques C4 ci-dessus, les données locales et ce qui
+  peut partir au modèle. Le clic de validation puis l'invite UAC sont obligatoires ; la fenêtre
+  et le LLM restent standard. La capture se termine après 30 s (ETW approfondi : choix 30/60 s),
+  s'annule localement, puis alimente les sources et constats FR/EN. La durée est une fenêtre
+  de mesure explicite, pas une limitation du nombre de questions ou de captures. Une nouvelle
+  capture est toujours possible. Les adaptateurs sans événements/support NVML sont signalés
+  honnêtement ; aucune simulation n'est présentée comme mesure native.
+  Acceptation : charge graphique synthétique sous compte standard, invite administrateur,
+  question réelle Nebius « pourquoi mon jeu saccade ? » avec chiffres cités et vérifiés ;
+  timings, captures et limites matérielles réellement constatées accompagnent la PR.
 - Interface : un bouton « Analyse approfondie (administrateur) » dans Stockage, PC en direct,
   l'accueil du Chat et le premier lancement. Les tâches sont expliquées avant l'invite de Windows.
   Il est aussi proposé depuis le chat :
@@ -1683,7 +1735,6 @@ Repoussé après la soumission :
 - index persistant et journal USN (S10) ;
 - export expurgé (U01) ;
 - coffre Windows pour la clé (U04) ;
-- fluidité en jeu mesurée (E06) ;
 - réseau (E07) ;
 - recherche documentaire libre (E08) ; le chantier 15 n'en avance que des outils typés ;
 - alertes au-delà des règles C7 (E09) ;
@@ -1936,11 +1987,12 @@ avant résolution.
   une PR d'interface ou de documentation ne suffit pas à le clore.
 - L'automatique Super → Ultra reste soumis à l'étalonnage humain compatible ; une notation
   automatisée n'est pas une preuve humaine.
-- #111 (ETW/E06) reste non fusionnée : décision du porteur attendue sur le gardien privilégié
-  séparé, armé avant `StartTrace`, et l'acquittement du nettoyage avant livraison du résultat.
-  `EventAccessRemove` a été rapporté administrateur seulement sur Windows 20348 ; aucune promesse
-  de suppression par le parent non élevé n'est adoptée ici. Aucune activation avant décision
-  et preuves complètes de nettoyage. Sur la VM WARP, GPU matériel et NVML restent non testés.
+- #111 (ETW/E06) : le porteur a approuvé le 27 octobre la délégation du retrait des permissions
+  temporaires au gardien privilégié séparé, armé avant `StartTrace`, avec acquittement du
+  nettoyage avant livraison du résultat. `EventAccessRemove` reste administrateur seulement
+  dans l'acceptation Windows 20348 ; aucune suppression par le parent non élevé n'est promise.
+  L'accord ne dispense pas des preuves complètes de nettoyage avant activation/fusion du code.
+  Sur la VM WARP, GPU matériel et NVML restent non testés.
 
 | Lot voix | Pistes | État | Branche |
 | --- | --- | --- | --- |
@@ -1976,6 +2028,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) ; #65 : formats localisés sur les champs numériques, résumé scanné désormais couvert | #23, #24, #36 |
 | 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
 | 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; carte par règle locale sous la réponse du chat livrée le 18 octobre ; lot sous une seule invite et proposition par le modèle (`propose_elevated_check`, 9 octobre) à faire | #33, #36, #62 |
+| 8 — Activation ETW et fluidité E06 | B, A, C | en cours (27 oct.) : contrat C4 et consentement définis ; gardien privilégié avant création, acceptation des quatre preuves de nettoyage, E/S par fichier opaque, présentations par processus, observations/constats et action 30 s depuis PC en direct/chat ; aucune activation déclarée avant preuve Windows, aucune mesure matérielle simulée | feature/etw-e06-plan, feature/etw-e06 |
 | 8 — Lot approfondi et proposition chat (#62/#83) | A, B, C | en cours (27 oct.) : contrat précisé dans cette PR du plan, avant le code ; protocole v3 à sections fermées sous un seul UAC, comptes standard avec autre administrateur, revue sans expiration, six familles proposées, persistance 24 h et sélection dans le même fil ; validation native standard + Nebius + UAC et captures EN/FR clair/sombre requises avant livraison | feature/deep-checks-plan ; #62, #83 |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
@@ -2011,6 +2064,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) ; `v0.1.1` (27 oct.) : lien de la release et test sur un second PC ajoutés au README, restent l'empreinte mesurée et les résultats de l'évaluation | wp12-docs, `release/v0.1.1` |
 | Compilation macOS | B | fait (26 oct.) : le scanner portable (`crates/storage/src/portable.rs`) convertit `st_dev` et `st_nlink` depuis les types Darwin (`dev_t` signé 32 bits, `nlink_t` 16 bits) ; sur macOS 26.6.2 Apple silicon : formatage, Clippy, 741 tests (3 ignorés), release des 4 programmes, 3 tests Python, 56 tests Node ; fenêtre et helper élevé restent des bouchons Windows seulement, collecteurs natifs `unsupported`, aucun changement de comportement Windows ; pas de cible produit macOS | fix/macos-build |
 | 16 — macOS natif (phase 5, item 5) | B, C | en cours (27 oct.) : plan fusionné ; code à suivre — télémétrie (Mach/libproc), inspections (launchd, journal unifié, `softwareupdate`), actions (LaunchAgents, caches, Corbeille), aide élevée `osascript`, GUI Tauri WKWebView, `.app` non signée, `docs/macos.md`, README ; validation locale sur Mac Apple Silicon requise | [#102](https://github.com/nassim-arifette/pc-agent/pull/102) |
+| 12 — Empreinte native au repos (#71) | D | mesurée (27 oct.) sur la GUI publiée v0.1.1, sous compte standard, VM Windows Server 2022 (8 processeurs logiques, 32 Gio) : GUI + six processus WebView2, deux phases d'environ 3 min ; ensembles de travail moyens 316 Mio ouverte / 204 Mio masquée, octets privés 131–132 Mio ; CPU moyen 0,05 % / 0,02 % de la VM ; 80 relevés, fichiers SQLite + WAL + SHM 3,28 Mio après environ 6 min 34 s. Protocole, interprétation mémoire et limites dans [footprint.md](footprint.md) ; aucun pic, gain de masquage ni volume journalier revendiqué. #71 reste ouverte pour ses autres critères. | docs/footprint-measurements |
 
 État historique du 10 octobre : arrêt demandé après la validation de ce lot, avant la nouvelle
 vue Stockage, sans commencer un autre chantier ni fusionner. Cette suspension du développement
