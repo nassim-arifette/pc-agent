@@ -240,6 +240,30 @@ les compléments du 6 octobre ci-dessous leur ajoutent des lectures pour les vue
 Historique. Le réglage « recherche web » et la clé Tavily sont décrits en C6, les commandes et
 événements des surveillances en C7.
 
+#### Complément du 27 octobre — dictée locale au microphone
+
+- `voice_start(options)` démarre uniquement sur un geste local, sans élévation ; renvoie un
+  identifiant de session. `voice_stop(session_id, cancel)` arrête la capture et finalise le texte,
+  ou détruit le brouillon si `cancel=true`. `voice_state()` expose l'état courant, le niveau,
+  le texte partiel/final, la langue détectée et un code d'erreur fermé ; aucun octet audio.
+- `voice_devices()`, `voice_settings_get/set()` choisissent le périphérique et le moteur :
+  whisper.cpp multilingue local en priorité, reconnaissance Windows locale en repli si le modèle
+  manque. Le repli ne doit jamais utiliser la dictée Windows en ligne ; une grammaire locale
+  ou un moteur hors ligne indisponible donne une erreur explicite, jamais un envoi implicite.
+- `voice_model_download(consent)` n'accepte que le modèle multilingue épinglé par l'application :
+  source HTTPS fixe, taille et empreinte SHA-256 affichées avant le clic, progression et
+  annulation, contrôle de taille et d'empreinte avant installation dans les données de l'app.
+  `voice_model_delete()` supprime le modèle local. Aucun URL ou chemin arbitraire fourni par la
+  page. Réglages et fichiers de modèle restent distincts de l'historique.
+- Les événements `voice:state` portent l'identifiant de session ; une ancienne session ne peut
+  remplir un autre brouillon. Un seul microphone actif, libéré à l'arrêt, à l'annulation, en
+  quittant la conversation, en masquant ou fermant la fenêtre et à la fermeture de l'app.
+  Aucune limite de durée de dictée : traitement par morceaux en mémoire, sans fichier audio.
+- Consentement micro et téléchargement séparés, périphérique choisi et niveau visibles,
+  erreurs explicites (absence de périphérique, autorisation refusée, modèle absent/corrompu,
+  moteur indisponible). Windows standard uniquement ; autres OS compilent avec un statut
+  `unsupported` tant que leur capture native n'est pas disponible.
+
 #### Complément du 26 octobre — préparation et envoi d'une image (#55)
 
 | Commande / résultat | Rôle |
@@ -521,6 +545,19 @@ Les compléments C2 et C3 ci-dessus précisent le stockage, les bornes et le tic
 l'implémentation. L'exception porte uniquement sur les pixels explicitement joints : elle
 n'autorise pas l'envoi de chemins, secrets ou identités supplémentaires dans le texte, les
 outils ou les métadonnées.
+
+Complément du 27 octobre — voix : **l'audio ne quitte jamais le PC ; seul le texte reconnu,
+relu par l'utilisateur, part** après son clic Envoyer, par le même aperçu exact que la saisie
+clavier. La reconnaissance n'effectue aucun appel réseau, y compris avec le moteur Windows :
+pas de grammaire de dictée cloud. Les échantillons restent en mémoire pendant la capture et
+l'inférence, puis sont abandonnés ; aucun enregistrement audio, journal de transcription,
+historique audio ou pièce jointe audio. Seul le texte effectivement envoyé rejoint l'historique
+ordinaire C2. Le téléchargement du modèle envoie une requête HTTPS sans contenu utilisateur.
+Le catalogue Nebius relu le 27 octobre n'annonce aucun modèle Omni/audio et ne fournit pas de
+champ `capabilities` ni `supported_features` sur cette réponse : l'absence de métadonnées ne
+prouve pas une capacité audio. Si un modèle audio apparaît ultérieurement, sa sélection
+explicite et un aperçu exact des données audio nécessiteront un nouveau complément C5 ;
+aucune détection de catalogue ne peut activer un envoi audio dans ce lot.
 
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
 Les surveillances (C7) n'envoient rien hors du PC.
@@ -888,6 +925,12 @@ recherche du chantier 15.
   dans la CI et le résultat reste embarqué dans l'exe.
 - Les données simulées (`apps/gui/dev/mock.js`) et les captures (`apps/gui/dev/tour.mjs`) couvrent
   les conversations pour la QA visuelle, ou leurs équivalents si la technique change.
+- Dictée locale (27 octobre) : bouton micro à bascule ou maintien, raccourci clavier, niveau
+  d'entrée, texte partiel puis insertion du texte final dans le brouillon **sans envoi automatique**,
+  langue FR/EN détectée, annulation et erreurs traduites. Une section Réglages permet de choisir
+  moteur et périphérique, consentir au téléchargement multilingue avec taille/progression,
+  l'annuler et supprimer le modèle. Tests synthétiques Rust et Node, mock EN/FR clair/sombre,
+  essai natif non-admin avec vraie entrée ou câble virtuel alimenté par WAV, `docs/voice.md`.
 - [docs/gui.md](gui.md) est réécrit à la fin du chantier.
 - **Fait quand :**
   - le parcours question → réponse → suivi → fermeture → réouverture avec l'historique fonctionne ;
@@ -1545,6 +1588,10 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 - Dépôt public dès la phase 0, ou seulement le 28 octobre.
 
 ## 8. Suivi
+
+| Lot voix | Pistes | État | Branche |
+| --- | --- | --- | --- |
+| 6 — Dictée locale au microphone | B, C | en cours : complément C3/C5 adopté dans cette PR de plan ; whisper.cpp local, repli Windows hors ligne, capture cpal, composer et réglages ; catalogue Nebius relu sans capacité audio déclarée ; validation native et preuves à livrer dans la PR code | feature/voice-plan puis feature/local-voice |
 
 **19 octobre 2026 — essai C1 / #85 :** exception de correction finale autorisée par le porteur,
 définie ci-dessus avant l'implémentation dans une PR distincte. À mesurer sur des parcours Nebius
