@@ -8,6 +8,7 @@ pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 mod process_peaks;
 pub mod sampler;
 mod samples;
+pub mod watch_engine;
 pub mod watches;
 pub use battery::{
     BatteryGap, BatteryHistory, BatteryPoint, BatteryRecording, BatteryRecordingCoverage,

@@ -99,6 +99,7 @@ impl StoredSample {
                     | Metric::ProcessIoReadBytesPerSecond
                     | Metric::ProcessIoWriteBytesPerSecond
                     | Metric::ProcessIoOtherBytesPerSecond
+                    | Metric::GpuTemperatureCelsius
             )
         };
         let values = snapshot
@@ -253,7 +254,7 @@ pub struct EventObservation {
 }
 
 impl EventObservation {
-    fn measured(value: &SampleValue, origin: Origin) -> Option<Self> {
+    pub(crate) fn measured(value: &SampleValue, origin: Origin) -> Option<Self> {
         let measured = value.value?;
         let window = value
             .observed_from_unix_ms
@@ -282,7 +283,7 @@ impl EventObservation {
         })
     }
 
-    fn derived(metric: &str, value: u64, derivation: &str, inputs: Vec<Self>) -> Self {
+    pub(crate) fn derived(metric: &str, value: u64, derivation: &str, inputs: Vec<Self>) -> Self {
         let first = &inputs[0];
         let window = first.window.clone().filter(|window| {
             inputs.iter().all(|input| {
@@ -314,6 +315,38 @@ impl EventObservation {
             inputs,
         }
     }
+}
+
+pub(crate) fn system_observations(sample: &StoredSample) -> [Option<EventObservation>; 3] {
+    let measured = |metric| {
+        sample
+            .values
+            .iter()
+            .find(|v| v.metric == metric && v.entity_ref == "system" && v.measured > 0)
+            .and_then(|v| EventObservation::measured(v, sample.origin))
+    };
+    let cpu = measured(Metric::CpuBusyBasisPoints);
+    let memory = measured(Metric::PhysicalAvailableBytes)
+        .zip(measured(Metric::PhysicalTotalBytes))
+        .and_then(|(free, total)| {
+            let used = total.value.checked_sub(free.value)?;
+            let value = ratio_basis_points(used, total.value)?;
+            Some(EventObservation::derived(
+                "physical_used_basis_points", value,
+                "10000 * (physical_total_bytes - physical_available_bytes) / physical_total_bytes; integer division",
+                vec![total, free],
+            ))
+        });
+    let disk_busy = measured(Metric::DiskIdleBasisPoints).and_then(|idle| {
+        let value = 10_000_u64.checked_sub(idle.value)?;
+        Some(EventObservation::derived(
+            "disk_busy_basis_points",
+            value,
+            "10000 - disk_idle_basis_points",
+            vec![idle],
+        ))
+    });
+    [cpu, memory, disk_busy]
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
@@ -749,21 +782,7 @@ impl Store {
                 .find(|v| v.metric == metric && v.entity_ref == "system")
                 .filter(|v| v.value.is_some() && v.measured > 0)
         };
-        let cpu = system(Metric::CpuBusyBasisPoints)
-            .and_then(|v| EventObservation::measured(v, sample.origin));
-        let memory = system(Metric::PhysicalAvailableBytes)
-            .zip(system(Metric::PhysicalTotalBytes))
-            .and_then(|(free, total)| {
-                let free = EventObservation::measured(free, sample.origin)?;
-                let total = EventObservation::measured(total, sample.origin)?;
-                let used = total.value.checked_sub(free.value)?;
-                let value = ratio_basis_points(used, total.value)?;
-                Some(EventObservation::derived(
-                    "physical_used_basis_points", value,
-                    "10000 * (physical_total_bytes - physical_available_bytes) / physical_total_bytes; integer division",
-                    vec![total, free],
-                ))
-            });
+        let [cpu, memory, disk_busy] = system_observations(sample);
         let disk = system(Metric::DiskReadLatencyMicroseconds)
             .into_iter()
             .chain(system(Metric::DiskWriteLatencyMicroseconds))
@@ -775,16 +794,6 @@ impl Store {
                 );
                 observation
             });
-        let disk_busy = system(Metric::DiskIdleBasisPoints).and_then(|idle| {
-            let idle = EventObservation::measured(idle, sample.origin)?;
-            let value = 10_000_u64.checked_sub(idle.value)?;
-            Some(EventObservation::derived(
-                "disk_busy_basis_points",
-                value,
-                "10000 - disk_idle_basis_points",
-                vec![idle],
-            ))
-        });
         let events = [
             (
                 "cpu_busy",

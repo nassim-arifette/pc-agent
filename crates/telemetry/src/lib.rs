@@ -51,6 +51,18 @@ pub fn current_resource_usage() -> ResourceUsage {
     }
 }
 
+/// The narrow drive/free-space read used by the watch sampler's minute maintenance.
+pub fn volume_inventory() -> pcagent_shared::Observed<Vec<pcagent_shared::VolumeInfo>> {
+    #[cfg(windows)]
+    {
+        windows::volumes()
+    }
+    #[cfg(not(windows))]
+    {
+        pcagent_shared::Observed::missing("Win32.GetLogicalDriveStringsW", Status::Unsupported)
+    }
+}
+
 /// Evidence older than this is reported `stale` by `process_details`.
 pub const DETAILS_FRESHNESS: Duration = Duration::from_secs(30);
 

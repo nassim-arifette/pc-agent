@@ -383,6 +383,13 @@ impl Store {
             .unwrap_or(false))
     }
 
+    pub(crate) fn watch_lease_valid(&self, owner: &str, now: u64) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM watch_lease WHERE owner=?1 AND heartbeat<=?2 AND expires_at>?2)",
+            params![owner, stored(now)], |r| r.get(0),
+        )?)
+    }
+
     pub fn watch_release(&self, owner: &str) -> Result<(), StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         self.close_watch_alerts(None, Some(owner), WatchCloseReason::Interrupted)?;
@@ -451,6 +458,21 @@ impl Store {
         .transpose()
     }
 
+    pub(crate) fn active_watch_alert(
+        &self,
+        watch_id: &str,
+        owner: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM watch_alerts WHERE watch_id=?1 AND owner=?2 AND ended_at IS NULL",
+                params![watch_id, owner],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn open_watch_alert(
         &self,
         owner: &str,
@@ -486,6 +508,47 @@ impl Store {
             params![alert.id, stored(alert.last_checked_unix_ms), alert.ended_at_unix_ms.map(stored),
                 notification_key(alert.notification), encode(alert)?])?;
         Ok(())
+    }
+
+    pub(crate) fn progress_watch_alert(
+        &self,
+        owner: &str,
+        id: &str,
+        observation: Option<&EventObservation>,
+        ended: Option<WatchCloseReason>,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let Some(mut alert) = self
+            .watch_alert(id)?
+            .filter(|a| a.ended_at_unix_ms.is_none())
+        else {
+            return Ok(false);
+        };
+        // Re-read the persisted payload so a notification result or seen flag cannot be lost.
+        alert.last_checked_unix_ms = now;
+        if let Some(observation) = observation {
+            let worse = if alert.rule.is_volume() {
+                observation.value < alert.extreme_observation.value
+            } else {
+                observation.value > alert.extreme_observation.value
+            };
+            if worse {
+                alert.extreme_observation = observation.clone();
+            }
+        }
+        if let Some(reason) = ended {
+            alert.ended_at_unix_ms = Some(now);
+            alert.close_reason = Some(reason);
+        }
+        let changed = tx.execute(
+            "UPDATE watch_alerts SET last_checked=?3,ended_at=?4,payload=?5
+             WHERE id=?1 AND owner=?2 AND ended_at IS NULL
+             AND EXISTS(SELECT 1 FROM watch_lease WHERE owner=?2 AND heartbeat<=?3 AND expires_at>?3)",
+            params![id,owner,stored(now),alert.ended_at_unix_ms.map(stored),encode(&alert)?],
+        )?;
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     pub fn watch_alerts(

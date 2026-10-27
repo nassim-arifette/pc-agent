@@ -8,6 +8,7 @@ mod sysproc;
 mod tree;
 pub(crate) mod version_info;
 pub(super) use inventory::hardware_inventory;
+pub(super) use inventory::volumes;
 pub(super) use tree::process_tree;
 
 use super::{cpu_busy_basis_points, process_cpu_basis_points, Collector, TickSample};
