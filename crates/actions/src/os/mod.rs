@@ -1,6 +1,8 @@
 //! Native adapters implement the existing `Guard` and permit-gated `Effects` contracts.
 mod adapter;
 pub use adapter::{NativeEffects, NativeGuard};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) mod desktop;
 
 #[cfg(target_os = "linux")]
 mod linux;

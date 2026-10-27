@@ -25,13 +25,11 @@ pcagent-actions.workspace = true
 # Portable: the live battery view model and its tests use the inspection types on every system.
 pcagent-inspect.workspace = true
 
-# The window only exists on Windows, the product's platform; elsewhere the binary explains that
-# and the portable view code is still built and tested.
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 pcagent-policy.workspace = true
 pcagent-store.workspace = true
-tauri = { version = "=2.12.0", features = ["tray-icon"] }
-tauri-plugin-dialog = "=2.8.0"
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
 
 [build-dependencies]
-tauri-build = { version = "=2.7.0", features = [] }
+tauri-build.workspace = true
