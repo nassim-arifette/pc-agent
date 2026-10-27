@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "pcagent-actions",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-actions"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-shared",
  "serde",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-diagnostics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-shared",
  "serde",
@@ -2467,14 +2467,14 @@ dependencies = [
 
 [[package]]
 name = "pcagent-elevated"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-elevation",
 ]
 
 [[package]]
 name = "pcagent-elevation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-mft",
  "pcagent-shared",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-eval"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "pcagent-agent",
@@ -2507,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-actions",
  "pcagent-agent",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-inspect"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-elevation",
  "pcagent-shared",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-mft"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-nebius"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-agent",
  "pcagent-shared",
@@ -2563,7 +2563,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-policy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-shared",
  "serde",
@@ -2573,7 +2573,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-shared"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-shared",
  "rustix",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-inspect",
  "pcagent-shared",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-telemetry"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-shared",
  "serde",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "pcagent-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pcagent-actions",
  "pcagent-agent",

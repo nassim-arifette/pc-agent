@@ -1206,7 +1206,7 @@ sortie). Les quatre annoncent les outils et le raisonnement.
   dans le binaire.
 - Vidéo de moins de 3 minutes, en anglais : un vrai problème, la conversation, les outils en direct,
   la réponse citée, l'action validée, l'avant/après.
-- Test complet sur un second PC Windows 11, jamais fait jusqu'ici (voir le README).
+- Test complet sur un second PC Windows 11 : fait par le porteur depuis la release `v0.1.0` (27 oct.).
 
 ### Chantier 13 — Optimiser le harness (piste A)
 
@@ -1493,7 +1493,7 @@ Implementation » est un critère de jugement).
 | --- | --- |
 | Vue Stockage **minimale** : résultats visibles en premier, liste et inspecteur ; carte et arbre seulement si le temps le permet | #67 partiellement traité, le reste en P2 |
 | Processus msedgewebview2 distingués par application | #61 |
-| Test complet sur un second PC Windows 11 (installation depuis la release, clé, parcours vidéo) | checklist cochée |
+| Test complet sur un second PC Windows 11 (installation depuis la release, clé, parcours vidéo) | fait par le porteur depuis la release `v0.1.0` (27 oct.) |
 | Mesurer l'empreinte de l'app (RAM, CPU, disque de l'historique) pour le README | chiffres datés |
 
 **Repoussé après la soumission :** Surveillances (C7), vue Historique complète, #58/#59 au-delà du
@@ -1504,6 +1504,9 @@ actifs (chantier 9), cache Tavily.
 
 1. **Gel le 29** (décision du 26 octobre, qui lève le gel du 27) : tag annoté `v0.1.0` sur `main`
    et release ; ensuite, seulement des corrections de bugs jusqu'à la soumission.
+   Fait le 27 octobre : `v0.1.0` (tag sur `881177f`, 12 fichiers : zip et quatre exécutables
+   Windows avec SHA-256, CLI Linux x86_64, CLI macOS Apple Silicon non signée) ; `v0.1.1` reprend
+   `main` après #98 et #99 (réponses plus rapides, langue de la question) avec le même circuit.
 2. README en anglais : vision, captures, installation, plateforme annoncée (**Windows 10/11 x64**),
    confidentialité, usage de Nemotron et de Token Factory, avertissement SmartScreen.
 3. Docs en retard sur le code (#71) : README, `architecture.md`, `validation.md`.
@@ -1600,7 +1603,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Q3 — Interface organisée par fonctionnalité | C | fusionné et validé (26 oct.) : `chat/`, `selection/`, `settings/`, `live/`, `storage/`, `elevation/`, `history/` ; décisions de santé séparées du DOM ; 40 modules liés sans exécution, 56 tests Node ; intégration avec #90 : 809 tests Rust sous compte standard, fmt, Clippy et release des 4 programmes ; pas de changement visuel, parcours natif non rejoué dans ce lot | [#91](https://github.com/nassim-arifette/pc-agent/pull/91) |
 | Registre des capacités (phase 1) | A, B, C | fait (26 oct.) : `crates/agent/src/capabilities.rs` (9 capacités, table REQUIREMENTS, variantes constantes), outils indisponibles absents du catalogue envoyé et du prompt système, `app_info.capabilities` pilote la vue Stockage et la carte des vérifications ; 224 tests agent, tour ; identité de calibration et replays inchangés | wp4-capability-registry |
 | Q3 — Séparation inspections / worker élevé / MFT | A, B | fusionné et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; intégration avec #91 : 18 exécutables, 809 tests réussis et 3 ignorés sous compte standard, fmt/Clippy/release/doctests, 56 tests Node et 3 Python | [#90](https://github.com/nassim-arifette/pc-agent/pull/90) |
-| 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) | wp12-docs |
+| 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) ; `v0.1.1` (27 oct.) : lien de la release et test sur un second PC ajoutés au README, restent l'empreinte mesurée et les résultats de l'évaluation | wp12-docs, `release/v0.1.1` |
 | Compilation macOS | B | fait (26 oct.) : le scanner portable (`crates/storage/src/portable.rs`) convertit `st_dev` et `st_nlink` depuis les types Darwin (`dev_t` signé 32 bits, `nlink_t` 16 bits) ; sur macOS 26.6.2 Apple silicon : formatage, Clippy, 741 tests (3 ignorés), release des 4 programmes, 3 tests Python, 56 tests Node ; fenêtre et helper élevé restent des bouchons Windows seulement, collecteurs natifs `unsupported`, aucun changement de comportement Windows ; pas de cible produit macOS | fix/macos-build |
 
 État historique du 10 octobre : arrêt demandé après la validation de ce lot, avant la nouvelle
