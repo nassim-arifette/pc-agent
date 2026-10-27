@@ -470,8 +470,13 @@ seul le contenu de `metric_history` change (voir Noms).
 
 Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la période (instant ou
 fenêtre en secondes), l'entité, la métrique, la valeur, l'unité, un statut (`ok`, `partial`,
-`denied`, `unsupported`, `needs_admin`) et la source (API Windows utilisée). S'y ajoute une
-couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format actuel, on ne le
+`denied`, `unsupported`, `needs_admin`) et la source (API native utilisée : Win32/WMI/ETW sous
+Windows, Mach/libproc/IOKit/launchd sous macOS, `/proc`/`/sys`/systemd sous Linux). S'y ajoute une
+couverture qui dit ce qui n'a pas pu être lu et pourquoi. Sur chaque OS, un capteur que le système
+réserve à l'administrateur (par exemple `powermetrics` sous macOS) est déclaré `needs_admin` ou
+`unsupported` avec sa raison ; aucune valeur n'est substituée. Les métriques gardent le même nom
+d'un OS à l'autre (mémoire résidente, CPU en points de base, E/S cumulées) et une note de source
+précise ce que l'OS mesure réellement derrière ce nom. On étend le format actuel, on ne le
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
 
@@ -1304,6 +1309,63 @@ garde sa marque et sa propre clé API.
   - les captures du chantier 7 enregistrent les résultats web, et le rejeu ne relance aucune
     recherche.
 
+### Chantier 16 — macOS natif (pistes B et C ; phase 5, item 5, décision du 27 octobre)
+
+Objectif : qu'un juré sur Mac dispose de la même application que sur Windows — mesures réelles,
+inspections, actions revues localement, aide élevée bornée, fenêtre Tauri — sans valeur fabriquée
+ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent sous
+`#[cfg(target_os = "macos")]` (`crates/*/src/macos/`) et se rangeront derrière les traits
+`os/{windows,linux,macos}` du chantier Linux dès qu'ils seront fusionnés.
+
+- **Télémétrie.** Mémoire par `host_statistics64` (`vm_statistics64` : libre + inactive +
+  spéculative disponibles ; `hw.memsize` pour le total ; mémoire « swap used » via
+  `vm.swapusage` tient lieu de commit) ; CPU par `host_statistics` (`HOST_CPU_LOAD_INFO`, fenêtre
+  d'une seconde ou réemploi de l'échantillon précédent comme sous Windows) ; processus par libproc
+  (`proc_listallpids`, `proc_pidinfo` TASKINFO/BSDINFO, `proc_pid_rusage` pour les E/S et le temps
+  CPU, `proc_name`) : nom, RSS, CPU, E/S, parent, date de création pour l'identité
+  `(pid, création)`. Le type de processus (application, agent, service) est dérivé localement du
+  chemin exécutable et du domaine launchd ; les arguments ne sont ni conservés ni envoyés. Les
+  processus d'autres utilisateurs sont comptés `permission_denied` dans la couverture.
+- **Matériel et volumes.** `sysctl` (`kern.osproductversion`, `hw.machine`, `hw.ncpu`,
+  `hw.memsize`), `getmntinfo`/`statfs` pour les volumes montés (type APFS/HFS/réseau, total,
+  libre, disponible), IOKit pour les disques physiques, `diskutil info -plist` en repli borné.
+  GPU et thermique par IOKit (`IOAccelerator` : nom, mémoire ; `AppleSMC` lisible sans
+  privilège quand il l'est) ; `powermetrics` demande root : couverture `needs_admin`, jamais
+  lancé. Batterie par `IOPSCopyPowerSourcesInfo` (charge, état, santé quand exposée).
+- **Inspections.** Démarrage : Login Items (`sfltool`/`osascript System Events`) et LaunchAgents
+  (`~/Library/LaunchAgents`, `/Library/LaunchAgents`, état `launchctl print`) ; services : launchd
+  (`launchctl list`, domaine système et utilisateur, PID associé) ; événements : journal unifié par
+  `log show --style json --last Nd --predicate …` borné en durée et en nombre d'entrées, messages
+  réduits à sous-système, catégorie, niveau et compteur ; mises à jour : `softwareupdate --list`
+  (délai borné, hors ligne toléré). Les sous-processus reçoivent des arguments fixes ; aucune
+  entrée du modèle ou de l'utilisateur ne devient argument de commande.
+- **Actions.** Même catalogue, même revue locale : désactiver/réactiver un LaunchAgent utilisateur
+  (`launchctl bootout`/`bootstrap gui/<uid>` sur un plist identifié par chemin + inode + date de
+  modification), nettoyage de `~/Library/Caches` et `~/Library/Logs` (adaptateur de nettoyage
+  utilisateur, mêmes garde-fous que `%TEMP%`), Corbeille par `NSFileManager trashItemAtURL`
+  (vérification que l'élément est bien dans `~/.Trash` après coup), ouvrir dans le Finder,
+  ouvrir Réglages Système (URL `x-apple.systempreferences:`). Les racines protégées macOS
+  (`/System`, `/Library`, `/usr`, `/bin`, `/sbin`, `/private`, `/Applications`, `/Volumes`) sont
+  refusées comme `C:\Windows` l'est.
+- **Élévation.** `pcagent-elevated` sur macOS exécute la même liste fermée de tâches, lancé une
+  fois par `osascript -e 'do shell script … with administrator privileges'` (invite système,
+  équivalent de l'UAC) ; pas de réseau, pas de modèle, protocole et durée de vie inchangés
+  (`crates/elevation`). Tâches : caches système (`/Library/Caches`, `/private/var/folders`
+  d'autres utilisateurs en taille seulement), métriques énergie/thermique par `powermetrics`
+  borné à quelques secondes, fiabilité disque (`diskutil info` S.M.A.R.T.), images de processus
+  d'autres utilisateurs. Les tâches Windows (MFT, VSS, ETW) restent `unsupported` sur macOS avec
+  leur raison.
+- **Interface.** `pcagent-gui` compile et tourne sur macOS (WKWebView), même page, même CSP, mêmes
+  capacités Tauri ; le registre des capacités expose la plateforme (`windows`, `macos`, `linux`) à
+  la place du seul drapeau `windows`, et les outils réservés à Windows (MFT, ETW, Windows Update)
+  sont absents du catalogue et de l'interface sur Mac. `.app` non signée construite par
+  `cargo tauri build` (ou `cargo build` + `Contents/` documenté), étapes Gatekeeper dans les notes
+  de release (`xattr -dr com.apple.quarantine`, clic droit → Ouvrir).
+- **Validation.** Tests sur fixtures synthétiques (plists, sorties `log show`/`softwareupdate`/
+  `launchctl`, listes libproc rejouées) exécutés partout ; workspace vert sur macOS (fmt, clippy
+  `-D warnings`, tests, build release des quatre binaires) ; GUI native lancée sur le Mac de la
+  session avec captures EN/FR, clair/sombre ; `docs/macos.md` et section plateformes du README.
+
 ## 5. Calendrier
 
 | Semaine | Travail |
@@ -1534,8 +1596,11 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
    Windows Update).
 3. Backend Linux (`/proc`, `/sys`, systemd, journald, XDG autostart) avec la CI Ubuntu.
 4. GUI Tauri sur les trois OS, pilotée par le registre des capacités.
-5. Backend macOS (libproc, host_statistics, IOKit, launchd), testé sur un vrai Mac, avec un job CI
-   macOS.
+5. Backend macOS complet (chantier 16) : `host_statistics64`/`sysctl`, libproc, `statfs`/IOKit/
+   `diskutil`, IOKit batterie et GPU, Login Items/LaunchAgents, launchd, journal unifié, `softwareupdate`,
+   actions (LaunchAgents, `~/Library/Caches`, Corbeille), aide élevée bornée par `osascript … with
+   administrator privileges`, GUI Tauri (WKWebView) et `.app` non signé ; validé sur un vrai Mac Apple
+   Silicon. La CI macOS reste suspendue comme les autres : la validation locale fait foi.
 6. Reprendre ce qui a été repoussé en phase 3, par ordre de priorité.
 
 ### Décisions encore ouvertes
@@ -1605,6 +1670,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Q3 — Séparation inspections / worker élevé / MFT | A, B | fusionné et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; intégration avec #91 : 18 exécutables, 809 tests réussis et 3 ignorés sous compte standard, fmt/Clippy/release/doctests, 56 tests Node et 3 Python | [#90](https://github.com/nassim-arifette/pc-agent/pull/90) |
 | 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) ; `v0.1.1` (27 oct.) : lien de la release et test sur un second PC ajoutés au README, restent l'empreinte mesurée et les résultats de l'évaluation | wp12-docs, `release/v0.1.1` |
 | Compilation macOS | B | fait (26 oct.) : le scanner portable (`crates/storage/src/portable.rs`) convertit `st_dev` et `st_nlink` depuis les types Darwin (`dev_t` signé 32 bits, `nlink_t` 16 bits) ; sur macOS 26.6.2 Apple silicon : formatage, Clippy, 741 tests (3 ignorés), release des 4 programmes, 3 tests Python, 56 tests Node ; fenêtre et helper élevé restent des bouchons Windows seulement, collecteurs natifs `unsupported`, aucun changement de comportement Windows ; pas de cible produit macOS | fix/macos-build |
+| 16 — macOS natif (phase 5, item 5) | B, C | en cours (27 oct.) : PR plan ouverte ; code à suivre — télémétrie (Mach/libproc), inspections (launchd, journal unifié, `softwareupdate`), actions (LaunchAgents, caches, Corbeille), aide élevée `osascript`, GUI Tauri WKWebView, `.app` non signée, `docs/macos.md`, README ; validation locale sur Mac Apple Silicon | — |
 
 État historique du 10 octobre : arrêt demandé après la validation de ce lot, avant la nouvelle
 vue Stockage, sans commencer un autre chantier ni fusionner. Cette suspension du développement
