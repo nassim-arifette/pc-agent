@@ -205,8 +205,11 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
   exacte épinglée) dans `%APPDATA%\pcagent\pcagent.sqlite`. Tables `conversations`, `turns` (JSON
   versionné) et `samples` (chantier 5). Tout reste local ; rétention par défaut de 90 jours,
   suppression par conversation et « tout effacer ».
-- Surveillances : leurs tables et leur rétention sont décrites en C7 ; le numéro de migration
-  suit les migrations effectivement livrées, sans réserver celui du prochain chantier.
+- Surveillances : leurs tables et leur rétention sont décrites en C7. Coordination du 27 octobre :
+  le schéma livré est 6 (`turn_images`) ; Surveillances prend 7, Historique 8, les résultats
+  approfondis persistants 9. Les migrations sont séquentielles : aucun saut de version ni
+  migration vide à la place d'un autre lot. Chaque PR de code dépend de ses prédécesseurs
+  fusionnés, ou d'un unique socle de migrations relu et fusionné en premier.
 - **Résultats approfondis (#62/#83, 27 octobre)** : SQLite conserve localement les inspections
   approuvées, leur section et leur fenêtre réelle pendant 24 h, y compris après redémarrage.
   La purge à l'écriture et à la lecture et « tout effacer » les couvrent ; l'expiration se calcule
@@ -333,8 +336,8 @@ Update restent Windows ; les capteurs LHM/HWiNFO aussi.
   ou détruit le brouillon si `cancel=true`. `voice_state()` expose l'état courant, le niveau,
   le texte partiel/final, la langue détectée et un code d'erreur fermé ; aucun octet audio.
 - `voice_devices()`, `voice_settings_get/set()` choisissent le périphérique et le moteur :
-  whisper.cpp multilingue local en priorité, reconnaissance Windows locale en repli si le modèle
-  manque. Le repli ne doit jamais utiliser la dictée Windows en ligne ; une grammaire locale
+  whisper.cpp multilingue local en priorité, SAPI confirmé hors ligne en repli si le modèle
+  manque. Le repli ne doit jamais utiliser la dictée cloud `Windows.Media.SpeechRecognition` ; une grammaire locale
   ou un moteur hors ligne indisponible donne une erreur explicite, jamais un envoi implicite.
 - `voice_model_download(consent)` n'accepte que le modèle multilingue épinglé par l'application :
   source HTTPS fixe, taille et empreinte SHA-256 affichées avant le clic, progression et
@@ -734,7 +737,8 @@ explicite et un aperçu exact des données audio nécessiteront un nouveau compl
 aucune détection de catalogue ne peut activer un envoi audio dans ce lot.
 
 Ce qui part vers la recherche web (Tavily), et vers Microsoft hors du modèle, est décrit en C6.
-Les surveillances (C7) n'envoient rien hors du PC.
+Les surveillances (C7) n'envoient rien automatiquement hors du PC ; leur explication explicite
+suit la projection C5 et l'aperçu exact décrits en C7.
 
 ### C6 — Sources externes (proposé le 3 octobre ; chantier 15)
 
@@ -1849,9 +1853,10 @@ Implementation » est un critère de jugement).
 | Test complet sur un second PC Windows 11 (installation depuis la release, clé, parcours vidéo) | fait par le porteur depuis la release `v0.1.0` (27 oct.) |
 | Mesurer l'empreinte de l'app (RAM, CPU, disque de l'historique) pour le README | chiffres datés |
 
-**Repoussé après la soumission :** vue Historique complète, #58/#59 au-delà du
-premier lot, #60 (navigateurs), #62 (lot UAC unique), #55 (images), ETW, validation des capteurs
-actifs (chantier 9), cache Tavily.
+**Ancien report, remplacé pour les lots autorisés le 27 octobre :** vue Historique complète,
+#58/#59 au-delà du premier lot, #60 (navigateurs), #62 (lot UAC unique) et cache Tavily.
+#55 est livré ; ETW reste bloqué par la décision et les preuves de nettoyage ci-dessous.
+La validation des capteurs actifs (chantier 9) reste à établir.
 
 ### Phase 4 — Gel et soumission (27–29 oct.)
 
@@ -1907,7 +1912,7 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 5. Backend macOS complet (chantier 16) : `host_statistics64`/`sysctl`, libproc, `statfs`/IOKit/
    `diskutil`, IOKit batterie et GPU, Login Items/LaunchAgents, launchd, journal unifié, `softwareupdate`,
    actions (LaunchAgents, `~/Library/Caches`, Corbeille), aide élevée bornée par `osascript … with
-   administrator privileges`, GUI Tauri (WKWebView) et `.app` non signé ; validé sur un vrai Mac Apple
+   administrator privileges`, GUI Tauri (WKWebView) et `.app` non signé ; à valider sur un vrai Mac Apple
    Silicon. La CI macOS reste suspendue comme les autres : la validation locale fait foi.
 6. Reprendre ce qui a été repoussé en phase 3, par ordre de priorité.
 
@@ -1918,6 +1923,24 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 - Dépôt public dès la phase 0, ou seulement le 28 octobre.
 
 ## 8. Suivi
+
+**Coordination de revue du 27 octobre :** les plans fusionnés définissent le travail, pas sa
+réalisation ni sa validation native. Les PR de code conservent leurs preuves par plateforme
+à la révision finale intégrée ; la CI reste suspendue. Un conflit documentaire purement
+additif peut être combiné ; tout conflit substantiel de contrat ou de code remonte au porteur
+avant résolution.
+
+- Le périmètre complet ne supprime pas les budgets de ressources sûrs, les expirations,
+  les contrôles contre le rejeu ni l'obligation d'indiquer la couverture réelle.
+- #71 reste ouvert jusqu'aux mesures d'empreinte du parent et aux preuves d'évaluation réelle ;
+  une PR d'interface ou de documentation ne suffit pas à le clore.
+- L'automatique Super → Ultra reste soumis à l'étalonnage humain compatible ; une notation
+  automatisée n'est pas une preuve humaine.
+- #111 (ETW/E06) reste non fusionnée : décision du porteur attendue sur le gardien privilégié
+  séparé, armé avant `StartTrace`, et l'acquittement du nettoyage avant livraison du résultat.
+  `EventAccessRemove` a été rapporté administrateur seulement sur Windows 20348 ; aucune promesse
+  de suppression par le parent non élevé n'est adoptée ici. Aucune activation avant décision
+  et preuves complètes de nettoyage. Sur la VM WARP, GPU matériel et NVML restent non testés.
 
 | Lot voix | Pistes | État | Branche |
 | --- | --- | --- | --- |
@@ -1987,7 +2010,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Q3 — Séparation inspections / worker élevé / MFT | A, B | fusionné et validé (26 oct.) : `pcagent-mft` pur, `pcagent-elevation` sans moteur LLM ni client HTTP, projection C4 et notes conservées dans `pcagent-inspect` ; API existante réexportée ; intégration avec #91 : 18 exécutables, 809 tests réussis et 3 ignorés sous compte standard, fmt/Clippy/release/doctests, 56 tests Node et 3 Python | [#90](https://github.com/nassim-arifette/pc-agent/pull/90) |
 | 12 — README et docs (#71) | D | fusionné (26 oct., `4b341ff`) : README en anglais avec captures du mock, `architecture.md`, `validation.md`, `.env.example` ; restent trois TODO liés à la release (lien de la release, empreinte mesurée, résultats de l'évaluation) ; `v0.1.1` (27 oct.) : lien de la release et test sur un second PC ajoutés au README, restent l'empreinte mesurée et les résultats de l'évaluation | wp12-docs, `release/v0.1.1` |
 | Compilation macOS | B | fait (26 oct.) : le scanner portable (`crates/storage/src/portable.rs`) convertit `st_dev` et `st_nlink` depuis les types Darwin (`dev_t` signé 32 bits, `nlink_t` 16 bits) ; sur macOS 26.6.2 Apple silicon : formatage, Clippy, 741 tests (3 ignorés), release des 4 programmes, 3 tests Python, 56 tests Node ; fenêtre et helper élevé restent des bouchons Windows seulement, collecteurs natifs `unsupported`, aucun changement de comportement Windows ; pas de cible produit macOS | fix/macos-build |
-| 16 — macOS natif (phase 5, item 5) | B, C | en cours (27 oct.) : PR plan ouverte ; code à suivre — télémétrie (Mach/libproc), inspections (launchd, journal unifié, `softwareupdate`), actions (LaunchAgents, caches, Corbeille), aide élevée `osascript`, GUI Tauri WKWebView, `.app` non signée, `docs/macos.md`, README ; validation locale sur Mac Apple Silicon | — |
+| 16 — macOS natif (phase 5, item 5) | B, C | en cours (27 oct.) : plan fusionné ; code à suivre — télémétrie (Mach/libproc), inspections (launchd, journal unifié, `softwareupdate`), actions (LaunchAgents, caches, Corbeille), aide élevée `osascript`, GUI Tauri WKWebView, `.app` non signée, `docs/macos.md`, README ; validation locale sur Mac Apple Silicon requise | [#102](https://github.com/nassim-arifette/pc-agent/pull/102) |
 
 État historique du 10 octobre : arrêt demandé après la validation de ce lot, avant la nouvelle
 vue Stockage, sans commencer un autre chantier ni fusionner. Cette suspension du développement
