@@ -3,6 +3,8 @@
 //! ever sent anywhere; the person can delete a conversation or everything, and old ones expire.
 #![forbid(unsafe_code)]
 mod battery;
+mod elevated;
+pub use elevated::{ElevatedInspection, ELEVATED_RETENTION_MS, MAX_ELEVATED_RECORD_BYTES};
 mod images;
 pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 mod process_peaks;
@@ -27,7 +29,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -181,6 +183,9 @@ impl Store {
         }
         if version < 8 {
             samples::system::migrate(&conn)?;
+        }
+        if version < 9 {
+            elevated::migrate(&conn)?;
         }
         Ok(Self {
             conn,

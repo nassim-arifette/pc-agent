@@ -325,7 +325,22 @@ pub(super) fn launch_investigation(
     let history = state.history.clone();
     let sampler = state.sampler.clone();
     let proposals = state.actions.clone();
-    let elevated_evidence = state.elevation.completed_evidence();
+    let elevated_evidence = if let Some(store) = lock(&state.history).as_ref() {
+        store
+            .elevated_inspections(unix_ms())
+            .map_err(crate::failure::history)?
+            .into_iter()
+            .filter_map(|record| {
+                pcagent_tools::elevated_tools::ApprovedInspection::new(
+                    &record.task,
+                    record.inspection,
+                )
+                .ok()
+            })
+            .collect()
+    } else {
+        state.elevation.completed_evidence()
+    };
     let web_search = cloud && lock(&state.privacy).web_search;
     let probes = *lock(&state.probes);
     let program_names = state.program_names.clone();

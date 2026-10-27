@@ -146,6 +146,8 @@ pub fn run() {
             elevation_commands::elevation_status,
             elevation_commands::elevation_run,
             elevation_commands::elevation_cancel,
+            elevation_commands::elevation_results,
+            elevation_commands::elevation_select,
             history_commands::conversations_list,
             history_commands::conversation_get,
             history_commands::conversation_delete,

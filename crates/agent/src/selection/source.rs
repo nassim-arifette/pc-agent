@@ -20,6 +20,10 @@ pub enum SelectionSource {
     /// One live battery read: C4 observations of the batteries the window shows. The host keeps
     /// only the metrics it displays, partial or contradicting values included.
     Battery(Inspection),
+    ElevatedInspection {
+        id: String,
+        inspection: Inspection,
+    },
 }
 
 pub struct RecordingSource {
@@ -102,6 +106,11 @@ impl SelectionSource {
             Self::Recording(recording) => targets.push(SelectionTarget::Recording {
                 recording_id: recording.recording.id.clone(),
             }),
+            Self::ElevatedInspection { id, .. } => {
+                targets.push(SelectionTarget::ElevatedInspection {
+                    inspection_id: id.clone(),
+                })
+            }
             Self::Storage(storage) => {
                 targets.extend(
                     storage
@@ -160,6 +169,10 @@ impl SelectionSource {
                 bytes(&value.page).saturating_add(value.context.retained_bytes())
             }
             Self::Battery(value) => bytes(value),
+            Self::ElevatedInspection { id, inspection } => id
+                .len()
+                .saturating_add(bytes(inspection))
+                .saturating_add(bytes(&inspection.names)),
         }
     }
 
@@ -188,12 +201,28 @@ impl SelectionSource {
     pub fn is_history(&self) -> bool {
         matches!(
             self,
-            Self::History(_) | Self::Events(_) | Self::Recording(_)
+            Self::History(_)
+                | Self::Events(_)
+                | Self::Recording(_)
+                | Self::ElevatedInspection { .. }
         )
+    }
+
+    pub fn available_at(&self, now_unix_ms: u64) -> bool {
+        match self {
+            Self::ElevatedInspection { inspection, .. } => now_unix_ms
+                .checked_sub(inspection.measured_at_unix_ms)
+                .is_some_and(|age| age < pcagent_store::ELEVATED_RETENTION_MS),
+            _ => true,
+        }
     }
 
     pub fn measured_at(&self, target: &SelectionTarget) -> Option<u64> {
         let at = match (self, target) {
+            (
+                Self::ElevatedInspection { inspection, .. },
+                SelectionTarget::ElevatedInspection { .. },
+            ) => Some(inspection.measured_at_unix_ms),
             (Self::Snapshot(snapshot), SelectionTarget::Resource { resource }) => snapshot
                 .evidence
                 .iter()

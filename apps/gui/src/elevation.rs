@@ -20,6 +20,14 @@ pub struct InspectionResult {
     /// the coverage `detail` stays the English C4 text, never shown in the window.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub coverage_notes: Vec<pcagent_inspect::elevation::CoverageNote>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<SectionResult>,
+}
+#[derive(Serialize)]
+pub struct SectionResult {
+    pub task: ElevatedTask,
+    #[serde(flatten)]
+    pub result: InspectionResult,
 }
 impl From<pcagent_inspect::Inspection> for InspectionResult {
     fn from(inspection: pcagent_inspect::Inspection) -> Self {
@@ -27,7 +35,32 @@ impl From<pcagent_inspect::Inspection> for InspectionResult {
             inspection,
             local_mft_tree: None,
             coverage_notes: Vec::new(),
+            sections: Vec::new(),
         }
+    }
+}
+impl InspectionResult {
+    fn from_response(response: pcagent_inspect::elevation::ElevationResponse) -> Self {
+        Self {
+            inspection: pcagent_inspect::elevation::to_inspection(&response),
+            coverage_notes: pcagent_inspect::elevation::coverage_notes(&response),
+            local_mft_tree: response.mft.map(|collection| collection.tree),
+            sections: response
+                .sections
+                .into_iter()
+                .map(|section| SectionResult {
+                    task: section.task.clone(),
+                    result: Self::from_response(section),
+                })
+                .collect(),
+        }
+    }
+    pub fn local_details(&self) -> serde_json::Value {
+        serde_json::json!({
+            "local_mft_tree": self.local_mft_tree,
+            "coverage_notes": self.coverage_notes,
+            "sections": self.sections,
+        })
     }
 }
 
@@ -83,11 +116,7 @@ impl ApprovedTask for NativeApproved {
             .prepared
             .run_locally_bounded(self.approval, cancel)
             .map_err(|error| failure::elevation(&error))?;
-        Ok(InspectionResult {
-            inspection: pcagent_inspect::elevation::to_inspection(&response),
-            coverage_notes: pcagent_inspect::elevation::coverage_notes(&response),
-            local_mft_tree: response.mft.map(|collection| collection.tree),
-        })
+        Ok(InspectionResult::from_response(response))
     }
 }
 
@@ -558,6 +587,9 @@ impl Drop for Slot {
 }
 
 impl Run {
+    pub fn task(&self) -> &ElevatedTask {
+        &self.task
+    }
     pub fn execute(mut self) -> Result<InspectionResult, Failure> {
         let approved = self.approved.take().ok_or_else(|| {
             Failure::new(
@@ -578,11 +610,6 @@ impl Run {
                             .completed
                             .retain(|r| r.available() && r.task_name() != captured.task_name());
                         state.completed.push(captured);
-                        if state.completed.len()
-                            > pcagent_tools::elevated_tools::MAX_APPROVED_INSPECTIONS
-                        {
-                            state.completed.remove(0);
-                        }
                     }
                 }
             }

@@ -5,17 +5,11 @@ use pcagent_agent::{Args, PrivacyContext, Sharing, ToolOutput, ToolSpec};
 use pcagent_inspect::{elevation::ElevatedTask, Inspection};
 use pcagent_shared::{unix_ms, Status};
 use serde_json::json;
-use std::time::{Duration, Instant};
-
-pub const MAX_APPROVED_INSPECTIONS: usize = 8;
-const MAX_INSPECTION_BYTES: usize = 512 * 1024;
-const RETENTION: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub struct ApprovedInspection {
     task_name: &'static str,
     inspection: Inspection,
-    expires_at: Instant,
 }
 impl ApprovedInspection {
     pub fn new(task: &ElevatedTask, inspection: Inspection) -> Result<Self, &'static str> {
@@ -32,21 +26,22 @@ impl ApprovedInspection {
         if serde_json::to_vec(&inspection)
             .map_err(|_| "invalid_inspection")?
             .len()
-            > MAX_INSPECTION_BYTES
+            > pcagent_store::MAX_ELEVATED_RECORD_BYTES
         {
             return Err("inspection_too_large");
         }
         Ok(Self {
             task_name,
             inspection,
-            expires_at: Instant::now() + RETENTION,
         })
     }
     pub fn task_name(&self) -> &'static str {
         self.task_name
     }
     pub fn available(&self) -> bool {
-        Instant::now() < self.expires_at
+        unix_ms()
+            .checked_sub(self.inspection.measured_at_unix_ms)
+            .is_some_and(|age| age < pcagent_store::ELEVATED_RETENTION_MS)
     }
     /// Same privacy projection as execution, for the locally reviewed context.
     pub fn preview(&self, sharing: Sharing, privacy: &PrivacyContext) -> ToolOutput {
@@ -142,7 +137,9 @@ mod tests {
         assert!(output.inspection_complete);
         assert_eq!(output.cloud["measured_at_unix_ms"], 1);
         assert_eq!(output.cloud["historical"], true);
-        captured.expires_at = Instant::now();
+        captured.inspection.measured_at_unix_ms = unix_ms();
+        assert!(captured.available());
+        captured.inspection.measured_at_unix_ms = unix_ms() - pcagent_store::ELEVATED_RETENTION_MS;
         assert!(!captured.available());
     }
 }

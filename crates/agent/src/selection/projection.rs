@@ -40,12 +40,22 @@ impl FrozenSelection {
         if !target.validate() || !source.targets().contains(target) {
             return Err("The selected target is absent from this immutable capture.");
         }
+        if !source.available_at(previewed_at_unix_ms) {
+            return Err("The administrator inspection has expired.");
+        }
         if file_names && sharing != Sharing::Complete {
             return Err("File names require complete sharing and the finite scan name preview.");
         }
         let mut snapshot = Snapshot::empty("selected-local-capture");
         let mut storage_context = StorageContext::default();
         let (mut output, wire_target) = match (source, target) {
+            (
+                SelectionSource::ElevatedInspection { inspection, .. },
+                SelectionTarget::ElevatedInspection { .. },
+            ) => (
+                crate::projections::system::project(inspection, sharing, privacy),
+                json!({"kind":"elevated_inspection"}),
+            ),
             (SelectionSource::Snapshot(capture), SelectionTarget::Resource { resource }) => {
                 snapshot = capture.clone();
                 snapshot

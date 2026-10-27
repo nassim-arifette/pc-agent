@@ -257,7 +257,8 @@ fn drop_history_projection(store: &Store) {
     store
         .conn
         .execute_batch(
-            "DROP TABLE system_samples; DROP TABLE history_names; DROP TABLE collection_policy;
+            "DROP TABLE elevated_inspections;
+             DROP TABLE system_samples; DROP TABLE history_names; DROP TABLE collection_policy;
          PRAGMA user_version=7;",
         )
         .unwrap();
@@ -298,7 +299,7 @@ fn release_v6_upgrades_through_real_watch_v7_and_history_v8_losslessly() {
             .conn
             .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        8
+        crate::SCHEMA_VERSION
     );
     assert_eq!(
         serde_json::to_value(store.history_chart(0, 20_000, 300).unwrap()).unwrap(),
