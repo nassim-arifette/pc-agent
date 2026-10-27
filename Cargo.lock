@@ -2611,6 +2611,7 @@ dependencies = [
 name = "pcagent-telemetry"
 version = "0.1.1"
 dependencies = [
+ "libc",
  "pcagent-shared",
  "serde",
  "serde_json",

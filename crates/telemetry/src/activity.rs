@@ -1504,7 +1504,7 @@ mod tests {
         assert_eq!(activity.processes.len(), 1);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn unsupported_activity_never_returns_fixture_measurements() {
         let activity = Collector::new().process_activity(3, 20);

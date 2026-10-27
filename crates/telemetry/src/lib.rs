@@ -5,6 +5,9 @@ pub mod counters;
 pub mod gpu;
 pub mod history;
 mod identity;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos;
 mod program_names;
 pub mod services;
 pub mod tree;
@@ -41,7 +44,11 @@ pub fn current_resource_usage() -> ResourceUsage {
     {
         windows::resource_usage()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::resource_usage()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         ResourceUsage {
             thread_cpu_100ns: None,
@@ -104,7 +111,7 @@ impl ProcessSort {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TickSample {
     ticks: [u64; 3],
@@ -118,7 +125,7 @@ pub struct Collector {
     boot_id: Option<String>,
     registry: Registry,
     history: MetricHistory,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     last_ticks: Option<TickSample>,
     #[cfg(windows)]
     pdh: Option<Result<windows::pdh::Pdh, counters::Unavailable>>,
@@ -143,11 +150,13 @@ impl Collector {
             started: Instant::now(),
             #[cfg(windows)]
             boot_id: windows::boot_id(),
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            boot_id: macos::boot_id(),
+            #[cfg(not(any(windows, target_os = "macos")))]
             boot_id: None,
             registry: Registry::default(),
             history: MetricHistory::new(config, Origin::Live),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             last_ticks: None,
             #[cfg(windows)]
             pdh: None,
@@ -178,7 +187,9 @@ impl Collector {
     ) -> Snapshot {
         #[cfg(windows)]
         let result = windows::collect(self, include_processes, limit.clamp(1, 50), false, sort);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let result = macos::collect(self, include_processes, limit.max(1), false, sort);
+        #[cfg(not(any(windows, target_os = "macos")))]
         let result = {
             let _ = (include_processes, limit, sort);
             unsupported_snapshot(&self.session_id)
@@ -191,7 +202,9 @@ impl Collector {
     pub fn sample_system(&mut self) -> Snapshot {
         #[cfg(windows)]
         let result = windows::collect(self, false, 1, true, ProcessSort::WorkingSet);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let result = macos::collect(self, false, 1, true, ProcessSort::WorkingSet);
+        #[cfg(not(any(windows, target_os = "macos")))]
         let result = unsupported_snapshot(&self.session_id);
         self.record(&result);
         result
@@ -201,7 +214,9 @@ impl Collector {
     pub fn sample_processes(&mut self, limit: usize, sort: ProcessSort) -> Snapshot {
         #[cfg(windows)]
         let result = windows::collect(self, true, limit.clamp(1, 50), true, sort);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let result = macos::collect(self, true, limit.max(1), true, sort);
+        #[cfg(not(any(windows, target_os = "macos")))]
         let result = {
             let _ = (limit, sort);
             unsupported_snapshot(&self.session_id)
@@ -214,7 +229,9 @@ impl Collector {
     pub fn sample_recording_processes(&mut self, limit: usize, sort: ProcessSort) -> Snapshot {
         #[cfg(windows)]
         let result = windows::collect_recording(self, limit.clamp(1, 50), sort);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let result = macos::collect(self, true, limit.max(1), true, sort);
+        #[cfg(not(any(windows, target_os = "macos")))]
         let result = {
             let _ = (limit, sort);
             unsupported_snapshot(&self.session_id)
@@ -241,7 +258,15 @@ impl Collector {
                 limit.clamp(1, 50),
             )
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::activity::collect(
+                self,
+                window_seconds.clamp(1, activity::MAX_ACTIVITY_WINDOW_SECONDS),
+                limit.max(1),
+            )
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (window_seconds, limit);
             ProcessActivity::unavailable(&self.session_id, Status::Unsupported, UNSUPPORTED)
@@ -272,7 +297,11 @@ impl Collector {
         {
             windows::process_tree(self)
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::process_tree(self)
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             ProcessTree {
                 schema_version: SCHEMA_VERSION,
@@ -309,7 +338,9 @@ impl Collector {
                 let tracked = t.clone();
                 #[cfg(windows)]
                 let state = windows::revalidate(key.0, key.1);
-                #[cfg(not(windows))]
+                #[cfg(target_os = "macos")]
+                let state = macos::revalidate(key.0, key.1);
+                #[cfg(not(any(windows, target_os = "macos")))]
                 let state = InstanceState::Unverified;
                 if matches!(state, InstanceState::Exited | InstanceState::PidReused) {
                     self.registry.retire(key, state);
@@ -369,7 +400,11 @@ impl Collector {
         {
             windows::hardware_inventory()
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::hardware_inventory()
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             use pcagent_shared::Observed;
             fn m<T>() -> Observed<T> {
@@ -393,11 +428,11 @@ impl Collector {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 const UNSUPPORTED: &str =
     "Native collection requires Windows; no host or synthetic data substituted.";
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn unsupported_snapshot(session_id: &str) -> Snapshot {
     use pcagent_shared::Evidence;
     let mut result = Snapshot::empty(session_id);
@@ -617,7 +652,7 @@ mod tests {
         assert_eq!(s.points.len(), 2);
         assert_eq!(s.origin, Origin::Live);
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn non_windows_never_masquerades_as_a_windows_sample() {
         let mut c = Collector::new();
