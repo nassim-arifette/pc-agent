@@ -248,6 +248,7 @@ pub(crate) fn apply(target: &StartupTarget) -> Result<EffectOutcome, EffectError
                 bytes.as_ptr(),
                 bytes.len() as u32,
             ),
+            StartupApproval::Xdg { .. } => return Err(error(Status::Unsupported)),
         }
     };
     if code != ERROR_SUCCESS {
