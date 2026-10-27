@@ -433,14 +433,25 @@ mod tests {
             .unwrap();
             store.append_sample(&sample).unwrap();
         }
-        store
+        let mut series = store
             .metric_history(&HistoryQuery {
                 metric: Metric::CpuBusyBasisPoints,
                 entity_ref: "system".into(),
                 from_unix_ms: 1,
                 to_unix_ms: (count + 1) * 1000,
             })
-            .unwrap()
+            .unwrap();
+        // These projection tests add events after the store read, with their own name context.
+        series.process_names = [
+            (
+                "proc-aabbccdd".into(),
+                r"C:\Users\Alice\Programs\browser.exe".into(),
+            ),
+            ("proc-aabbccde".into(), "editor.exe".into()),
+            ("proc-aabbccdf".into(), "unrelated.exe".into()),
+        ]
+        .into();
+        series
     }
 
     fn named_reference(series: &HistorySeries, name: &str) -> String {

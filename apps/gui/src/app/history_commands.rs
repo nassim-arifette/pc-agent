@@ -1,5 +1,5 @@
 //! Local history, recordings and stored conversations.
-use super::selection_commands::retain_recording;
+use super::selection_commands::{retain_recording, retain_recording_detail};
 use super::{lock, AppState};
 use crate::failure::{Code, Failure};
 use crate::{failure, preview, protocol};
@@ -11,6 +11,7 @@ use pcagent_store::{
     Conversation, ConversationSummary, HistoryQuery, HistorySeries, Recording, Store,
     DEFAULT_RETENTION_DAYS,
 };
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 use tauri::State;
@@ -37,6 +38,127 @@ pub(super) fn history_unavailable() -> Failure {
 #[tauri::command]
 pub(super) fn history_status(state: State<'_, AppState>) -> Option<SamplerStatus> {
     state.sampler.as_ref().map(Sampler::status)
+}
+
+#[derive(Serialize)]
+pub(super) struct SelectableHistory<T: Serialize> {
+    #[serde(flatten)]
+    capture: T,
+    source_id: Option<String>,
+    selection_unavailable: Option<String>,
+}
+
+impl<T: Serialize> SelectableHistory<T> {
+    fn new(capture: T, source: Result<String, String>) -> Self {
+        let (source_id, selection_unavailable) = match source {
+            Ok(id) => (Some(id), None),
+            Err(reason) => (None, Some(reason)),
+        };
+        Self {
+            capture,
+            source_id,
+            selection_unavailable,
+        }
+    }
+}
+
+#[tauri::command]
+pub(super) async fn history_chart(
+    state: State<'_, AppState>,
+    from_unix_ms: u64,
+    to_unix_ms: u64,
+    buckets: usize,
+) -> Result<SelectableHistory<pcagent_store::HistoryChart>, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    let selections = state.selections.clone();
+    let revision = lock(&selections).history_revision();
+    tauri::async_runtime::spawn_blocking(move || {
+        let chart = sampler
+            .history_chart(from_unix_ms, to_unix_ms, buckets)
+            .map_err(failure::history)?;
+        let source =
+            lock(&selections).publish_history(SelectionSource::Chart(chart.clone()), revision);
+        Ok(SelectableHistory::new(chart, source))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(super) async fn history_overview(
+    state: State<'_, AppState>,
+    day_start_unix_ms: u64,
+) -> Result<pcagent_store::HistoryOverview, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        sampler
+            .history_overview(day_start_unix_ms)
+            .map_err(failure::history)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(super) async fn history_recordings(
+    state: State<'_, AppState>,
+    offset: u64,
+) -> Result<pcagent_store::HistoryRecordings, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        sampler.history_recordings(offset).map_err(failure::history)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(super) async fn recording_detail(
+    state: State<'_, AppState>,
+    recording_id: String,
+) -> Result<Option<SelectableHistory<pcagent_store::RecordingDetail>>, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    let selections = state.selections.clone();
+    let revision = lock(&selections).history_revision();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(detail) = sampler
+            .recording_detail(&recording_id)
+            .map_err(failure::history)?
+        else {
+            return Ok(None);
+        };
+        let source = retain_recording_detail(&selections, &detail, revision);
+        Ok(Some(SelectableHistory::new(detail, source)))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(super) async fn history_collection(
+    state: State<'_, AppState>,
+) -> Result<pcagent_store::HistoryCollection, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        sampler.history_collection().map_err(failure::history)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(super) async fn history_collection_set_budget(
+    state: State<'_, AppState>,
+    bytes: u64,
+) -> Result<pcagent_store::HistoryCollection, Failure> {
+    let sampler = state.sampler.clone().ok_or_else(history_unavailable)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        sampler
+            .set_collection_budget(bytes)
+            .map_err(failure::history)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

@@ -4,7 +4,7 @@ use crate::StorageContext;
 use pcagent_inspect::{CoverageStatus, Inspection};
 use pcagent_shared::{Origin, Snapshot, Window};
 use pcagent_storage::LargestItemsPage;
-use pcagent_store::{BatteryRecording, HistorySeries, ProcessPeaks, Recording};
+use pcagent_store::{BatteryRecording, HistoryChart, HistorySeries, ProcessPeaks, Recording};
 use pcagent_telemetry::ProcessActivity;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -15,6 +15,7 @@ pub enum SelectionSource {
     ProcessActivity(ProcessActivity),
     History(HistorySeries),
     Events(HistorySeries),
+    Chart(HistoryChart),
     Recording(RecordingSource),
     Storage(StorageSource),
     /// One live battery read: C4 observations of the batteries the window shows. The host keeps
@@ -99,6 +100,25 @@ impl SelectionSource {
                     event_id: event.id.clone(),
                 }))
             }
+            Self::Chart(chart) => {
+                for resource in [
+                    Resource::Memory,
+                    Resource::Cpu,
+                    Resource::Disk,
+                    Resource::Gpu,
+                ] {
+                    if chart
+                        .histories
+                        .iter()
+                        .any(|series| resource.contains(series.metric))
+                    {
+                        targets.push(SelectionTarget::Resource { resource });
+                    }
+                }
+                targets.extend(chart.events.iter().map(|event| SelectionTarget::Event {
+                    event_id: event.id.clone(),
+                }));
+            }
             Self::Recording(recording) => targets.push(SelectionTarget::Recording {
                 recording_id: recording.recording.id.clone(),
             }),
@@ -134,7 +154,9 @@ impl SelectionSource {
             target.validate()
                 && seen.insert(serde_json::to_string(target).expect("target serializes"))
         });
-        targets.truncate(MAX_SOURCE_TARGETS);
+        if !self.is_history() {
+            targets.truncate(MAX_SOURCE_TARGETS);
+        }
         targets
     }
 
@@ -147,6 +169,7 @@ impl SelectionSource {
             Self::Snapshot(value) => bytes(value),
             Self::ProcessActivity(value) => bytes(value),
             Self::History(value) | Self::Events(value) => bytes(value),
+            Self::Chart(value) => bytes(value).saturating_add(bytes(&value.histories)),
             Self::Recording(value) => [
                 bytes(&value.recording),
                 bytes(&value.histories),
@@ -188,7 +211,7 @@ impl SelectionSource {
     pub fn is_history(&self) -> bool {
         matches!(
             self,
-            Self::History(_) | Self::Events(_) | Self::Recording(_)
+            Self::History(_) | Self::Events(_) | Self::Chart(_) | Self::Recording(_)
         )
     }
 
@@ -225,6 +248,26 @@ impl SelectionSource {
                     })
                     .max()
             }
+            (Self::Chart(chart), SelectionTarget::Event { event_id }) => chart
+                .events
+                .iter()
+                .filter(|event| &event.id == event_id)
+                .flat_map(|event| [&event.peak_observation, &event.contributor_observation])
+                .filter_map(|observation| {
+                    observation
+                        .as_ref()
+                        .and_then(|value| value.measured_at_unix_ms)
+                })
+                .max(),
+            (Self::Chart(chart), SelectionTarget::Resource { resource }) => chart
+                .histories
+                .iter()
+                .find(|series| resource.contains(series.metric))
+                .into_iter()
+                .flat_map(|series| &series.points)
+                .filter(|point| point.value.is_some() || point.min.is_some() || point.max.is_some())
+                .map(|point| point.observed_to_unix_ms.unwrap_or(point.unix_ms))
+                .max(),
             (
                 Self::History(series),
                 SelectionTarget::Resource { .. } | SelectionTarget::Process { .. },

@@ -111,19 +111,30 @@ pub fn run(
             let mut histories = Vec::new();
             let mut complete = recording.status == "completed";
             out.limitations.clear();
+            let chart = context.sampler.history_chart(
+                recording.started_at_unix_ms,
+                to,
+                MAX_RECORDING_POINTS,
+            );
             for metric in [
                 Metric::CpuBusyBasisPoints,
                 Metric::PhysicalAvailableBytes,
                 Metric::DiskReadLatencyMicroseconds,
                 Metric::DiskWriteLatencyMicroseconds,
             ] {
-                match context.sampler.history(&HistoryQuery {
-                    metric,
-                    entity_ref: "system".into(),
-                    from_unix_ms: recording.started_at_unix_ms,
-                    to_unix_ms: to,
+                match chart.as_ref().ok().and_then(|chart| {
+                    let mut series = chart
+                        .histories
+                        .iter()
+                        .find(|series| series.metric == metric)?
+                        .clone();
+                    if metric == Metric::CpuBusyBasisPoints {
+                        series.events = chart.events.clone();
+                        series.process_names = chart.process_names.clone();
+                    }
+                    Some(series)
                 }) {
-                    Ok(series) => {
+                    Some(series) => {
                         let projected =
                             project(series, sharing, &privacy, Some(MAX_RECORDING_POINTS));
                         complete &= projected.status == Status::Ok;
@@ -135,7 +146,7 @@ pub fn run(
                             }
                         }
                     }
-                    Err(_) => {
+                    None => {
                         complete = false;
                         histories.push(json!({"metric":metric,"entity_ref":"system",
                             "status":Status::Error,"from_unix_ms":recording.started_at_unix_ms,

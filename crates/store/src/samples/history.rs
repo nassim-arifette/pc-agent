@@ -1,4 +1,4 @@
-//! One read snapshot serves the five system charts. Only bounded, finished series are cached;
+//! One read snapshot serves all system charts. Only bounded, finished series are cached;
 //! sample payloads are streamed and never retained in the reader between requests.
 use super::*;
 use std::collections::VecDeque;
@@ -7,12 +7,14 @@ use std::io::{self, Write};
 #[cfg(test)]
 mod tests;
 
-const SYSTEM_CHARTS: [Metric; 5] = [
+pub(crate) const SYSTEM_CHARTS: [Metric; 7] = [
     Metric::CpuBusyBasisPoints,
     Metric::PhysicalAvailableBytes,
     Metric::PhysicalTotalBytes,
     Metric::DiskIdleBasisPoints,
     Metric::GpuBusiestEngineBasisPoints,
+    Metric::DiskReadLatencyMicroseconds,
+    Metric::DiskWriteLatencyMicroseconds,
 ];
 const MAX_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -40,7 +42,7 @@ pub struct ChartSeries {
 }
 
 /// [timestamp, mean, minimum, maximum, measured, expected, resolution, status, origin].
-/// Positions keep 300 buckets x 5 metrics near 100 KiB without losing null values or bands.
+/// Positions keep the transport compact without losing null values or bands.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChartPoint(
     pub u64,
@@ -56,7 +58,7 @@ pub struct ChartPoint(
 
 impl HistoryChart {
     fn new(from: u64, to: u64, buckets: usize, mut histories: Vec<HistorySeries>) -> Self {
-        let first = histories.first_mut().expect("five system metrics");
+        let first = histories.first_mut().expect("system metrics");
         let events = std::mem::take(&mut first.events);
         let process_names = std::mem::take(&mut first.process_names);
         let gaps = first.gaps.clone();
@@ -456,25 +458,19 @@ impl Store {
         }
         let events = self.activity_events(query.from_unix_ms, query.to_unix_ms, usize::MAX)?;
         if query.entity_ref == "system" {
-            for reference in events
-                .iter()
-                .filter_map(|event| event.contributor_ref.as_ref())
-            {
-                let name = self
-                    .conn
-                    .query_row(
-                        "SELECT name FROM history_names WHERE entity_ref=?1",
-                        [reference],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                if let Some(name) = name {
-                    names.insert(reference.clone(), name);
-                }
-            }
+            let mut statement = self.conn.prepare(
+                "SELECT DISTINCT n.entity_ref,n.name FROM history_names n
+                 JOIN activity_events e ON e.contributor_ref=n.entity_ref
+                 WHERE e.ended_at>=?1 AND e.started_at<=?2",
+            )?;
+            let rows = statement.query_map(
+                params![stored(query.from_unix_ms), stored(query.to_unix_ms)],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            names.extend(rows.collect::<Result<BTreeMap<_, _>, _>>()?);
         }
         let mut results = Vec::with_capacity(builders.len());
-        for builder in builders {
+        for (index, builder) in builders.into_iter().enumerate() {
             let mut gaps = gaps.clone();
             let points: Vec<_> = builder.points.into_iter().collect();
             let mut limitations = vec!["Persisted local samples; values are not interpolated. After 24 hours, values are duration-weighted minute averages with measured minima and maxima. Instantaneous gauges use the sampling interval as averaging weight, not as a measured window.".into(),
@@ -517,8 +513,16 @@ impl Store {
                 to_unix_ms: query.to_unix_ms,
                 points,
                 gaps,
-                events: events.clone(),
-                process_names: names.clone(),
+                events: if buckets.is_none() || index == 0 {
+                    events.clone()
+                } else {
+                    vec![]
+                },
+                process_names: if buckets.is_none() || index == 0 {
+                    names.clone()
+                } else {
+                    BTreeMap::new()
+                },
                 sources: builder.sources,
                 limitations,
             });
