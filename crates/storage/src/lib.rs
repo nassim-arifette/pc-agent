@@ -6,16 +6,9 @@
 mod content;
 mod index;
 pub use content::{ContentComparison, ContentGroup, ContentOptions};
-#[cfg(not(windows))]
-mod portable;
+mod os;
 mod scan;
-#[cfg(windows)]
-#[allow(unsafe_code)]
-mod windows;
-#[cfg(not(windows))]
-use portable as platform;
-#[cfg(windows)]
-use windows as platform;
+use os::{selected as platform, Native, Platform};
 
 pub use index::{
     dedup_parent_child, redact_names, redact_path, ItemKind, ItemView, LargestItemsPage, LastUse,
@@ -23,7 +16,7 @@ pub use index::{
 };
 /// Live free space of the volume that contains `root` (Win32 `GetDiskFreeSpaceExW`).
 pub fn volume_space(root: &Path) -> VolumeSpace {
-    platform::volume_space(root)
+    Native::volume_space(root)
 }
 pub use scan::{
     classify_attributes, AttributeClass, ClassicBackend, ATTR_COMPRESSED, ATTR_DIRECTORY,
@@ -94,15 +87,15 @@ pub struct ScanScope {
 }
 impl ScanScope {
     pub fn authorize(root: &Path) -> Result<Self, StorageError> {
-        let (root, pinned) = platform::authorize_root(root)?;
+        let (root, pinned) = Native::authorize_root(root)?;
         let identity = pinned.identity()?;
-        let volume = platform::check_root(&root)?;
+        let volume = Native::check_root(&root)?;
         Ok(Self {
             id: new_id("scope"),
             root,
             volume,
             identity,
-            profile: platform::profile_dir(),
+            profile: Native::profile_dir(),
         })
     }
     pub fn id(&self) -> &str {
@@ -444,7 +437,7 @@ impl StorageService {
             let s = scopes.get(scope_id).ok_or(StorageError::UnknownScope)?;
             (s.scope.clone(), s.index.clone(), s.running.is_some())
         };
-        let space = platform::volume_space(&scope.root);
+        let space = Native::volume_space(&scope.root);
         Ok(StorageOverview::build(
             &scope,
             index.as_deref(),
