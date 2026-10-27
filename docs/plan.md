@@ -75,6 +75,12 @@ Toute modification passe d'abord par ce document, dans une PR à part.
 
 ### C1 — Réponse de l'agent
 
+**Complément Surveillances (27 octobre 2026).** `get_watch_alerts` est un outil fermé en lecture
+seule (`from_unix_ms`, `to_unix_ms`, `limit`, `offset`), paginé, qui lit les alertes locales
+des sept derniers jours. Il rend les observations C4 du déclenchement, le seuil, la valeur
+extrême, les dates, l'état et les lacunes ; il ne crée ni ne modifie aucune règle. Les chiffres
+de la réponse restent vérifiés contre ces observations. Aucun appel n'est automatique.
+
 Par défaut, chaque requête garde `tool_choice: "required"` ; le modèle termine le tour en appelant
 l'outil `submit_answer`.
 
@@ -381,6 +387,11 @@ avec Sonnet/Codex sont exclues de ce lot, à la demande du porteur du projet.
   sélection précédente. Les sources figées et tickets expirent après cinq minutes monotones,
   avec une capacité bornée. Une suppression d'historique, révocation de scan ou identité remplacée
   invalide les sources concernées. Les dates, âges, lacunes et valeurs inconnues restent explicites.
+- Complément Surveillances (27 octobre) : `watch_alert` est une source opaque publiée côté Rust
+  depuis une alerte conservée. « Expliquer » fige la règle au déclenchement, les observations,
+  le seuil, l'extrême, les dates et la raison de clôture, sans nouvelle collecte. L'aperçu et
+  le ticket existants lient exactement cette capture au tour. Supprimer l'alerte, sa règle ou
+  l'historique invalide la source. La page ne fournit jamais elle-même les mesures.
 - Ajout du 5 octobre, ressource `battery` : elle se résout dans le dernier relevé batterie local
   publié par la vue PC en direct (observations C4 de la seule lecture batterie, sans WMI ni
   admin, sur un petit worker borné distinct du worker partagé des inspections). Expliquer fige
@@ -624,6 +635,13 @@ le type onglet/site. Le gestionnaire du navigateur donne le détail qu'il est se
 
 ### C5 — Ce qui quitte le PC
 
+**Complément Surveillances (27 octobre).** L'évaluation, les notifications et le bilan hebdomadaire
+restent entièrement locaux. Sur demande explicite, une alerte est une mesure : son explication
+et `get_watch_alerts` passent par les projections C5 et l'aperçu exact existants. Les cibles
+utilisent des références opaques ; seul le nom de base d'exécutable nettoyé peut être partagé
+si « Noms des programmes » est actif. Aucun chemin, libellé de volume, identifiant matériel,
+contenu de notification ni règle arbitraire n'est envoyé. En mode Local, aucun appel réseau.
+
 | Mode | Contenu envoyé au modèle |
 | --- | --- |
 | Complet (par défaut) | question ; mesures ; noms d'exécutables, de services et d'applications ; noms de dossiers et de fichiers relatifs à un dossier connu (`%USERPROFILE%\Downloads\…`) |
@@ -734,12 +752,12 @@ cherchés dans leur texte en local. Leur téléchargement reste soumis au choix 
 
 ### C7 — Surveillances (adopté le 6 octobre ; chantier 6, phase 2)
 
-Avancées avant la soumission à la demande du porteur du projet (branche `wp6-watches`). Les
-surveillances n'ajoutent aucun appel cloud, aucun outil du modèle et aucune autorité d'exécution :
-elles lisent les relevés de l'échantillonneur (chantier 5) et préviennent par une notification
-Windows. C7 fait foi pour les seuils, les durées et les limites ; le code et les textes le suivent.
+Avancées avant la soumission à la demande du porteur du projet (branche `feature/wp6-watches`).
+Les surveillances lisent les relevés de l'échantillonneur (chantier 5) et préviennent par une
+notification Windows. Elles n'ajoutent aucun appel cloud automatique ni autorité d'exécution.
+Le lot inclut l'explication explicite d'une alerte, l'outil de lecture et le bilan local (C1/C3/C5).
 
-- **Règles.** Ensemble fermé (`kind`, champs inconnus refusés), 20 règles au plus, une seule par
+- **Règles.** Ensemble fermé (`kind`, champs inconnus refusés), sans plafond arbitraire, une seule par
   cible et par mesure :
 
 | `kind` | Cible | Seuil | Durée soutenue |
@@ -801,8 +819,10 @@ Windows. C7 fait foi pour les seuils, les durées et les limites ; le code et le
   dates, dernière notification), `watch_alerts` (règle au moment de l'alerte, début, fin et
   raison, observation de la valeur qui a déclenché sous la forme C4 des observations
   d'événements, valeur extrême, état de la notification, vue ou non), `watch_settings` (langue des
-  notifications) et `watch_lease`. Les alertes suivent la rétention de l'historique (7 jours), 500
-  au plus. « Effacer l'historique » (`history_clear`) les efface et garde les règles ; sa
+  notifications) et `watch_lease`. La migration 6 étant déjà occupée par les images, cette
+  migration porte le numéro 7, sans modifier les migrations livrées. Les alertes suivent la
+  rétention de l'historique (7 jours), sans plafond en nombre ; leur lecture est paginée.
+  « Effacer l'historique » (`history_clear`) les efface et garde les règles ; sa
   confirmation le dit. Supprimer une règle supprime ses alertes. Quitter PC Agent clôt les alertes
   ouvertes comme interrompues, à l'heure du dernier contrôle ; après un arrêt brutal, une alerte
   trouvée ouverte au démarrage est close de même, à l'heure du dernier battement du bail ou du
@@ -814,10 +834,12 @@ Windows. C7 fait foi pour les seuils, les durées et les limites ; le code et le
 | Commande | Rôle |
 | --- | --- |
 | `watches_list()` | règles et état en direct de chacune (normal, en attente, en alerte, pas de mesure avec la raison, désactivée, en pause), dernière valeur avec sa date et sa nature (exacte ou borne basse), état du moteur, dernier envoi de notification, nombre d'alertes non vues |
-| `watch_create(rule)` | valide la règle côté Rust (forme, plages, volume fixe présent, carte NVIDIA lue, nom d'exécutable vu par l'échantillonneur, doublon, plafond) puis l'enregistre ; renvoie la règle et son état |
+| `watch_create(rule)` | valide la règle côté Rust (forme, plages, volume fixe présent, carte NVIDIA lue, nom d'exécutable vu par l'échantillonneur, doublon) puis l'enregistre ; renvoie la règle et son état |
+| `watch_update(id, rule)` | mêmes validations ; clôt l'éventuelle alerte comme modifiée et redémarre l'évaluation sans réécrire l'ancienne mesure |
 | `watch_set_enabled(id, enabled)` | active ou désactive ; désactiver clôt l'alerte ouverte |
 | `watch_delete(id)` | supprime la règle, ses alertes et ses notifications |
-| `watch_alerts(from_unix_ms, to_unix_ms, limit)` | alertes d'une fenêtre de 7 jours au plus, 200 au plus, de la plus récente à la plus ancienne |
+| `watch_alerts(from_unix_ms, to_unix_ms, limit, offset)` | alertes d'une fenêtre de 7 jours au plus, pages de 200 au plus sans tronquer le résultat total, de la plus récente à la plus ancienne |
+| `watch_weekly_summary()` | bilan local sur clic : période couverte, décomptes par mesure, alertes ouvertes, retours et interruptions, sans LLM |
 | `watch_alerts_seen(up_to_unix_ms)` | marque vues les alertes déclenchées jusqu'à cette date |
 | `watch_language_set(language)` | `en` ou `fr` : langue des notifications, mémorisée localement |
 | `watch_notification_test()` | envoie une notification de test ; renvoie `sent`, `disabled` (coupée dans Windows) ou `failed` |
@@ -835,12 +857,12 @@ qui évalue ; `watch:open` au clic sur une notification.
 - **Fermeture.** Tant qu'au moins une règle est activée, dès sa création, fermer la fenêtre la
   masque dans la zone de notification, comme avec le démarrage avec Windows ; « Quitter PC Agent »
   arrête l'échantillonneur et les surveillances.
-- **Ce qui part (C5).** Rien : règles, valeurs, alertes et notifications restent sur le PC. Selon
+- **Ce qui part (C5).** Par défaut rien : règles, valeurs, alertes et notifications restent sur le PC. Selon
   les réglages de Windows, une notification peut s'afficher sur l'écran de verrouillage, avec la
-  lettre du disque ou le nom de l'exécutable. « Demander à l'IA » sur une alerte envoie une
-  question tapée par le chemin existant (`cloud_preview` puis `send_message`, aperçu exact), avec
-  le nom de l'exécutable seulement en partage complet. Aucune référence de sélection n'existe pour
-  une alerte dans ce lot.
+  lettre du disque ou le nom de l'exécutable. « Expliquer une alerte » utilise la source figée
+  `watch_alert`, l'aperçu exact puis le chemin de sélection existant ; le nom de l'exécutable
+  ne part que si le partage des programmes est actif. Le bilan hebdomadaire ne déclenche aucun
+  appel cloud ; aucune explication n'est lancée à l'ouverture ou à l'arrivée d'une alerte.
 - **Hors contrat.** La vue PC en direct gagne deux champs additifs : `nvml_index` pour une carte
   NVIDIA et `named` pour un processus ou une application, afin que la page n'ait jamais à
   reconnaître un texte « Processus sans nom ».
@@ -1142,9 +1164,9 @@ chantiers 5 et 8.
     reliée à la liste, inspecteur d'un événement ou d'un enregistrement (complément du 6 octobre
     en C3). Expliquer ouvre encore le Chat ; la réponse dans l'inspecteur reste à faire pour
     toutes les vues.
-  - **Surveillances** pleine largeur, sans barre secondaire ni inspecteur : état du moteur et des
-    notifications, règles avec leur état et leur dernière valeur, alertes des 7 derniers jours ;
-    rien n'est envoyé (C7).
+  - **Surveillances** avec barre secondaire (règles, alertes, bilan local), état du moteur et des
+    notifications, création et modification des règles, dernière valeur et raison d'absence,
+    alertes paginées des 7 derniers jours, inspecteur et explication explicite (C7).
 - Une couleur par ressource dans les graphiques est la seule exception à l'accent unique ; elles
   restent distinguables en clair et en sombre.
 - Maquettes de référence : page « Application de bureau » du canevas de design (privé), avec PC en
@@ -1606,9 +1628,6 @@ ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent
 | **S5 · 26–30 oct.** | Gel le 27. Corrections. README, docs, licence. Vidéo. Release. Soumission avant le 30 octobre à 18 h. |
 
 Repoussé après la soumission :
-- Surveillances, suite (C7 couvre les règles, les notifications et les alertes avant la
-  soumission) : bilan hebdomadaire local ou sur un clic (aucune requête cloud automatique),
-  Expliquer une alerte (référence de sélection, complément de C3) et outil `get_watch_alerts` ;
 - historique au-delà de 7 jours et enregistrement automatique quand un ralentissement est détecté ;
 - spécialistes (un ou deux agents dédiés, par exemple stockage ou jeu), seulement si l'évaluation
   montre des familles de tâches réellement séparables ;
@@ -1787,7 +1806,7 @@ Implementation » est un critère de jugement).
 | Test complet sur un second PC Windows 11 (installation depuis la release, clé, parcours vidéo) | fait par le porteur depuis la release `v0.1.0` (27 oct.) |
 | Mesurer l'empreinte de l'app (RAM, CPU, disque de l'historique) pour le README | chiffres datés |
 
-**Repoussé après la soumission :** Surveillances (C7), vue Historique complète, #58/#59 au-delà du
+**Repoussé après la soumission :** vue Historique complète, #58/#59 au-delà du
 premier lot, #60 (navigateurs), #62 (lot UAC unique), #55 (images), ETW, validation des capteurs
 actifs (chantier 9), cache Tavily.
 
@@ -1902,7 +1921,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Batterie dans PC en direct | B, A, C | livré : lecture batterie dédiée hors worker partagé, ressource de sélection `battery`, carte avec barre d'action, inspecteur, panneau et pastille ; vérifié sur un portable en charge ; décharge, enregistrement avec la vue ouverte et durée de lecture à mesurer | wp6-live-battery |
 | 6 — Stockage en carte, arbre et liste | B, A, C | en cours (27 oct.) : #67 item 2, complément C3 du 6 octobre (C4, C5) intégral ; hiérarchie et faits annulables en cache dans `crates/storage`, faits figés dans la sélection, comptes lus par le vérificateur, barre secondaire des disques et analyses récentes, carte, arbre, liste et inspecteur ; validation locale complète et captures avant revue | feature/storage-map-plan, feature/storage-map |
 | 6 — Vue Historique | C, A, B | en cours (27 octobre) : lot complet autorisé, remplace le report de la section 7 quinquies pour ce lot ; C2 table système et budget, C3 commande groupée/aperçu/détail, barre secondaire, frise numérotée, inspecteurs, Expliquer/Enquêter et cible Surveiller C7 ; tests, mesures avant/après et validation native sous compte standard prévues | feature/history-contract, feature/history-complete ; #58, #59 |
-| 6 — Surveillances | B, A, C | à faire, aucune branche ouverte au 9 octobre : contrat C7 adopté, sur le socle `wp6-view-sidebar` ; règles, moteur dans l'échantillonneur avec bail, notifications Windows, vue et bouton Surveiller | wp6-watches |
+| 6 — Surveillances | B, A, C | en cours (27 oct.) : lot complet C7, migration 7, moteur avec bail, notifications Windows, barre secondaire et boutons Surveiller, sélection `watch_alert`, outil de lecture C1 et bilan local ; suppression des plafonds arbitraires de règles/alertes, lecture paginée | feature/wp6-watches |
 | 6 — Barre secondaire par vue | C | livré : une vue peut déclarer sa barre dans l'emplacement de la liste des conversations (`shell.setViewBar`), redessinée sur ses sujets, avec repli, fenêtre étroite, focus et repère accessibles ; aucune vue ne l'utilise encore (Stockage, Historique, Surveillances) | wp6-viewbar |
 | Retours UI/UX du 9 octobre | A, B, C | 22 issues ouvertes (18 en P1 avant le gel, 4 en P2) ; décisions en section 7 quater ; #50 à #54, #57 et #68 traités côté interface le 10 octobre (branches `wp6-chat-polish`, `wp6-views-polish`, `wp3-composer-toggles`) ; reprise terminée : corrections de revue, confidentialité et envois concurrents, 52 contrôles navigateur et 9 contrôles natifs locaux réussis, release reconstruite sur D:, formatage/Clippy et 715 tests réussis (2 ignorés) ; parcours avec modèle réel encore à vérifier | #72 |
 | 6 — Résumé dans l'inspecteur et recherche de cause | C | implémenté et validé localement (10 octobre) : #56, résumé sans quitter la vue, poursuite du même fil et étiquettes de sélection ; 57 contrôles rendus, 28 régressions du contrôleur et 12 contrôles natifs réussis ; formatage/Clippy et 715 tests réussis (2 ignorés), binaire reconstruit sur D: ; évaluation réelle des réponses et livraison reportées à la demande du porteur du projet | wp6-selection-inspector |
