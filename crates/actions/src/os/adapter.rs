@@ -15,7 +15,9 @@ impl Guard for NativeGuard {
     ) -> Result<Option<crate::StartupIdentity>, Status> {
         #[cfg(windows)]
         return crate::windows::startup::observe(value_name);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::observe_startup(value_name);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = value_name;
             Err(Status::Unsupported)
@@ -24,7 +26,9 @@ impl Guard for NativeGuard {
     fn observe_file(&self, path: &Path) -> Result<Option<FileIdentity>, Status> {
         #[cfg(windows)]
         return crate::windows::observe_file(path);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::observe_file(path);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = path;
             Err(Status::Unsupported)
@@ -33,7 +37,9 @@ impl Guard for NativeGuard {
     fn observe_process(&self, pid: u32) -> Result<Option<ProcessIdentity>, Status> {
         #[cfg(windows)]
         return crate::windows::observe_process(pid);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::observe_process(pid);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = pid;
             Err(Status::Unsupported)
@@ -54,7 +60,7 @@ impl Default for NativeEffects {
         }
     }
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn unsupported() -> Result<EffectOutcome, EffectError> {
     Err(EffectError::new(
         Status::Unsupported,
@@ -63,7 +69,11 @@ fn unsupported() -> Result<EffectOutcome, EffectError> {
 }
 impl Effects for NativeEffects {
     fn capability(&self, kind: ActionKind) -> Capability {
-        if !cfg!(windows) {
+        #[cfg(target_os = "linux")]
+        if kind == ActionKind::RequestNormalClose {
+            return Capability::RecommendationOnly("Close the application in its desktop window; this desktop has no verified normal-close protocol.");
+        }
+        if !cfg!(any(windows, target_os = "linux")) {
             return Capability::Unsupported;
         }
         match kind {
@@ -83,7 +93,9 @@ impl Effects for NativeEffects {
     ) -> Result<EffectOutcome, EffectError> {
         #[cfg(windows)]
         return crate::windows::open_in_explorer(file);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::open_in_explorer(file);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = file;
             unsupported()
@@ -96,7 +108,9 @@ impl Effects for NativeEffects {
     ) -> Result<EffectOutcome, EffectError> {
         #[cfg(windows)]
         return crate::windows::open_settings_page(page);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::settings(page);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = page;
             unsupported()
@@ -112,7 +126,9 @@ impl Effects for NativeEffects {
             process,
             self.close_wait.min(Duration::from_secs(30)),
         );
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::close(process);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = process;
             unsupported()
@@ -121,7 +137,9 @@ impl Effects for NativeEffects {
     fn recycle_file(&self, _: &Permit, file: &FileTarget) -> Result<EffectOutcome, EffectError> {
         #[cfg(windows)]
         return crate::windows::recycle_file(file);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::recycle_file(file);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = file;
             unsupported()
@@ -134,7 +152,9 @@ impl Effects for NativeEffects {
     ) -> Result<EffectOutcome, EffectError> {
         #[cfg(windows)]
         return crate::windows::startup::apply(startup);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        return super::linux::apply_startup(startup);
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = startup;
             unsupported()

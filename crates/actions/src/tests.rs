@@ -1111,7 +1111,7 @@ fn synthetic_cleanup_adapter_only_touches_marked_cache() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 #[test]
 fn native_backend_reports_unsupported_off_windows() {
     let file = FileTarget {

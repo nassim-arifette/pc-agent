@@ -476,10 +476,13 @@ impl ActionTargets {
                 break;
             }
             if opaque(reference, "startup-")
-                && observation(inspection, reference, "startup_kind").and_then(Value::as_str)
-                    == Some("Run")
-                && observation(inspection, reference, "startup_scope").and_then(Value::as_str)
-                    == Some("user_64")
+                && matches!(
+                    (
+                        observation(inspection, reference, "startup_kind").and_then(Value::as_str),
+                        observation(inspection, reference, "startup_scope").and_then(Value::as_str)
+                    ),
+                    (Some("Run"), Some("user_64")) | (Some("xdg_autostart"), Some("user_xdg"))
+                )
             {
                 if let Ok(target) = StartupTarget::disable(name, guard) {
                     self.startup.insert(reference.clone(), target);
@@ -511,6 +514,11 @@ impl ActionTargets {
             (
                 UserCleanupKind::Direct3dShaderCache,
                 "directx_shader_cache",
+                CleanupClass::RegenerableIdentified,
+            ),
+            (
+                UserCleanupKind::LinuxCache,
+                "linux.cache",
                 CleanupClass::RegenerableIdentified,
             ),
         ] {
