@@ -195,11 +195,34 @@ impl LargestItemsPage {
 pub struct VolumeSpace {
     pub total_bytes: Option<u64>,
     pub free_bytes: Option<u64>,
+    /// Space available to the caller, distinct from volume-wide free blocks.
+    #[serde(default)]
+    pub available_bytes: Option<u64>,
     pub occupied_bytes: Option<u64>,
     pub filesystem: Option<String>,
     pub source: String,
     pub status: Status,
     pub limitations: Vec<String>,
+}
+
+#[cfg(test)]
+mod volume_space_tests {
+    use super::*;
+
+    #[test]
+    fn old_volume_snapshots_keep_available_space_unknown() {
+        let value = serde_json::json!({
+            "total_bytes": 100, "free_bytes": 30, "occupied_bytes": 70,
+            "filesystem": "apfs", "source": "fixture", "status": "ok", "limitations": []
+        });
+        let legacy: VolumeSpace = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.available_bytes, None);
+        let mut current = legacy;
+        current.available_bytes = Some(20);
+        let json = serde_json::to_value(&current).unwrap();
+        assert_eq!(json["free_bytes"], 30);
+        assert_eq!(json["available_bytes"], 20);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

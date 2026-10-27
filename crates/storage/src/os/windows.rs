@@ -746,6 +746,7 @@ pub(crate) fn volume_space(root: &Path) -> VolumeSpace {
         return VolumeSpace {
             total_bytes: None,
             free_bytes: None,
+            available_bytes: None,
             occupied_bytes: None,
             filesystem,
             source: SOURCE.into(),
@@ -761,6 +762,7 @@ pub(crate) fn volume_space(root: &Path) -> VolumeSpace {
     VolumeSpace {
         total_bytes: Some(total),
         free_bytes: Some(free),
+        available_bytes: Some(caller_free),
         occupied_bytes: occupied,
         filesystem,
         source: SOURCE.into(),
