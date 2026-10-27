@@ -23,7 +23,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Console", "Win32_System_IO", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Etw", "Win32_System_Time", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Performance", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Wdk_System_SystemInformation", "Win32_System_Services", "Win32_System_EventLog", "Win32_System_Power", "Win32_System_Ioctl", "Win32_System_Memory", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties"] }
 windows-core = "=0.62.2"
-windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_UpdateAgent", "Win32_System_Wmi", "Win32_System_Variant", "Win32_System_Ole", "Win32_Security"] }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_UpdateAgent", "Win32_System_Wmi", "Win32_System_Variant", "Win32_System_Ole", "Win32_Security", "Win32_UI_Notifications", "Data_Xml_Dom", "UI_Notifications", "Foundation"] }
 pcagent-shared = { path = "crates/shared" }
 pcagent-telemetry = { path = "crates/telemetry" }
 pcagent-diagnostics = { path = "crates/diagnostics" }
