@@ -475,6 +475,29 @@ couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format a
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
 
+#### Complément du 27 octobre — ETW et fluidité en jeu (E06)
+
+Les mesures ETW approuvées localement rejoignent les observations C4, jamais une réponse
+rédigée par le collecteur. La fenêtre porte sa durée réellement observée, les événements
+perdus, le nombre d'échantillons et les causes de couverture partielle. Une absence d'événement
+ou de capteur donne une valeur absente avec son statut, jamais zéro.
+
+E06 mesure les intervalles de présentation par processus et par chaîne de présentation :
+fréquence moyenne = nombre d'intervalles / somme des intervalles ; « 1 % low » = inverse de
+la moyenne du centile des intervalles les plus longs (arrondi supérieur, au moins un) ;
+saccades = intervalles strictement supérieurs à deux fois la médiane. Ce sont des
+présentations de l'application, pas une promesse d'images effectivement affichées. Les
+processus réutilisant un PID et les chaînes distinctes ne sont pas fusionnés. Occupation GPU,
+pression VRAM et indicateurs NVML de bridage thermique/puissance gardent leur source, période
+et portée (GPU global ou processus) ; un indice CPU/GPU reste une hypothèse locale, pas une
+causalité prouvée. Tous les nombres citables passent par le même vérificateur C1.
+
+Les identifiants ETW, PID, adresses, pointeurs de fichiers et chaînes de présentation restent
+locaux ; les entités projetées sont opaques. Les E/S par fichier utilisent des références
+opaques, sans contenu ni chemin collecté ou envoyé. Aucun nom de fichier supplémentaire
+n'est autorisé par ce complément. Les noms de programmes et toutes les mesures suivent C5
+et l'aperçu exact « Voir ce qui part ». Le modèle ne démarre aucune capture.
+
 ### C5 — Ce qui quitte le PC
 
 | Mode | Contenu envoyé au modèle |
@@ -1111,6 +1134,27 @@ Nouveau binaire `pcagent-eval` (`apps/eval`) :
   3. santé des disques (compteurs de fiabilité, SMART) ;
   4. chemins complets des processus protégés ;
   5. trace ETW de 30 à 60 s pendant le problème (latence DPC/ISR, E/S disque par fichier).
+- **Activation ETW (27 octobre)** : session privée liée au job et à son secret ; aucune
+  autorité sur une session préexistante (`AlreadyExists`). Un gardien privilégié, sans réseau
+  ni modèle, est armé avant `StartTrace` et survit à la mort du contrôleur/GUI ; un job Windows
+  kill-on-close borne ses enfants. Les droits temporaires `EventAccessControl` portent
+  seulement sur le GUID privé. La requête, l'arrêt et la suppression de ces droits sont
+  vérifiés sur cette seule session. L'activation reste conditionnée aux quatre preuves
+  documentées dans `docs/etw.md`, reproduites par `scripts/etw-acceptance.ps1` :
+  fin normale, annulation, consommateur bloqué, watchdog, `TerminateProcess` du parent et
+  échec de démarrage. Aucun réglage ni variable d'environnement ne contourne ce prérequis.
+- **E06 — fluidité mesurée (avancé avant la soumission, 27 octobre)** : depuis PC en direct
+  et le chat, « Mesurer la fluidité pendant 30 s » ouvre une revue expliquant les processus,
+  les événements de présentation, les métriques C4 ci-dessus, les données locales et ce qui
+  peut partir au modèle. Le clic de validation puis l'invite UAC sont obligatoires ; la fenêtre
+  et le LLM restent standard. La capture se termine après 30 s (ETW approfondi : choix 30/60 s),
+  s'annule localement, puis alimente les sources et constats FR/EN. La durée est une fenêtre
+  de mesure explicite, pas une limitation du nombre de questions ou de captures. Une nouvelle
+  capture est toujours possible. Les adaptateurs sans événements/support NVML sont signalés
+  honnêtement ; aucune simulation n'est présentée comme mesure native.
+  Acceptation : charge graphique synthétique sous compte standard, invite administrateur,
+  question réelle Nebius « pourquoi mon jeu saccade ? » avec chiffres cités et vérifiés ;
+  timings, captures et limites matérielles réellement constatées accompagnent la PR.
 - Interface : un bouton « Analyse approfondie (administrateur) » dans Stockage, PC en direct,
   l'accueil du Chat et le premier lancement. Les tâches sont expliquées avant l'invite de Windows.
   Il est aussi proposé depuis le chat :
@@ -1326,7 +1370,6 @@ Repoussé après la soumission :
 - index persistant et journal USN (S10) ;
 - export expurgé (U01) ;
 - coffre Windows pour la clé (U04) ;
-- fluidité en jeu mesurée (E06) ;
 - réseau (E07) ;
 - recherche documentaire libre (E08) ; le chantier 15 n'en avance que des outils typés ;
 - alertes au-delà des règles C7 (E09) ;
@@ -1575,6 +1618,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | 6 — Interface de conversation | C | interface existante conservée ; commandes Rust Expliquer/Enquêter, sources figées et aperçu exact livrés dans le lot backend ; branchements de phase 2 à terminer (docs/selection.md) ; #65 : formats localisés sur les champs numériques, résumé scanné désormais couvert | #23, #24, #36 |
 | 7 — Évaluation | D | capture/rejeu/traces et compilateur local d'étalonnage Nemotron livrés ; traces réelles Super/Ultra conservées ; annotation humaine et campagne de continuation hybride à réaliser, comparaisons externes exclues de ce lot | #33, #36 |
 | 8 — Admin à la demande | B | helper, caches, MFT natif borné avec arbre local, VSS, fiabilité disques, identités de processus et estimations E3 livrés ; ETW préparé mais bloqué avant effets tant que le nettoyage après arrêt brutal n'est pas prouvé ; acceptation UAC/second PC à réaliser ; carte par règle locale sous la réponse du chat livrée le 18 octobre ; lot sous une seule invite et proposition par le modèle (`propose_elevated_check`, 9 octobre) à faire | #33, #36, #62 |
+| 8 — Activation ETW et fluidité E06 | B, A, C | en cours (27 oct.) : contrat C4 et consentement définis ; gardien privilégié avant création, acceptation des quatre preuves de nettoyage, E/S par fichier opaque, présentations par processus, observations/constats et action 30 s depuis PC en direct/chat ; aucune activation déclarée avant preuve Windows, aucune mesure matérielle simulée | feature/etw-e06-plan, feature/etw-e06 |
 | 9 — Capteurs matériels | B | lecteurs passifs LHM/HWiNFO livrés ; validation avec fournisseur actif à réaliser | #33 |
 | 10 — Modèle | A | catalogue NVIDIA et métadonnées livrés ; modèle par défaut conservé, décision fondée sur l'évaluation encore attendue | #33 |
 | 11 — Agir depuis la conversation | A, C | démarrage HKCU, restauration liée au journal, TEMP/shaders et pages Paramètres livrés ; acceptation native sur cibles contrôlées à réaliser | #33 |
