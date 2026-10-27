@@ -1705,9 +1705,18 @@ ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent
   réduits à sous-système, catégorie, niveau et compteur ; mises à jour : `softwareupdate --list`
   (délai borné, hors ligne toléré). Les sous-processus reçoivent des arguments fixes ; aucune
   entrée du modèle ou de l'utilisateur ne devient argument de commande.
-- **Actions.** Même catalogue, même revue locale : désactiver/réactiver un LaunchAgent utilisateur
-  (`launchctl bootout`/`bootstrap gui/<uid>` sur un plist identifié par chemin + inode + date de
-  modification), nettoyage de `~/Library/Caches` (adaptateur de nettoyage
+- **Actions.** Même catalogue, même revue locale : désactiver/réactiver le démarrage d'un
+  LaunchAgent de l'utilisateur courant (`launchctl disable`/`enable gui/<uid>/<Label>`).
+  Le plist est identifié par chemin local + volume/inode + date de modification + SHA-256 ;
+  UID et domaine sont liés à l'identité. Les liens, changements d'identité, labels ambigus,
+  services Apple et agents provenant des répertoires système sont refusés.
+  La revue prévient que le changement est persistant mais n'arrête ni ne démarre un processus
+  déjà chargé : aucune commande `bootout`, `bootstrap` ou `kickstart` implicite. La restauration
+  après désactivation rétablit l'état **effectif** initial avec un override explicite `false` :
+  `launchctl` ne fournit pas de suppression publique de cet override. L'absence initiale n'est
+  jamais présentée comme restaurée exactement. L'état avant/après et cette distinction sont
+  journalisés localement ; tout format de réponse inconnu échoue fermé.
+  Nettoyage de `~/Library/Caches` (adaptateur de nettoyage
   utilisateur, mêmes garde-fous que `%TEMP%`), Corbeille par `NSFileManager trashItemAtURL`
   (vérification que l'élément est bien dans `~/.Trash` après coup), ouvrir dans le Finder,
   ouvrir Réglages Système (URL `x-apple.systempreferences:`). Les racines protégées macOS
