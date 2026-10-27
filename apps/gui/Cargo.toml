@@ -24,6 +24,7 @@ pcagent-telemetry.workspace = true
 pcagent-actions.workspace = true
 # Portable: the live battery view model and its tests use the inspection types on every system.
 pcagent-inspect.workspace = true
+pcagent-voice.workspace = true
 
 # The window only exists on Windows, the product's platform; elsewhere the binary explains that
 # and the portable view code is still built and tested.

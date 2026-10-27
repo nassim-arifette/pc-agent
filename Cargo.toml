@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "apps/gui", "apps/eval", "apps/elevated", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/nebius", "crates/tools", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect", "crates/mft", "crates/elevation"]
+members = ["apps/cli", "apps/gui", "apps/eval", "apps/elevated", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/nebius", "crates/tools", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect", "crates/mft", "crates/elevation", "crates/voice"]
 resolver = "2"
 
 [workspace.package]
@@ -17,6 +17,9 @@ uuid = { version = "=1.18.1", features = ["v4"] }
 sha2 = { version = "=0.10.9", default-features = false }
 base64 = "=0.22.1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
+cpal = "=0.15.3"
+whisper-rs = "=0.14.4"
+tokio = { version = "=1.53.1", features = ["rt", "time", "net"] }
 clap = { version = "=4.5.50", features = ["derive"] }
 # SQLite compiled into the binary: no system library to install.
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
@@ -37,6 +40,7 @@ pcagent-store = { path = "crates/store" }
 pcagent-inspect = { path = "crates/inspect" }
 pcagent-mft = { path = "crates/mft" }
 pcagent-elevation = { path = "crates/elevation" }
+pcagent-voice = { path = "crates/voice" }
 
 [profile.release]
 lto = "thin"
