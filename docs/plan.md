@@ -249,7 +249,7 @@ commande C3 ne change de nom : seuls les lectures natives derrière changent d'O
 
 | Terme neutre (outils, C4, C5) | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| **mémoire engagée** (`system_commit_bytes`, `system_commit_limit_bytes`) | charge de validation et limite (`PERFORMANCE_INFORMATION`) | `Committed_AS` et `CommitLimit` de `/proc/meminfo` | `host_statistics64` (pages câblées + swap utilisé) |
+| **mémoire engagée** (`system_commit_bytes`, `system_commit_limit_bytes`) | charge de validation et limite (`PERFORMANCE_INFORMATION`) | `Committed_AS` et `CommitLimit` de `/proc/meminfo` (sémantique Linux, pas l'usage RAM) | `unsupported` sans équivalent ; pages câblées, compression et swap restent des métriques distinctes |
 | **éléments de démarrage** (`get_startup_programs`, actions `DisableUserStartup` / `RestoreUserStartup`) | `HKCU\…\Run`, dossier Démarrage, `StartupApproved` | fichiers `.desktop` de `~/.config/autostart` (clé `Hidden=true` pour désactiver), unités systemd utilisateur activées | agents `launchd` de l'utilisateur, « Ouvrir avec la session » |
 | **services** (`get_services`, attribution service → processus) | gestionnaire de services (SCM) | unités systemd (`systemd1` via D-Bus ou `systemctl --output=json`), pid principal et état | démons et agents `launchd` |
 | **événements système** (`get_recent_events`) | journal des événements (System, Application) | journald (`journalctl --output=json`, priorités 0–4, 7 jours) | journal unifié (`log show`) |
@@ -257,7 +257,7 @@ commande C3 ne change de nom : seuls les lectures natives derrière changent d'O
 | **gestionnaire de fichiers** (`OpenInExplorer`) | Explorateur | `xdg-open` du dossier parent | Finder |
 | **corbeille** (`RecycleSelectedFiles`) | corbeille Windows | corbeille XDG (`~/.local/share/Trash` : `files/` + `info/`) | corbeille macOS |
 | **invite d'élévation** (chantier 8) | UAC (`runas`) | polkit (`pkexec`) vers le même helper borné, sans réseau ni modèle | autorisation macOS |
-| **mises à jour en attente** (`get_drivers`, offres) | Windows Update | `apt list --upgradable`, `dnf check-update`, `flatpak remote-ls --updates` (lecture seule) | `softwareupdate -l` |
+| **mises à jour en attente** (`get_drivers`, offres) | Windows Update | apt/dnf/flatpak : caches locaux par défaut ; rafraîchissement réseau uniquement sur demande explicite | `softwareupdate -l` sur demande explicite |
 
 Les champs sérialisés gardent leur nom actuel (`working_set`, `commit`, `startup_item`…) pour ne
 pas casser les traces, les snapshots et l'évaluation ; la source (`source`) de chaque observation
@@ -495,7 +495,7 @@ seul le contenu de `metric_history` change (voir Noms).
 
 Chaque outil renvoie des observations avec `observation_id`, `measured_at`, la période (instant ou
 fenêtre en secondes), l'entité, la métrique, la valeur, l'unité, un statut (`ok`, `partial`,
-`denied`, `unsupported`, `needs_admin`) et la source (API Windows utilisée). S'y ajoute une
+`denied`, `unsupported`, `needs_admin`) et la source (API native ou fichier système utilisé). S'y ajoute une
 couverture qui dit ce qui n'a pas pu être lu et pourquoi. On étend le format actuel, on ne le
 remplace pas. Les findings locaux restent joints comme indices. Les noms partent selon C5. Les
 observations d'origine web sont décrites en C6.
