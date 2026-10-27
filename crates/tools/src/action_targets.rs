@@ -739,6 +739,15 @@ impl ActionTargets {
                     view.push(
                         json!({"action_kind":"request_normal_close", "process_ref":reference}),
                     );
+                    if self.processes[reference]
+                        .executable_name
+                        .as_deref()
+                        .and_then(pcagent_actions::BrowserManager::from_executable)
+                        .is_some()
+                    {
+                        view.push(json!({"action_kind":"open_browser_process_manager",
+                            "process_ref":reference}));
+                    }
                 }
             }
             "get_largest_items" | "get_cleanup_candidates" => {

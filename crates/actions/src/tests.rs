@@ -108,6 +108,34 @@ impl TargetResolver for Fake {
     }
 }
 impl Guard for Fake {
+    fn observe_browser(
+        &self,
+        process: &ProcessTarget,
+    ) -> Result<Option<BrowserManagerTarget>, Status> {
+        let Some(destination) = process
+            .executable_name
+            .as_deref()
+            .and_then(BrowserManager::from_executable)
+        else {
+            return Ok(None);
+        };
+        let path = PathBuf::from(format!(
+            r"C:\Browsers\{}",
+            process.executable_name.as_deref().unwrap()
+        ));
+        Ok(self
+            .files
+            .borrow()
+            .get(&path)
+            .map(|identity| BrowserManagerTarget {
+                process: process.clone(),
+                executable: FileTarget {
+                    path,
+                    identity: identity.clone(),
+                },
+                destination,
+            }))
+    }
     fn observe_file(&self, path: &Path) -> Result<Option<FileIdentity>, Status> {
         Ok(self.files.borrow().get(path).cloned())
     }
@@ -160,6 +188,14 @@ impl Recorder<'_> {
     }
 }
 impl Effects for Recorder<'_> {
+    fn open_browser_process_manager(
+        &self,
+        _: &Permit,
+        browser: &BrowserManagerTarget,
+    ) -> Result<EffectOutcome, EffectError> {
+        self.record(format!("browser {:?}", browser.destination));
+        Ok(EffectOutcome::Done(None))
+    }
     fn capability(&self, _: ActionKind) -> Capability {
         Capability::Executable
     }
@@ -488,6 +524,104 @@ fn reused_pid_is_refused_without_escalation() {
         }));
     assert!(fx.calls.borrow().is_empty());
     assert_eq!(plan.state(), PlanState::Failed);
+}
+
+fn browser_fixture(name: &str) -> Fake {
+    let mut fake = Fake::default().process("browser-1", 4242);
+    let Some(ResolvedTarget::Process(process)) = fake.targets.get_mut("browser-1") else {
+        unreachable!()
+    };
+    process.executable_name = Some(name.into());
+    fake.files
+        .borrow_mut()
+        .insert(PathBuf::from(format!(r"C:\Browsers\{name}")), file_id(123));
+    fake
+}
+
+#[test]
+fn browser_manager_requires_local_single_use_approval_and_never_closes() {
+    for name in ["firefox.exe", "chrome.exe", "msedge.exe"] {
+        let fake = browser_fixture(name);
+        let fx = Recorder::default();
+        let env = Env::new();
+        let b = broker(&fake, &BaselineProtection, &fx, &env);
+        let session = LocalSession::new();
+        let mut plan = b
+            .prepare_plan(&intent(
+                ActionKind::OpenBrowserProcessManager,
+                &["browser-1"],
+            ))
+            .unwrap();
+        assert!(fx.calls.borrow().is_empty());
+        assert!(plan
+            .preconditions()
+            .contains(&Precondition::BrowserManagerAllowlisted));
+        let serialized = serde_json::to_string(&plan.model_view()).unwrap();
+        assert!(!serialized.contains("C:\\\\Browsers"));
+        let token = approve_locally(&mut plan, &session, TTL).unwrap();
+        let result = go(&b, &mut plan, &token, &session).unwrap();
+        assert_eq!(result.overall, OverallOutcome::Completed);
+        assert_eq!(fx.calls.borrow().len(), 1);
+        assert!(fx.calls.borrow()[0].starts_with("browser "));
+        assert!(go(&b, &mut plan, &token, &session).is_err());
+    }
+}
+
+#[test]
+fn browser_manager_refuses_replaced_process_or_executable_after_review() {
+    for replace_process in [false, true] {
+        let fake = browser_fixture("firefox.exe");
+        let fx = Recorder::default();
+        let env = Env::new();
+        let b = broker(&fake, &BaselineProtection, &fx, &env);
+        let session = LocalSession::new();
+        let mut plan = b
+            .prepare_plan(&intent(
+                ActionKind::OpenBrowserProcessManager,
+                &["browser-1"],
+            ))
+            .unwrap();
+        let token = approve_locally(&mut plan, &session, TTL).unwrap();
+        if replace_process {
+            fake.processes.borrow_mut().insert(4242, proc_id(4242, 999));
+        } else {
+            fake.files
+                .borrow_mut()
+                .insert(r"C:\Browsers\firefox.exe".into(), file_id(999));
+        }
+        assert_eq!(
+            go(&b, &mut plan, &token, &session).unwrap().overall,
+            OverallOutcome::Failed
+        );
+        assert!(fx.calls.borrow().is_empty());
+    }
+}
+
+#[test]
+fn browser_manager_rejects_other_programs_and_arbitrary_arguments() {
+    let fake = browser_fixture("not-browser.exe");
+    let fx = Recorder::default();
+    let env = Env::new();
+    let b = broker(&fake, &BaselineProtection, &fx, &env);
+    assert!(b
+        .prepare_plan(&intent(
+            ActionKind::OpenBrowserProcessManager,
+            &["browser-1"]
+        ))
+        .is_err());
+    for extra in ["url", "command", "pid", "destination", "arguments"] {
+        let text = format!(
+            r#"{{"action_kind":"open_browser_process_manager","target_refs":["browser-1"],"{extra}":"about:config"}}"#
+        );
+        assert!(ActionIntent::from_model_json(&text).is_err());
+    }
+    assert!(b
+        .prepare_plan(&intent(
+            ActionKind::OpenBrowserProcessManager,
+            &["browser-1", "browser-2"]
+        ))
+        .is_err());
+    assert!(fx.calls.borrow().is_empty());
 }
 
 #[test]

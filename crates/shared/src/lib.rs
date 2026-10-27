@@ -72,6 +72,7 @@ pub enum Metric {
     SystemCommitLimitBytes,
     CpuBusyBasisPoints,
     ProcessWorkingSetBytes,
+    ProcessCount,
     ProcessPrivateCommitBytes,
     /// Share of all logical processors used by one instance over the evidence window.
     ProcessCpuBasisPoints,
@@ -172,6 +173,7 @@ pub fn gpu_slowdown_codes(bits: u64) -> Vec<&'static str> {
 impl Metric {
     pub fn unit(self) -> &'static str {
         match self {
+            Self::ProcessCount => "count",
             Self::CpuBusyBasisPoints | Self::ProcessCpuBasisPoints => "basis_points_of_total_cpu",
             Self::CpuBusiestCoreBasisPoints => "basis_points_of_one_logical_processor",
             Self::DiskReadLatencyMicroseconds | Self::DiskWriteLatencyMicroseconds => {
@@ -211,6 +213,7 @@ impl Metric {
     /// Short label for human-readable output.
     pub fn label(self) -> &'static str {
         match self {
+            Self::ProcessCount => "Processes",
             Self::PhysicalTotalBytes => "Physical memory",
             Self::PhysicalAvailableBytes => "Available memory",
             Self::SystemCommitBytes => "Commit charge",
@@ -250,6 +253,7 @@ impl Metric {
     /// A value of this metric in human units: binary byte units, percentages, milliseconds.
     pub fn format_value(self, value: u64) -> String {
         match self {
+            Self::ProcessCount => format!("{value} processes"),
             Self::PhysicalTotalBytes
             | Self::PhysicalAvailableBytes
             | Self::SystemCommitBytes

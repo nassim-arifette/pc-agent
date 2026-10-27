@@ -83,12 +83,24 @@ impl FrozenSelection {
             ) => {
                 let mut activity = capture.clone();
                 activity
-                    .evidence
-                    .retain(|evidence| &evidence.entity_ref == entity_ref);
-                activity
                     .processes
                     .retain(|process| &process.instance.entity_ref == entity_ref);
-                activity.applications.clear();
+                // The selected browser process keeps its application's measured type breakdown.
+                // No window/tab text exists in this source or projection.
+                let app_ref = activity.processes.first().map(|p| &p.application_ref);
+                activity.applications.retain(|app| {
+                    app_ref == Some(&app.entity_ref) && !app.browser_types.is_empty()
+                });
+                let mut included = std::collections::HashSet::from([entity_ref.as_str()]);
+                for app in &activity.applications {
+                    included.insert(&app.entity_ref);
+                    for row in &app.browser_types {
+                        included.insert(&row.entity_ref);
+                    }
+                }
+                activity
+                    .evidence
+                    .retain(|evidence| included.contains(evidence.entity_ref.as_str()));
                 snapshot.origin = activity.origin;
                 snapshot.evidence = activity.evidence.clone();
                 snapshot.processes = activity

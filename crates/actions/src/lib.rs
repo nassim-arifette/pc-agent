@@ -7,6 +7,7 @@
 
 mod approval;
 mod broker;
+mod browser;
 mod cancellation;
 mod cleanup;
 mod journal;
@@ -28,6 +29,7 @@ pub use broker::{
     ItemResult, MeasurementHooks, OverallOutcome, Permit, ProtectionCheck, Refusal, SkipReason,
     TargetResolver, DEFAULT_PLAN_TTL, MAX_PLAN_TTL,
 };
+pub use browser::{BrowserManager, BrowserManagerTarget};
 pub use cancellation::ActionCancellation;
 pub use cleanup::{CacheInventory, SyntheticDemoCache, SYNTHETIC_DEMO_CACHE_ID};
 pub use journal::{

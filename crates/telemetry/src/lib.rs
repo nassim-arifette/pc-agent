@@ -1,10 +1,12 @@
 //! Read-only collectors. Non-Windows targets report unsupported, not fixture data.
 #![deny(unsafe_code)]
 pub mod activity;
+pub mod browser;
 pub mod counters;
 pub mod gpu;
 pub mod history;
 mod identity;
+pub mod local_browser;
 mod program_names;
 pub mod services;
 pub mod tree;
@@ -13,8 +15,8 @@ pub mod tree;
 mod windows;
 
 pub use activity::{
-    ActivityCoverage, ActivityProcess, ApplicationActivity, ProcessActivity, ProcessRole,
-    DEFAULT_ACTIVITY_WINDOW_SECONDS,
+    ActivityCoverage, ActivityProcess, ApplicationActivity, BrowserTypeActivity, ProcessActivity,
+    ProcessRole, DEFAULT_ACTIVITY_WINDOW_SECONDS,
 };
 pub use history::{HistoryConfig, MetricHistory, Reading, RecordError, SystemSample};
 use identity::{Lookup, Registry};
@@ -238,7 +240,7 @@ impl Collector {
             windows::activity::collect(
                 self,
                 window_seconds.clamp(1, activity::MAX_ACTIVITY_WINDOW_SECONDS),
-                limit.clamp(1, 50),
+                limit.max(1),
             )
         }
         #[cfg(not(windows))]

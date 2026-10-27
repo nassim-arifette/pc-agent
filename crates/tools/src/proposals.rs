@@ -72,6 +72,39 @@ impl ActionDesk {
     pub fn take_pending(&mut self) -> Vec<PendingPlan> {
         std::mem::take(&mut self.pending)
     }
+    /// Prepare from a process instance captured locally, never from a caller-supplied PID/path.
+    /// The caller must still show the returned plan and obtain explicit local approval.
+    pub fn prepare_browser_manager(
+        &self,
+        instance: &pcagent_shared::ProcessInstance,
+        protection: &dyn ProtectionCheck,
+    ) -> Result<PendingPlan, String> {
+        let target = pcagent_actions::ProcessTarget {
+            identity: pcagent_actions::ProcessIdentity {
+                pid: instance.pid,
+                creation_time_filetime: instance.creation_time_filetime,
+                boot_id: instance.boot_id.clone(),
+            },
+            executable_name: instance.executable_name.clone(),
+        };
+        let targets = FixedTargets(HashMap::from([(
+            instance.entity_ref.clone(),
+            ResolvedTarget::Process(target),
+        )]));
+        let plan = self
+            .broker_for(&targets, None, protection)
+            .prepare_plan(&ActionIntent {
+                action_kind: ActionKind::OpenBrowserProcessManager,
+                target_refs: vec![instance.entity_ref.clone()],
+                evidence_refs: Vec::new(),
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(PendingPlan {
+            plan,
+            targets,
+            synthetic_cache: None,
+        })
+    }
     /// Local recovery entry point; deliberately absent from the model's proposal schema.
     pub fn prepare_startup_restore(
         &self,
@@ -149,6 +182,7 @@ pub(crate) fn parse_kind(text: &str) -> Option<ActionKind> {
         "run_cleanup_adapter" => Some(ActionKind::RunCleanupAdapter),
         "disable_user_startup" => Some(ActionKind::DisableUserStartup),
         "request_normal_close" => Some(ActionKind::RequestNormalClose),
+        "open_browser_process_manager" => Some(ActionKind::OpenBrowserProcessManager),
         "recycle_selected_files" => Some(ActionKind::RecycleSelectedFiles),
         _ => None,
     }
@@ -158,7 +192,7 @@ pub(crate) fn validate_arguments(kind: ActionKind, args: &Args) -> Result<(), St
     let allowed: &[&str] = match kind {
         ActionKind::OpenSettingsPage => &["settings_page"],
         ActionKind::OpenInExplorer | ActionKind::RecycleSelectedFiles => &["scope_id", "item_ref"],
-        ActionKind::RequestNormalClose => &["process_ref"],
+        ActionKind::RequestNormalClose | ActionKind::OpenBrowserProcessManager => &["process_ref"],
         ActionKind::DisableUserStartup => &["startup_ref"],
         ActionKind::RunCleanupAdapter if args.text("adapter_id").is_some() => &["adapter_id"],
         ActionKind::RunCleanupAdapter => &["scope_id", "item_ref"],
@@ -412,6 +446,7 @@ mod tests {
             r#"{"action_kind":"disable_user_startup","startup_ref":"startup-fixture"}"#,
             r#"{"action_kind":"run_cleanup_adapter","adapter_id":"user.temp"}"#,
             r#"{"action_kind":"request_normal_close","process_ref":"proc-fixture"}"#,
+            r#"{"action_kind":"open_browser_process_manager","process_ref":"proc-fixture"}"#,
             r#"{"action_kind":"recycle_selected_files","scope_id":"scope-fixture","item_ref":"scan-fixture:1"}"#,
             r#"{"action_kind":"open_settings_page","settings_page":"windowsupdate-optionalupdates"}"#,
             r#"{"action_kind":"open_settings_page","settings_page":"batterysaver-usagedetails"}"#,
@@ -440,6 +475,8 @@ mod tests {
             r#"{"action_kind":"run_cleanup_adapter","adapter_id":"arbitrary.cache"}"#,
             r#"{"action_kind":"recycle_selected_files","path":"C:\\PRIVATE\\file"}"#,
             r#"{"action_kind":"request_normal_close","pid":42}"#,
+            r#"{"action_kind":"open_browser_process_manager","process_ref":"proc-fixture","url":"https://example.com"}"#,
+            r#"{"action_kind":"open_browser_process_manager","process_ref":"proc-fixture","command":"Shift+Esc"}"#,
             r#"{"action_kind":"open_settings_page","settings_page":"windowsupdate","command":"PAYLOAD"}"#,
         ] {
             assert!(PREPARE_ACTION_PLAN.validate(invalid).is_err());
