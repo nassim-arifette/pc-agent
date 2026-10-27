@@ -616,6 +616,7 @@ export function mount(page) {
   };
 
   const renderHome = () => {
+    box?.dispose();
     mode = "home";
     turnsKey = "";
     disposeAdminCards();
@@ -634,6 +635,7 @@ export function mount(page) {
 
   const ensureThread = () => {
     if (mode === "thread") return;
+    box?.dispose();
     mode = "thread";
     suggestionsHost = null;
     turnsKey = "";
@@ -807,6 +809,7 @@ export function mount(page) {
   });
   return () => {
     window.clearInterval(elapsedTimer);
+    box?.dispose();
     window.removeEventListener("pcagent:mode", renderFootnote);
     disposeAdminCards();
     unsubscribe();

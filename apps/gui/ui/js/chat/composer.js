@@ -15,6 +15,7 @@ import { webConsentNote } from "./web.js";
 import { failureText } from "../failure.js";
 import { createImageDraft, pastedImages } from "./image-draft.js";
 import { imagePreview, showImage } from "./images.js";
+import { voiceComposer } from "./voice.js";
 
 const attachment = createImageDraft({
   prepare: (dataBase64) => call("image_prepare", { dataBase64 }),
@@ -366,6 +367,10 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   const sendHost = h("span", { class: "send-host" });
   const imageHost = h("div", { class: "image-draft", "aria-live": "polite" });
   const running = () => Boolean(state.inv && (state.inv.status === "running" || state.inv.status === "stopping"));
+  const voice = voiceComposer({
+    area, grow, changed: () => refresh(),
+    unavailable: () => running() || state.preparing,
+  });
   const attach = async (files) => {
     if (running() || state.preparing) return;
     try { await attachment.attach(Array.from(files)); }
@@ -377,7 +382,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   } });
   const attachButton = h("button", { type: "button", class: "icon-btn", title: t("image.attach"), "aria-label": t("image.attach"), onclick: () => fileInput.click() }, icon("image"));
   const submit = async () => {
-    if (running() || state.preparing || attachment.pending) return;
+    if (running() || state.preparing || attachment.pending || voice.blocked) return;
     const text = area.value;
     if (!text.trim()) return;
     const imageId = attachment.image?.id ?? null;
@@ -389,10 +394,12 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
   };
   const refresh = () => {
     attachment.bind(state.conversationRevision);
+    voice.bind(state.conversationRevision);
+    voice.refresh();
     // The welcome composer is replaced by the thread when a send starts. Keep its text stable
     // until that handoff; otherwise edits made while preparing would be lost with the old node.
-    area.readOnly = state.preparing;
-    area.setAttribute("aria-busy", String(state.preparing));
+    area.readOnly = state.preparing || voice.busy;
+    area.setAttribute("aria-busy", String(state.preparing || voice.busy));
     const focusedShare = modeHost.contains(document.activeElement) ? document.activeElement.dataset.shareKey : null;
     const mode = effectiveMode();
     fill(modeHost, mode === "local" ? localPill() : shareToggles({ followUp, text: () => area.value }));
@@ -420,7 +427,7 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
             { type: "button", class: "send stop", title: t("inv.stop"), "aria-label": t("inv.stop"), disabled: state.inv.status === "stopping", onclick: () => stopInvestigation() },
             icon("stop"),
           )
-        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), disabled: state.preparing || attachment.pending || Boolean(image && mode !== "complete"), onclick: submit }, icon("send")),
+        : h("button", { type: "button", class: "send", title: t("ask.send"), "aria-label": t("ask.send"), disabled: state.preparing || attachment.pending || voice.blocked || Boolean(image && mode !== "complete"), onclick: submit }, icon("send")),
     );
   };
   area.addEventListener("input", grow);
@@ -443,10 +450,12 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
     fileInput,
     imageHost,
     area,
+    voice.el,
     h(
       "div",
       { class: "ask-bar" },
       attachButton,
+      voice.mic,
       h("button", { type: "button", class: "icon-btn", title: t("ask.folder"), "aria-label": t("ask.folder"), onclick: () => navigate("storage") }, icon("folder")),
       modeHost,
       h("span", { class: "spacer" }),
@@ -465,5 +474,6 @@ export function composer({ autofocus = false, followUp = false, big = false } = 
       area.focus();
     },
     refresh,
+    dispose: () => voice.dispose(),
   };
 }
