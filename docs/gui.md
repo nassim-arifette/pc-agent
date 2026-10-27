@@ -116,6 +116,30 @@ remains readable as an ordinary saved turn there.
 
 ## Storage selection
 
+Storage starts with a squarified map of direct child folders. Map, Tree and List share the same
+scan index and inspector. Folders can be opened by double-clicking a map tile, by the explicit
+Open folder button (keyboard accessible), or by a breadcrumb. Map tiles support Tab, arrows,
+Home/End and Enter/Space selection. The list below the map includes zero-size and unknown items
+that cannot receive an area. **Other** explains the difference between the parent and displayed
+pages; it never creates an AI selection. Partial coverage is explicit.
+
+Tree uses nested lists with native disclosure buttons and `aria-expanded`, loading folder and
+file pages only as expanded. List reads the current folder rather than mixing descendants.
+All pages remain reachable through Load more; no visual top-N cap hides indexed children.
+Selection loads cancellable, scan-time facts and an exact host-issued C3 reference before
+enabling Explain/Investigate. Its inspector adds 182-day untouched bytes/count, undated files,
+largest file and extension-only type totals. Unknown allocation is displayed as unknown.
+
+The shared action toolbar participates in normal layout and wraps on narrow windows, rather
+than reserving a fixed-height overlay; this applies to Live PC too. Number, size and date
+formatting follows the selected interface language. Scan completion time and the permanent
+read-only notice distinguish metadata measurement from current use or deletion.
+
+Recent scans are summaries for this session only; selecting an old root explicitly rescans it.
+Watch proposes volume-free-below through `ui/watches-controller.js`'s `requestWatch(rule)`.
+The threshold is 10 GiB, bounded by capacity and at least 1 GiB. An absent form, non-fixed
+volume or unknown/too-small capacity has a visible disabled reason, never a fake success.
+
 Each page of scan results the host returns is published as a selection source
 (`retain_storage_page`): the page carries its `selection_source_id` and the target of an item is
 `{ kind: "storage", scope_id, item_ref }`. Selecting a folder or a file of the results shows the
