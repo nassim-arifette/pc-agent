@@ -223,6 +223,25 @@ Vérification locale, dans [`crates/agent/src/answer.rs`](../crates/agent/src/an
 
 ### C3 — Commandes et événements de l'app
 
+#### Complément du 27 octobre — textes fermés et accessibilité (piste C, #71)
+
+Les textes produits par le cœur et présentés à la personne (constats, faits, couverture,
+limites, étapes, erreurs, propositions d'action et vérifications administrateur) sont rendus
+depuis des codes fermés et des valeurs typées, avec dictionnaires français/anglais. Ce contrat
+s'applique à la fenêtre et aux rendus humains CLI/évaluation ; les objets JSON de mesure et les
+phrases libres du modèle ne sont pas traduits par substitution. Les archives anciennes sans code
+restent lisibles et sont explicitement distinguées des nouveaux textes localisables. Aucun nouveau
+texte ni identifiant personnel n'est ajouté aux envois C5. Le vérificateur continue à signaler,
+sans rédiger ni traduire la réponse.
+
+La fenêtre expose noms accessibles, navigation clavier, focus visible et annonces des étapes et
+réponses en cours. Elle respecte la réduction des animations et les couleurs contrastées de
+Windows. La validation couvre le parcours simulé complet en français/anglais, clair/sombre et
+contraste élevé, axe, puis Narrateur et NVDA dans l'application native sous compte standard ;
+les résultats et limites réellement constatés sont consignés dans `docs/accessibility.md`.
+Les autorisations d'action et d'élévation restent inchangées : proposition, revue locale, clic
+explicite et UAC pour une vérification élevée ; jamais de modèle ni réseau dans le programme élevé.
+
 | Commande | Rôle |
 | --- | --- |
 | `conversations_list()` | titres, dates, état du dernier tour |
@@ -876,6 +895,13 @@ recherche du chantier 15.
   5. les suggestions de suivi.
 - Accueil : la zone de saisie, quatre suggestions et une ligne d'état (« Mémoire 81 % · Processeur
   17 % · C: plein à 92 % »). Plus de tableau de bord en page d'accueil.
+- **Décision du 27 octobre (#71)** : quatre suggestions en grille 2 × 2 (une colonne uniquement
+  quand la largeur l'impose). La ligne d'état affiche ensemble mémoire, processeur et remplissage
+  de C:, issus de la dernière mesure ; une valeur absente reste inconnue, jamais zéro. Les alertes
+  de batterie et autres ressources restent visibles en complément, sans masquer ces trois mesures.
+  Le tour simulé couvre aussi une proposition d'action, sa revue, sa validation et son résultat
+  avant/après ; son nombre d'échantillons est cohérent avec la période annoncée. L'audit français
+  du tour et les tests de dictionnaires détectent les régressions de traduction et clés dupliquées.
 - Stockage : un dossier se joint à la conversation ; l'explorateur s'ouvre dans le panneau, avec une
   vue plein écran possible.
 - Refonte visuelle :
@@ -1554,6 +1580,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
+| Textes français, accessibilité et finitions #71 | C | contrat approuvé par le porteur ; implémentation et preuves Windows standard, Narrateur/NVDA, axe et parcours FR/EN clair/sombre/contraste élevé en cours ; aucune validation non exécutée n'est considérée acquise | PR plan puis PR code séparées |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Réorganisation C — cœur / outils / Nebius | A, B | client Nebius, catalogue déclaratif, projections pures et implémentations `pcagent-tools` séparés ; apps raccordées ; validation locale : 828 tests Rust réussis, 3 ignorés, sur 22 exécutables sous compte standard (intégrité moyenne, hors groupe administrateurs), fmt, Clippy, doctests et quatre builds release ; 46 constantes de catalogue comparées à leur définition avant refactor sans changement de valeur ; aucun parcours GUI natif ni test Linux rejoué ; découpage des gros fichiers détaillé ci-dessous | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
 | Réorganisation C — gros fichiers du cœur | A | réponse et sélections figées séparées en modules par responsabilité, API conservées et sources ajoutées à l'identité de calibration ; 41 tests déplacés et 68 corps de fonctions comparés sans changement de comportement (l'adaptateur de sélection utilise ses accesseurs existants) ; 828 tests Rust réussis sous compte standard, 3 ignorés, Clippy et quatre builds release validés ; 51 tests d'orchestration ensuite regroupés par comportement sans modifier leurs corps, 184 tests du cœur et Clippy repassés ; aucun changement visuel | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
