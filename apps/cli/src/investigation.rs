@@ -42,7 +42,11 @@ pub(super) fn declared_tools(
         web_search: false,
         action_proposals: proposals,
     };
-    let capabilities = Capabilities::of_turn(cfg!(windows), flows, Probes::without_helper(initial));
+    let capabilities = Capabilities::for_platform(
+        pcagent_agent::capabilities::Platform::current(),
+        flows,
+        Probes::without_helper(initial),
+    );
     pcagent_agent::capabilities::catalog(&specs, &capabilities)
         .iter()
         .map(|spec| spec.name)
@@ -139,8 +143,11 @@ pub(super) fn diagnose(
             format!("The question is longer than {MAX_QUESTION_BYTES} bytes; shorten it.").into(),
         );
     }
-    if allow_cloud && !cfg!(windows) {
-        return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
+    if allow_cloud && !pcagent_agent::capabilities::Platform::current().has_native_backend() {
+        return Err(
+            "Cloud diagnostics require a native collector; no synthetic telemetry is substituted."
+                .into(),
+        );
     }
     let creds = Credentials::load();
     let mut privacy = PrivacyContext::local();
@@ -303,8 +310,11 @@ pub(super) fn chat(
     if json {
         return Err("chat is interactive and has no --json mode; use diagnose --json.".into());
     }
-    if !cfg!(windows) {
-        return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
+    if !pcagent_agent::capabilities::Platform::current().has_native_backend() {
+        return Err(
+            "Cloud diagnostics require a native collector; no synthetic telemetry is substituted."
+                .into(),
+        );
     }
     let creds = Credentials::load();
     let config =

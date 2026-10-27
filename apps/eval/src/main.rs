@@ -329,9 +329,10 @@ fn run(cli: Cli) -> Result<u8> {
             if let Some(calls) = &extra_calls {
                 capture::validate_calls(calls, &Workstation::tool_specs())?;
             }
-            if !cfg!(windows) {
+            if !pcagent_agent::capabilities::Platform::current().has_native_backend() {
                 return Err(
-                    "Live capture requires Windows; use replay for portable evaluation".into(),
+                    "Live capture requires a native backend; use replay on unsupported platforms"
+                        .into(),
                 );
             }
             let output = OutputFile::reserve(&out)?;
@@ -552,8 +553,10 @@ fn run(cli: Cli) -> Result<u8> {
                     eprintln!("Replay had {} unrecorded calls.", replay.misses.len());
                 }
             } else {
-                if !cfg!(windows) {
-                    return Err("Live MCP requires Windows; use --scenario elsewhere".into());
+                if !pcagent_agent::capabilities::Platform::current().has_native_backend() {
+                    return Err(
+                        "Live MCP requires a native backend; use --scenario elsewhere".into(),
+                    );
                 }
                 let asked = question(asked, Some("Inspect this PC."))?;
                 let storage = storage(&scopes)?;

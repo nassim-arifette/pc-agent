@@ -3,6 +3,7 @@ pub mod activity;
 pub mod elevated;
 pub mod external;
 pub mod history;
+pub(crate) mod linux;
 pub mod proposals;
 pub mod system;
 use crate::tools::{Param, ParamKind, ToolSpec, MAX_PROCESSES};

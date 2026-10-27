@@ -18,7 +18,12 @@ pub const SETTINGS_PAGES: &[&str] = &[
     "powersleep",
     "batterysaver-usagedetails",
 ];
-pub const USER_CLEANUP_ADAPTERS: &[&str] = &["user.temp", "nvidia.dxcache", "windows.d3dscache"];
+pub const USER_CLEANUP_ADAPTERS: &[&str] = &[
+    "user.temp",
+    "nvidia.dxcache",
+    "windows.d3dscache",
+    "linux.cache",
+];
 
 pub const PREPARE_ACTION_PLAN: ToolSpec = ToolSpec {
     name: "prepare_action_plan",
@@ -62,13 +67,13 @@ const ITEM_REF: Param = Param {
 };
 const SETTINGS_PAGE: Param = Param {
     name: "settings_page",
-    description: "Allowlisted Windows Settings page.",
+    description: "Allowlisted system settings page (stable compatibility identifier).",
     kind: ParamKind::OneOf(SETTINGS_PAGES),
     required: false,
 };
 const STARTUP_REF: Param = Param {
     name: "startup_ref",
-    description: "Opaque current-user Run target listed by get_startup_programs.",
+    description: "Opaque current-user startup target listed by get_startup_programs.",
     kind: ParamKind::OpaqueRef { prefix: "startup-" },
     required: false,
 };
@@ -110,3 +115,31 @@ pub(crate) const PREPARE_WITHOUT_STORAGE: ToolSpec = ToolSpec {
     ],
     ..PREPARE_ACTION_PLAN
 };
+
+const LINUX_ADAPTER: Param = Param {
+    kind: ParamKind::OneOf(&["linux.cache"]),
+    ..ADAPTER_ID
+};
+const LINUX_SETTINGS: Param = Param {
+    kind: ParamKind::OneOf(&[
+        "storagesense",
+        "appsfeatures",
+        "startupapps",
+        "windowsupdate",
+        "powersleep",
+        "batterysaver-usagedetails",
+    ]),
+    ..SETTINGS_PAGE
+};
+
+pub(crate) fn linux(scopes: bool) -> ToolSpec {
+    ToolSpec {
+        description:"Propose an action for explicit local review; nothing runs now. Only locally issued opaque targets are accepted. Linux supports reviewed XDG startup state changes, exact cache-file manifests moved to recoverable trash, available desktop settings and authorized storage items. No shell, permanent deletion, force termination or automatic elevation.",
+        params:if scopes {
+            &[Param{kind:ParamKind::OneOf(&["open_in_explorer","open_settings_page","run_cleanup_adapter","disable_user_startup","recycle_selected_files"]),..ACTION_KIND},SCOPE_ID,ITEM_REF,LINUX_SETTINGS,STARTUP_REF,LINUX_ADAPTER]
+        }else{
+            &[Param{kind:ParamKind::OneOf(&["open_settings_page","run_cleanup_adapter","disable_user_startup"]),..ACTION_KIND},LINUX_SETTINGS,STARTUP_REF,LINUX_ADAPTER]
+        },
+        ..PREPARE_ACTION_PLAN
+    }
+}

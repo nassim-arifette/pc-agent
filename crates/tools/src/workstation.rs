@@ -78,9 +78,20 @@ impl<'a> Workstation<'a> {
     }
     /// The capabilities this turn's tools follow, or `None` while every tool is declared.
     pub fn capabilities(&self) -> Option<pcagent_agent::capabilities::Capabilities> {
-        self.capabilities_on(cfg!(windows))
+        self.capabilities_for(pcagent_agent::capabilities::Platform::current())
     }
+    #[cfg(test)]
     fn capabilities_on(&self, windows: bool) -> Option<pcagent_agent::capabilities::Capabilities> {
+        self.capabilities_for(if windows {
+            pcagent_agent::capabilities::Platform::Windows
+        } else {
+            pcagent_agent::capabilities::Platform::Unsupported
+        })
+    }
+    fn capabilities_for(
+        &self,
+        platform: pcagent_agent::capabilities::Platform,
+    ) -> Option<pcagent_agent::capabilities::Capabilities> {
         let probes = self.probes?;
         let flows = pcagent_agent::capabilities::Flows {
             history_sampler: self.history.is_some(),
@@ -92,8 +103,8 @@ impl<'a> Workstation<'a> {
             web_search: self.external.is_some(),
             action_proposals: self.actions.is_some(),
         };
-        Some(pcagent_agent::capabilities::Capabilities::of_turn(
-            windows, flows, probes,
+        Some(pcagent_agent::capabilities::Capabilities::for_platform(
+            platform, flows, probes,
         ))
     }
     /// The fixed catalog, then the enabled web lookups and proposals, restricted to this turn's
@@ -1008,15 +1019,19 @@ mod tests {
             assert_eq!(declared(&ws, "list_storage_scopes"), 1);
             assert_eq!(declared(&ws, "get_user_preferences"), 1);
             // Windows-only tools follow the platform; history tools need a sampler too.
-            let windows = usize::from(cfg!(windows));
+            let native =
+                usize::from(pcagent_agent::capabilities::Platform::current().has_native_backend());
             for name in [
                 "get_system_snapshot",
                 "get_process_activity",
-                "get_approved_elevated_inspection",
                 "prepare_action_plan",
             ] {
-                assert_eq!(declared(&ws, name), windows, "{name}");
+                assert_eq!(declared(&ws, name), native, "{name}");
             }
+            assert_eq!(
+                declared(&ws, "get_approved_elevated_inspection"),
+                usize::from(cfg!(windows))
+            );
             assert_eq!(declared(&ws, "get_metric_history"), 0);
             if cfg!(windows) {
                 let elevated = ws
