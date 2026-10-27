@@ -16,3 +16,7 @@ uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+chrono.workspace = true

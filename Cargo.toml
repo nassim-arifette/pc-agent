@@ -16,6 +16,9 @@ thiserror = "=2.0.17"
 uuid = { version = "=1.18.1", features = ["v4"] }
 sha2 = { version = "=0.10.9", default-features = false }
 base64 = "=0.22.1"
+rustix = { version = "=1.1.4", features = ["fs", "param", "process", "time"] }
+nvml-wrapper = "=0.11.0"
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 clap = { version = "=4.5.50", features = ["derive"] }
 # SQLite compiled into the binary: no system library to install.
