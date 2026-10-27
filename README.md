@@ -42,6 +42,10 @@ puts a capable model in front of real measurements, and keeps it honest:
 
 ## What it does
 
+- **Local French/English voice dictation.** Dictate with a microphone and an offline Whisper
+  model, then review/edit the text before sending. Audio is neither saved nor uploaded.
+  Engine, language, microphone and model controls are in Settings; see [voice dictation](docs/voice.md).
+
 ### A conversation with cited, verified answers
 
 The interface is in English or French; the model answers in the language of your question. While
