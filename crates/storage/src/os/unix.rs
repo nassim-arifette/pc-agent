@@ -1,10 +1,8 @@
 //! Unix metadata fallback. Every lookup is relative to an already-open directory descriptor.
 use crate::{
-    index::VolumeSpace,
     scan::{AttributeClass, EntryFacts, FileFacts},
     StorageError,
 };
-use pcagent_shared::Status;
 use rustix::fs::{self, AtFlags, Dir, FileType, Mode, OFlags, Stat};
 use std::{
     ffi::{OsStr, OsString},
@@ -12,6 +10,8 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::{Component, Path, PathBuf},
 };
+#[cfg(not(target_os = "macos"))]
+use {crate::VolumeSpace, pcagent_shared::Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VolumeId(u64);
@@ -221,10 +221,12 @@ fn modified_ms(stat: &Stat) -> Option<u64> {
 pub(crate) fn check_root(root: &Path) -> Result<VolumeId, StorageError> {
     Ok(VolumeId(Directory::open_root(root, None)?.identity()?.0))
 }
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn volume_space(_root: &Path) -> VolumeSpace {
     VolumeSpace {
         total_bytes: None,
         free_bytes: None,
+        available_bytes: None,
         occupied_bytes: None,
         filesystem: None,
         source: "platform".into(),
