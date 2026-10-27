@@ -1,6 +1,6 @@
 //! Current-user TEMP and shader adapters. Inventory is read-only; approved files go to the bin.
 use crate::{
-    is_windows_absolute, same_object, BaselineProtection, FileTarget, Guard, ProtectionCheck,
+    is_native_absolute, same_object, BaselineProtection, FileTarget, Guard, ProtectionCheck,
     Refusal,
 };
 use pcagent_shared::Status;
@@ -23,6 +23,7 @@ pub enum UserCleanupKind {
     UserTemp,
     NvidiaDxCache,
     Direct3dShaderCache,
+    LinuxCache,
 }
 impl UserCleanupKind {
     pub fn from_ref(reference: &str) -> Option<Self> {
@@ -30,6 +31,7 @@ impl UserCleanupKind {
             "user.temp" => Some(Self::UserTemp),
             "nvidia.dxcache" => Some(Self::NvidiaDxCache),
             "windows.d3dscache" => Some(Self::Direct3dShaderCache),
+            "linux.cache" => Some(Self::LinuxCache),
             _ => None,
         }
     }
@@ -38,6 +40,7 @@ impl UserCleanupKind {
             Self::UserTemp => "user.temp",
             Self::NvidiaDxCache => "nvidia.dxcache",
             Self::Direct3dShaderCache => "windows.d3dscache",
+            Self::LinuxCache => "linux.cache",
         }
     }
 }
@@ -86,7 +89,7 @@ impl RecycleCleanupTarget {
         })
     }
     pub(crate) fn validate_structure(&self) -> Result<(), Refusal> {
-        if !is_windows_absolute(&self.root.path)
+        if !is_native_absolute(&self.root.path)
             || BaselineProtection.is_protected(&self.root.path)
             || !self.root.identity.is_directory
             || self.root.identity.is_reparse_point
@@ -153,6 +156,9 @@ impl RecycleCleanupTarget {
 }
 
 fn within_root(root: &Path, path: &Path) -> bool {
+    if cfg!(unix) && root.is_absolute() {
+        return path != root && path.starts_with(root) && is_native_absolute(path);
+    }
     let (Some(root), Some(path)) = (root.to_str(), path.to_str()) else {
         return false;
     };
@@ -160,10 +166,21 @@ fn within_root(root: &Path, path: &Path) -> bool {
     path.get(..root.len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(root))
         && path.as_bytes().get(root.len()) == Some(&b'\\')
-        && is_windows_absolute(Path::new(path))
+        && is_native_absolute(Path::new(path))
 }
 
 fn covered_ancestors(root: &Path, file: &Path, directories: &[FileTarget]) -> bool {
+    if cfg!(unix) && root.is_absolute() {
+        for parent in file.ancestors().skip(1) {
+            if parent == root {
+                return true;
+            }
+            if !directories.iter().any(|directory| directory.path == parent) {
+                return false;
+            }
+        }
+        return false;
+    }
     let (Some(root), Some(mut path)) = (root.to_str(), file.to_str()) else {
         return false;
     };
@@ -196,6 +213,29 @@ pub struct UserCleanupAdapter {
 }
 impl UserCleanupAdapter {
     pub fn current_user(kind: UserCleanupKind) -> Result<Self, Status> {
+        #[cfg(target_os = "linux")]
+        if kind == UserCleanupKind::LinuxCache {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or(Status::Unsupported)?;
+            let root = std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home.join(".cache"));
+            if !is_native_absolute(&root)
+                || home.starts_with(&root)
+                || BaselineProtection.is_protected(&root)
+            {
+                return Err(Status::Unsupported);
+            }
+            let observed = crate::NativeGuard
+                .observe_file(&root)?
+                .ok_or(Status::Unsupported)?;
+            if !observed.is_directory || observed.is_reparse_point {
+                return Err(Status::Unsupported);
+            }
+            return Ok(Self { kind, root });
+        }
         if !cfg!(windows) {
             return Err(Status::Unsupported);
         }
@@ -211,8 +251,9 @@ impl UserCleanupAdapter {
             UserCleanupKind::Direct3dShaderCache => {
                 local.ok_or(Status::Unsupported)?.join("D3DSCache")
             }
+            UserCleanupKind::LinuxCache => return Err(Status::Unsupported),
         };
-        if !is_windows_absolute(&root) || BaselineProtection.is_protected(&root) {
+        if !is_native_absolute(&root) || BaselineProtection.is_protected(&root) {
             return Err(Status::Unsupported);
         }
         // A misconfigured TEMP must never turn an entire profile or volume into a cleanup root.

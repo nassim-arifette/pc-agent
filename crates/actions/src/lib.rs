@@ -34,7 +34,8 @@ pub use journal::{
     recover, InterruptedItem, Journal, JournalPhase, JournalRecord, PreState, RecoveryReport,
 };
 pub use native::{
-    explorer_select_arg, is_windows_absolute, BaselineProtection, NativeEffects, NativeGuard,
+    explorer_select_arg, is_native_absolute, is_windows_absolute, BaselineProtection,
+    NativeEffects, NativeGuard,
 };
 #[cfg_attr(not(windows), allow(unused_imports))]
 pub(crate) use native::{same_object, verify_recycled, RecycleEvidence};
