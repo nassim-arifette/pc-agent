@@ -29,6 +29,45 @@ current_resource_usage() -> ResourceUsage                                       
 
 ## Design
 
+### Browser process activity
+
+Windows activity classifies Firefox, Chrome, Edge, WebView2 and Chromium/Electron child
+processes locally. `BrowserProcessType` is closed: `browser_main`, `renderer`, `extension`,
+`gpu`, `network`, `storage`, `audio`, `media_decoding`, `utility`, `crash_handler`, `unknown`.
+Firefox's `-contentproc` type and Chromium's fixed process/utility switches supply the
+classification. For an otherwise unknown executable, a Chromium IPC signature is required;
+`--type=renderer` alone does not establish a Chromium runtime. This heuristic does not
+establish a product identity or authorize an action.
+
+The Windows adapter reads `NtQueryInformationProcess(ProcessCommandLineInformation)` with
+`PROCESS_QUERY_LIMITED_INFORMATION`, with a local WMI fallback. PID and creation time must
+still match before and after the read. Arguments and temporary UTF-16 buffers are discarded
+immediately after classification. **Command lines are never retained, logged, recorded,
+selected or sent to a model.** Public DTOs contain only the closed family/type and status.
+Missing access or an unrecognized switch becomes `unknown`, not a guessed renderer.
+
+Application and per-type counts, classified counts and evidence sums cover all observed
+members, before response ranking. Each type has its own opaque evidence reference; memory,
+CPU and I/O retain their measured windows/statuses. Classification runs after the final
+counter timestamp so its latency does not dilute CPU/I/O rates. Live PC requests the full
+application inventory; callers may still choose a smaller response, with coverage explicit.
+Summed working sets overlap shared pages: they are neither unique physical RAM nor exact
+memory per tab, URL or site. A renderer may represent several tabs or sites.
+
+### Ephemeral browser titles
+
+`local_browser::read` is a separate desktop-only path, not a collector or model tool.
+`EnumWindows`/`GetWindowTextW` reads visible window captions for revalidated browser instances.
+On an explicit second request, UI Automation reads accessible TabItem names and selection
+states. A browser/version that does not expose its tab controls reports `unsupported` or
+`partial`; no tab count or title is invented, and captions are not mapped to renderer memory.
+
+These response types are deliberately neither measurement nor selection-source types.
+Titles do not enter SQLite, history, logs, eval captures or any model projection. The desktop
+holds them in ephemeral view memory and clears it when leaving Live PC. The exact selection
+preview contains the measured browser breakdown, never this local text. Inspection does not
+send titles even with executable-name sharing enabled.
+
 - **Identity.** A session registry keys instances by (PID, creation FILETIME) and issues opaque, random `proc-<8 hex>` refs, redrawn if they collide with a live or retired ref, so a model cannot guess the ref of a process it was not shown. A complete enumeration retires instances whose PID vanished (`exited`) or now has a different readable creation time (`pid_reused`); unreadable PIDs keep their identity. Up to 256 retired instances are kept so lookups return a clear `stale` status. Enumerations flagged truncated never retire anything.
 - **Process CPU** (`process_cpu_basis_points`): Δ(kernel+user) from two `NtQuerySystemInformation.SystemProcessInformation` readings of the same PID and creation time, divided by monotonic elapsed × `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`, i.e. basis points of total capacity. The per-handle fallback uses `GetProcessTimes`. Explicit snapshots take a fresh baseline, which overrides older registry counters; reused samples reject windows older than 60 seconds. Missing baselines, regressions, empty windows and >5 % overshoot are `None` + `partial`; ≤5 % overshoot (timer granularity) is clamped to 10 000.
 - **Process I/O**: system-list transfer-count deltas, or `GetProcessIoCounters` in the fallback (read/write/other bytes). Activity and persistent history convert them to bytes per second using the actual observation window. Every item states that the counters include cached, network and device I/O and are not physical disk activity.
