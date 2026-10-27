@@ -1,5 +1,9 @@
 // English interface dictionary; core measurement phrases live in phrases.js.
 export const en = {
+  "value.unknown": "not measured",
+  "home.memory": "Memory {value}",
+  "home.cpu": "Processor {value}",
+  "home.drive": "C: {value} full",
   "image.attach": "Attach an image (PNG or JPEG)",
   "image.preview": "Exact image preview",
   "image.alt": "Prepared attachment, exactly as sent to Nebius",
@@ -410,7 +414,6 @@ export const en = {
   "suggest.heat": "Why is my PC hot?",
   "suggest.spaceDrive": "What can I delete on {drive}?",
   "mode.pill.title": "Switch between local analysis and AI",
-  "mode.pill.local": "On this PC only",
   "ask.folder": "Analyze a folder",
   "usage.title": "Requests and cost",
   "nav.storage": "Storage",

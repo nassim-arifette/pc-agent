@@ -5,14 +5,72 @@ use pcagent_agent::{
     Pricing, RequestUsage, Stats, ToolEvent, VERIFY_SAMPLES,
 };
 use pcagent_shared::{
-    format_bytes, format_utc_minute, Evidence, Metric, Origin, ProcessInstance, Snapshot, Status,
+    format_utc_minute, presentation::Language, Evidence, Metric, Origin, Phrase, ProcessInstance,
+    Quantity, Snapshot, Status,
 };
 use pcagent_storage::{LargestItemsPage, ScanSummary, StorageOverview};
 use serde::Serialize;
 use std::{
     io::{self, Write},
     path::Path,
+    sync::OnceLock,
 };
+
+static LANGUAGE: OnceLock<Language> = OnceLock::new();
+
+pub fn set_language(language: Language) {
+    let _ = LANGUAGE.set(language);
+}
+
+fn language() -> Language {
+    LANGUAGE.get().copied().unwrap_or_default()
+}
+
+pub fn label(key: &str) -> &str {
+    language().label(key).unwrap_or(key)
+}
+
+fn format_bytes(value: u64) -> String {
+    if language() == Language::En {
+        pcagent_shared::format_bytes(value)
+    } else {
+        language().bytes(value)
+    }
+}
+
+macro_rules! say {
+    ($key:literal $(, $name:ident = $value:expr)* $(,)?) => {
+        language().fill(
+            $key,
+            &std::collections::BTreeMap::from([
+                $((stringify!($name), $value.to_string())),*
+            ]),
+        ).unwrap_or_else(|| format!("[{}]", $key))
+    };
+}
+
+/// Only core-owned diagnostic fields use this lookup. Model/user prose never enters it.
+fn diagnostic(text: &str, processes: &[ProcessInstance]) -> String {
+    presented(pcagent_diagnostics::phrase(text).as_ref(), text, processes)
+}
+
+fn presented(phrase: Option<&Phrase>, fallback: &str, processes: &[ProcessInstance]) -> String {
+    let rendered = phrase.and_then(|phrase| {
+        let mut phrase = phrase.clone();
+        for value in phrase.values.values_mut() {
+            if let Quantity::Entity(reference) = value {
+                if let Some(process) = processes.iter().find(|p| p.entity_ref == *reference) {
+                    *value = Quantity::Process {
+                        name: process.executable_name.clone(),
+                        pid: process.pid,
+                    };
+                }
+            }
+        }
+        language().render(&phrase)
+    });
+    clean(&rendered.unwrap_or_else(|| localize(fallback, processes)))
+}
 
 /// Untrusted names and paths: control and bidirectional-formatting characters are escaped so a
 /// name cannot move the cursor, recolor the terminal or reorder the line; the rest prints as is.
@@ -57,16 +115,48 @@ pub fn recovery(r: Recovery) -> &'static str {
 /// A snake_case enum value as words: `recycle_bin_available` -> `recycle bin available`.
 pub fn words(value: &impl Serialize) -> String {
     match serde_json::to_value(value) {
-        Ok(serde_json::Value::String(s)) => s.replace('_', " "),
-        _ => "unknown".into(),
+        Ok(serde_json::Value::String(s)) => language()
+            .label(&format!("word.{s}"))
+            .map(str::to_owned)
+            .unwrap_or_else(|| s.replace('_', " ")),
+        _ => label("cli.unknown").into(),
     }
+}
+
+fn metric_label(metric: Metric) -> &'static str {
+    if language() == Language::En {
+        metric.label()
+    } else {
+        language().metric(metric).unwrap_or_else(|| metric.label())
+    }
+}
+
+fn metric_value(metric: Metric, value: u64) -> String {
+    if language() == Language::En {
+        metric.format_value(value)
+    } else {
+        language()
+            .metric_value(metric, value)
+            .unwrap_or_else(|| label("cli.unknown").into())
+    }
+}
+
+fn classification(value: pcagent_diagnostics::Classification) -> String {
+    let code = serde_json::to_value(value).expect("classification");
+    language()
+        .label(&format!(
+            "classification.{}",
+            code.as_str().expect("classification code")
+        ))
+        .unwrap_or_else(|| value.label())
+        .to_owned()
 }
 
 fn value_text(e: &Evidence) -> String {
     match e.usable_value() {
-        Some(v) => e.metric.format_value(v),
-        None if e.status == Status::Ok => "unknown".into(),
-        None => format!("not measured ({})", words(&e.status)),
+        Some(v) => metric_value(e.metric, v),
+        None if e.status == Status::Ok => label("cli.unknown").into(),
+        None => say!("cli.not_measured", reason = words(&e.status)),
     }
 }
 
@@ -75,7 +165,11 @@ fn thousands(n: u64) -> String {
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
+            out.push(if language() == Language::Fr {
+                '\u{202f}'
+            } else {
+                ','
+            });
         }
         out.push(c);
     }
@@ -88,7 +182,16 @@ fn seconds(ms: u64) -> String {
 
 pub fn plural(n: impl Into<u64>, one: &str, many: &str) -> String {
     let n = n.into();
-    format!("{} {}", thousands(n), if n == 1 { one } else { many })
+    let form = if n == 1 || (n == 0 && language() == Language::Fr) {
+        "one"
+    } else {
+        "many"
+    };
+    let key = format!("noun.{}.{}", one.replace(' ', "_"), form);
+    let noun = language()
+        .label(&key)
+        .unwrap_or(if n == 1 { one } else { many });
+    format!("{} {noun}", thousands(n))
 }
 
 /// Two aligned columns: label, value.
@@ -119,7 +222,7 @@ pub fn process_name(p: &ProcessInstance) -> String {
     let name = p
         .executable_name
         .as_deref()
-        .map_or_else(|| "name unavailable".into(), clean);
+        .map_or_else(|| label("cli.name_unavailable").into(), clean);
     format!("{name} (PID {})", p.pid)
 }
 
@@ -138,13 +241,13 @@ pub fn snapshot(
     ranked_by: &str,
 ) -> io::Result<()> {
     if s.origin != Origin::Live {
-        writeln!(out, "Synthetic data, not a live measurement of this PC.")?;
+        writeln!(out, "{}", label("cli.synthetic"))?;
     }
     if !processes_only {
-        writeln!(out, "System")?;
+        writeln!(out, "{}", label("cli.system"))?;
         let system = system_rows(s);
         if system.is_empty() {
-            writeln!(out, "  No system measurement is available.")?;
+            writeln!(out, "{}", label("cli.no_measurements"))?;
         } else {
             rows(out, &system)?;
         }
@@ -152,7 +255,7 @@ pub fn snapshot(
     }
     processes(out, s, ranked_by)?;
     writeln!(out)?;
-    list(out, "Notes", &s.limitations)
+    list(out, label("cli.notes"), &s.limitations)
 }
 
 /// Display order of system metrics: CPU, memory, disk, GPU.
@@ -175,7 +278,21 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
     let share = |part: Metric, whole: Metric, of: &str| {
         let part = s.system_value(part)?.1;
         let whole = s.system_value(whole)?.1;
-        (whole > 0).then(|| format!(" ({:.0}% of {of})", part as f64 * 100.0 / whole as f64))
+        (whole > 0).then(|| {
+            say!(
+                "cli.share",
+                share = if language() == Language::En {
+                    format!("{:.0}%", part as f64 * 100.0 / whole as f64)
+                } else {
+                    language()
+                        .quantity(&Quantity::BasisPoints(
+                            pcagent_shared::ratio_basis_points(part, whole).unwrap_or(0),
+                        ))
+                        .expect("basis points")
+                },
+                total = of
+            )
+        })
     };
     let mut system: Vec<&Evidence> = s
         .evidence
@@ -195,17 +312,17 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
                 Metric::PhysicalAvailableBytes => share(
                     Metric::PhysicalAvailableBytes,
                     Metric::PhysicalTotalBytes,
-                    "physical memory",
+                    label("cli.physical_memory"),
                 ),
                 Metric::SystemCommitBytes => share(
                     Metric::SystemCommitBytes,
                     Metric::SystemCommitLimitBytes,
-                    "the limit",
+                    label("cli.commit_limit"),
                 ),
                 _ => None,
             };
             (
-                e.metric.label().to_owned(),
+                metric_label(e.metric).to_owned(),
                 value_text(e) + &extra.unwrap_or_default(),
             )
         })
@@ -233,17 +350,17 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
                 format!(
                     "{} {}",
                     clean(kind),
-                    Metric::GpuEngineBasisPoints.format_value(*v)
+                    metric_value(Metric::GpuEngineBasisPoints, *v)
                 )
             })
             .collect();
         if idle > 0 {
-            parts.push(format!("{idle} idle"));
+            parts.push(say!("cli.idle", count = thousands(idle as u64)));
         }
         if unmeasured > 0 {
-            parts.push(format!("{unmeasured} not measured"));
+            parts.push(say!("cli.unmeasured", count = thousands(unmeasured as u64)));
         }
-        rows.push(("GPU engines".to_owned(), parts.join(", ")));
+        rows.push((label("cli.gpu_engines").to_owned(), parts.join(", ")));
     }
     // One line per NVIDIA GPU read through NVML.
     for gpu in &s.gpus {
@@ -255,35 +372,35 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
         };
         let mut parts = Vec::new();
         if let Some(v) = value(Metric::GpuTemperatureCelsius) {
-            parts.push(Metric::GpuTemperatureCelsius.format_value(v));
+            parts.push(metric_value(Metric::GpuTemperatureCelsius, v));
         }
         if let (Some(used), Some(total)) = (
             value(Metric::GpuMemoryUsedBytes),
             value(Metric::GpuMemoryTotalBytes),
         ) {
-            parts.push(format!(
-                "{} of {} memory",
-                format_bytes(used),
-                format_bytes(total)
+            parts.push(say!(
+                "cli.gpu_memory",
+                used = format_bytes(used),
+                total = format_bytes(total)
             ));
         }
         if let Some(v) = value(Metric::GpuUtilizationBasisPoints) {
-            parts.push(format!(
-                "{} busy",
-                Metric::GpuUtilizationBasisPoints.format_value(v)
+            parts.push(say!(
+                "cli.busy",
+                share = metric_value(Metric::GpuUtilizationBasisPoints, v)
             ));
         }
         if let Some(v) = value(Metric::GpuSmClockMegahertz) {
-            parts.push(Metric::GpuSmClockMegahertz.format_value(v));
+            parts.push(metric_value(Metric::GpuSmClockMegahertz, v));
         }
         if let Some(v) = value(Metric::GpuPowerMilliwatts) {
-            parts.push(Metric::GpuPowerMilliwatts.format_value(v));
+            parts.push(metric_value(Metric::GpuPowerMilliwatts, v));
         }
         match value(Metric::GpuSlowdownReasons) {
-            Some(0) => parts.push("no slowdown".to_owned()),
-            Some(bits) => parts.push(format!(
-                "slowing down: {}",
-                Metric::GpuSlowdownReasons.format_value(bits)
+            Some(0) => parts.push(label("cli.no_slowdown").to_owned()),
+            Some(bits) => parts.push(say!(
+                "cli.slowdown",
+                reasons = metric_value(Metric::GpuSlowdownReasons, bits)
             )),
             None => {}
         }
@@ -297,7 +414,7 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
             clean,
         );
         let text = if parts.is_empty() {
-            "no readings (see notes)".to_owned()
+            label("cli.no_readings").to_owned()
         } else {
             parts.join(", ")
         };
@@ -308,36 +425,53 @@ fn system_rows(s: &Snapshot) -> Vec<(String, String)> {
 
 fn processes(out: &mut impl Write, s: &Snapshot, ranked_by: &str) -> io::Result<()> {
     let c = &s.process_coverage;
-    let mut coverage = vec![format!("{} of {} readable", c.readable, c.enumerated)];
+    let mut coverage = vec![say!(
+        "cli.readable",
+        readable = thousands(c.readable as u64),
+        total = thousands(c.enumerated as u64)
+    )];
     if c.permission_denied > 0 {
-        coverage.push(format!("{} access denied", c.permission_denied));
+        coverage.push(say!(
+            "cli.denied",
+            count = thousands(c.permission_denied as u64)
+        ));
     }
     if c.unavailable > 0 {
-        coverage.push(format!("{} unavailable", c.unavailable));
+        coverage.push(say!(
+            "cli.unavailable",
+            count = thousands(c.unavailable as u64)
+        ));
     }
     if c.enumeration_truncated {
-        coverage.push("list truncated".into());
+        coverage.push(label("cli.truncated").into());
     }
     if s.processes.is_empty() {
         return writeln!(
             out,
-            "Processes: none readable ({}; {})",
-            words(&c.status),
-            coverage.join(", ")
+            "{}",
+            say!(
+                "cli.no_processes",
+                status = words(&c.status),
+                coverage = coverage.join(", ")
+            )
         );
     }
     writeln!(
         out,
-        "Processes: top {} by {ranked_by} ({})",
-        s.processes.len(),
-        coverage.join(", ")
+        "{}",
+        say!(
+            "cli.processes",
+            count = thousands(s.processes.len() as u64),
+            resource = ranked_by,
+            coverage = coverage.join(", ")
+        )
     )?;
     let cell = |p: &ProcessInstance, m: Metric| {
         s.evidence
             .iter()
             .find(|e| e.entity_ref == p.entity_ref && e.metric == m)
             .and_then(Evidence::usable_value)
-            .map(|v| m.format_value(v))
+            .map(|v| metric_value(m, v))
     };
     // Rate columns only appear when at least one instance was observed twice.
     let optional = [
@@ -358,9 +492,9 @@ fn processes(out: &mut impl Write, s: &Snapshot, ranked_by: &str) -> io::Result<
     .collect();
     write!(out, "  {:>7}", "PID")?;
     for m in &columns {
-        write!(out, "  {:>14}", m.label())?;
+        write!(out, "  {:>14}", metric_label(*m))?;
     }
-    writeln!(out, "  Name")?;
+    writeln!(out, "  {}", label("cli.name"))?;
     for p in &s.processes {
         write!(out, "  {:>7}", p.pid)?;
         for m in &columns {
@@ -369,7 +503,7 @@ fn processes(out: &mut impl Write, s: &Snapshot, ranked_by: &str) -> io::Result<
         let name = p
             .executable_name
             .as_deref()
-            .map_or_else(|| "(name unavailable)".into(), clean);
+            .map_or_else(|| format!("({})", label("cli.name_unavailable")), clean);
         writeln!(out, "  {name}")?;
     }
     Ok(())
@@ -572,6 +706,13 @@ pub fn tool_event(e: &ToolEvent) -> String {
 
 /// What an unverified part of an answer means, for the reader.
 fn issue_text(kind: IssueKind) -> String {
+    if language() == Language::Fr {
+        if let Ok(serde_json::Value::String(code)) = serde_json::to_value(kind) {
+            if let Some(text) = language().label(&format!("issue.{code}")) {
+                return text.to_owned();
+            }
+        }
+    }
     match kind {
         IssueKind::UnsupportedNumber => "number not found in the measurements".into(),
         IssueKind::MissingCitation => "numbers without a cited source".into(),
@@ -587,6 +728,22 @@ fn issue_text(kind: IssueKind) -> String {
     }
 }
 
+pub fn agent_error(error: &pcagent_agent::AgentError) -> String {
+    if language() == Language::En {
+        return error.to_string();
+    }
+    match serde_json::to_value(error) {
+        Ok(serde_json::Value::String(code)) => language()
+            .label(&format!("error.{code}"))
+            .unwrap_or_else(|| label("failure.unknown"))
+            .to_owned(),
+        Ok(serde_json::Value::Object(value)) if value.contains_key("http") => {
+            format!("{} (HTTP {})", label("error.http"), value["http"])
+        }
+        _ => label("failure.unknown").to_owned(),
+    }
+}
+
 /// The model's answer, its checked sources and what could not be verified.
 fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()> {
     let local = |text: &str| localize(text, &r.local_processes);
@@ -595,18 +752,21 @@ fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()>
     }
     writeln!(out)?;
     if !a.unverified.is_empty() {
-        writeln!(out, "Not verified by PC Agent")?;
+        writeln!(out, "{}", label("cli.unverified"))?;
         for issue in &a.unverified {
             writeln!(
                 out,
-                "  - \"{}\": {}",
-                clean(&issue.excerpt),
-                issue_text(issue.kind)
+                "{}",
+                say!(
+                    "cli.quoted_issue",
+                    excerpt = clean(&issue.excerpt),
+                    reason = issue_text(issue.kind)
+                )
             )?;
         }
     }
     if !a.citations.is_empty() {
-        writeln!(out, "Sources")?;
+        writeln!(out, "{}", label("cli.sources"))?;
     }
     for citation in &a.citations {
         if let Some(old) = r
@@ -616,10 +776,13 @@ fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()>
         {
             writeln!(
                 out,
-                "  [{}] {} (earlier measurement, Unix ms {})",
-                citation.reference,
-                clean(&old.tool),
-                old.measured_at_unix_ms
+                "{}",
+                say!(
+                    "cli.source_time",
+                    reference = citation.reference,
+                    tool = clean(&old.tool),
+                    time = old.measured_at_unix_ms
+                )
             )?;
             for fact in &old.facts {
                 writeln!(out, "      {}", clean(fact))?;
@@ -687,10 +850,10 @@ fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()>
                         out,
                         "  [{}] {}: {}{}",
                         citation.reference,
-                        f.classification.label(),
-                        local(&f.summary),
+                        classification(f.classification),
+                        diagnostic(&f.summary, &r.local_processes),
                         if earlier.is_some() {
-                            " (earlier measurement)"
+                            label("cli.earlier")
                         } else {
                             ""
                         }
@@ -700,7 +863,7 @@ fn answer(out: &mut impl Write, r: &Investigation, a: &Answer) -> io::Result<()>
         }
     }
     let follow_ups: Vec<String> = a.follow_ups.iter().map(|f| clean(f)).collect();
-    list(out, "You could ask next", &follow_ups)
+    list(out, label("cli.followups"), &follow_ups)
 }
 
 /// Observations listed when a report without an answer falls back on everything usable.
@@ -709,17 +872,24 @@ const MAX_SHOWN_OBSERVATIONS: usize = 6;
 /// A local analysis, or an investigation that ended without an answer: the selected local
 /// finding with its evidence, hypothesis and limits.
 fn findings(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Result<()> {
-    let local = |text: &str| localize(text, &r.local_processes);
     let f = &r.selected;
-    writeln!(out, "{}", f.classification.label())?;
-    writeln!(out, "{}", f.summary)?;
-    writeln!(out, "Support: {} ({})", f.support.label(), f.support_reason)?;
+    writeln!(out, "{}", classification(f.classification))?;
+    writeln!(out, "{}", diagnostic(&f.summary, &r.local_processes))?;
+    writeln!(
+        out,
+        "{}",
+        say!(
+            "cli.support",
+            level = words(&f.support),
+            reason = diagnostic(&f.support_reason, &r.local_processes)
+        )
+    )?;
     writeln!(out)?;
     let facts: Vec<String> = f
         .facts
         .iter()
         .map(|fact| {
-            let text = local(&fact.text);
+            let text = presented(fact.phrase.as_ref(), &fact.text, &r.local_processes);
             if verbose && !fact.evidence_refs.is_empty() {
                 format!("{text} [{}]", fact.evidence_refs.join(", "))
             } else {
@@ -727,21 +897,48 @@ fn findings(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Resul
             }
         })
         .collect();
-    list(out, "Evidence", &facts)?;
+    list(out, label("cli.evidence"), &facts)?;
     if let Some(h) = &f.hypothesis {
-        writeln!(out, "Hypothesis: {}", local(h))?;
+        writeln!(
+            out,
+            "{}",
+            say!("cli.hypothesis", text = diagnostic(h, &r.local_processes))
+        )?;
     }
-    let counter: Vec<String> = f.counter_evidence.iter().map(|c| local(c)).collect();
-    list(out, "Counter-evidence", &counter)?;
+    let counter: Vec<String> = f
+        .counter_evidence
+        .iter()
+        .enumerate()
+        .map(|(i, c)| presented(f.counter_phrases.get(i), c, &r.local_processes))
+        .collect();
+    list(out, label("cli.counter"), &counter)?;
     if !f.missing.is_empty() {
-        writeln!(out, "Not measured: {}", f.missing.join(", "))?;
+        writeln!(
+            out,
+            "{}",
+            say!(
+                "cli.missing",
+                text = f
+                    .missing
+                    .iter()
+                    .map(|text| diagnostic(text, &r.local_processes))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        )?;
     }
     let alternatives: Vec<String> = r
         .alternatives
         .iter()
-        .map(|a| format!("{}: {}", a.classification.label(), a.summary))
+        .map(|a| {
+            format!(
+                "{}: {}",
+                classification(a.classification),
+                diagnostic(&a.summary, &r.local_processes)
+            )
+        })
         .collect();
-    list(out, "Other possibilities", &alternatives)?;
+    list(out, label("cli.alternatives"), &alternatives)?;
     for observation in r
         .observations
         .iter()
@@ -752,44 +949,67 @@ fn findings(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Resul
     {
         writeln!(
             out,
-            "Observation: {} [{}] ({})",
-            clean(&observation.tool),
-            clean(&observation.observation_id),
-            words(&observation.status)
+            "{}",
+            say!(
+                "cli.observation",
+                tool = clean(&observation.tool),
+                id = clean(&observation.observation_id),
+                status = words(&observation.status)
+            )
         )?;
         let facts: Vec<_> = observation.facts.iter().map(|f| clean(f)).collect();
-        list(out, "  Facts", &facts)?;
+        list(out, label("cli.facts"), &facts)?;
         storage_context(out, &observation.storage_items)?;
         let limits: Vec<_> = observation.limitations.iter().map(|l| clean(l)).collect();
-        list(out, "  Limits", &limits)?;
+        list(out, label("cli.limits"), &limits)?;
     }
     if let Some(request) = &r.continuation {
         writeln!(
             out,
-            "Budget reached: {}. {}",
-            words(&request.reason),
-            if request.available {
-                "Further investigation requires explicit consent in this interactive session."
-            } else {
-                "The maximum extension or per-response tool limit was reached."
-            }
+            "{}",
+            say!(
+                "cli.budget",
+                reason = words(&request.reason),
+                next = if request.available {
+                    label("cli.budget_continue")
+                } else {
+                    label("cli.budget_stop")
+                }
+            )
         )?;
     }
-    writeln!(out, "Next step: {}", f.next_step)?;
+    writeln!(
+        out,
+        "{}",
+        say!(
+            "cli.next",
+            text = diagnostic(&f.next_step, &r.local_processes)
+        )
+    )?;
     writeln!(out)?;
-    list(out, "Limitations", &f.limitations)?;
+    list(
+        out,
+        label("cli.limitations"),
+        &f.limitations
+            .iter()
+            .map(|text| diagnostic(text, &r.local_processes))
+            .collect::<Vec<_>>(),
+    )?;
     let notes: Vec<&String> = r
         .limitations
         .iter()
         .filter(|l| !f.limitations.contains(l))
         .collect();
     if verbose {
-        list(out, "Collection notes", &notes)?;
+        list(out, label("cli.collection"), &notes)?;
     } else if !notes.is_empty() {
         writeln!(
             out,
-            "({} not shown; add --verbose to see them.)",
-            plural(notes.len() as u64, "collection note", "collection notes")
+            "{}",
+            say!(
+                "cli.collection_hidden",
+                count = thousands(notes.len() as u64)
+            )
         )?;
     }
     Ok(())
@@ -797,19 +1017,26 @@ fn findings(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Resul
 
 pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Result<()> {
     match r.mode.as_str() {
-        "local_rules" => writeln!(out, "Local analysis (nothing was sent to the cloud)")?,
-        "nebius" => writeln!(out, "Cloud-assisted investigation (Nebius)")?,
-        other => writeln!(out, "Mode: {}", clean(other))?,
+        "local_rules" => writeln!(out, "{}", label("cli.local"))?,
+        "nebius" => writeln!(out, "{}", label("cli.cloud"))?,
+        other => writeln!(out, "{}", say!("cli.mode", mode = clean(other)))?,
     }
     let support = match &r.answer {
-        Some(a) => format!("Confidence: {}", words(&a.confidence)),
-        None => format!("Diagnostic support: {}", r.diagnostic_support.label()),
+        Some(a) => say!("cli.confidence", value = words(&a.confidence)),
+        None => say!(
+            "cli.diagnostic_support",
+            value = words(&r.diagnostic_support)
+        ),
     };
     writeln!(
         out,
-        "Execution: {} | Sensor coverage: {} | {support}",
-        words(&r.execution_status),
-        words(&r.coverage.status),
+        "{}",
+        say!(
+            "cli.execution",
+            execution = words(&r.execution_status),
+            coverage = words(&r.coverage.status),
+            support = support
+        ),
     )?;
     for domain in &r.coverage.domains {
         let target = domain
@@ -824,14 +1051,11 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
             words(&domain.status)
         )?;
         if verbose {
-            list(out, "    Missing coverage", &domain.missing)?;
+            list(out, label("cli.coverage_missing"), &domain.missing)?;
         }
     }
     if let Some(error) = &r.error {
-        writeln!(
-            out,
-            "Warning: the investigation did not complete ({error}). Collected observations are retained below."
-        )?;
+        writeln!(out, "{}", say!("cli.failed", error = agent_error(error)))?;
     }
     writeln!(out)?;
     match &r.answer {
@@ -839,38 +1063,39 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
         None => findings(out, r, verbose)?,
     }
     if r.mode == "local_rules" {
-        writeln!(
-            out,
-            "For a model-guided investigation, add --allow-cloud (sends your question and minimized measurements to Nebius)."
-        )?;
+        writeln!(out, "{}", label("cli.cloud_hint"))?;
     } else {
         let s = &r.stats;
         let tokens = match (s.total_tokens, s.prompt_tokens, s.completion_tokens) {
-            (Some(total), Some(input), Some(output)) => format!(
-                "{} tokens ({} in, {} out)",
-                thousands(total),
-                thousands(input),
-                thousands(output)
+            (Some(total), Some(input), Some(output)) => say!(
+                "cli.tokens",
+                total = thousands(total),
+                input = thousands(input),
+                output = thousands(output)
             ),
-            (Some(total), _, _) => format!("{} tokens", thousands(total)),
+            (Some(total), _, _) => say!("cli.tokens_total", total = thousands(total)),
             _ if s.unknown_requests > 0
                 && s.known_prompt_tokens + s.known_completion_tokens > 0 =>
             {
-                format!(
-                    "at least {} tokens ({} in, {} out); {} reported no usage",
-                    thousands(s.known_prompt_tokens + s.known_completion_tokens),
-                    thousands(s.known_prompt_tokens),
-                    thousands(s.known_completion_tokens),
-                    plural(s.unknown_requests as u64, "request", "requests")
+                say!(
+                    "cli.tokens_lower",
+                    total = thousands(s.known_prompt_tokens + s.known_completion_tokens),
+                    input = thousands(s.known_prompt_tokens),
+                    output = thousands(s.known_completion_tokens),
+                    requests = plural(s.unknown_requests as u64, "request", "requests")
                 )
             }
-            _ => "tokens unknown".to_owned(),
+            _ => label("cli.tokens_unknown").to_owned(),
         };
         writeln!(
             out,
-            "Model usage: {}, {}; {tokens}",
-            plural(s.inference_calls as u64, "request", "requests"),
-            plural(s.tool_calls as u64, "tool call", "tool calls"),
+            "{}",
+            say!(
+                "cli.model_usage",
+                requests = plural(s.inference_calls as u64, "request", "requests"),
+                tools = plural(s.tool_calls as u64, "tool call", "tool calls"),
+                tokens = tokens
+            ),
         )?;
         if let Some(change) = model_change(r) {
             writeln!(out, "{change}")?;
@@ -888,8 +1113,8 @@ pub fn report(out: &mut impl Write, r: &Investigation, verbose: bool) -> io::Res
                     out,
                     "{}",
                     cost_line(Some(lower)).replacen(
-                        "Estimated cost: $",
-                        "Estimated cost: at least $",
+                        label("cli.cost_prefix"),
+                        label("cli.cost_lower_prefix"),
                         1
                     )
                 )?,
@@ -922,21 +1147,41 @@ fn model_change(r: &Investigation) -> Option<String> {
             String::new()
         }
     };
-    let from_answer = shown(&format!("The answer above was written by {from}."));
+    let from_answer = shown(&say!("cli.answer_author", from = from));
     Some(match (taken, routing.last_request_error.as_ref()) {
-        (0, _) => format!(
-            "Model change: {to} was to take over from {from} after {after} ({reason}), but the investigation ended before it answered.{from_answer}"
+        (0, _) => say!(
+            "cli.model_change_pending",
+            to = to,
+            from = from,
+            after = after,
+            reason = reason,
+            answer = from_answer
         ),
-        (1, Some(error)) => format!(
-            "Model change: {to} was asked to take over from {from} after {after} ({reason}), but its request failed ({error}).{from_answer}"
+        (1, Some(error)) => say!(
+            "cli.model_change_failed",
+            to = to,
+            from = from,
+            after = after,
+            reason = reason,
+            error = agent_error(error),
+            answer = from_answer
         ),
-        (_, Some(error)) => format!(
-            "Model change: {to} took over from {from} after {after} ({reason}), but its last request failed ({error}).{}",
-            shown("The answer above is the best one written before the failure.")
+        (_, Some(error)) => say!(
+            "cli.model_change_last_failed",
+            to = to,
+            from = from,
+            after = after,
+            reason = reason,
+            error = agent_error(error),
+            answer = shown(label("cli.answer_before_failure"))
         ),
-        (_, None) => {
-            format!("Model change: {to} took over from {from} after {after} ({reason}).")
-        }
+        (_, None) => say!(
+            "cli.model_change",
+            to = to,
+            from = from,
+            after = after,
+            reason = reason
+        ),
     })
 }
 
@@ -961,28 +1206,28 @@ fn model_line(model_id: Option<&str>, requests: &[&ModelRequestUsage]) -> String
             .try_fold(0u64, |sum, r| sum.checked_add(count(&r.usage)?))
     };
     let usage = match (tokens(|u| u.prompt_tokens), tokens(|u| u.completion_tokens)) {
-        (Some(input), Some(output)) => format!(
-            "{} tokens ({} in, {} out)",
-            thousands(input.saturating_add(output)),
-            thousands(input),
-            thousands(output)
+        (Some(input), Some(output)) => say!(
+            "cli.tokens",
+            total = thousands(input.saturating_add(output)),
+            input = thousands(input),
+            output = thousands(output)
         ),
-        _ => "tokens unknown".to_owned(),
+        _ => label("cli.tokens_unknown").to_owned(),
     };
     let priced: Vec<&Cost> = requests.iter().filter_map(|r| r.cost.as_ref()).collect();
     let price = priced
         .first()
         .filter(|first| priced.iter().all(|c| c.pricing == first.pricing))
-        .map(|c| format!(" at {}", price_text(&c.pricing)))
+        .map(|c| say!("cli.price_at", price = price_text(&c.pricing)))
         .unwrap_or_default();
     let cost = match (priced.len() == requests.len())
         .then(|| sum_pico(&priced))
         .flatten()
     {
-        Some(pico) => format!("estimated cost ${}{price}", usd_text(pico)),
-        None => format!(
-            "estimated cost not shown ({} without usage or verified price)",
-            plural(
+        Some(pico) => say!("cli.model_cost", amount = usd_text(pico), price = price),
+        None => say!(
+            "cli.model_cost_unknown",
+            requests = plural(
                 (requests.len() - priced.len()) as u64,
                 "request",
                 "requests"
@@ -991,7 +1236,7 @@ fn model_line(model_id: Option<&str>, requests: &[&ModelRequestUsage]) -> String
     };
     format!(
         "{}: {}; {usage}; {cost}",
-        model_id.map_or_else(|| "unknown model".to_owned(), clean),
+        model_id.map_or_else(|| label("cli.unknown_model").to_owned(), clean),
         plural(requests.len() as u64, "request", "requests")
     )
 }
@@ -999,10 +1244,7 @@ fn model_line(model_id: Option<&str>, requests: &[&ModelRequestUsage]) -> String
 /// The total of a turn served by several models, only when every request is priced.
 fn total_cost_line(s: &Stats) -> String {
     if let Some(total) = s.total_cost_usd.as_deref().and_then(pico) {
-        return format!(
-            "Estimated cost: ${} in total, each model at its own catalog price",
-            usd_text(total)
-        );
+        return say!("cli.cost_total", amount = usd_text(total));
     }
     let priced: Vec<&Cost> = s
         .model_requests
@@ -1010,10 +1252,7 @@ fn total_cost_line(s: &Stats) -> String {
         .filter_map(|r| r.cost.as_ref())
         .collect();
     match sum_pico(&priced).filter(|_| !priced.is_empty()) {
-        Some(lower) => format!(
-            "Estimated cost: at least ${} (requests without usage or verified price are not counted)",
-            usd_text(lower)
-        ),
+        Some(lower) => say!("cli.cost_lower", amount = usd_text(lower)),
         None => cost_line(None),
     }
 }
@@ -1058,8 +1297,7 @@ fn usd_text(pico: u128) -> String {
 /// Spec 13: a cost is shown only from a verified, dated price; otherwise usage alone.
 pub fn cost_line(cost: Option<&Cost>) -> String {
     let Some(cost) = cost else {
-        return "Estimated cost: not shown (no verified, dated catalog price, or incomplete usage)"
-            .to_owned();
+        return label("cli.cost_unknown").to_owned();
     };
     let rounded = cost.rounded_usd(4);
     let amount = if rounded == "0.0000" && cost.usd != "0" {
@@ -1067,38 +1305,52 @@ pub fn cost_line(cost: Option<&Cost>) -> String {
     } else {
         rounded
     };
-    format!("Estimated cost: ${amount} at {}", price_text(&cost.pricing))
+    say!(
+        "cli.cost",
+        amount = amount,
+        price = price_text(&cost.pricing)
+    )
 }
 
 pub fn price_text(pricing: &Pricing) -> String {
     let rates = pricing.per_million_usd().map_or_else(
-        || "unparsed prices".to_owned(),
-        |(input, output)| format!("${input} in / ${output} out per million tokens"),
+        || label("cli.rates_unknown").to_owned(),
+        |(input, output)| say!("cli.rates", input = input, output = output),
     );
-    format!(
-        "Nebius catalog prices ({rates}, read {})",
-        format_utc_minute(pricing.read_at_unix_ms)
+    say!(
+        "cli.catalog_prices",
+        rates = rates,
+        date = format_utc_minute(pricing.read_at_unix_ms)
     )
 }
 
 pub fn verification(out: &mut impl Write, v: &ActionVerification) -> io::Result<()> {
-    writeln!(out, "  Before/after ({VERIFY_SAMPLES} samples each side):")?;
+    writeln!(
+        out,
+        "{}",
+        say!("cli.verification", samples = VERIFY_SAMPLES)
+    )?;
     for c in &v.comparisons {
         let median = |w: &Option<pcagent_diagnostics::WindowSummary>| {
-            w.as_ref()
-                .map_or_else(|| "unknown".into(), |w| c.metric.format_value(w.median))
+            w.as_ref().map_or_else(
+                || label("cli.unknown").into(),
+                |w| metric_value(c.metric, w.median),
+            )
         };
         writeln!(
             out,
-            "    {}: {} (median {} -> {})",
-            c.metric.label(),
-            words(&c.outcome),
-            median(&c.before),
-            median(&c.after)
+            "{}",
+            say!(
+                "cli.comparison",
+                metric = metric_label(c.metric),
+                outcome = words(&c.outcome),
+                before = median(&c.before),
+                after = median(&c.after)
+            )
         )?;
     }
     if let Some(vol) = &v.volume {
-        let show = |b: Option<u64>| b.map_or_else(|| "unknown".into(), format_bytes);
+        let show = |b: Option<u64>| b.map_or_else(|| label("cli.unknown").into(), format_bytes);
         // `gained_bytes` is absent both when a side is unknown and when free space did not grow.
         let gained = match (
             vol.gained_bytes,
@@ -1106,19 +1358,23 @@ pub fn verification(out: &mut impl Write, v: &ActionVerification) -> io::Result<
             vol.free_after_bytes,
         ) {
             (Some(g), _, _) => format_bytes(g),
-            (None, Some(_), Some(_)) => "none".into(),
-            _ => "unknown".into(),
+            (None, Some(_), Some(_)) => label("cli.none").into(),
+            _ => label("cli.unknown").into(),
         };
         writeln!(
             out,
-            "    Free space: {} -> {} (gained {gained}; the adapter reports {} removed)",
-            show(vol.free_before_bytes),
-            show(vol.free_after_bytes),
-            show(vol.reported_removed_bytes)
+            "{}",
+            say!(
+                "cli.space",
+                before = show(vol.free_before_bytes),
+                after = show(vol.free_after_bytes),
+                gained = gained,
+                removed = show(vol.reported_removed_bytes)
+            )
         )?;
     }
     for l in &v.limitations {
-        writeln!(out, "    Limitation: {l}")?;
+        writeln!(out, "{}", say!("cli.limitation", text = l))?;
     }
     Ok(())
 }

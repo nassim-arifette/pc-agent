@@ -63,6 +63,10 @@ pub struct FindingView {
     pub fact_phrases: Vec<Option<Phrase>>,
     pub next_step_phrase: Option<Phrase>,
     pub limitation_phrases: Vec<Option<Phrase>>,
+    pub support_reason_phrase: Option<Phrase>,
+    pub hypothesis_phrase: Option<Phrase>,
+    pub counter_phrases: Vec<Option<Phrase>>,
+    pub missing_phrases: Vec<Option<Phrase>>,
 }
 /// Whether `reference` stands at byte `at` of `text` as a whole word.
 pub(super) fn reference_at(text: &str, at: usize, reference: &str) -> bool {
@@ -244,6 +248,26 @@ pub fn finding(f: &Finding, processes: &[ProcessInstance], readable: Readable<'_
             .limitations
             .iter()
             .map(|l| pcagent_diagnostics::phrase(l))
+            .collect(),
+        support_reason_phrase: pcagent_diagnostics::phrase(&f.support_reason),
+        hypothesis_phrase: f
+            .hypothesis
+            .as_deref()
+            .and_then(pcagent_diagnostics::phrase),
+        counter_phrases: f
+            .counter_evidence
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                f.counter_phrases
+                    .get(index)
+                    .map(|p| local_phrase(p, processes))
+            })
+            .collect(),
+        missing_phrases: f
+            .missing
+            .iter()
+            .map(|text| pcagent_diagnostics::phrase(text))
             .collect(),
     }
 }

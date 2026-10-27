@@ -1,5 +1,9 @@
 // French interface dictionary and finding headings; measurement phrases live in phrases.js.
 export const fr = {
+  "value.unknown": "non mesuré",
+  "home.memory": "Mémoire {value}",
+  "home.cpu": "Processeur {value}",
+  "home.drive": "C: plein à {value}",
   "image.attach": "Joindre une image (PNG ou JPEG)",
   "image.preview": "Aperçu exact de l’image",
   "image.alt": "Pièce jointe préparée, exactement telle qu’envoyée à Nebius",
@@ -409,7 +413,6 @@ export const fr = {
   "suggest.heat": "Pourquoi mon PC chauffe ?",
   "suggest.spaceDrive": "Que puis-je supprimer sur {drive} ?",
   "mode.pill.title": "Passer de l'analyse locale à l'IA, et inversement",
-  "mode.pill.local": "Sur ce PC uniquement",
   "ask.folder": "Analyser un dossier",
   "usage.title": "Requêtes et coût",
   "nav.storage": "Stockage",

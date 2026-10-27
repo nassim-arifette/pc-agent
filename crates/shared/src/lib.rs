@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 mod phrase;
+pub mod presentation;
 pub use phrase::{Phrase, Quantity};
 
 pub const SCHEMA_VERSION: u32 = 1;
