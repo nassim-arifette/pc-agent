@@ -51,6 +51,8 @@ impl Agg {
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub parent: usize,
+    pub first_child: Option<usize>,
+    pub next_sibling: Option<usize>,
     pub name: OsString,
     pub dir: bool,
     pub logical: u64,
@@ -62,9 +64,20 @@ pub(crate) struct Entry {
     agg: Agg,
 }
 impl Entry {
+    pub(crate) fn size_key(&self) -> (u64, u64) {
+        if self.dir {
+            (self.agg.allocated, self.agg.logical)
+        } else if self.flags & F_ALLOC_UNKNOWN != 0 {
+            (self.logical, self.logical)
+        } else {
+            (self.allocated, self.logical)
+        }
+    }
     pub fn dir(parent: usize, name: OsString) -> Self {
         Self {
             parent,
+            first_child: None,
+            next_sibling: None,
             name,
             dir: true,
             logical: 0,
@@ -323,6 +336,8 @@ pub struct StorageIndex {
     pub(crate) files_rank: Vec<usize>,
     dirs_rank: Vec<usize>,
     pub(crate) status: Status,
+    pub(crate) facts_cache:
+        std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<crate::ItemFacts>>>,
 }
 
 impl StorageIndex {
@@ -350,17 +365,26 @@ impl StorageIndex {
             files_rank: Vec::new(),
             dirs_rank: Vec::new(),
             status: Status::Ok,
+            facts_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     /// Bottom-up aggregation: pre-order indices guarantee children follow parents.
     pub(crate) fn finalize(&mut self, duration_ms: u64) {
+        self.facts_cache
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         for i in 0..self.entries.len() {
             self.entries[i].agg = self.entries[i].own();
+            self.entries[i].first_child = None;
+            self.entries[i].next_sibling = None;
         }
         let mut overflow = false;
         for i in (1..self.entries.len()).rev() {
             let (parent, agg) = (self.entries[i].parent, self.entries[i].agg);
+            self.entries[i].next_sibling = self.entries[parent].first_child;
+            self.entries[parent].first_child = Some(i);
             overflow |= !self.entries[parent].agg.add(&agg);
         }
         self.coverage.allocation_unknown_files =
@@ -368,20 +392,11 @@ impl StorageIndex {
         if overflow {
             self.coverage.errors += 1;
         }
-        let key = |e: &Entry| {
-            if e.dir {
-                (e.agg.allocated, e.agg.logical)
-            } else if e.flags & F_ALLOC_UNKNOWN != 0 {
-                (e.logical, e.logical)
-            } else {
-                (e.allocated, e.logical)
-            }
-        };
         let (mut files, mut dirs): (Vec<usize>, Vec<usize>) = (1..self.entries.len())
             .filter(|&i| self.entries[i].flags & F_ALIAS == 0)
             .partition(|&i| !self.entries[i].dir);
-        files.sort_by_key(|&i| (std::cmp::Reverse(key(&self.entries[i])), i));
-        dirs.sort_by_key(|&i| (std::cmp::Reverse(key(&self.entries[i])), i));
+        files.sort_by_key(|&i| (std::cmp::Reverse(self.entries[i].size_key()), i));
+        dirs.sort_by_key(|&i| (std::cmp::Reverse(self.entries[i].size_key()), i));
         (self.files_rank, self.dirs_rank) = (files, dirs);
         self.window.duration_ms = duration_ms;
         self.window.finished_at_unix_ms = pcagent_shared::unix_ms();

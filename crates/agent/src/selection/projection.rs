@@ -153,8 +153,22 @@ impl FrozenSelection {
                 cloud["window"] = json!(capture.window);
                 cloud["measured_at_unix_ms"] = json!(capture.window.finished_at_unix_ms);
                 cloud["origin"] = json!(capture.origin);
+                if let Some(evidence) = &capture.facts {
+                    cloud["item_facts"] = json!(evidence.item_facts.without_names());
+                    cloud["volume_total_bytes"] = json!(evidence.volume_total_bytes);
+                    cloud["parent_ref"] = json!(evidence.parent_alias);
+                    cloud["parent_alias"] = json!(evidence.parent_alias);
+                    cloud["rank_scope"] = json!(evidence.rank_scope);
+                    // The verifier derives shares within one measured object, not across siblings.
+                    cloud["items"][0]["volume_total_bytes"] = json!(evidence.volume_total_bytes);
+                    cloud["items"][0]["parent_ref"] = json!(evidence.parent_alias);
+                }
                 let status = if page.scan_status == Status::Ok
                     && page.items.iter().all(|item| item.status == Status::Ok)
+                    && capture
+                        .facts
+                        .as_ref()
+                        .is_none_or(|f| f.item_facts.status == Status::Ok)
                 {
                     Status::Ok
                 } else {

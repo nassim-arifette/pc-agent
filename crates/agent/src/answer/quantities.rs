@@ -246,7 +246,7 @@ fn unit_of(name: &str) -> Option<(Dim, f64)> {
     let is = |unit: &str| n == unit || n.ends_with(&format!("_{unit}"));
     if n.contains("unix_ms") {
         None
-    } else if n == "count" {
+    } else if is("count") {
         Some((Dim::Count, 1.0))
     } else if is("bytes_per_second") {
         Some((Dim::BytesPerSecond, 1.0))

@@ -31,6 +31,7 @@ pub struct RecordingSource {
 }
 
 pub struct StorageSource {
+    pub facts: Option<Box<pcagent_storage::StorageItemEvidence>>,
     /// Completed scan page: item references are bound to this page's scan_id.
     pub page: LargestItemsPage,
     pub window: Window,
@@ -156,9 +157,9 @@ impl SelectionSource {
             ]
             .into_iter()
             .fold(0usize, usize::saturating_add),
-            Self::Storage(value) => {
-                bytes(&value.page).saturating_add(value.context.retained_bytes())
-            }
+            Self::Storage(value) => bytes(&value.page)
+                .saturating_add(bytes(&value.facts))
+                .saturating_add(value.context.retained_bytes()),
             Self::Battery(value) => bytes(value),
         }
     }

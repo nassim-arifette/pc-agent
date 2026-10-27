@@ -751,6 +751,7 @@ mod tests {
         use pcagent_agent::selection::{SelectionTarget, StorageSource};
         let storage = |scan: &str, value: u64| {
             SelectionSource::Storage(StorageSource {
+            facts: None,
             page: serde_json::from_value(json!({"schema_version":1,"scope_id":"scope-fixture","scan_id":scan,"kind":"files","sort_basis":"allocated_bytes","offset":0,"limit":1,"total":1,"next_offset":null,"scan_status":"ok","limitations":[],"items":[{"item_ref":format!("{scan}:1"),"alias":"file-1","alias_path":"<scope>/file-1","parent_ref":null,"kind":"files","path":null,"redacted_path":"<scope>/file-1","logical_bytes":value,"allocated_bytes":value,"allocation_unknown_files":0,"estimated_reclaim_bytes":null,"files":1,"link_count":1,"sparse":false,"compressed":false,"modified_unix_ms":null,"last_used":"unknown","status":"ok"}]})).unwrap(),
             window: Window { started_at_unix_ms: 1000, finished_at_unix_ms: 2000, duration_ms: 1000 }, origin: Origin::SyntheticFixture, context: pcagent_agent::StorageContext::default(),
         })

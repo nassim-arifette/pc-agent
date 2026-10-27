@@ -9,6 +9,10 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct Item {
     pub item_ref: String,
+    pub parent_ref: Option<String>,
+    pub kind: ItemKind,
+    pub system: bool,
+    pub file_type: Option<pcagent_storage::FileType>,
     pub name: String,
     /// Folder that contains the item, relative to the scanned folder ("" at its top level).
     pub parent: String,
@@ -44,6 +48,7 @@ pub struct StorageView {
     pub root: String,
     pub status: Status,
     pub duration_ms: u64,
+    pub scanned_at_unix_ms: Option<u64>,
     pub scanned: Option<Totals>,
     pub scanned_text: Option<String>,
     pub volume: Volume,
@@ -53,7 +58,7 @@ pub struct StorageView {
     pub files: Page,
     pub limitations: Vec<String>,
 }
-pub(super) fn item(i: &ItemView, root: &str) -> Item {
+pub fn item(i: &ItemView, root: &str) -> Item {
     let path = i.path.clone().unwrap_or_default();
     let trimmed = path.trim_end_matches('\\');
     let (folder, name) = trimmed.rsplit_once('\\').unwrap_or(("", trimmed));
@@ -64,6 +69,22 @@ pub(super) fn item(i: &ItemView, root: &str) -> Item {
     let size = i.allocated_bytes.unwrap_or(i.logical_bytes);
     Item {
         item_ref: i.item_ref.clone(),
+        parent_ref: i.parent_ref.clone(),
+        kind: i.kind,
+        system: i.kind == ItemKind::Dirs
+            && folder.len() == 2
+            && folder.ends_with(':')
+            && [
+                "windows",
+                "program files",
+                "program files (x86)",
+                "programdata",
+                "$recycle.bin",
+                "system volume information",
+            ]
+            .contains(&name.to_ascii_lowercase().as_str()),
+        file_type: (i.kind == ItemKind::Files)
+            .then(|| pcagent_storage::FileType::of(std::path::Path::new(name))),
         name: if name.is_empty() {
             path.clone()
         } else {
@@ -102,6 +123,7 @@ pub fn storage(
         root: root.to_owned(),
         status: summary.status,
         duration_ms: summary.duration_ms,
+        scanned_at_unix_ms: overview.window.as_ref().map(|w| w.finished_at_unix_ms),
         scanned_text: overview
             .scanned
             .as_ref()

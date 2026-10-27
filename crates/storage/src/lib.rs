@@ -4,12 +4,16 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 #![cfg_attr(windows, deny(unsafe_code))]
 mod content;
+mod hierarchy;
 mod index;
 pub use content::{ContentComparison, ContentGroup, ContentOptions};
 mod os;
 mod scan;
 use os::{selected as platform, Native, Platform};
 
+pub use hierarchy::{
+    ChildrenPage, FileType, FileTypeTotal, ItemFacts, MeasuredFiles, StorageItemEvidence,
+};
 pub use index::{
     dedup_parent_child, redact_names, redact_path, ItemKind, ItemView, LargestItemsPage, LastUse,
     StorageIndex, StorageOverview, Totals, VolumeSpace, GENERIC_NAMES,
@@ -69,6 +73,8 @@ pub enum StorageError {
     InvalidPage,
     #[error("Unknown item reference")]
     UnknownItem,
+    #[error("The item facts request was cancelled")]
+    FactsCancelled,
 }
 impl From<std::io::Error> for StorageError {
     fn from(e: std::io::Error) -> Self {
@@ -123,13 +129,25 @@ pub struct ScopeInfo {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken {
+    cancelled: Arc<AtomicBool>,
+    completion: Arc<Mutex<()>>,
+}
 impl CancelToken {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        let _guard = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        self.cancelled.store(true, Ordering::Relaxed);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.cancelled.load(Ordering::Relaxed)
+    }
+    pub(crate) fn complete<T>(&self, commit: impl FnOnce() -> T) -> Result<T, StorageError> {
+        let _guard = self.completion.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_cancelled() {
+            Err(StorageError::FactsCancelled)
+        } else {
+            Ok(commit())
+        }
     }
 }
 
@@ -239,7 +257,20 @@ struct ScopeState {
 /// Registry of authorized scopes and their latest completed index.
 pub struct StorageService {
     backend: Arc<dyn ScanBackend>,
+    facts_cancel: Mutex<Option<CancelToken>>,
     scopes: Mutex<HashMap<String, ScopeState>>,
+}
+
+/// Prepared on receipt so requests cancel in UI order, not worker scheduling order.
+pub struct ItemFactsJob {
+    index: Arc<StorageIndex>,
+    item_ref: String,
+    cancel: CancelToken,
+}
+impl ItemFactsJob {
+    pub fn run(self) -> Result<Arc<ItemFacts>, StorageError> {
+        self.index.item_facts(&self.item_ref, &self.cancel)
+    }
 }
 impl Default for StorageService {
     fn default() -> Self {
@@ -300,6 +331,7 @@ impl StorageService {
     pub fn with_backend(backend: Arc<dyn ScanBackend>) -> Self {
         Self {
             backend,
+            facts_cancel: Mutex::new(None),
             scopes: Mutex::new(HashMap::new()),
         }
     }
@@ -321,6 +353,7 @@ impl StorageService {
         Ok(info)
     }
     pub fn revoke(&self, scope_id: &str) -> bool {
+        self.cancel_item_facts();
         let removed = self.lock().remove(scope_id);
         if let Some(token) = removed.as_ref().and_then(|s| s.running.as_ref()) {
             token.cancel();
@@ -414,6 +447,48 @@ impl StorageService {
         let scopes = self.lock();
         let state = scopes.get(scope_id).ok_or(StorageError::UnknownScope)?;
         state.index.clone().ok_or(StorageError::NotScanned)
+    }
+
+    pub fn cancel_item_facts(&self) {
+        if let Some(cancel) = self
+            .facts_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            cancel.cancel();
+        }
+    }
+
+    pub fn scan_item_facts(
+        &self,
+        scope_id: &str,
+        item_ref: &str,
+    ) -> Result<Arc<ItemFacts>, StorageError> {
+        self.prepare_item_facts(scope_id, item_ref)?.run()
+    }
+
+    pub fn prepare_item_facts(
+        &self,
+        scope_id: &str,
+        item_ref: &str,
+    ) -> Result<ItemFactsJob, StorageError> {
+        let index = self.index(scope_id)?;
+        index.validate_fact_item(item_ref)?;
+        let cancel = CancelToken::default();
+        if let Some(old) = self
+            .facts_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(cancel.clone())
+        {
+            old.cancel();
+        }
+        Ok(ItemFactsJob {
+            index,
+            item_ref: item_ref.into(),
+            cancel,
+        })
     }
     /// Reads file bytes locally. Call only after explicit user authorization; never expose
     /// this operation as an autonomous model tool. Hashes and contents are not returned.
