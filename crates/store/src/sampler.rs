@@ -150,11 +150,79 @@ impl Sampler {
         }
     }
     pub fn history(&self, query: &HistoryQuery) -> Result<HistorySeries, StoreError> {
+        if query.entity_ref == "system"
+            && [
+                pcagent_shared::Metric::CpuBusyBasisPoints,
+                pcagent_shared::Metric::PhysicalAvailableBytes,
+                pcagent_shared::Metric::PhysicalTotalBytes,
+                pcagent_shared::Metric::DiskIdleBasisPoints,
+                pcagent_shared::Metric::GpuBusiestEngineBasisPoints,
+            ]
+            .contains(&query.metric)
+        {
+            let chart = self.history_chart(query.from_unix_ms, query.to_unix_ms, 300)?;
+            let mut series = chart
+                .histories
+                .into_iter()
+                .find(|s| s.metric == query.metric)
+                .ok_or(StoreError::Corrupt)?;
+            series.events = chart.events;
+            series.process_names = chart.process_names;
+            return Ok(series);
+        }
         self.0
             .history_reader
             .lock()
             .map_err(|_| stopped())?
             .metric_history(query)
+    }
+    pub fn history_chart(
+        &self,
+        from: u64,
+        to: u64,
+        buckets: usize,
+    ) -> Result<crate::HistoryChart, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_chart(from, to, buckets)
+    }
+    pub fn history_overview(&self, day_start: u64) -> Result<crate::HistoryOverview, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_overview(day_start, unix_ms())
+    }
+    pub fn history_recordings(&self, offset: u64) -> Result<crate::HistoryRecordings, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_recordings(offset)
+    }
+    pub fn recording_detail(&self, id: &str) -> Result<Option<crate::RecordingDetail>, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .recording_detail(id)
+    }
+    pub fn history_collection(&self) -> Result<crate::HistoryCollection, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_collection()
+    }
+    pub fn set_collection_budget(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::HistoryCollection, StoreError> {
+        let mut store = Store::open(&self.0.path)?;
+        store.set_collection_budget(bytes, unix_ms())?;
+        store.history_collection()
     }
     pub fn process_peaks(
         &self,
