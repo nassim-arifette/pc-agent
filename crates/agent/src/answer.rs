@@ -117,7 +117,7 @@ impl IssueKind {
             Self::Command => "Do not give commands to run. Describe the step in words, or propose an action with prepare_action_plan when it is offered.",
             Self::Link => "Remove links and images.",
             Self::Html => "Remove HTML; write plain text and short lists.",
-            Self::UnknownAction => "action_refs may only contain plan_id values returned by prepare_action_plan in this investigation.",
+            Self::UnknownAction => "action_refs may only contain plan_id values returned by a locally declared proposal tool in this investigation.",
             Self::TooLong => "Shorten the answer to at most 6000 characters.",
             Self::Empty => "Write the answer.",
             Self::Malformed => "Follow the declared submit_answer schema: answer, confidence and category are required; action_refs and follow_ups are optional arrays of strings. Do not add undeclared fields.",

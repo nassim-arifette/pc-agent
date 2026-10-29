@@ -187,6 +187,7 @@ pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
     ),
     // Proposals act on Windows targets: Settings pages, Explorer, Run entries, processes.
     ("prepare_action_plan", &[Windows, ActionProposals]),
+    ("propose_elevated_check", &[Windows, ElevatedHelper]),
     // Web lookups compose their queries from Windows inspections of this turn.
     ("lookup_driver_notes", &[Windows, WebSearch]),
     ("lookup_known_issue", &[Windows, WebSearch]),
@@ -195,12 +196,13 @@ pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
 ];
 
 /// Helper tasks `get_approved_elevated_inspection` offers, with what each needs beyond the tool
-/// itself. Process images and the performance trace are never offered: no host prepares them.
+/// itself. Performance traces use their separate guardian, not the deep-analysis batch.
 pub const ELEVATED_TASKS: &[(&str, &[Capability])] = &[
     ("system_caches", &[]),
     ("mft_inventory", &[NtfsVolumes]),
     ("shadow_storage", &[]),
     ("disk_reliability", &[]),
+    ("process_images", &[]),
     ("battery_energy", &[Battery]),
 ];
 
@@ -216,6 +218,18 @@ pub struct Variant {
 /// Tried in order: the first row of a tool whose `missing` capabilities are all absent applies;
 /// without one, the canonical tool is offered.
 pub const VARIANTS: &[Variant] = &[
+    Variant {
+        missing: &[Battery, NtfsVolumes],
+        spec: crate::catalog::elevated::PROPOSE_CORE_TASKS,
+    },
+    Variant {
+        missing: &[Battery],
+        spec: crate::catalog::elevated::PROPOSE_WITHOUT_BATTERY,
+    },
+    Variant {
+        missing: &[NtfsVolumes],
+        spec: crate::catalog::elevated::PROPOSE_WITHOUT_NTFS,
+    },
     Variant {
         missing: &[NvidiaGpu],
         spec: crate::catalog::SNAPSHOT_WITHOUT_NVIDIA,
@@ -235,10 +249,6 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         missing: &[NtfsVolumes],
         spec: crate::catalog::elevated::TASKS_WITHOUT_NTFS,
-    },
-    Variant {
-        missing: &[],
-        spec: crate::catalog::elevated::OFFERED_TASKS,
     },
     Variant {
         missing: &[StorageScopes],
@@ -340,7 +350,7 @@ mod tests {
             .iter()
             .find(|p| p.name == param)
             .map(|p| match p.kind {
-                ParamKind::OneOf(values) => values.to_vec(),
+                ParamKind::OneOf(values) | ParamKind::UniqueChoices(values) => values.to_vec(),
                 _ => panic!("{param} is not an enum"),
             })
             .unwrap_or_default()
@@ -365,6 +375,7 @@ mod tests {
         "get_activity_events",
         "record_activity",
         "get_approved_elevated_inspection",
+        "propose_elevated_check",
         "prepare_action_plan",
         "lookup_driver_notes",
         "lookup_known_issue",
@@ -401,7 +412,7 @@ mod tests {
                 std::mem::discriminant(&canonical.class),
                 std::mem::discriminant(&variant.spec.class)
             );
-            assert_ne!(canonical.description, variant.spec.description);
+            assert_ne!(canonical.definition(), variant.spec.definition());
             for param in variant.spec.params {
                 let original = canonical
                     .params
@@ -409,7 +420,7 @@ mod tests {
                     .find(|p| p.name == param.name)
                     .expect("a variant keeps the canonical argument names");
                 assert_eq!(param.required, original.required, "{}", param.name);
-                if let ParamKind::OneOf(values) = param.kind {
+                if let ParamKind::OneOf(values) | ParamKind::UniqueChoices(values) = param.kind {
                     let all = enum_values(canonical, param.name);
                     assert!(values.iter().all(|v| all.contains(v)), "{}", param.name);
                 }
@@ -445,7 +456,10 @@ mod tests {
         for (capability, removed) in [
             (HistorySampler, HISTORY),
             (StorageScopes, SCOPES),
-            (ElevatedHelper, &["get_approved_elevated_inspection"][..]),
+            (
+                ElevatedHelper,
+                &["get_approved_elevated_inspection", "propose_elevated_check"][..],
+            ),
             (ActionProposals, &["prepare_action_plan"][..]),
             (
                 WebSearch,
@@ -562,6 +576,7 @@ mod tests {
                     "mft_inventory",
                     "shadow_storage",
                     "disk_reliability",
+                    "process_images",
                     "battery_energy",
                 ],
             ),
@@ -572,6 +587,7 @@ mod tests {
                     "mft_inventory",
                     "shadow_storage",
                     "disk_reliability",
+                    "process_images",
                 ],
             ),
             (
@@ -580,12 +596,18 @@ mod tests {
                     "system_caches",
                     "shadow_storage",
                     "disk_reliability",
+                    "process_images",
                     "battery_energy",
                 ],
             ),
             (
                 vec![Battery, NtfsVolumes],
-                vec!["system_caches", "shadow_storage", "disk_reliability"],
+                vec![
+                    "system_caches",
+                    "shadow_storage",
+                    "disk_reliability",
+                    "process_images",
+                ],
             ),
         ] {
             let capabilities = missing
@@ -593,6 +615,8 @@ mod tests {
                 .fold(all.clone(), |set, c| set.with(*c, false));
             let spec = pick(&capabilities, "get_approved_elevated_inspection");
             assert_eq!(enum_values(&spec, "task"), expected, "{missing:?}");
+            let proposal = pick(&capabilities, "propose_elevated_check");
+            assert_eq!(enum_values(&proposal, "tasks"), expected, "{missing:?}");
             // The description lists exactly the offered tasks, as the enum does.
             for (task, _) in ELEVATED_TASKS {
                 assert_eq!(
@@ -601,7 +625,7 @@ mod tests {
                     "{task}"
                 );
             }
-            for never in ["process_images", "performance_trace"] {
+            for never in ["performance_trace", "deep_analysis"] {
                 assert!(!names_tool(spec.description, never));
             }
             // Each listed task keeps its canonical explanation.

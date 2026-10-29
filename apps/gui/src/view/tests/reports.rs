@@ -258,6 +258,47 @@ fn observed(tool: &str, cloud: Value) -> pcagent_agent::Observation {
 }
 
 #[test]
+fn elevated_cards_require_a_cited_host_proposal_and_closed_tasks() {
+    let mut inv = pcagent_agent::local_report(&fixture());
+    inv.observations.push(observed(
+        "propose_elevated_check",
+        serde_json::json!({"plan":{"plan_id":"plan-local","tasks":["system_caches","process_images"]}}),
+    ));
+    assert!(report(&inv, "q", &no_readable_names)
+        .elevated_proposals
+        .is_empty());
+    inv.answer = Some(pcagent_agent::Answer {
+        text: "A check is available.".into(),
+        confidence: Confidence::Low,
+        category: Category::Memory,
+        citations: Vec::new(),
+        follow_ups: Vec::new(),
+        action_refs: vec!["plan-guessed".into()],
+        unverified: Vec::new(),
+        repairs: 0,
+    });
+    assert!(report(&inv, "q", &no_readable_names)
+        .elevated_proposals
+        .is_empty());
+    inv.answer.as_mut().unwrap().action_refs = vec!["plan-local".into()];
+    let view = report(&inv, "q", &no_readable_names);
+    assert_eq!(view.elevated_proposals.len(), 1);
+    assert_eq!(
+        view.elevated_proposals[0].tasks,
+        ["system_caches", "process_images"]
+    );
+    inv.observations[0].observation["plan"]["tasks"] = serde_json::json!(["cmd.exe"]);
+    assert!(report(&inv, "q", &no_readable_names)
+        .elevated_proposals
+        .is_empty());
+    inv.observations[0].observation["plan"]["tasks"] = serde_json::json!(["system_caches"]);
+    inv.observations[0].tool = "get_system_snapshot".into();
+    assert!(report(&inv, "q", &no_readable_names)
+        .elevated_proposals
+        .is_empty());
+}
+
+#[test]
 fn admin_hints_come_only_from_needs_admin_coverage_of_offered_checks() {
     let mut inv = pcagent_agent::local_report(&fixture());
     assert!(report(&inv, "q", &no_readable_names).admin_hints.is_empty());

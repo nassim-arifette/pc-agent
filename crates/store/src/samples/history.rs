@@ -16,10 +16,99 @@ const SYSTEM_CHARTS: [Metric; 5] = [
 ];
 const MAX_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Compact local chart transport. Exact C4 observations remain in `histories` on the host.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryChart {
+    pub from_unix_ms: u64,
+    pub to_unix_ms: u64,
+    pub buckets: usize,
+    pub series: Vec<ChartSeries>,
+    pub gaps: Vec<HistoryGap>,
+    pub events: Vec<ActivityEvent>,
+    pub process_names: BTreeMap<String, String>,
+    pub limitations: Vec<String>,
+    #[serde(skip)]
+    pub histories: Vec<HistorySeries>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChartSeries {
+    pub metric: Metric,
+    pub unit: String,
+    pub status: Status,
+    pub points: Vec<ChartPoint>,
+}
+
+/// [timestamp, mean, minimum, maximum, measured, expected, resolution, status, origin].
+/// Positions keep 300 buckets x 5 metrics near 100 KiB without losing null values or bands.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChartPoint(
+    pub u64,
+    pub Option<u64>,
+    pub Option<u64>,
+    pub Option<u64>,
+    pub u64,
+    pub u64,
+    pub u64,
+    pub Status,
+    pub Origin,
+);
+
+impl HistoryChart {
+    fn new(from: u64, to: u64, buckets: usize, mut histories: Vec<HistorySeries>) -> Self {
+        let first = histories.first_mut().expect("five system metrics");
+        let events = std::mem::take(&mut first.events);
+        let process_names = std::mem::take(&mut first.process_names);
+        let gaps = first.gaps.clone();
+        let limitations = first.limitations.clone();
+        for history in &mut histories {
+            history.events.clear();
+            history.process_names.clear();
+        }
+        let series = histories
+            .iter()
+            .map(|history| ChartSeries {
+                metric: history.metric,
+                unit: history.unit.clone(),
+                status: history.status,
+                points: history
+                    .points
+                    .iter()
+                    .map(|p| {
+                        ChartPoint(
+                            p.unix_ms,
+                            p.value,
+                            p.min,
+                            p.max,
+                            p.measured_samples,
+                            p.expected_samples,
+                            p.resolution_ms,
+                            p.status,
+                            p.origin,
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+        Self {
+            from_unix_ms: from,
+            to_unix_ms: to,
+            buckets,
+            series,
+            gaps,
+            events,
+            process_names,
+            limitations,
+            histories,
+        }
+    }
+}
+
 pub(crate) struct HistoryCache {
     revision: (i64, u64),
     from: u64,
     to: u64,
+    buckets: Option<usize>,
     series: Vec<HistorySeries>,
 }
 
@@ -46,6 +135,7 @@ struct SeriesBuilder {
     previous_at: u64,
     previous_resolution: u64,
     omitted: bool,
+    time_bucket: Option<(u64, u64)>,
 }
 
 impl SeriesBuilder {
@@ -59,6 +149,7 @@ impl SeriesBuilder {
             previous_at: 0,
             previous_resolution: 0,
             omitted: false,
+            time_bucket: None,
         }
     }
 
@@ -88,16 +179,25 @@ impl SeriesBuilder {
         let compatible = self.points.back().is_some_and(|last| {
             last.origin == point.origin
                 && last.session_id == point.session_id
+                && (self.time_bucket.is_none() || last.value.is_some() == point.value.is_some())
                 && point.unix_ms.saturating_sub(self.previous_at)
                     <= point.resolution_ms.max(self.previous_resolution) * 2
         });
         self.previous_at = point.unix_ms;
         self.previous_resolution = point.resolution_ms;
-        if self.chunk_len < self.width && compatible {
+        let same_bucket = self
+            .time_bucket
+            .map_or(self.chunk_len < self.width, |(from, step)| {
+                self.points.back().is_some_and(|last| {
+                    last.unix_ms.saturating_sub(from) / step
+                        == point.unix_ms.saturating_sub(from) / step
+                })
+            });
+        if same_bucket && compatible {
             merge_points(self.points.back_mut().expect("compatible point"), &point);
             self.chunk_len += 1;
         } else {
-            if self.points.len() == MAX_POINTS {
+            if self.time_bucket.is_none() && self.points.len() == MAX_POINTS {
                 self.points.pop_front();
                 self.omitted = true;
             }
@@ -113,6 +213,54 @@ impl SeriesBuilder {
 }
 
 impl Store {
+    pub fn history_chart(
+        &self,
+        from: u64,
+        to: u64,
+        buckets: usize,
+    ) -> Result<HistoryChart, StoreError> {
+        if from >= to || to - from > SAMPLE_RETENTION_MS || to > i64::MAX as u64 || buckets == 0 {
+            return Err(StoreError::InvalidQuery);
+        }
+        let revision = self.history_revision()?;
+        if let Some(cache) = self.history_cache.borrow().as_ref().filter(|cache| {
+            cache.revision == revision
+                && cache.from == from
+                && cache.to == to
+                && cache.buckets == Some(buckets)
+        }) {
+            return Ok(HistoryChart::new(from, to, buckets, cache.series.clone()));
+        }
+        self.history_cache.borrow_mut().take();
+        let tx = self
+            .conn
+            .is_autocommit()
+            .then(|| self.conn.unchecked_transaction())
+            .transpose()?;
+        let query = HistoryQuery {
+            metric: Metric::CpuBusyBasisPoints,
+            entity_ref: "system".into(),
+            from_unix_ms: from,
+            to_unix_ms: to,
+        };
+        let histories = self.read_history(&query, &SYSTEM_CHARTS, Some(buckets))?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
+        if revision == self.history_revision()?
+            && serde_json::to_writer(SizeLimit(0), &histories).is_ok()
+        {
+            *self.history_cache.borrow_mut() = Some(HistoryCache {
+                revision,
+                from,
+                to,
+                buckets: Some(buckets),
+                series: histories.clone(),
+            });
+        }
+        Ok(HistoryChart::new(from, to, buckets, histories))
+    }
+
     fn history_revision(&self) -> Result<(i64, u64), StoreError> {
         Ok((
             self.conn
@@ -134,6 +282,7 @@ impl Store {
         if charts {
             if let Some(cache) = self.history_cache.borrow().as_ref().filter(|cache| {
                 cache.revision == revision
+                    && cache.buckets.is_none()
                     && cache.from == query.from_unix_ms
                     && cache.to == query.to_unix_ms
             }) {
@@ -154,7 +303,7 @@ impl Store {
         } else {
             std::slice::from_ref(&query.metric)
         };
-        let series = self.read_history(query, metrics)?;
+        let series = self.read_history(query, metrics, None)?;
         transaction.commit()?;
         let result = series
             .iter()
@@ -171,6 +320,7 @@ impl Store {
                 revision,
                 from: query.from_unix_ms,
                 to: query.to_unix_ms,
+                buckets: None,
                 series,
             });
         }
@@ -181,27 +331,50 @@ impl Store {
         &self,
         query: &HistoryQuery,
         metrics: &[Metric],
+        buckets: Option<usize>,
     ) -> Result<Vec<HistorySeries>, StoreError> {
         let from = stored(query.from_unix_ms.saturating_sub(60_000));
         let to = stored(query.to_unix_ms);
+        let (table, payload, row_limit) = if query.entity_ref == "system" {
+            ("system_samples", "measurements", i64::MAX)
+        } else {
+            ("samples", "payload", MAX_QUERY_ROWS as i64)
+        };
         // Count indexed metadata under the same read transaction to choose the original
         // aggregation width before streaming. No process JSON is decoded for this count.
-        let point_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM (SELECT measured_at,resolution_ms FROM samples
-             WHERE measured_at>=?1 AND measured_at<=?2 ORDER BY measured_at,id LIMIT ?3)
-             WHERE measured_at>=?4 OR (resolution_ms>=60000 AND measured_at>?4-resolution_ms)",
-            params![from, to, MAX_QUERY_ROWS as i64, stored(query.from_unix_ms)],
-            |row| row.get(0),
-        )?;
+        let point_count: i64 = if buckets.is_some() {
+            0
+        } else {
+            self.conn.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM (SELECT measured_at,resolution_ms FROM {table}
+             WHERE measured_at>=?1 AND measured_at<=?2 ORDER BY measured_at,rowid LIMIT ?3)
+             WHERE measured_at>=?4 OR (resolution_ms>=60000 AND measured_at>?4-resolution_ms)"
+                ),
+                params![from, to, row_limit, stored(query.from_unix_ms)],
+                |row| row.get(0),
+            )?
+        };
         let point_count = usize::try_from(point_count).map_err(|_| StoreError::Corrupt)?;
         let mut builders: Vec<_> = metrics
             .iter()
-            .map(|metric| SeriesBuilder::new(*metric, point_count))
+            .map(|metric| {
+                let mut builder = SeriesBuilder::new(*metric, point_count);
+                builder.time_bucket = buckets.map(|count| {
+                    (
+                        query.from_unix_ms,
+                        (query.to_unix_ms - query.from_unix_ms)
+                            .div_ceil(count as u64)
+                            .max(1),
+                    )
+                });
+                builder
+            })
             .collect();
-        let mut statement = self.conn.prepare(
-            "SELECT measured_at,resolution_ms,payload FROM samples WHERE measured_at>=?1 AND measured_at<=?2 ORDER BY measured_at,id LIMIT ?3",
-        )?;
-        let rows = statement.query_map(params![from, to, MAX_QUERY_ROWS as i64], |row| {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT measured_at,resolution_ms,{payload} FROM {table} WHERE measured_at>=?1 AND measured_at<=?2 ORDER BY measured_at,rowid LIMIT ?3",
+        ))?;
+        let rows = statement.query_map(params![from, to, row_limit], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
@@ -281,7 +454,25 @@ impl Store {
                 reason: "not_recorded".into(),
             });
         }
-        let events = self.activity_events(query.from_unix_ms, query.to_unix_ms, 100)?;
+        let events = self.activity_events(query.from_unix_ms, query.to_unix_ms, usize::MAX)?;
+        if query.entity_ref == "system" {
+            for reference in events
+                .iter()
+                .filter_map(|event| event.contributor_ref.as_ref())
+            {
+                let name = self
+                    .conn
+                    .query_row(
+                        "SELECT name FROM history_names WHERE entity_ref=?1",
+                        [reference],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if let Some(name) = name {
+                    names.insert(reference.clone(), name);
+                }
+            }
+        }
         let mut results = Vec::with_capacity(builders.len());
         for builder in builders {
             let mut gaps = gaps.clone();
@@ -289,7 +480,7 @@ impl Store {
             let mut limitations = vec!["Persisted local samples; values are not interpolated. After 24 hours, values are duration-weighted minute averages with measured minima and maxima. Instantaneous gauges use the sampling interval as averaging weight, not as a measured window.".into(),
                 "Only the top 20 processes at each sample are retained; absence of a process is unknown, not zero.".into(),
                 "Observation timestamps and accumulated measured duration are preserved separately from the nominal sampling cadence. A recording's first rate may cover the preceding background interval. Minute buckets overlapping the requested range are returned in full.".into()];
-            if rows_read == MAX_QUERY_ROWS {
+            if rows_read as i64 == row_limit {
                 limitations.push("History row limit reached; narrow the requested window.".into());
             }
             if point_count > MAX_POINTS {
@@ -306,7 +497,7 @@ impl Store {
             let status = if points.iter().any(|point| point.value.is_some())
                 && gaps.is_empty()
                 && points.iter().all(|point| point.status == Status::Ok)
-                && rows_read < MAX_QUERY_ROWS
+                && (rows_read as i64) < row_limit
             {
                 Status::Ok
             } else {

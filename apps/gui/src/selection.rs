@@ -95,7 +95,8 @@ pub struct SelectionRegistry {
 impl SelectionRegistry {
     fn expire(&mut self) {
         let now = Instant::now();
-        self.sources.retain(|source| source.expires_at > now);
+        self.sources
+            .retain(|source| source.expires_at > now && source.source.available_at(unix_ms()));
         let sources: BTreeSet<_> = self
             .sources
             .iter()

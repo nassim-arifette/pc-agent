@@ -128,15 +128,28 @@ export async function exerciseMock(bridge, clock, search) {
   await ok("open_nebius_console");
 
   await ok("elevation_status");
+  const availableChecks = await ok("elevation_options");
+  await ok("elevation_results");
+  await reject("elevation_select", { inspectionId: "expired-or-invented" }, "selection_expired");
+  for (const tasks of [[], [{ kind: "performance_trace" }], [{ kind: "system_caches" }, { kind: "system_caches" }], [{ kind: "deep_analysis", tasks: [{ kind: "system_caches" }] }]]) {
+    await reject("elevation_prepare", { task: { kind: "deep_analysis", tasks }, budgetMs: 1 }, "unsupported");
+  }
   await reject("elevation_prepare", { task: { kind: "other" }, budgetMs: 1 }, "unsupported");
   const pending = await ok("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 10000 });
   await reject("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 10000 }, "helper_busy");
   await ok("elevation_cancel", { requestId: pending.request_id });
-  for (const task of [{ kind: "mft_inventory", volume: "C" }, ...["system_caches", "shadow_storage", "disk_reliability", "battery_energy"].map(kind => ({ kind }))]) {
+  for (const task of [{ kind: "deep_analysis", tasks: availableChecks.tasks }, { kind: "mft_inventory", volume: "C" }, ...["system_caches", "shadow_storage", "disk_reliability", "battery_energy"].map(kind => ({ kind }))]) {
     const request = await ok("elevation_prepare", { task, budgetMs: 120000 });
     const result = await call("elevation_run", { requestId: request.request_id });
     if (params.get("elevation") === "fail") assert.equal(result.error.code, "uac_declined");
-    else assert.ok(result.value.observations.length);
+    else {
+      assert.ok(result.value.observations.length);
+      const saved = await ok("elevation_results");
+      assert.ok(saved.some(record => record.id === result.value.stored_id));
+      const reference = await ok("elevation_select", { inspectionId: result.value.stored_id });
+      assert.equal(reference.target.kind, "elevated_inspection");
+      if (task.kind === "deep_analysis") assert.equal(result.value.sections.length, task.tasks.length);
+    }
     assert.equal(await ok("elevation_status"), null);
   }
 

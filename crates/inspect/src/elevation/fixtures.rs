@@ -13,8 +13,9 @@ pub(super) fn request(task: ElevatedTask, budget: Duration) -> ElevationRequest 
             "nonce": new_id("nonce"),
             "task": task,
             "created_at_unix_ms": now,
-            "expires_at_unix_ms": now + MAX_BUDGET_MS,
+            "expires_at_unix_ms": now + budget.as_millis() as u64 + CONSENT_BUDGET_MS,
             "budget_ms": budget.as_millis() as u64,
+            "requester": { "pid": 1, "created_at": 1, "session_id": 0 },
         }))
         .unwrap(),
     )

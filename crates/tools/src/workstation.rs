@@ -172,7 +172,7 @@ impl<'a> Workstation<'a> {
     ) {
         self.elevated = evidence
             .into_iter()
-            .take(crate::elevated_tools::MAX_APPROVED_INSPECTIONS)
+            .filter(|result| result.available())
             .collect();
     }
     pub fn set_storage_context(&mut self, context: pcagent_agent::StorageContext) {

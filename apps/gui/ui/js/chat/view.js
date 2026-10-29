@@ -473,7 +473,7 @@ function stepsFold(shown, sent) {
  * the deeper checks card limited to those checks, then "ask again" once a result is fresh.
  */
 function deeperChecks(turn, last, cards) {
-  const kinds = turn.report?.admin_hints || [];
+  const kinds = [...new Set([...(turn.report?.admin_hints || []), ...(turn.report?.elevated_proposals || []).flatMap((plan) => plan.tasks)])];
   // Without pcagent-elevated next to the app no check can start (capabilities.js).
   if (!last || !kinds.length || !capable("elevated_helper")) return null;
   const card = adminChecksCard({
@@ -482,7 +482,7 @@ function deeperChecks(turn, last, cards) {
     lead: t("admin.chat.lead"),
     askLabel: t("admin.chat.askAgain"),
     // Back to the AI when the person answered locally: a local analysis would not read the result.
-    onAsk: () => askWithAi(turn.question, { followUp: true }),
+    question: turn.question,
   });
   cards.push(card);
   return h("div", { class: "turn-admin" }, card.el);
@@ -632,10 +632,13 @@ export function mount(page) {
     box = composer({ autofocus: true, big: true });
     suggestionsHost = h("div", { class: "suggestions" });
     homeStatusHost = h("p", { class: "home-status" });
+    const adminCard = adminChecksCard();
+    adminCards.push(adminCard);
     suggestionsDrive = undefined;
     fill(
       column,
       h("div", { class: "welcome" }, mark(36), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
+      adminCard.el,
     );
     renderSuggestions();
     fill(bottom, footnote);

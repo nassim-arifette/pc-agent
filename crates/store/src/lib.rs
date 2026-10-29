@@ -3,12 +3,15 @@
 //! ever sent anywhere; the person can delete a conversation or everything, and old ones expire.
 #![forbid(unsafe_code)]
 mod battery;
+mod elevated;
+pub use elevated::{ElevatedInspection, ELEVATED_RETENTION_MS, MAX_ELEVATED_RECORD_BYTES};
 mod images;
 pub mod web_cache;
 pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 mod process_peaks;
 pub mod sampler;
 mod samples;
+pub mod watches;
 pub use battery::{
     BatteryGap, BatteryHistory, BatteryPoint, BatteryRecording, BatteryRecordingCoverage,
     MAX_BATTERY_POINTS, MAX_RECORDING_BATTERIES,
@@ -16,8 +19,9 @@ pub use battery::{
 pub use process_peaks::ProcessPeaks;
 use rusqlite::{params, Connection, OptionalExtension};
 pub use samples::{
-    ActivityEvent, EventObservation, HistoryPoint, HistoryQuery, HistorySeries, Recording,
-    StoredSample, SAMPLE_RETENTION_MS,
+    ActivityEvent, ChartPoint, ChartSeries, EventObservation, HistoryChart, HistoryCollection,
+    HistoryOverview, HistoryPeriod, HistoryPoint, HistoryQuery, HistoryRecordings, HistorySeries,
+    Recording, RecordingDetail, StoredSample, DEFAULT_COLLECTION_BUDGET_BYTES, SAMPLE_RETENTION_MS,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -26,7 +30,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Schema version stored in SQLite's `user_version`; older files are migrated, newer refused.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 9;
 /// Longest conversation title, taken from its first question.
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Default retention of the desktop app.
@@ -174,6 +178,15 @@ impl Store {
         }
         if version < 6 {
             conn.execute_batch(images::MIGRATION)?;
+        }
+        if version < 7 {
+            conn.execute_batch(watches::MIGRATION)?;
+        }
+        if version < 8 {
+            samples::system::migrate(&conn)?;
+        }
+        if version < 9 {
+            elevated::migrate(&conn)?;
         }
         Ok(Self {
             conn,

@@ -34,7 +34,8 @@ pub use lifecycle::ElevationCompletion;
 pub use protocol::{
     CacheCategory, CacheCoverage, CacheSummary, DriveLetter, ElevatedTask, ElevationError,
     ElevationLimit, ElevationRequest, ElevationResponse, ElevationStatus, WorkerArguments,
-    MAX_BUDGET_MS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
+    CONSENT_BUDGET_MS, MAX_BUDGET_MS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MAX_SECTIONS,
+    MAX_SECTION_BUDGET_MS, MAX_SECTION_RESPONSE_BYTES, PROTOCOL_VERSION,
 };
 pub use worker::worker_main;
 

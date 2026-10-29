@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 const MAX_ROWS: usize = 100_000;
 const MAX_ENTITIES: usize = 4096;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProcessPeaks {
     pub status: Status,
     pub from_unix_ms: u64,

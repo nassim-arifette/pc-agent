@@ -95,7 +95,7 @@ pub(crate) fn definition() -> Value {
 /// offers it. The schema itself never changes (C1).
 pub(crate) fn definition_for(proposals: bool) -> Value {
     let action_refs = if proposals {
-        "plan_id values returned by prepare_action_plan in this investigation that the answer recommends."
+        "plan_id values returned by a locally declared proposal tool in this investigation that the answer recommends."
     } else {
         "No action can be proposed in this investigation: leave it empty."
     };

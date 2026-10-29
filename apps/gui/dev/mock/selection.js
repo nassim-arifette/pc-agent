@@ -17,7 +17,7 @@ export function createSelectionFixture({ params, cloud, getPrivacy, nextPreviewS
   }
 
   function sameTarget(a, b) {
-    return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id && a.scope_id === b.scope_id && a.item_ref === b.item_ref;
+    return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id && a.scope_id === b.scope_id && a.item_ref === b.item_ref && a.inspection_id === b.inspection_id;
   }
 
   function invalidateStorage() {
@@ -50,11 +50,11 @@ export function createSelectionFixture({ params, cloud, getPrivacy, nextPreviewS
         const evidence = {
           status: "ok",
           // Like the host's projection: a scan item is named by its alias, never by its scope or scan.
-          selection: { target: stored ? { kind: "storage", alias: stored.alias } : reference.target, intent, fresh_collection: false },
+          selection: { target: stored ? { kind: "storage", alias: stored.alias } : source.elevated ? { kind: "elevated_inspection" } : reference.target, intent, fresh_collection: false },
           measured_at_unix_ms: source.measuredAt,
           age_ms: age,
           freshness: "already_measured",
-          observations: stored
+          observations: source.elevated ? source.elevated.observations : stored
             ? [{ observation_id: "O0", entity_ref: stored.alias, metric: "allocated_bytes", value: stored.allocated_bytes, unit: "bytes", status: "ok" }]
             : reference.target.kind === "resource" && reference.target.resource === "battery"
               ? (source.battery || []).flatMap((b) =>

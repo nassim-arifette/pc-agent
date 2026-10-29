@@ -154,6 +154,8 @@ export function report(question, cloudRun, error = null, { web = false, toolEven
     limitation_phrases: [p("note.short_sample")],
     // view::admin_hints: the checks a turn lacked, when the model met needs_admin.
     admin_hints: cloudRun && !error && /health|santé/i.test(question) ? ["disk_reliability", "battery_energy"] : [],
+    elevated_proposals: cloudRun && !error && /administrator|administrateur|deep|approfondie/i.test(question)
+      ? [{ plan_id: "plan-mock-deep", tasks: ["system_caches", "shadow_storage", "disk_reliability", "mft_inventory", "process_images"] }] : [],
     usage: cloudRun
       ? {
           requests: error === "output_limit" ? 1 : 3,
