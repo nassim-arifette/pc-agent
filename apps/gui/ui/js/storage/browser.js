@@ -90,7 +90,7 @@ export function hierarchyBrowser(changed, deselect) {
           tiles[next]?.focus();
         }
       },
-    }, h("span", null, item.name), h("strong", null, bytes(item.size))));
+    }, h("span", { "data-i18n-source": "local_name" }, item.name), h("strong", null, bytes(item.size))));
     return h("div", null,
       h("p", { class: "hint" }, t("storage.map.help")),
       h("div", { class: "storage-map", "aria-label": t("storage.mode.map") }, tiles),
@@ -114,7 +114,7 @@ export function hierarchyBrowser(changed, deselect) {
         h("nav", { class: "row wrap storage-crumbs", "aria-label": t("storage.location") },
           control(view.root, () => { trail = []; deselect(); changed(); }, { "data-key": "storage-root" }),
           trail.map((item, index) => control(item.name, () => { trail = trail.slice(0, index + 1); deselect(); changed(); },
-            { "data-key": `crumb:${item.item_ref}` }))),
+            { "data-key": `crumb:${item.item_ref}`, "data-i18n-source": "local_name" }))),
         mode === "map" ? map(options) : mode === "tree"
           ? h("div", null, group(parentRef(), "dirs", options, true), group(parentRef(), "files", options, true))
           : group(parentRef(), kind, options));

@@ -177,7 +177,12 @@ fn thousands(n: u64) -> String {
 }
 
 fn seconds(ms: u64) -> String {
-    format!("{:.1} s", ms as f64 / 1_000.0)
+    let text = format!("{:.1} s", ms as f64 / 1_000.0);
+    if language() == Language::Fr {
+        text.replace('.', ",")
+    } else {
+        text
+    }
 }
 
 pub fn plural(n: impl Into<u64>, one: &str, many: &str) -> String {
@@ -524,51 +529,75 @@ pub fn storage_context(
         )?;
         writeln!(
             out,
-            "    Role: {}; folder: {} ({})",
-            words(&item.context.role),
-            words(&item.context.folder_role),
-            item.context.basis.replace('_', " ")
+            "    {}",
+            say!(
+                "cli.storage.role",
+                role = words(&item.context.role),
+                folder = words(&item.context.folder_role),
+                basis = words(&item.context.basis)
+            )
         )?;
         if let Some(app) = &item.context.application {
             writeln!(
                 out,
-                "    Associated application: {} (path pattern; installation/ownership unverified)",
-                clean(app.name)
+                "    {}",
+                say!("cli.storage.application", name = clean(app.name))
             )?;
         }
         writeln!(
             out,
-            "    Content comparison: {}",
-            item.content.status.replace('_', " ")
+            "    {}",
+            say!("cli.storage.content", status = words(&item.content.status))
         )?;
         for copy in &item.other_copy_paths {
-            writeln!(out, "      Observed copy: {}", clean(copy))?;
+            writeln!(
+                out,
+                "      {}",
+                say!("cli.storage.copy", path = clean(copy))
+            )?;
         }
         if item.content.other_copy_count > item.other_copy_paths.len() {
             writeln!(
                 out,
-                "      Showing {} of {} other observed copies.",
-                item.other_copy_paths.len(),
-                item.content.other_copy_count
+                "      {}",
+                say!(
+                    "cli.storage.copies_shown",
+                    shown = item.other_copy_paths.len(),
+                    total = item.content.other_copy_count
+                )
             )?;
         }
         if let Some(regeneration) = item.context.recovery.regeneration {
-            writeln!(out, "    Possible regeneration: {}", clean(regeneration))?;
+            writeln!(
+                out,
+                "    {}",
+                say!(
+                    "cli.storage.regeneration",
+                    text = clean(&core(regeneration))
+                )
+            )?;
         }
         if let Some(method) = item.context.recovery.adapter_method {
             writeln!(
                 out,
-                "    Adapter recovery: {} (conditional; no action authorized)",
-                words(&method)
+                "    {}",
+                say!("cli.storage.adapter", method = words(&method))
             )?;
         }
         writeln!(
             out,
-            "    Recovery: {}; backup and Recycle Bin not verified.",
-            clean(item.content.recovery_note).trim_end_matches('.')
+            "    {}",
+            say!(
+                "cli.storage.recovery",
+                text = clean(&core(item.content.recovery_note)).trim_end_matches('.')
+            )
         )?;
         for condition in &item.context.conditions {
-            writeln!(out, "    Condition: {}", clean(condition))?;
+            writeln!(
+                out,
+                "    {}",
+                say!("cli.storage.condition", text = clean(&core(condition)))
+            )?;
         }
     }
     Ok(())
@@ -581,14 +610,17 @@ pub fn content_comparisons(
     for comparison in comparisons {
         writeln!(
             out,
-            "Content comparison: {} groups, {} files hashed, {} read ({})",
-            comparison.groups.len(),
-            comparison.checked_refs.len(),
-            format_bytes(comparison.bytes_read),
-            words(&comparison.status)
+            "{}",
+            say!(
+                "cli.storage.comparison",
+                groups = comparison.groups.len(),
+                files = comparison.checked_refs.len(),
+                bytes = format_bytes(comparison.bytes_read),
+                status = words(&comparison.status)
+            )
         )?;
         for limitation in &comparison.limitations {
-            writeln!(out, "  {}", clean(limitation))?;
+            writeln!(out, "  {}", clean(&core(limitation)))?;
         }
     }
     Ok(())
@@ -605,71 +637,102 @@ pub fn storage(
     let c = &summary.coverage;
     writeln!(
         out,
-        "Scanned {} in {}: {} in {} ({})",
-        clean(root),
-        seconds(summary.duration_ms),
-        plural(c.files, "file", "files"),
-        plural(c.dirs, "folder", "folders"),
-        if summary.status == Status::Ok {
-            "complete".to_owned()
-        } else {
-            words(&summary.status)
-        }
+        "{}",
+        say!(
+            "cli.storage.scanned",
+            root = clean(root),
+            duration = seconds(summary.duration_ms),
+            files = plural(c.files, "file", "files"),
+            folders = plural(c.dirs, "folder", "folders"),
+            status = if summary.status == Status::Ok {
+                label("cli.storage.complete").to_owned()
+            } else {
+                words(&summary.status)
+            }
+        )
     )?;
     let mut gaps: Vec<String> = [
-        (c.denied_dirs, "folders not readable"),
-        (c.denied_files, "files not readable"),
-        (c.reparse_skipped, "links or junctions not followed"),
-        (c.placeholders, "cloud placeholders not downloaded"),
-        (c.other_volume_skipped, "items on other volumes skipped"),
-        (c.special_skipped, "special files skipped"),
-        (c.vanished, "items vanished during the scan"),
-        (c.changed_during_scan, "items changed during the scan"),
-        (c.errors, "errors"),
-        (c.hard_link_aliases, "extra hard links counted once"),
+        (c.denied_dirs, "cli.storage.gap.denied_dirs"),
+        (c.denied_files, "cli.storage.gap.denied_files"),
+        (c.reparse_skipped, "cli.storage.gap.reparse_skipped"),
+        (c.placeholders, "cli.storage.gap.placeholders"),
+        (
+            c.other_volume_skipped,
+            "cli.storage.gap.other_volume_skipped",
+        ),
+        (c.special_skipped, "cli.storage.gap.special_skipped"),
+        (c.vanished, "cli.storage.gap.vanished"),
+        (c.changed_during_scan, "cli.storage.gap.changed_during_scan"),
+        (c.errors, "cli.storage.gap.errors"),
+        (c.hard_link_aliases, "cli.storage.gap.hard_link_aliases"),
         (
             c.allocation_unknown_files,
-            "files with unknown size on disk",
+            "cli.storage.gap.allocation_unknown_files",
         ),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)
-    .map(|(n, what)| format!("{} {what}", thousands(n)))
+    .map(|(n, key)| format!("{} {}", thousands(n), label(key)))
     .collect();
     if let Some(reason) = &c.truncated {
-        gaps.push(format!("scan stopped early ({})", words(reason)));
+        gaps.push(say!("cli.storage.truncated", reason = words(reason)));
     }
     if c.cancelled {
-        gaps.push("scan cancelled".into());
+        gaps.push(label("cli.storage.cancelled").to_owned());
     }
     let mut facts = Vec::new();
     if let Some(t) = &overview.scanned {
         facts.push((
-            "Total size".to_owned(),
-            format!(
-                "{} ({} on disk)",
-                format_bytes(t.logical_bytes),
-                format_bytes(t.allocated_bytes)
+            label("cli.storage.total").to_owned(),
+            say!(
+                "cli.storage.total_value",
+                logical = format_bytes(t.logical_bytes),
+                allocated = format_bytes(t.allocated_bytes)
             ),
         ));
     }
     if let (Some(free), Some(total)) = (overview.volume.free_bytes, overview.volume.total_bytes) {
         facts.push((
-            "Volume".to_owned(),
-            format!("{} free of {}", format_bytes(free), format_bytes(total)),
+            label("cli.storage.volume").to_owned(),
+            say!(
+                "cli.storage.volume_value",
+                free = format_bytes(free),
+                total = format_bytes(total)
+            ),
         ));
     }
     if !gaps.is_empty() {
-        facts.push(("Coverage".to_owned(), gaps.join(", ")));
+        facts.push((label("cli.storage.coverage").to_owned(), gaps.join(", ")));
     }
     rows(out, &facts)?;
     writeln!(out)?;
-    let what = if dirs { "folders" } else { "files" };
     if largest.items.is_empty() {
-        writeln!(out, "No {what} found.")?;
+        writeln!(
+            out,
+            "{}",
+            label(if dirs {
+                "cli.storage.none_dirs"
+            } else {
+                "cli.storage.none_files"
+            })
+        )?;
     } else {
-        writeln!(out, "Largest {what}")?;
-        writeln!(out, "  {:>11}  {:>11}  Path", "Size", "On disk")?;
+        writeln!(
+            out,
+            "{}",
+            label(if dirs {
+                "cli.storage.largest_dirs"
+            } else {
+                "cli.storage.largest_files"
+            })
+        )?;
+        writeln!(
+            out,
+            "  {:>11}  {:>11}  {}",
+            label("cli.storage.size"),
+            label("cli.storage.on_disk"),
+            label("cli.storage.path")
+        )?;
         let prefix = format!("{}\\", root.trim_end_matches('\\'));
         for item in &largest.items {
             let path = item.path.as_deref().unwrap_or(&item.redacted_path);
@@ -679,20 +742,24 @@ pub fn storage(
                 "  {:>11}  {:>11}  {}",
                 format_bytes(item.logical_bytes),
                 item.allocated_bytes
-                    .map_or_else(|| "unknown".into(), format_bytes),
+                    .map_or_else(|| label("cli.unknown").to_owned(), format_bytes),
                 clean(shown)
             )?;
         }
         if largest.total > largest.items.len() {
             writeln!(
                 out,
-                "  ... {} more; use --limit to show up to 100",
-                thousands((largest.total - largest.items.len()) as u64)
+                "  {}",
+                say!(
+                    "cli.storage.more",
+                    count = thousands((largest.total - largest.items.len()) as u64)
+                )
             )?;
         }
     }
     writeln!(out)?;
-    list(out, "Notes", &largest.limitations)
+    let notes: Vec<String> = largest.limitations.iter().map(|l| core(l)).collect();
+    list(out, label("cli.notes"), &notes)
 }
 
 pub fn tool_event(e: &ToolEvent) -> String {
@@ -1250,12 +1317,18 @@ fn web_cost_line(s: &Stats) -> Option<String> {
         let web = &s.web_usage;
         let cost = web
             .estimated_usd()
-            .map_or_else(|| "unknown".to_owned(), |usd| format!("${usd}"));
+            .map_or_else(|| label("cli.unknown").to_owned(), |usd| format!("${usd}"));
         let total = web
             .with_model_usd(s.total_cost_usd.as_deref())
-            .map_or_else(|| "unknown".to_owned(), |usd| format!("${usd}"));
-        return Some(format!("Estimated combined cost: {total}; web: {} known Tavily credits, {} cache hits, {} requests with unknown usage, {cost} at $0.008/credit before free allowance/discounts (not an invoice)",
-            web.known_credits, web.cache_hits, web.unknown_requests));
+            .map_or_else(|| label("cli.unknown").to_owned(), |usd| format!("${usd}"));
+        return Some(say!(
+            "cli.cost.web",
+            total = total,
+            credits = web.known_credits,
+            hits = web.cache_hits,
+            unknown = web.unknown_requests,
+            cost = cost
+        ));
     }
     None
 }
@@ -1613,5 +1686,142 @@ mod tests {
             localize("Process proc-1 had 1.00 GiB private commit.", &[p]),
             "Process app\\u{1b}.exe (PID 42) had 1.00 GiB private commit."
         );
+    }
+}
+
+/// Human prompts and notices of the interactive commands, in the chosen language.
+pub fn extension_prompt(
+    rounds: impl ToString,
+    tools: impl ToString,
+    seconds: impl ToString,
+) -> String {
+    say!(
+        "cli.extension.prompt",
+        rounds = rounds.to_string(),
+        tools = tools.to_string(),
+        seconds = seconds.to_string()
+    )
+}
+
+/// `yes` in English, and also `oui` in French; anything else declines.
+pub fn is_yes(answer: &str) -> bool {
+    let answer = answer.trim();
+    answer.eq_ignore_ascii_case("yes")
+        || (language() == Language::Fr && answer.eq_ignore_ascii_case("oui"))
+}
+
+pub fn question_too_long(limit: usize) -> String {
+    say!("cli.question.too_long", limit = limit)
+}
+
+pub fn question_empty() -> String {
+    label("cli.question.empty").to_owned()
+}
+
+/// A catalogue sentence with named values, for modules outside this one (which cannot use
+/// `say!`). An unknown key shows itself rather than inventing text.
+pub fn fill(key: &str, values: &[(&str, String)]) -> String {
+    language()
+        .fill(key, &values.iter().cloned().collect())
+        .unwrap_or_else(|| format!("[{key}]"))
+}
+
+/// Closed English sentences of the storage, policy and storage-context cores, rendered in the
+/// chosen language by exact match. Any other text is shown unchanged, never guessed.
+const CORE_TEXT: [&str; 45] = [
+    "core.text.00",
+    "core.text.01",
+    "core.text.02",
+    "core.text.03",
+    "core.text.04",
+    "core.text.05",
+    "core.text.06",
+    "core.text.07",
+    "core.text.08",
+    "core.text.09",
+    "core.text.10",
+    "core.text.11",
+    "core.text.12",
+    "core.text.13",
+    "core.text.14",
+    "core.text.15",
+    "core.text.16",
+    "core.text.17",
+    "core.text.18",
+    "core.text.19",
+    "core.text.20",
+    "core.text.21",
+    "core.text.22",
+    "core.text.23",
+    "core.text.24",
+    "core.text.25",
+    "core.text.26",
+    "core.text.27",
+    "core.text.28",
+    "core.text.29",
+    "core.text.30",
+    "core.text.31",
+    "core.text.32",
+    "core.text.33",
+    "core.text.34",
+    "core.text.35",
+    "core.text.36",
+    "core.text.37",
+    "core.text.38",
+    "core.text.39",
+    "core.text.40",
+    "core.text.41",
+    "core.text.42",
+    "core.text.43",
+    "core.text.44",
+];
+
+pub fn core(text: &str) -> String {
+    if language() == Language::En {
+        return text.to_owned();
+    }
+    CORE_TEXT
+        .iter()
+        .find(|key| Language::En.label(key) == Some(text))
+        .and_then(|key| language().label(key))
+        .map_or_else(|| text.to_owned(), str::to_owned)
+}
+
+#[cfg(test)]
+mod core_text_tests {
+    use super::*;
+
+    #[test]
+    fn every_closed_core_sentence_has_an_english_source_and_a_french_rendering() {
+        for key in CORE_TEXT {
+            let english = Language::En.label(key).expect(key);
+            let french = Language::Fr.label(key).expect(key);
+            assert_ne!(english, french, "{key}");
+            assert!(!french.is_empty());
+        }
+    }
+
+    #[test]
+    fn closed_status_words_have_both_languages() {
+        for code in [
+            "unclassified",
+            "not_checked",
+            "not_applicable_to_folders",
+            "same_content_sha256",
+            "no_match_in_checked_set",
+            "registered_path_pattern",
+            "local_path_rule_not_content_validation",
+            "temporary",
+            "personal_data",
+        ] {
+            let key = format!("word.{code}");
+            assert!(Language::En.label(&key).is_some(), "{key}");
+            assert!(Language::Fr.label(&key).is_some(), "{key}");
+        }
+    }
+
+    #[test]
+    fn unknown_text_is_never_rewritten() {
+        assert_eq!(core("A sentence from a model"), "A sentence from a model");
     }
 }

@@ -94,11 +94,11 @@ try {
     await page.goto(`${base}?cloud=ready#/storage`);
     await page.waitFor("document.querySelectorAll('.chip').length >= 6");
     await page.click(".chip", 0);
-    await page.waitFor("document.querySelector('.tabs')", 10000);
+    await page.waitFor("document.querySelector('.storage-map, .tabs')", 10000);
     await shot(`8-storage-${theme}`);
     // Deeper checks: the list, the review of the disk health check, then its result.
     await page.goto(`${base}?cloud=ready&privacy=complete&disk=ok#/storage`);
-    await page.waitFor("document.querySelectorAll('.admin-check').length === 4");
+    await page.waitFor("document.querySelectorAll('.admin-check').length >= 4");
     await page.eval("document.querySelector('.admin-card').scrollIntoView({ block: 'start' })");
     await page.sleep(300);
     await shot(`8a-admin-${theme}`);
@@ -171,8 +171,9 @@ try {
     await shot(`16b-escalated-sources-${theme}`);
     // The action bar under a selected history event, then under a folder of a scan.
     await page.goto(`${base}?cloud=ready&privacy=complete#/history`);
-    await page.waitFor("document.querySelector('.event-main')", 10000);
-    await page.click(".event-main", 0);
+    // Recordings share the row style in a hidden section: pick a visible event row.
+    await page.waitFor("document.querySelector('.event-row .event-main[data-key^=\"event:\"]')", 10000);
+    await page.click(".event-row .event-main[data-key^=\"event:\"]", 0);
     await page.waitFor("document.querySelector('.event-row.selected .actbar')");
     await page.sleep(300);
     await shot(`17-history-bar-${theme}`);
