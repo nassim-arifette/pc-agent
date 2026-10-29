@@ -12,6 +12,7 @@ mod settings_commands;
 mod state;
 mod storage_commands;
 mod turn_commands;
+mod voice_commands;
 mod watch_commands;
 mod worker;
 
@@ -206,6 +207,17 @@ pub fn run() {
         ])
         .setup(move |app| {
             let _ = handle.set(app.handle().clone());
+            let voice_app = app.handle().clone();
+            let model_app = app.handle().clone();
+            app.manage(pcagent_voice::VoiceService::new(
+                app.path().app_local_data_dir()?.join("voice"),
+                move |state| {
+                    let _ = voice_app.emit("voice:state", state);
+                },
+                move |model| {
+                    let _ = model_app.emit("voice:model", model);
+                },
+            ));
             use tauri::{
                 menu::{Menu, MenuItem},
                 tray::{TrayIconBuilder, TrayIconEvent},

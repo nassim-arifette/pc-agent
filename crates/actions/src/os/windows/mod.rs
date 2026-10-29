@@ -1,5 +1,6 @@
 //! The only unsafe boundary: least-privilege handles, no elevation, no forced termination, no
 //! shell interpreter. Permanent deletion is confined to the approved synthetic cache manifest.
+pub(crate) mod browser;
 pub(crate) mod notifications;
 pub(crate) mod startup;
 use crate::{
