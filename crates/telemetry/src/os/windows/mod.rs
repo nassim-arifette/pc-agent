@@ -3,6 +3,7 @@ pub(crate) mod activity;
 mod browser;
 pub(crate) mod browser_windows;
 mod inventory;
+pub(crate) mod local_time;
 pub(crate) mod nvml;
 pub(crate) mod pdh;
 pub(crate) mod services;

@@ -399,6 +399,18 @@ pub fn parse_multi_sz(buffer: &[u16]) -> Vec<String> {
         .collect()
 }
 
+/// Minutes to add to UTC to get this PC's local time at `unix_ms` (daylight saving included).
+/// `None` where the native backend does not read the time zone (outside Windows).
+pub fn local_utc_offset_minutes(unix_ms: u64) -> Option<i32> {
+    #[cfg(windows)]
+    return os::windows::local_time::utc_offset_minutes(unix_ms);
+    #[cfg(not(windows))]
+    {
+        let _ = unix_ms;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
