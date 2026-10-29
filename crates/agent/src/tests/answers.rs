@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn an_administrator_proposal_can_be_cited_but_not_invented_or_used_as_a_measurement() {
+    let mut report = local_report(&usable_snapshot());
+    let proposed = Observation {
+        observation_id: "obs-proposal".into(),
+        citation: String::new(),
+        tool: catalog::elevated::PROPOSE_ELEVATED_CHECK.name.into(),
+        measured_at_unix_ms: 0,
+        status: Status::Ok,
+        citable: false,
+        facts: vec![],
+        fact_phrases: vec![],
+        limitations: vec![],
+        observation: json!({"plan":{"plan_id":"plan-local","tasks":["system_caches"],"executed":false}}),
+        storage_items: vec![],
+    };
+    report.observations.push(proposed);
+    assert_eq!(report.plans(), vec!["plan-local"]);
+    assert!(!report
+        .references(&mut FindingAliases::default())
+        .iter()
+        .any(|(_, _, id)| id == "obs-proposal"));
+    report.observations[0].tool = "get_system_snapshot".into();
+    assert!(report.plans().is_empty());
+}
+
+#[test]
 fn answers_are_checked_and_repaired_before_acceptance() {
     let initial = fixture();
     let mut next = fixture();

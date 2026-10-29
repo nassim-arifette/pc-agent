@@ -5,6 +5,30 @@ approval, target revalidation, durable item journals and measurement hooks.
 
 ## Flow
 
+### Open the browser process manager
+
+`open_browser_process_manager` is an open-only action, never termination. Its destination
+is a closed enum derived from the observed executable: Firefox `about:processes`, Chrome
+Task Manager or Edge Task Manager. Electron and WebView2 attribution do not authorize this
+action. Neither a model nor a desktop IPC caller may supply a URL, executable path,
+command line, keyboard shortcut or window handle.
+
+The model can propose it only against an issued process reference. Live PC can prepare it
+from a locally inspected browser window. Both routes use the same broker: resolve PID and
+creation time, bind executable file identity and fixed destination, display the review card,
+wait for an explicit local decision, then revalidate before dispatch. Changed/missing
+identities, reparse points and unsupported executables fail closed. The executable is pinned
+against replacement during dispatch. No elevated helper or global keyboard injection is used.
+
+Firefox starts the revalidated absolute executable with the fixed `-new-tab about:processes`
+arguments. Chrome/Edge receive the fixed Chromium `IDC_TASK_MANAGER` command (40006) through
+`SendMessageTimeoutW` on a visible `Chrome_WidgetWin_1` owned by the revalidated PID. The
+timeout prevents a hung browser from blocking indefinitely; successful delivery means
+*requested*, not proof that the browser displayed its task manager. The result asks the
+person to confirm in the browser. Neither implementation closes any process or changes
+browser settings. A browser with multiple profiles may choose where its fixed internal page
+opens; PC Agent does not read or replay profile arguments.
+
 ```
 model ──ActionIntent (opaque refs only)──▶ Broker::prepare_plan ──▶ ActionPlan (awaiting_approval)
                                               │ TargetResolver / Guard / ProtectionCheck

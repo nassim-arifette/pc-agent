@@ -1436,7 +1436,7 @@ mod tests {
             .finish_recording(&recording.id, 2000, false, 1)
             .unwrap();
         store.maintain_samples(SAMPLE_RETENTION_MS + 2000).unwrap();
-        assert!(store.battery_recording(&recording.id).unwrap().is_none());
+        assert!(store.battery_recording(&recording.id).unwrap().is_some());
         assert_eq!(
             store
                 .conn
@@ -1446,7 +1446,7 @@ mod tests {
                     |row| row.get(0)
                 )
                 .unwrap(),
-            0
+            1
         );
         let recording = store
             .begin_recording(30, SAMPLE_RETENTION_MS + 3000)

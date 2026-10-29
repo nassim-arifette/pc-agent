@@ -162,7 +162,7 @@ fn volume(root: String) -> VolumeInfo {
     v.status = Status::Ok;
     v
 }
-fn volumes() -> Observed<Vec<VolumeInfo>> {
+pub(crate) fn volumes() -> Observed<Vec<VolumeInfo>> {
     const SOURCE: &str = "Win32.GetLogicalDriveStringsW";
     let mut buffer = [0_u16; 512];
     // SAFETY: the buffer is writable for its length in UTF-16 units.

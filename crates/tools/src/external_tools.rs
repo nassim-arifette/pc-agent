@@ -67,6 +67,7 @@ pub struct ExternalTools {
     hardware: Option<Hardware>,
     /// Tavily credits used in this turn, when reported.
     pub credits: f64,
+    cache: Option<pcagent_store::web_cache::WebCache>,
 }
 
 impl ExternalTools {
@@ -79,7 +80,13 @@ impl ExternalTools {
             drivers: BTreeMap::new(),
             hardware: None,
             credits: 0.0,
+            cache: None,
         }
+    }
+
+    pub fn with_cache(mut self, cache: pcagent_store::web_cache::WebCache) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// Keeps the local facts of a measurement the lookups may build on; names stay on the PC.
@@ -127,7 +134,19 @@ impl ExternalTools {
             Ok(query) => query,
             Err(reason) => return Some(unavailable(spec.name, Status::Partial, reason, None)),
         };
-        if self.searches >= MAX_WEB_SEARCHES {
+        let now = unix_ms();
+        let key = cache_key(spec.name, &query);
+        let cached = self
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.get(&key, now).ok())
+            .flatten()
+            .and_then(|entry| {
+                serde_json::from_value::<crate::tavily::WebSearch>(entry.value)
+                    .ok()
+                    .map(|search| (search, entry.read_at_unix_ms))
+            });
+        if cached.is_none() && self.searches >= MAX_WEB_SEARCHES {
             return Some(unavailable(
                 spec.name,
                 Status::Partial,
@@ -135,12 +154,21 @@ impl ExternalTools {
                 Some(&query),
             ));
         }
-        self.searches += 1;
-        let searched_at = unix_ms();
-        let search = match self.searcher.search(&query) {
+        let cached_at = cached.as_ref().map(|(_, time)| *time);
+        let searched_at = cached_at.unwrap_or(now);
+        let search = match cached
+            .map(|(mut search, _)| {
+                search.credits = Some(0.0);
+                search.duration_ms = 0;
+                Ok(search)
+            })
+            .unwrap_or_else(|| {
+                self.searches += 1;
+                self.searcher.lookup(spec.name, &query)
+            }) {
             Ok(search) => search,
             Err(error) => {
-                return Some(unavailable(
+                let mut output = unavailable(
                     spec.name,
                     Status::Error,
                     match error {
@@ -150,9 +178,25 @@ impl ExternalTools {
                         _ => "The web search failed.",
                     },
                     Some(&query),
-                ))
+                );
+                output.cloud["web_usage"] = json!({"credits":null,"cache_hit":false});
+                return Some(output);
             }
         };
+        if cached_at.is_none() {
+            if let Some(cache) = &self.cache {
+                let ttl = search
+                    .results
+                    .iter()
+                    .filter_map(|source| source.read_at_unix_ms)
+                    .map(|read| {
+                        read.saturating_add(crate::release_health::PAGE_TTL_MS)
+                            .saturating_sub(now)
+                    })
+                    .fold(cache_ttl_ms(spec.name), u64::min);
+                let _ = cache.put(&key, &json!(search), now, ttl);
+            }
+        }
         self.credits += search.credits.unwrap_or(0.0);
         let sources: Vec<Value> = search
             .results
@@ -161,7 +205,10 @@ impl ExternalTools {
                 self.sources += 1;
                 json!({"source_id":format!("W{}", self.sources),"title":result.title,
                     "domain":result.domain,"url":result.url,
-                    "published_date":result.published_date,"snippet":result.snippet})
+                    "published_date":result.published_date,"snippet":result.snippet,
+                    "read_at_unix_ms":result.read_at_unix_ms.unwrap_or(searched_at),
+                    "cached_at_unix_ms":result.cached_at_unix_ms.or(cached_at.map(|_| result.read_at_unix_ms.unwrap_or(searched_at))),
+                    "reused_at_unix_ms":(result.cached_at_unix_ms.is_some() || cached_at.is_some()).then_some(now)})
             })
             .collect();
         let status = if sources.is_empty() {
@@ -171,6 +218,8 @@ impl ExternalTools {
         };
         let mut cloud = json!({"status":status,"origin":"web","tool":spec.name,"query":query.query,
             "domains":query.domains,"country":query.country,"searched_at_unix_ms":searched_at,
+            "reused_at_unix_ms":cached_at.map(|_| now),"cached_at_unix_ms":cached_at,
+            "web_usage":{"credits":search.credits,"cache_hit":cached_at.is_some()},
             "sources":sources,
             "limitations":["Web snippets are not measurements of this PC and may be outdated or wrong.",
                 "published_date is the source's own date when known; it can be missing."]});
@@ -290,6 +339,34 @@ impl ExternalTools {
             .clone()
             .ok_or("The hardware inventory is unavailable.")
     }
+}
+
+fn cache_ttl_ms(tool: &str) -> u64 {
+    let days = match tool {
+        "lookup_known_issue" | "lookup_pc_specs" => 7,
+        _ => 1,
+    };
+    days * 24 * 60 * 60 * 1000
+}
+
+fn cache_key(tool: &str, query: &WebQuery) -> String {
+    let normalize = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let mut domains: Vec<_> = query.domains.iter().map(|s| normalize(s)).collect();
+    domains.sort();
+    domains.dedup();
+    json!([
+        "web-v1",
+        tool,
+        normalize(&query.query),
+        domains,
+        query.country.as_deref().map(normalize)
+    ])
+    .to_string()
 }
 
 const MICROSOFT: [&str; 2] = ["learn.microsoft.com", "support.microsoft.com"];
@@ -543,6 +620,7 @@ mod tests {
                     domain: "nvidia.com".into(),
                     snippet: "Version 566.36 fixes stutter in some games.".into(),
                     published_date: Some("2024-12-05".into()),
+                    ..WebResult::default()
                 }],
                 credits: Some(1.0),
                 duration_ms: 400,
@@ -643,6 +721,76 @@ mod tests {
             assert_eq!(out.status, Status::Partial, "{bad:?}");
         }
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cache_keys_normalize_query_and_country_and_separate_tools() {
+        let a = WebQuery {
+            query: "  KB5034441  Known Issues ".into(),
+            domains: vec!["SUPPORT.MICROSOFT.COM".into(), "learn.microsoft.com".into()],
+            country: Some(" France ".into()),
+        };
+        let b = WebQuery {
+            query: "kb5034441 known issues".into(),
+            domains: vec!["learn.microsoft.com".into(), "support.microsoft.com".into()],
+            country: Some("france".into()),
+        };
+        assert_eq!(
+            cache_key("lookup_known_issue", &a),
+            cache_key("lookup_known_issue", &b)
+        );
+        assert_ne!(
+            cache_key("lookup_pc_specs", &a),
+            cache_key("lookup_known_issue", &b)
+        );
+        assert_eq!(
+            cache_ttl_ms("lookup_known_issue"),
+            7 * cache_ttl_ms("lookup_driver_notes")
+        );
+    }
+
+    #[test]
+    fn cache_hit_preserves_dates_refreshes_citations_and_uses_no_credits() {
+        let (tools, seen) = tools();
+        let mut tools = tools.with_cache(pcagent_store::web_cache::WebCache::in_memory().unwrap());
+        let args = args(&[("kb", "KB5034441")]);
+        let first = tools.run(&LOOKUP_KNOWN_ISSUE, &args).unwrap();
+        let hit = tools.run(&LOOKUP_KNOWN_ISSUE, &args).unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(first.cloud["sources"][0]["source_id"], "W1");
+        assert_eq!(hit.cloud["sources"][0]["source_id"], "W2");
+        assert_eq!(
+            hit.cloud["searched_at_unix_ms"],
+            first.cloud["searched_at_unix_ms"]
+        );
+        assert_eq!(
+            hit.cloud["cached_at_unix_ms"],
+            first.cloud["searched_at_unix_ms"]
+        );
+        assert_eq!(hit.cloud["web_usage"]["credits"], 0.0);
+        assert_eq!(hit.cloud["web_usage"]["cache_hit"], true);
+        assert_eq!(tools.credits, 1.0);
+    }
+
+    #[test]
+    fn failed_searches_are_not_cached() {
+        struct Fails(Arc<Mutex<usize>>);
+        impl WebSearcher for Fails {
+            fn search(&mut self, _: &WebQuery) -> Result<WebSearch, WebError> {
+                *self.0.lock().unwrap() += 1;
+                Err(WebError::InvalidResponse)
+            }
+        }
+        let calls = Arc::new(Mutex::new(0));
+        let mut tools = ExternalTools::new(Box::new(Fails(calls.clone())), None)
+            .with_cache(pcagent_store::web_cache::WebCache::in_memory().unwrap());
+        let args = args(&[("kb", "KB5034441")]);
+        for _ in 0..2 {
+            let out = tools.run(&LOOKUP_KNOWN_ISSUE, &args).unwrap();
+            assert_eq!(out.status, Status::Error);
+            assert!(out.cloud["web_usage"]["credits"].is_null());
+        }
+        assert_eq!(*calls.lock().unwrap(), 2);
     }
 
     #[test]

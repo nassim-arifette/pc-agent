@@ -3,3 +3,4 @@
 pub mod activity;
 pub mod history;
 pub mod system;
+pub mod watches;

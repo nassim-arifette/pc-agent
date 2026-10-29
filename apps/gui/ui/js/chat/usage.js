@@ -40,6 +40,12 @@ export function shareName(share) {
  */
 export function costFigure(usage) {
   if (!usage) return null;
+  if (usage.web?.lookups > 0) {
+    if (usage.combined_estimated_cost) return { usd: usage.combined_estimated_cost.usd, atLeast: false };
+    // A known inference cost is only a lower bound when web usage is missing.
+    const known = usage.total_cost || usage.priced_cost_lower_bound;
+    return known ? { usd: known.usd, atLeast: true } : null;
+  }
   if ("total_cost" in usage || "priced_cost_lower_bound" in usage) {
     if (usage.total_cost) return { usd: usage.total_cost.usd, atLeast: false };
     if (usage.priced_cost_lower_bound) return { usd: usage.priced_cost_lower_bound.usd, atLeast: true };
@@ -107,8 +113,15 @@ const NOTE_ICONS = { took: "sparkle", stopped: "info", failed: "alert" };
 /** The lasting line under an answer when a stronger model took the question over, or tried to. */
 export function routingNote(report) {
   const change = modelChange(report);
-  if (!change) return null;
-  return h("p", { class: ["routing-note", change.tone === "failed" ? "warn" : ""] }, icon(NOTE_ICONS[change.tone]), h("span", null, change.text));
+  const web = report?.usage?.web;
+  const webNote = web?.lookups > 0 ? h("p", { class: "routing-note" },
+    icon("globe"), t("web.usage", { credits: number(web.known_credits), hits: number(web.cache_hits),
+      cost: report.usage.web_estimated_usd == null ? t("usage.model.noCost") : usd(report.usage.web_estimated_usd) }),
+    web.unknown_requests > 0 ? ` · ${t("web.usageMissing", { count: web.unknown_requests })}` : null) : null;
+  if (!change) return webNote;
+  return h("div", null,
+    h("p", { class: ["routing-note", change.tone === "failed" ? "warn" : ""] }, icon(NOTE_ICONS[change.tone]), h("span", null, change.text)),
+    webNote);
 }
 
 /** The switch row of a saved turn's steps: its tool events carry no request numbers. */

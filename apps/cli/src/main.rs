@@ -23,8 +23,9 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    text::set_language(args.language);
     if pcagent_inspect::elevation::ensure_unelevated_host().is_err() {
-        eprintln!("Start PC Agent from a standard, unelevated session.");
+        eprintln!("{}", text::label("cli.standard_user"));
         return ExitCode::from(2);
     }
     match commands::run(args) {

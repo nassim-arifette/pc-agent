@@ -9,6 +9,18 @@ use std::{path::Path, time::Duration};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeGuard;
 impl Guard for NativeGuard {
+    fn observe_browser(
+        &self,
+        process: &ProcessTarget,
+    ) -> Result<Option<crate::BrowserManagerTarget>, Status> {
+        #[cfg(windows)]
+        return crate::windows::browser::observe(process);
+        #[cfg(not(windows))]
+        {
+            let _ = process;
+            Err(Status::Unsupported)
+        }
+    }
     fn observe_user_startup(
         &self,
         value_name: &str,
@@ -62,12 +74,26 @@ fn unsupported() -> Result<EffectOutcome, EffectError> {
     ))
 }
 impl Effects for NativeEffects {
+    fn open_browser_process_manager(
+        &self,
+        _: &Permit,
+        browser: &crate::BrowserManagerTarget,
+    ) -> Result<EffectOutcome, EffectError> {
+        #[cfg(windows)]
+        return crate::windows::browser::open(browser);
+        #[cfg(not(windows))]
+        {
+            let _ = browser;
+            unsupported()
+        }
+    }
     fn capability(&self, kind: ActionKind) -> Capability {
         if !cfg!(windows) {
             return Capability::Unsupported;
         }
         match kind {
             ActionKind::OpenInExplorer
+            | ActionKind::OpenBrowserProcessManager
             | ActionKind::OpenSettingsPage
             | ActionKind::RequestNormalClose
             | ActionKind::RecycleSelectedFiles

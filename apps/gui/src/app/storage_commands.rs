@@ -1,5 +1,5 @@
 //! Explicit folder selection, bounded scans and item reveal.
-use super::selection_commands::retain_storage_page;
+use super::selection_commands::{retain_storage_facts, retain_storage_page};
 use super::{lock, AppState};
 use crate::failure::{Code, Failure};
 use crate::{failure, shell, view};
@@ -174,9 +174,103 @@ pub(super) fn start_scan(
 
 #[tauri::command]
 pub(super) fn cancel_scan(state: State<'_, AppState>) {
+    state.storage.cancel_item_facts();
     if let Some(scope) = lock(&state.scan).scope_id.clone() {
         let _ = state.storage.cancel(&scope);
     }
+}
+
+#[derive(Serialize)]
+pub(super) struct Children {
+    #[serde(flatten)]
+    page: view::Page,
+    parent: view::StorageItem,
+    other_bytes: u64,
+    parent_partial: bool,
+}
+
+#[tauri::command]
+pub(super) async fn scan_children(
+    state: State<'_, AppState>,
+    scope_id: String,
+    item_ref: Option<String>,
+    kind: ItemKind,
+    offset: usize,
+) -> Result<Children, Failure> {
+    let storage = state.storage.clone();
+    let root = lock(&state.scan).root.clone().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = storage
+            .index(&scope_id)
+            .and_then(|i| i.children(item_ref.as_deref(), kind, offset))
+            .map_err(|e| failure::storage(&e, &root))?;
+        Ok(Children {
+            page: view::page(&p.page, &root),
+            parent: view::storage_item(&p.parent, &root),
+            other_bytes: p.other_bytes,
+            parent_partial: p.parent_partial,
+        })
+    })
+    .await
+    .map_err(|_| Failure::new(Code::ScanFailed, "Cannot read scan children."))?
+}
+
+#[derive(Serialize)]
+pub(super) struct FactsView {
+    item: view::StorageItem,
+    #[serde(flatten)]
+    evidence: pcagent_storage::StorageItemEvidence,
+    selection_source_id: String,
+}
+
+#[tauri::command]
+pub(super) async fn scan_item_facts(
+    state: State<'_, AppState>,
+    scope_id: String,
+    item_ref: String,
+) -> Result<FactsView, Failure> {
+    let (storage, selections, scan) = (
+        state.storage.clone(),
+        state.selections.clone(),
+        state.scan.clone(),
+    );
+    let root = lock(&scan).root.clone().unwrap_or_default();
+    let job = storage
+        .prepare_item_facts(&scope_id, &item_ref)
+        .map_err(|e| failure::storage(&e, &root))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let unavailable = || {
+            Failure::new(
+                Code::ItemUnavailable,
+                "The scan item is no longer available.",
+            )
+        };
+        let index = storage.index(&scope_id).map_err(|_| unavailable())?;
+        let facts = job.run().map_err(|e| failure::storage(&e, &root))?;
+        let (page, parent) = index.item_page(&item_ref).map_err(|_| unavailable())?;
+        let volume = storage
+            .get_storage_overview(&scope_id)
+            .map_err(|_| unavailable())?
+            .volume;
+        let evidence = pcagent_storage::StorageItemEvidence {
+            item_facts: (*facts).clone(),
+            parent_ref: parent.item_ref,
+            parent_alias: parent.alias,
+            rank_scope: "siblings_of_parent".into(),
+            volume_total_bytes: volume.total_bytes,
+        };
+        let item = view::storage_item(&page.items[0], &root);
+        let source =
+            retain_storage_facts(&selections, &storage, &scan, page, Some(evidence.clone()))
+                .ok_or_else(unavailable)?;
+        Ok(FactsView {
+            item,
+            evidence,
+            selection_source_id: source,
+        })
+    })
+    .await
+    .map_err(|_| Failure::new(Code::ScanFailed, "Cannot read item facts."))?
 }
 
 #[tauri::command]

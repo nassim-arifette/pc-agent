@@ -38,6 +38,9 @@ impl Backend for Native {
     fn revalidate(_: u32, _: u64) -> InstanceState {
         InstanceState::Unverified
     }
+    fn volume_inventory() -> pcagent_shared::Observed<Vec<pcagent_shared::VolumeInfo>> {
+        pcagent_shared::Observed::missing("platform", Status::Unsupported)
+    }
     fn hardware_inventory() -> HardwareInventory {
         use pcagent_shared::Observed;
         fn m<T>() -> Observed<T> {

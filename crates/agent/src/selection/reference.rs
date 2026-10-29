@@ -100,8 +100,10 @@ pub enum SelectionTarget {
     Resource { resource: Resource },
     Process { entity_ref: String },
     Event { event_id: String },
+    WatchAlert { alert_id: String },
     Recording { recording_id: String },
     Storage { scope_id: String, item_ref: String },
+    ElevatedInspection { inspection_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +125,9 @@ impl SelectionTarget {
             Self::Resource { .. } => true,
             Self::Process { entity_ref } => crate::is_process_ref(entity_ref),
             Self::Event { event_id } => opaque(event_id, "event-"),
+            Self::WatchAlert { alert_id } => opaque(alert_id, "alert-"),
             Self::Recording { recording_id } => opaque(recording_id, "recording-"),
+            Self::ElevatedInspection { inspection_id } => opaque(inspection_id, "elevated-"),
             Self::Storage { scope_id, item_ref } => {
                 opaque(scope_id, "scope-")
                     && item_ref.len() <= 128
@@ -163,8 +167,12 @@ impl SelectionTarget {
             } => "the selected battery measurements",
             Self::Process { .. } => "the selected process measurements",
             Self::Event { .. } => "the selected recorded activity event",
+            Self::WatchAlert { .. } => "the selected recorded watch alert",
             Self::Recording { .. } => "the selected existing recording",
             Self::Storage { .. } => "the selected storage scan item",
+            Self::ElevatedInspection { .. } => {
+                "the selected previously measured administrator inspection"
+            }
         };
         format!("{verb} {noun}, stating what is measured and what remains uncertain.")
     }

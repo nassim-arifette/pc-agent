@@ -98,6 +98,9 @@ export function dialog(render, { label, dismissValue = null, dismissible = true 
   return new Promise((resolve) => {
     const host = document.getElementById("dialogs");
     const previous = document.activeElement;
+    const background = document.getElementById("app");
+    const wasInert = background?.inert;
+    if (background) background.inert = true;
     let done = false;
     const close = (value) => {
       if (done) return;
@@ -105,10 +108,11 @@ export function dialog(render, { label, dismissValue = null, dismissible = true 
       openDialogs -= 1;
       overlay.remove();
       document.removeEventListener("keydown", onKey, true);
+      if (background) background.inert = wasInert;
       if (previous && previous.focus) previous.focus();
       resolve(value);
     };
-    const box = h("div", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": label });
+    const box = h("div", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": label, tabindex: "-1" });
     const overlay = h("div", {
       class: "overlay",
       onclick: (e) => {
@@ -121,14 +125,18 @@ export function dialog(render, { label, dismissValue = null, dismissible = true 
         close(dismissValue);
       } else if (e.key === "Tab") {
         // Keep keyboard focus inside the dialog.
-        const focusable = [...box.querySelectorAll("button, input, select, textarea, summary, [tabindex]")].filter((el) => !el.disabled);
-        if (!focusable.length) return;
+        const focusable = [...box.querySelectorAll("button, input, select, textarea, summary, a[href], [tabindex]")].filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest("[hidden], [inert]"));
+        if (!focusable.length) {
+          e.preventDefault();
+          box.focus();
+          return;
+        }
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+        if (e.shiftKey && (document.activeElement === first || !box.contains(document.activeElement))) {
           e.preventDefault();
           last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+        } else if (!e.shiftKey && (document.activeElement === last || !box.contains(document.activeElement))) {
           e.preventDefault();
           first.focus();
         }
@@ -139,7 +147,7 @@ export function dialog(render, { label, dismissValue = null, dismissible = true 
     openDialogs += 1;
     document.addEventListener("keydown", onKey, true);
     const primary = box.querySelector("[data-autofocus]") || box.querySelector(".btn-primary") || box.querySelector("button");
-    primary?.focus();
+    (primary || box).focus();
   });
 }
 

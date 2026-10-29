@@ -1,6 +1,7 @@
 //! Identity-safe two-sample process activity and application grouping.
 #![cfg_attr(not(windows), allow(dead_code))]
 use crate::{
+    browser::{BrowserClassification, BrowserProcessType},
     counters::{clamp_share, scaled, Instances, Sampled},
     identity::CounterSample,
     process_cpu_basis_points,
@@ -19,7 +20,6 @@ use std::{
 
 pub const DEFAULT_ACTIVITY_WINDOW_SECONDS: u64 = 3;
 pub const MAX_ACTIVITY_WINDOW_SECONDS: u64 = 30;
-const MAX_MEMBERS: usize = 50;
 const SOURCE: &str = "NtQuerySystemInformation.SystemProcessInformation";
 const GPU_SOURCE: &str = crate::counters::SRC_GPU;
 
@@ -32,6 +32,8 @@ pub enum ProcessRole {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityProcess {
+    #[serde(default)]
+    pub browser: BrowserClassification,
     pub instance: ProcessInstance,
     pub parent_ref: Option<String>,
     pub application_ref: String,
@@ -44,6 +46,8 @@ pub struct ActivityProcess {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationActivity {
+    #[serde(default)]
+    pub browser_types: Vec<BrowserTypeActivity>,
     pub entity_ref: String,
     /// Observed executable image of the earliest member, preferring an application over a hosted
     /// runtime such as WebView2. This is a local heuristic label.
@@ -51,6 +55,15 @@ pub struct ApplicationActivity {
     pub process_refs: Vec<String>,
     pub process_count: usize,
     pub members_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserTypeActivity {
+    pub entity_ref: String,
+    pub process_type: BrowserProcessType,
+    pub process_count: usize,
+    /// Command-line classification coverage, independent of the numeric measurement coverage.
+    pub classified_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +137,7 @@ impl ProcessActivity {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessReading {
+    pub browser: BrowserClassification,
     pub pid: u32,
     pub parent_pid: u32,
     pub created: u64,
@@ -141,6 +155,7 @@ pub(crate) struct Collection {
     pub before: Result<Vec<ProcessReading>, Status>,
     pub after: Result<Vec<ProcessReading>, Status>,
     pub window: Window,
+    pub counters_at: Duration,
     pub gpu: Sampled<Instances>,
     pub gpu_window: Window,
     pub services: ServiceProcesses,
@@ -361,7 +376,14 @@ fn measures(
         finished_at_unix_ms: window.finished_at_unix_ms,
         duration_ms: 0,
     };
-    let mut out = Vec::new();
+    let mut out = vec![evidence(
+        Metric::ProcessCount,
+        entity,
+        u64::try_from(rows.len()).ok(),
+        SOURCE,
+        &instant,
+        "Process count overflowed.",
+    )];
     let first: Option<Vec<_>> = rows
         .iter()
         .map(|p| before.get(&(p.pid, p.created)).copied())
@@ -388,14 +410,20 @@ fn measures(
             }
         };
         let current = total(rows.iter().copied(), read);
-        out.push(evidence(
+        let mut measured = evidence(
             metric,
             entity,
             current,
             SOURCE,
             &instant,
             "Memory total overflowed.",
-        ));
+        );
+        if !private && rows.len() > 1 {
+            measured.limitations.push(
+                "Working sets can overlap across processes; this sum is not unique physical RAM or per-tab memory.".into(),
+            );
+        }
+        out.push(measured);
         let change = first
             .as_ref()
             .and_then(|first| total(first.iter().copied(), read))
@@ -579,6 +607,7 @@ pub(crate) fn assemble(
         before,
         after,
         window,
+        counters_at,
         gpu,
         gpu_window,
         services,
@@ -628,7 +657,7 @@ pub(crate) fn assemble(
             .iter()
             .filter(|p| p.pid != 0 && p.created == 0)
             .count(),
-        returned: rows.len().min(limit.clamp(1, 50)),
+        returned: rows.len().min(limit.max(1)),
         enumeration_truncated: false,
     };
     out.coverage.stable_instances = stable_pids.len();
@@ -707,7 +736,7 @@ pub(crate) fn assemble(
         tracked.counters = Some(CounterSample {
             cpu_100ns: Some(p.cpu_100ns),
             io_bytes: Some(p.io),
-            at: collector.started.elapsed(),
+            at: counters_at,
             unix_ms: window.finished_at_unix_ms,
         });
         let parent_ref = by_pid
@@ -716,6 +745,7 @@ pub(crate) fn assemble(
             .map(|&j| instances[j].entity_ref.clone());
         processes.push((
             ActivityProcess {
+                browser: p.browser,
                 instance: instances[i].clone(),
                 parent_ref,
                 application_ref: String::new(),
@@ -755,17 +785,47 @@ pub(crate) fn assemble(
         for &i in &members {
             processes[i].0.application_ref = entity.clone();
         }
+        let mut browser_types = Vec::new();
+        if observed.iter().any(|p| p.browser.family.is_some()) {
+            let mut types: BTreeMap<BrowserProcessType, Vec<&ProcessReading>> = BTreeMap::new();
+            for p in &observed {
+                types.entry(p.browser.process_type).or_default().push(p);
+            }
+            for (process_type, rows) in types {
+                let reference = new_short_ref("btype");
+                ev.extend(measures(
+                    &reference,
+                    &rows,
+                    &first,
+                    &window,
+                    logical_processors,
+                ));
+                browser_types.push(BrowserTypeActivity {
+                    entity_ref: reference,
+                    process_type,
+                    process_count: rows.len(),
+                    classified_count: rows
+                        .iter()
+                        .filter(|p| {
+                            p.browser.family.is_some()
+                                && p.browser.status == Status::Ok
+                                && p.browser.process_type != BrowserProcessType::Unknown
+                        })
+                        .count(),
+                });
+            }
+        }
         applications.push((
             ApplicationActivity {
+                browser_types,
                 entity_ref: entity,
                 name: rows[primary].name.clone(),
                 process_refs: members
                     .iter()
-                    .take(MAX_MEMBERS)
                     .map(|&i| instances[i].entity_ref.clone())
                     .collect(),
                 process_count: members.len(),
-                members_truncated: members.len() > MAX_MEMBERS,
+                members_truncated: false,
             },
             ev,
         ));
@@ -773,11 +833,11 @@ pub(crate) fn assemble(
     out.coverage.applications_total = applications.len();
     processes.sort_by_key(|(_, ev)| std::cmp::Reverse(rank(ev)));
     applications.sort_by_key(|(_, ev)| std::cmp::Reverse(rank(ev)));
-    for (process, ev) in processes.into_iter().take(limit.clamp(1, 50)) {
+    for (process, ev) in processes.into_iter().take(limit.max(1)) {
         out.processes.push(process);
         out.evidence.extend(ev);
     }
-    for (app, ev) in applications.into_iter().take(limit.clamp(1, 50)) {
+    for (app, ev) in applications.into_iter().take(limit.max(1)) {
         out.applications.push(app);
         out.evidence.extend(ev);
     }
@@ -809,6 +869,7 @@ mod tests {
 
     fn row(pid: u32, parent: u32, created: u64, name: &str) -> ProcessReading {
         ProcessReading {
+            browser: BrowserClassification::default(),
             pid,
             parent_pid: parent,
             created,
@@ -822,6 +883,142 @@ mod tests {
             name: Some(name.into()),
         }
     }
+
+    #[test]
+    fn browser_types_measure_all_members_before_process_truncation() {
+        use crate::browser::{BrowserFamily, BrowserProcessType::*};
+        let mut rows: Vec<_> = (1..=80)
+            .map(|pid| {
+                let mut p = row(pid, 1, u64::from(pid), "firefox.exe");
+                p.browser = BrowserClassification {
+                    family: Some(BrowserFamily::Firefox),
+                    process_type: if pid == 1 {
+                        BrowserMain
+                    } else if pid == 80 {
+                        Unknown
+                    } else {
+                        Renderer
+                    },
+                    status: if pid == 80 {
+                        Status::PermissionDenied
+                    } else {
+                        Status::Ok
+                    },
+                };
+                p
+            })
+            .collect();
+        let before = rows.clone();
+        for p in &mut rows {
+            p.cpu_100ns += 1_000_000;
+        }
+        let activity = assemble(&mut Collector::new(), collection(before, rows), 1);
+        assert_eq!(activity.processes.len(), 1);
+        let app = &activity.applications[0];
+        assert_eq!(app.process_count, 80);
+        assert_eq!(app.process_refs.len(), 80);
+        assert!(!app.members_truncated);
+        assert_eq!(
+            app.browser_types
+                .iter()
+                .map(|t| t.process_count)
+                .sum::<usize>(),
+            80
+        );
+        let tabs = app
+            .browser_types
+            .iter()
+            .find(|t| t.process_type == Renderer)
+            .unwrap();
+        assert_eq!(tabs.process_count, 78);
+        assert_eq!(tabs.classified_count, 78);
+        assert_eq!(
+            value(&activity, &tabs.entity_ref, Metric::ProcessCount),
+            Some(78)
+        );
+        assert_eq!(
+            value(&activity, &tabs.entity_ref, Metric::ProcessWorkingSetBytes),
+            Some(78_000)
+        );
+        assert!(activity
+            .evidence
+            .iter()
+            .any(|e| e.entity_ref == tabs.entity_ref
+                && e.limitations.iter().any(|l| l.contains("overlap"))));
+        let unknown = app
+            .browser_types
+            .iter()
+            .find(|t| t.process_type == Unknown)
+            .unwrap();
+        assert_eq!(unknown.classified_count, 0);
+        assert_eq!(
+            value(
+                &activity,
+                &unknown.entity_ref,
+                Metric::ProcessWorkingSetBytes
+            ),
+            Some(1000)
+        );
+        assert_eq!(
+            value(&activity, &app.entity_ref, Metric::ProcessCount),
+            Some(80)
+        );
+    }
+
+    #[test]
+    fn browser_type_memory_overflow_is_missing_not_wrapped_or_saturated() {
+        use crate::browser::{BrowserFamily, BrowserProcessType};
+        let mut rows = vec![row(1, 0, 1, "chrome.exe"), row(2, 1, 2, "chrome.exe")];
+        for p in &mut rows {
+            p.working_set = u64::MAX;
+            p.browser = BrowserClassification {
+                family: Some(BrowserFamily::Chrome),
+                process_type: BrowserProcessType::Renderer,
+                status: Status::Ok,
+            };
+        }
+        let activity = assemble(&mut Collector::new(), collection(rows.clone(), rows), 50);
+        let group = &activity.applications[0].browser_types[0];
+        assert_eq!(
+            value(&activity, &group.entity_ref, Metric::ProcessWorkingSetBytes),
+            None
+        );
+        assert_eq!(
+            value(&activity, &group.entity_ref, Metric::ProcessCount),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn embedded_main_inference_requires_same_image_session_age_and_readable_arguments() {
+        use crate::browser::{attribute_embedded_main, BrowserFamily, BrowserProcessType};
+        for case in 0..5 {
+            let mut parent = row(10, 0, 100, "custom-electron.exe");
+            parent.browser.status = Status::Ok;
+            let mut child = row(11, 10, 101, "custom-electron.exe");
+            child.browser = BrowserClassification {
+                family: Some(BrowserFamily::ChromiumEmbedded),
+                process_type: BrowserProcessType::Renderer,
+                status: Status::Ok,
+            };
+            match case {
+                1 => parent.created = 102,
+                2 => parent.session = 2,
+                3 => parent.name = Some("launcher.exe".into()),
+                4 => parent.browser.status = Status::PermissionDenied,
+                _ => {}
+            }
+            let mut rows = vec![parent, child];
+            attribute_embedded_main(&mut rows);
+            assert_eq!(rows[0].browser.family.is_some(), case == 0);
+            if case == 0 {
+                assert_eq!(
+                    rows[0].browser.process_type,
+                    BrowserProcessType::BrowserMain
+                );
+            }
+        }
+    }
     fn collection(before: Vec<ProcessReading>, after: Vec<ProcessReading>) -> Collection {
         let window = Window {
             started_at_unix_ms: 1000,
@@ -829,6 +1026,7 @@ mod tests {
             duration_ms: 2000,
         };
         Collection {
+            counters_at: Duration::from_secs(1),
             before: Ok(before),
             after: Ok(after),
             window: window.clone(),

@@ -1,7 +1,14 @@
 //! Persistent, bounded measurement history. Raw samples expire into minute aggregates after a
 //! day; extrema and coverage are retained. A missing sample never becomes a zero reading.
 mod codec;
+mod collection;
 mod history;
+mod overview;
+pub use collection::{HistoryCollection, DEFAULT_COLLECTION_BUDGET_BYTES};
+pub(crate) use history::SYSTEM_CHARTS;
+pub use history::{ChartPoint, ChartSeries, HistoryChart};
+pub use overview::{HistoryOverview, HistoryPeriod, HistoryRecordings, RecordingDetail};
+pub(crate) mod system;
 use super::{stored, Store, StoreError};
 pub(super) use history::HistoryCache;
 use pcagent_shared::{
@@ -99,6 +106,7 @@ impl StoredSample {
                     | Metric::ProcessIoReadBytesPerSecond
                     | Metric::ProcessIoWriteBytesPerSecond
                     | Metric::ProcessIoOtherBytesPerSecond
+                    | Metric::GpuTemperatureCelsius
             )
         };
         let values = snapshot
@@ -253,7 +261,7 @@ pub struct EventObservation {
 }
 
 impl EventObservation {
-    fn measured(value: &SampleValue, origin: Origin) -> Option<Self> {
+    pub(crate) fn measured(value: &SampleValue, origin: Origin) -> Option<Self> {
         let measured = value.value?;
         let window = value
             .observed_from_unix_ms
@@ -282,7 +290,7 @@ impl EventObservation {
         })
     }
 
-    fn derived(metric: &str, value: u64, derivation: &str, inputs: Vec<Self>) -> Self {
+    pub(crate) fn derived(metric: &str, value: u64, derivation: &str, inputs: Vec<Self>) -> Self {
         let first = &inputs[0];
         let window = first.window.clone().filter(|window| {
             inputs.iter().all(|input| {
@@ -314,6 +322,38 @@ impl EventObservation {
             inputs,
         }
     }
+}
+
+pub(crate) fn system_observations(sample: &StoredSample) -> [Option<EventObservation>; 3] {
+    let measured = |metric| {
+        sample
+            .values
+            .iter()
+            .find(|v| v.metric == metric && v.entity_ref == "system" && v.measured > 0)
+            .and_then(|v| EventObservation::measured(v, sample.origin))
+    };
+    let cpu = measured(Metric::CpuBusyBasisPoints);
+    let memory = measured(Metric::PhysicalAvailableBytes)
+        .zip(measured(Metric::PhysicalTotalBytes))
+        .and_then(|(free, total)| {
+            let used = total.value.checked_sub(free.value)?;
+            let value = ratio_basis_points(used, total.value)?;
+            Some(EventObservation::derived(
+                "physical_used_basis_points", value,
+                "10000 * (physical_total_bytes - physical_available_bytes) / physical_total_bytes; integer division",
+                vec![total, free],
+            ))
+        });
+    let disk_busy = measured(Metric::DiskIdleBasisPoints).and_then(|idle| {
+        let value = 10_000_u64.checked_sub(idle.value)?;
+        Some(EventObservation::derived(
+            "disk_busy_basis_points",
+            value,
+            "10000 - disk_idle_basis_points",
+            vec![idle],
+        ))
+    });
+    [cpu, memory, disk_busy]
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
@@ -642,6 +682,7 @@ impl Store {
             "INSERT OR IGNORE INTO samples(sample_key,session_id,measured_at,resolution_ms,payload) VALUES(?1,?2,?3,?4,?5)",
             params![sample.id, sample.session_id, stored(sample.measured_at_unix_ms), stored(sample.resolution_ms), text])? > 0;
         if inserted {
+            system::insert(&tx, &stored_sample)?;
             Self::update_events(&tx, &stored_sample)?;
         }
         tx.commit()?;
@@ -652,24 +693,45 @@ impl Store {
     pub fn maintain_samples(&mut self, now: u64) -> Result<usize, StoreError> {
         let cutoff = now.saturating_sub(SAMPLE_RETENTION_MS);
         let removed = self.conn.execute(
-            "DELETE FROM samples WHERE measured_at < ?1",
+            &format!(
+                "DELETE FROM samples WHERE id IN (SELECT s.id FROM samples s
+             WHERE s.measured_at < ?1 AND {})",
+                collection::UNPROTECTED
+            ),
             params![stored(cutoff)],
         )?;
         self.conn.execute(
-            "DELETE FROM activity_events WHERE ended_at < ?1",
-            params![stored(cutoff)],
-        )?;
-        self.conn.execute(
-            "DELETE FROM recordings WHERE started_at < ?1",
+            "DELETE FROM activity_events WHERE ended_at < ?1 AND NOT EXISTS
+             (SELECT 1 FROM recordings r WHERE activity_events.ended_at>=r.started_at
+              AND (r.ended_at IS NULL OR activity_events.started_at<=r.ended_at))",
             params![stored(cutoff)],
         )?;
         self.conn.execute(
             "DELETE FROM sample_entities WHERE last_seen < ?1",
             params![stored(cutoff)],
         )?;
-        let aggregate_before = now.saturating_sub(RAW_RETENTION_MS) / 60_000 * 60_000;
+        self.conn.execute(
+            "DELETE FROM history_names WHERE last_seen < ?1 AND entity_ref NOT IN
+             (SELECT contributor_ref FROM activity_events WHERE contributor_ref IS NOT NULL)",
+            params![stored(cutoff)],
+        )?;
+        let under_pressure = self.collection_bytes()? > self.collection_budget()?;
+        let aggregate_before = if under_pressure {
+            now
+        } else {
+            now.saturating_sub(RAW_RETENTION_MS)
+        } / 60_000
+            * 60_000;
         let groups: Vec<(String, i64)> = {
-            let mut stmt = self.conn.prepare("SELECT session_id,measured_at/60000 AS bucket FROM samples WHERE resolution_ms < 60000 AND measured_at < ?1 GROUP BY session_id,bucket ORDER BY bucket LIMIT 120")?;
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT s.session_id,s.measured_at/60000 AS bucket
+             FROM samples s WHERE s.resolution_ms < 60000 AND s.measured_at < ?1
+             AND NOT EXISTS (SELECT 1 FROM recordings r
+              WHERE (s.measured_at/60000+1)*60000>=r.started_at
+              AND (r.ended_at IS NULL OR s.measured_at/60000*60000<=r.ended_at))
+             GROUP BY s.session_id,bucket ORDER BY bucket LIMIT {}",
+                if under_pressure { i64::MAX } else { 120 }
+            ))?;
             let rows = stmt.query_map(params![stored(aggregate_before)], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })?;
@@ -726,19 +788,20 @@ impl Store {
                 }
                 merged.values = values.into_values().collect();
                 let text = codec::encode(&merged)?;
-                merged_rows.push((merged.id, text));
+                merged_rows.push((merged, text));
             }
             let tx = self.conn.transaction()?;
             tx.execute(
                 "DELETE FROM samples WHERE session_id=?1 AND measured_at>=?2 AND measured_at<?3",
                 params![session, minute * 60_000, (minute + 1) * 60_000],
             )?;
-            for (id, text) in merged_rows {
-                tx.execute("INSERT INTO samples(sample_key,session_id,measured_at,resolution_ms,payload) VALUES(?1,?2,?3,60000,?4)", params![id,session,minute*60_000,text])?;
+            for (sample, text) in merged_rows {
+                tx.execute("INSERT INTO samples(sample_key,session_id,measured_at,resolution_ms,payload) VALUES(?1,?2,?3,60000,?4)", params![sample.id,session,minute*60_000,text])?;
+                system::insert(&tx, &sample)?;
             }
             tx.commit()?;
         }
-        Ok(removed)
+        Ok(removed + self.enforce_collection_budget(now)?)
     }
 
     fn update_events(conn: &rusqlite::Connection, sample: &StoredSample) -> Result<(), StoreError> {
@@ -749,21 +812,7 @@ impl Store {
                 .find(|v| v.metric == metric && v.entity_ref == "system")
                 .filter(|v| v.value.is_some() && v.measured > 0)
         };
-        let cpu = system(Metric::CpuBusyBasisPoints)
-            .and_then(|v| EventObservation::measured(v, sample.origin));
-        let memory = system(Metric::PhysicalAvailableBytes)
-            .zip(system(Metric::PhysicalTotalBytes))
-            .and_then(|(free, total)| {
-                let free = EventObservation::measured(free, sample.origin)?;
-                let total = EventObservation::measured(total, sample.origin)?;
-                let used = total.value.checked_sub(free.value)?;
-                let value = ratio_basis_points(used, total.value)?;
-                Some(EventObservation::derived(
-                    "physical_used_basis_points", value,
-                    "10000 * (physical_total_bytes - physical_available_bytes) / physical_total_bytes; integer division",
-                    vec![total, free],
-                ))
-            });
+        let [cpu, memory, disk_busy] = system_observations(sample);
         let disk = system(Metric::DiskReadLatencyMicroseconds)
             .into_iter()
             .chain(system(Metric::DiskWriteLatencyMicroseconds))
@@ -775,16 +824,6 @@ impl Store {
                 );
                 observation
             });
-        let disk_busy = system(Metric::DiskIdleBasisPoints).and_then(|idle| {
-            let idle = EventObservation::measured(idle, sample.origin)?;
-            let value = 10_000_u64.checked_sub(idle.value)?;
-            Some(EventObservation::derived(
-                "disk_busy_basis_points",
-                value,
-                "10000 - disk_idle_basis_points",
-                vec![idle],
-            ))
-        });
         let events = [
             (
                 "cpu_busy",
@@ -884,7 +923,11 @@ impl Store {
         }
         let mut stmt=self.conn.prepare("SELECT id,kind,entity_ref,started_at,ended_at,peak,metric,unit,active,contributor_ref,contributor_value,contributor_metric,contributor_unit,origin,peak_observation,contributor_observation FROM activity_events WHERE ended_at>=?1 AND started_at<=?2 ORDER BY started_at DESC LIMIT ?3")?;
         let rows = stmt.query_map(
-            params![stored(from), stored(to), limit.min(200) as i64],
+            params![
+                stored(from),
+                stored(to),
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
             |r| {
                 Ok(ActivityEvent {
                     id: r.get(0)?,
@@ -1011,10 +1054,14 @@ impl Store {
     }
     pub fn clear_samples(&self) -> Result<usize, StoreError> {
         self.history_cache.borrow_mut().take();
+        let tx = self.conn.unchecked_transaction()?;
         let removed = self.conn.execute("DELETE FROM samples", [])?;
         self.conn.execute("DELETE FROM sample_entities", [])?;
+        self.conn.execute("DELETE FROM history_names", [])?;
         self.conn.execute("DELETE FROM activity_events", [])?;
         self.conn.execute("DELETE FROM recordings", [])?;
+        self.clear_watch_alerts()?;
+        tx.commit()?;
         Ok(removed)
     }
 }

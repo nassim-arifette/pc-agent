@@ -20,6 +20,9 @@ approve a proposed action (diagnose --allow-cloud --propose-actions)."#;
     after_help = EXAMPLES
 )]
 pub(super) struct Args {
+    /// Language for local human-readable output; JSON and model/user prose remain unchanged.
+    #[arg(long, global = true, default_value = "en")]
+    pub(super) language: pcagent_shared::presentation::Language,
     /// Print machine-readable JSON instead of text (byte counts are 64-bit integers).
     #[arg(long, global = true)]
     pub(super) json: bool,

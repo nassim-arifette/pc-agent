@@ -92,6 +92,12 @@ test("the models are named in the order they worked, with the saved turn's fallb
   );
 });
 
+test("web credits add to the turn estimate without inventing missing usage", () => {
+  assert.deepEqual(costFigure({ web: { lookups: 1 }, combined_estimated_cost: { usd: "0.009" }, total_cost: { usd: "0.001" } }), { usd: "0.009", atLeast: false });
+  assert.deepEqual(costFigure({ web: { lookups: 1 }, combined_estimated_cost: null, total_cost: { usd: "0.001" } }), { usd: "0.001", atLeast: true });
+  assert.equal(costFigure({ web: { lookups: 1 }, combined_estimated_cost: null, total_cost: null }), null);
+});
+
 test("the model change says truthfully whose answer is shown", () => {
   const took = modelChange(routed([9734]));
   assert.equal(took.text, "Nemotron 3 Ultra took over this question: Nemotron 3 Super's answer had low confidence.");

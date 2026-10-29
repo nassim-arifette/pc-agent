@@ -75,6 +75,7 @@ pub fn project(
         processes.push(json!({"entity_ref":entity,
             "parent_ref":process.parent_ref.as_deref().filter(|reference|opaque(reference,"proc-")),
             "application_ref":process.application_ref,"role":process.role,
+            "process_type":process.browser.process_type,"classification_status":process.browser.status,
             "handles":process.handles,"threads":process.threads,"services":services}));
     }
     let mut applications = Vec::new();
@@ -96,7 +97,18 @@ pub fn project(
             .iter()
             .filter(|reference| opaque(reference, "proc-"))
             .collect();
+        let types: Vec<_> = app
+            .browser_types
+            .iter()
+            .filter(|t| opaque(&t.entity_ref, "btype-"))
+            .map(|t| {
+                allowed.insert(t.entity_ref.as_str());
+                json!({"entity_ref":t.entity_ref,"process_type":t.process_type,
+                    "process_count":t.process_count,"classified_count":t.classified_count})
+            })
+            .collect();
         applications.push(json!({"entity_ref":app.entity_ref,"process_refs":members,
+            "browser_types":types,
             "process_count":app.process_count,"members_truncated":app.members_truncated}));
     }
     let evidence: Vec<_> = activity
@@ -213,6 +225,7 @@ mod tests {
             window,
             evidence,
             processes: vec![ActivityProcess {
+                browser: Default::default(),
                 instance,
                 parent_ref: Some("proc-11112222".into()),
                 application_ref: "app-b1c2d3e4".into(),
@@ -228,6 +241,7 @@ mod tests {
                 }],
             }],
             applications: vec![ApplicationActivity {
+                browser_types: Vec::new(),
                 entity_ref: "app-b1c2d3e4".into(),
                 name: Some("browser.exe".into()),
                 process_refs: vec!["proc-a1b2c3d4".into()],
@@ -342,6 +356,59 @@ mod tests {
         let text = output.cloud.to_string();
         assert!(!text.contains("48151") && !text.contains("123456789") && !text.contains("Alice"));
         assert_eq!(output.cloud["processes"], json!([]));
+    }
+
+    #[test]
+    fn browser_types_project_closed_categories_and_verifiable_totals_only() {
+        use pcagent_telemetry::{browser::BrowserProcessType, BrowserTypeActivity};
+        for sharing in [Sharing::Anonymized, Sharing::Complete] {
+            let mut activity = fixture();
+            activity.applications[0].browser_types = vec![BrowserTypeActivity {
+                entity_ref: "btype-11223344".into(),
+                process_type: BrowserProcessType::Renderer,
+                process_count: 23,
+                classified_count: 23,
+            }];
+            activity.evidence.push(Evidence::measured(
+                Metric::ProcessCount,
+                "btype-11223344",
+                23,
+                "fixture",
+                activity.window.clone(),
+            ));
+            activity.evidence.push(Evidence::measured(
+                Metric::ProcessWorkingSetBytes,
+                "btype-11223344",
+                4096,
+                "fixture",
+                activity.window.clone(),
+            ));
+            let mut output = project(activity, sharing, &privacy());
+            let group = &output.cloud["applications"][0]["browser_types"][0];
+            assert_eq!(group["process_type"], "renderer");
+            assert_eq!(group.as_object().unwrap().len(), 4);
+            output.cloud["observation_id"] = json!("O1");
+            let received = [output.cloud];
+            let references = [(
+                "O1".into(),
+                crate::CitationKind::Observation,
+                "local-test".into(),
+            )];
+            let context = crate::answer::Context {
+                received: &received,
+                references: &references,
+                plans: &[],
+            };
+            let check = |text: &str| {
+                crate::answer::review(
+                    &json!({"answer":text,"confidence":"high","category":"memory"}).to_string(),
+                    &context,
+                )
+            };
+            assert!(check("There are 23 processes using 4 KiB [O1].").is_ok());
+            assert!(check("There are 93 processes using 4 KiB [O1].").is_err());
+            assert!(check("There are 23 processes using 99 GiB [O1].").is_err());
+        }
     }
 
     #[test]

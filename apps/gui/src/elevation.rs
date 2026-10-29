@@ -9,6 +9,79 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Serialize)]
+pub struct ReviewOptions {
+    pub tasks: Vec<ElevatedTask>,
+    pub unavailable: Vec<&'static str>,
+    pub process_targets_omitted: usize,
+}
+
+/// Resolve targets on this PC. The proposal supplies family names, never paths or process IDs.
+pub fn review_options(
+    volumes: &[crate::view::VolumeView],
+    snapshot: &pcagent_shared::Snapshot,
+    battery: bool,
+) -> ReviewOptions {
+    use pcagent_inspect::elevation::{system, DriveLetter};
+    let mut tasks = vec![
+        ElevatedTask::SystemCaches,
+        ElevatedTask::ShadowStorage,
+        ElevatedTask::DiskReliability,
+    ];
+    let mut unavailable = Vec::new();
+    if battery {
+        tasks.push(ElevatedTask::BatteryEnergy);
+    } else {
+        unavailable.push("battery_energy");
+    }
+    let mut letters = std::collections::BTreeSet::new();
+    for volume in volumes {
+        if volume.kind != pcagent_shared::VolumeKind::Fixed
+            || !volume
+                .filesystem
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("NTFS"))
+        {
+            continue;
+        }
+        if let Some(letter) = volume.root.strip_suffix(":\\") {
+            if let Ok(drive) = DriveLetter::parse(letter) {
+                if letters.insert(drive.letter()) {
+                    tasks.push(ElevatedTask::MftInventory { volume: drive });
+                }
+            }
+        }
+    }
+    if letters.is_empty() {
+        unavailable.push("mft_inventory");
+    }
+    let mut pids = std::collections::BTreeSet::new();
+    let eligible: Vec<_> = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.pid > 0 && p.creation_time_filetime > 0 && pids.insert(p.pid))
+        .map(|p| system::ProcessImageTarget {
+            pid: p.pid,
+            creation_time_filetime: p.creation_time_filetime,
+        })
+        .collect();
+    let process_targets_omitted = eligible.len().saturating_sub(system::MAX_PROCESS_IMAGES);
+    let targets: Vec<_> = eligible
+        .into_iter()
+        .take(system::MAX_PROCESS_IMAGES)
+        .collect();
+    if targets.is_empty() {
+        unavailable.push("process_images");
+    } else {
+        tasks.push(ElevatedTask::ProcessImages { targets });
+    }
+    ReviewOptions {
+        tasks,
+        unavailable,
+        process_targets_omitted,
+    }
+}
+
 /// C4 stays at the existing JSON level; the optional metadata tree is local UI data only.
 #[derive(Serialize)]
 pub struct InspectionResult {
@@ -20,6 +93,14 @@ pub struct InspectionResult {
     /// the coverage `detail` stays the English C4 text, never shown in the window.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub coverage_notes: Vec<pcagent_inspect::elevation::CoverageNote>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<SectionResult>,
+}
+#[derive(Serialize)]
+pub struct SectionResult {
+    pub task: ElevatedTask,
+    #[serde(flatten)]
+    pub result: InspectionResult,
 }
 impl From<pcagent_inspect::Inspection> for InspectionResult {
     fn from(inspection: pcagent_inspect::Inspection) -> Self {
@@ -27,7 +108,32 @@ impl From<pcagent_inspect::Inspection> for InspectionResult {
             inspection,
             local_mft_tree: None,
             coverage_notes: Vec::new(),
+            sections: Vec::new(),
         }
+    }
+}
+impl InspectionResult {
+    fn from_response(response: pcagent_inspect::elevation::ElevationResponse) -> Self {
+        Self {
+            inspection: pcagent_inspect::elevation::to_inspection(&response),
+            coverage_notes: pcagent_inspect::elevation::coverage_notes(&response),
+            local_mft_tree: response.mft.map(|collection| collection.tree),
+            sections: response
+                .sections
+                .into_iter()
+                .map(|section| SectionResult {
+                    task: section.task.clone(),
+                    result: Self::from_response(section),
+                })
+                .collect(),
+        }
+    }
+    pub fn local_details(&self) -> serde_json::Value {
+        serde_json::json!({
+            "local_mft_tree": self.local_mft_tree,
+            "coverage_notes": self.coverage_notes,
+            "sections": self.sections,
+        })
     }
 }
 
@@ -83,11 +189,7 @@ impl ApprovedTask for NativeApproved {
             .prepared
             .run_locally_bounded(self.approval, cancel)
             .map_err(|error| failure::elevation(&error))?;
-        Ok(InspectionResult {
-            inspection: pcagent_inspect::elevation::to_inspection(&response),
-            coverage_notes: pcagent_inspect::elevation::coverage_notes(&response),
-            local_mft_tree: response.mft.map(|collection| collection.tree),
-        })
+        Ok(InspectionResult::from_response(response))
     }
 }
 
@@ -558,6 +660,9 @@ impl Drop for Slot {
 }
 
 impl Run {
+    pub fn task(&self) -> &ElevatedTask {
+        &self.task
+    }
     pub fn execute(mut self) -> Result<InspectionResult, Failure> {
         let approved = self.approved.take().ok_or_else(|| {
             Failure::new(
@@ -578,11 +683,6 @@ impl Run {
                             .completed
                             .retain(|r| r.available() && r.task_name() != captured.task_name());
                         state.completed.push(captured);
-                        if state.completed.len()
-                            > pcagent_tools::elevated_tools::MAX_APPROVED_INSPECTIONS
-                        {
-                            state.completed.remove(0);
-                        }
                     }
                 }
             }
@@ -619,6 +719,58 @@ mod tests {
         collections::BTreeMap,
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn review_resolves_all_fixed_ntfs_drives_and_only_known_process_identities() {
+        use pcagent_inspect::elevation::DriveLetter;
+        use pcagent_shared::{ProcessInstance, Snapshot, VolumeKind};
+        let volume = |root: &str, filesystem: &str, kind| crate::view::VolumeView {
+            root: root.into(),
+            kind,
+            filesystem: Some(filesystem.into()),
+            total_bytes: 100,
+            free_bytes: 50,
+            free_ratio: 0.5,
+        };
+        let volumes = [
+            volume("C:\\", "NTFS", VolumeKind::Fixed),
+            volume("D:\\", "ntfs", VolumeKind::Fixed),
+            volume("C:\\", "NTFS", VolumeKind::Fixed),
+            volume("E:\\", "NTFS", VolumeKind::Removable),
+            volume("F:\\", "ReFS", VolumeKind::Fixed),
+            volume("C:\\private\\", "NTFS", VolumeKind::Fixed),
+        ];
+        let mut snapshot = Snapshot::empty("test");
+        let process = |pid, created| ProcessInstance {
+            pid,
+            creation_time_filetime: created,
+            entity_ref: "proc-local".into(),
+            boot_id: None,
+            executable_name: None,
+        };
+        snapshot.processes = vec![
+            process(7, 100),
+            process(7, 100),
+            process(8, 0),
+            process(0, 100),
+        ];
+        let options = review_options(&volumes, &snapshot, false);
+        assert_eq!(options.tasks.len(), 6);
+        for letter in ["C", "D"] {
+            assert!(options.tasks.contains(&ElevatedTask::MftInventory {
+                volume: DriveLetter::parse(letter).unwrap()
+            }));
+        }
+        assert_eq!(options.unavailable, ["battery_energy"]);
+        let Some(ElevatedTask::ProcessImages { targets }) = options.tasks.last() else {
+            panic!()
+        };
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].pid, 7);
+        let empty = review_options(&[], &Snapshot::empty("test"), true);
+        assert_eq!(empty.unavailable, ["mft_inventory", "process_images"]);
+        assert!(empty.tasks.contains(&ElevatedTask::BatteryEnergy));
+    }
 
     #[derive(Default)]
     struct Counters {

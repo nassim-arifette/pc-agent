@@ -8,7 +8,9 @@ use crate::view;
 use pcagent_agent::capabilities::Probes;
 use pcagent_agent::selection::SelectionSource;
 use pcagent_shared::Snapshot;
+use pcagent_telemetry::local_browser::{self, BrowserWindowTarget, LocalBrowserWindows};
 use pcagent_telemetry::{Collector, ProgramNames};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -50,6 +52,7 @@ pub(super) fn measure_thread(
 ) {
     let mut collector = Collector::new();
     let mut volumes: Option<(Instant, Vec<view::VolumeView>)> = None;
+    let mut browser_targets: HashMap<String, Vec<BrowserWindowTarget>> = HashMap::new();
     // NVML lists the NVIDIA GPUs in every snapshot this thread takes anyway.
     let nvidia = |snapshot: &Snapshot| lock(&probes).nvidia_gpu = Some(!snapshot.gpus.is_empty());
     for request in requests {
@@ -91,7 +94,32 @@ pub(super) fn measure_thread(
             }
             Measure::Activity(reply) => {
                 // Two seconds between samples: long enough for rates, short enough to feel live.
-                let activity = collector.process_activity(2, 50);
+                let activity = collector.process_activity(2, usize::MAX);
+                browser_targets = activity
+                    .applications
+                    .iter()
+                    .filter_map(|app| {
+                        let targets: Vec<_> = activity
+                            .processes
+                            .iter()
+                            .filter(|p| p.application_ref == app.entity_ref)
+                            .filter_map(|p| {
+                                p.browser.family.map(|family| BrowserWindowTarget {
+                                    instance: p.instance.clone(),
+                                    family,
+                                })
+                            })
+                            .collect();
+                        (!targets.is_empty()).then(|| {
+                            (
+                                view::application_key(app, &|reference| {
+                                    collector.instance(reference).cloned()
+                                }),
+                                targets,
+                            )
+                        })
+                    })
+                    .collect();
                 // Readable names are read here, once per process and per executable, and only
                 // for the view: the selection source keeps the activity as measured.
                 let mut shown = view::activity(
@@ -102,6 +130,17 @@ pub(super) fn measure_thread(
                 shown.selection_source_id =
                     retain_capture(&selections, SelectionSource::ProcessActivity(activity));
                 let _ = reply.send(shown);
+            }
+            Measure::BrowserTargets {
+                application_ref,
+                reply,
+            } => {
+                let _ = reply.send(
+                    browser_targets
+                        .get(&application_ref)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
             }
             Measure::Preview(reply) => {
                 let snapshot = collector.snapshot(true, 10);
@@ -143,4 +182,26 @@ pub(super) async fn process_activity(
     state: State<'_, AppState>,
 ) -> Result<view::ActivityView, Failure> {
     ask_measure(&state, Measure::Activity).await
+}
+
+/// Local-only endpoint: titles never enter the shared collector, selections, recordings or turns.
+#[tauri::command]
+pub(super) async fn local_browser_windows(
+    state: State<'_, AppState>,
+    application_ref: String,
+    include_tabs: bool,
+) -> Result<LocalBrowserWindows, Failure> {
+    let targets = ask_measure(&state, |reply| Measure::BrowserTargets {
+        application_ref,
+        reply,
+    })
+    .await?;
+    if targets.is_empty() {
+        return Ok(LocalBrowserWindows::unavailable(
+            pcagent_shared::Status::Stale,
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || local_browser::read(&targets, include_tabs))
+        .await
+        .map_err(|_| Failure::new(Code::LiveUnavailable, "Local browser inspection stopped."))
 }

@@ -187,7 +187,22 @@ pub(super) fn investigation(
                 .get("TAVILY_API_KEY")
                 .and_then(|key| pcagent_tools::tavily::Tavily::new(&key))
             {
+                let cache_path = pcagent_agent::credentials::file_path()
+                    .and_then(|path| path.parent().map(|dir| dir.join("web-cache.sqlite")));
+                let page_cache = cache_path
+                    .as_ref()
+                    .and_then(|path| pcagent_store::web_cache::WebCache::open(path).ok());
+                let tavily = match page_cache {
+                    Some(cache) => tavily.with_page_cache(cache),
+                    None => tavily,
+                };
                 workstation.enable_web_search(Box::new(tavily), pcagent_inspect::region_country());
+                if let Some(cache) = cache_path
+                    .as_ref()
+                    .and_then(|path| pcagent_store::web_cache::WebCache::open(path).ok())
+                {
+                    workstation.set_web_cache(cache);
+                }
             }
         }
         if let Some(sampler) = sampler {

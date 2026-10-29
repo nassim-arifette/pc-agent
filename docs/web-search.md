@@ -54,8 +54,8 @@ composed on the PC from local measurements ([`external_tools.rs`](../crates/tool
   measurements and may be outdated, and that a known-issue match is a hint, not proof (confidence
   at most medium). A price is a dated range from its source, and a newer driver is suggested only
   if its notes fix the measured symptom or a security issue.
-- **Follow-up turns.** Web sources stay with the turn that searched. A follow-up searches again
-  rather than citing old snippets.
+- **Follow-up turns.** Web sources stay with the turn that searched. A follow-up performs a new
+  lookup, which may reuse a fresh local cache entry with new citation identifiers.
 
 ## Consent, key and display
 
@@ -69,12 +69,42 @@ composed on the PC from local measurements ([`external_tools.rs`](../crates/tool
   read, the snippet and the query. *Open in browser* calls `open_web_source`, which reads the URL
   from the stored turn, never from the page, and opens only an `https` address.
 
-## Not done yet
+## Persistent cache and official pages
 
-- The release health pages for compatibility holds, which C6 plans to download without a search,
-  are not fetched.
-- There is no local cache of results (plan: 24 h for prices and driver notes, 7 days for known
-  issues).
-- Tavily's cost is not added to the turn's displayed cost; the credits used are counted by
-  `Workstation::web_credits`.
-- The list of shops per country is a first cut, to be checked against real results.
+The GUI opens `web-cache.sqlite` beside its credential file, not inside the history database.
+Two short-lived connections share its versioned cache table: one for query results and one for
+official page text. They never hold a transaction across network requests. Cache failures fall
+back to a live lookup; they never prevent diagnosis. Deleting this disposable database clears the
+cache without changing conversations, settings or credentials.
+
+Keys include the tool, query (case/whitespace normalized), sorted/deduplicated domains and country.
+Prices and driver notes last 24 hours; known issues and manufacturer specifications last 7 days.
+Official Microsoft page text lasts 24 hours. A cached result derived from page text cannot extend
+that text's original expiry. Expiry and clock rollback produce a miss, not stale evidence. Only
+successful typed responses are stored; network errors, refusals, keys and malformed responses
+are not. Empty successful searches retain their meaning: no match in these sources, not proof
+that the PC is unaffected.
+
+`lookup_known_issue` first downloads a fixed HTTPS allowlist of Windows release-health pages.
+It sends no KB/code in a URL, follows no redirects, requires HTML, and extracts article text
+locally with the pinned HTML parser. Exact case-insensitive identifier boundaries prevent a
+short KB number from matching a different longer number. Page errors are not mistaken for a
+complete negative search. If pages fail or have no match, the existing Microsoft-restricted
+Tavily search remains available. This entire path remains behind the existing web consent and
+key-enabled tools. No model-supplied URL is fetched.
+
+Source cards retain original read time and display “cached result from …” / “résultat en cache
+du …”; observations also preserve reuse time. Cache hits get fresh `[W…]` identifiers, consume
+no network-search slot and charge zero Tavily credits. Replay reads only the recorded tool output,
+including its original usage and cache metadata; it opens neither this cache nor the network.
+
+## Usage estimates
+
+The core records web lookups, cache hits, known credits and requests with unknown usage separately
+from model requests. The CLI and GUI show the web estimate separately; a combined estimate is
+available only when both model and web usage are complete. A failure or missing Tavily usage is
+unknown, never free. The $0.008/credit list-price estimate excludes free allocations, discounts
+and account billing: it is not an invoice. A source found directly in official pages needs no
+Tavily request and reports zero credits.
+
+The list of shops per country remains a first cut, to be checked against real results.

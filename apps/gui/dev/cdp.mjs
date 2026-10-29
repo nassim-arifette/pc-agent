@@ -83,11 +83,12 @@ async function connect(url) {
     async viewport(width, height) {
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
     },
-    async scheme(dark, reducedMotion = false) {
+    async scheme(dark, reducedMotion = false, forcedColors = false) {
       await send("Emulation.setEmulatedMedia", {
         features: [
           { name: "prefers-color-scheme", value: dark ? "dark" : "light" },
           { name: "prefers-reduced-motion", value: reducedMotion ? "reduce" : "no-preference" },
+          { name: "forced-colors", value: forcedColors ? "active" : "none" },
         ],
       });
     },

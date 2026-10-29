@@ -41,10 +41,19 @@ export async function exerciseMock(bridge, clock, search) {
     assert.equal((await ok("dashboard")).cpu.busy.status, "ok");
   }
   await ok("process_activity");
+  const localWindows = await ok("local_browser_windows", { applicationRef: "app-7", includeTabs: false });
+  assert.equal(localWindows.windows[0].tabs.length, 0);
+  const localTabs = await ok("local_browser_windows", { applicationRef: "app-7", includeTabs: true });
+  assert.ok(localTabs.windows[0].tabs[0].title.includes("LOCAL-ONLY"));
+  const browserPlan = await ok("browser_manager_prepare", { applicationRef: "app-7", processRef: "proc-7p0" });
+  assert.equal(browserPlan.plan.kind, "open_browser_process_manager");
+  assert.equal(browserPlan.plan.decision, null);
+  await ok("action_decline", { turnId: browserPlan.turn_id, planId: browserPlan.plan.plan_id });
   const sources = await ok("selection_sources");
   assert.ok(sources.length);
   const selected = sources[0].reference;
   const preview = await ok("selection_preview", { reference: selected, intent: "explain", names: true });
+  assert.ok(!JSON.stringify(preview).includes("LOCAL-ONLY"));
   assert.equal(preview.selected_evidence.selection.fresh_collection, false);
   const sendSelection = { reference: selected, intent: "explain", previewId: preview.preview_id };
   if (params.get("preview") === "expired") await reject("selection_send", sendSelection, "preview_expired");
@@ -83,10 +92,29 @@ export async function exerciseMock(bridge, clock, search) {
       const shown = await ok("selection_preview", { reference, intent: "explain", names: false });
       assert.equal(shown.selected_evidence.selection.target.alias, "file-1");
       assert.ok(!JSON.stringify(shown.message).includes(root));
+      const children = await ok("scan_children", { scopeId: scan.value.scope_id, itemRef: null, kind: "dirs", offset: 0 });
+      assert.equal(children.items.length, 50);
+      assert.equal(children.next_offset, 50);
+      assert.equal(children.selection_source_id, null);
+      const remaining = await ok("scan_children", { scopeId: scan.value.scope_id, kind: "dirs", offset: 50 });
+      assert.equal(remaining.items.length, 14);
+      assert.equal(remaining.next_offset, null);
+      const child = children.items[0];
+      const nested = await ok("scan_children", { scopeId: scan.value.scope_id, itemRef: child.item_ref, kind: "files" });
+      assert.equal(nested.parent.item_ref, child.item_ref);
+      assert.ok(nested.items.every(item => item.parent_ref === child.item_ref));
+      const facts = await ok("scan_item_facts", { scopeId: scan.value.scope_id, itemRef: child.item_ref });
+      assert.ok(facts.selection_source_id);
+      assert.equal(facts.rank_scope, "siblings_of_parent");
+      assert.equal(facts.parent_ref, children.parent.item_ref);
+      assert.equal(facts.item_facts.scanned_at_unix_ms - facts.item_facts.untouched_before_unix_ms, 182 * 86400000);
+      assert.ok(facts.item_facts.file_types.every(type => type.files_count >= 0));
+      await reject("scan_item_facts", { scopeId: scan.value.scope_id, itemRef: children.parent.item_ref }, "item_unavailable");
       await ok("start_scan", { path: root });
       await ok("cancel_scan");
       await clock.drain();
       await reject("selection_preview", { reference, intent: "explain", names: false }, "selection_expired");
+      await reject("scan_item_facts", { scopeId: scan.value.scope_id, itemRef: child.item_ref }, "scan_unavailable");
     }
   }
   await ok("reveal");
@@ -100,15 +128,28 @@ export async function exerciseMock(bridge, clock, search) {
   await ok("open_nebius_console");
 
   await ok("elevation_status");
+  const availableChecks = await ok("elevation_options");
+  await ok("elevation_results");
+  await reject("elevation_select", { inspectionId: "expired-or-invented" }, "selection_expired");
+  for (const tasks of [[], [{ kind: "performance_trace" }], [{ kind: "system_caches" }, { kind: "system_caches" }], [{ kind: "deep_analysis", tasks: [{ kind: "system_caches" }] }]]) {
+    await reject("elevation_prepare", { task: { kind: "deep_analysis", tasks }, budgetMs: 1 }, "unsupported");
+  }
   await reject("elevation_prepare", { task: { kind: "other" }, budgetMs: 1 }, "unsupported");
   const pending = await ok("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 10000 });
   await reject("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 10000 }, "helper_busy");
   await ok("elevation_cancel", { requestId: pending.request_id });
-  for (const task of [{ kind: "mft_inventory", volume: "C" }, ...["system_caches", "shadow_storage", "disk_reliability", "battery_energy"].map(kind => ({ kind }))]) {
+  for (const task of [{ kind: "deep_analysis", tasks: availableChecks.tasks }, { kind: "mft_inventory", volume: "C" }, ...["system_caches", "shadow_storage", "disk_reliability", "battery_energy"].map(kind => ({ kind }))]) {
     const request = await ok("elevation_prepare", { task, budgetMs: 120000 });
     const result = await call("elevation_run", { requestId: request.request_id });
     if (params.get("elevation") === "fail") assert.equal(result.error.code, "uac_declined");
-    else assert.ok(result.value.observations.length);
+    else {
+      assert.ok(result.value.observations.length);
+      const saved = await ok("elevation_results");
+      assert.ok(saved.some(record => record.id === result.value.stored_id));
+      const reference = await ok("elevation_select", { inspectionId: result.value.stored_id });
+      assert.equal(reference.target.kind, "elevated_inspection");
+      if (task.kind === "deep_analysis") assert.equal(result.value.sections.length, task.tasks.length);
+    }
     assert.equal(await ok("elevation_status"), null);
   }
 
