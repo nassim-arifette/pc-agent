@@ -42,7 +42,7 @@ impl Runtime {
                         let _ = window.unminimize();
                         let _ = window.set_focus();
                     }
-                    let _ = app.emit("watch:activate", id);
+                    let _ = app.emit("watch:open", id);
                 }
             }
             Event::Failed(id) => {
@@ -96,6 +96,12 @@ impl Runtime {
                     }
                 }
                 if let Some(app) = handle.get() {
+                    let _ = app.emit(
+                        "watch:alert",
+                        serde_json::json!({
+                            "alert": alert, "unseen_alerts": unseen,
+                        }),
+                    );
                     let _ = app.emit("watch:changed", unseen);
                 }
             }),
@@ -248,17 +254,50 @@ pub(super) async fn watch_delete(
     id: String,
 ) -> Result<Delivery, Failure> {
     checked_id(&id)?;
+    let selections = state.selections.clone();
     let (history, sampler, notifications) = (
         state.history.clone(),
         state.sampler.clone(),
         state.watches.notifications.clone(),
     );
     tauri::async_runtime::spawn_blocking(move || {
-        read(&history, |s| s.watch_delete(&id))?;
+        {
+            let mut selections = lock(&selections);
+            read(&history, |s| s.watch_delete(&id))?;
+            selections.invalidate_watch(&id);
+        }
         if let Some(sampler) = sampler {
             let _ = sampler.watches_changed();
         }
         Ok(notifications.remove_watch(&id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+pub(super) struct AlertDetail {
+    alert: WatchAlert,
+    source_id: String,
+}
+
+#[tauri::command]
+pub(super) async fn watch_alert_detail(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<AlertDetail>, Failure> {
+    checked_id(&id)?;
+    let (history, selections) = (state.history.clone(), state.selections.clone());
+    let revision = lock(&selections).history_revision();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(alert) = read(&history, |s| s.watch_alert(&id))? else {
+            return Ok(None);
+        };
+        let source_id = lock(&selections).publish_history(
+            pcagent_agent::selection::SelectionSource::WatchAlert(alert.clone()),
+            revision,
+        )?;
+        Ok(Some(AlertDetail { alert, source_id }))
     })
     .await
     .map_err(|e| e.to_string())?

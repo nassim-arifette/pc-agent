@@ -10,6 +10,7 @@ mod captures;
 mod engine;
 mod history;
 mod storage;
+mod watches;
 
 fn capture() -> Snapshot {
     let mut snapshot = Snapshot::empty("private-selection-session");

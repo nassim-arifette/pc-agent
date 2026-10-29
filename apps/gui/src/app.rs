@@ -174,6 +174,7 @@ pub fn run() {
             watch_commands::watch_set_enabled,
             watch_commands::watch_delete,
             watch_commands::watch_alerts,
+            watch_commands::watch_alert_detail,
             watch_commands::watch_alerts_seen,
             watch_commands::watch_language_set,
             watch_commands::watch_notification_test,

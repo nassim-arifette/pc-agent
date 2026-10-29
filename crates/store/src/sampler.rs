@@ -179,6 +179,19 @@ impl Sampler {
             .map_err(|_| stopped())?
             .history_chart(from, to, buckets)
     }
+    pub fn watch_alerts(
+        &self,
+        from: u64,
+        to: u64,
+        limit: u64,
+        offset: u64,
+    ) -> Result<crate::watches::WatchAlertPage, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .watch_alerts(from, to, limit, offset)
+    }
     pub fn history_overview(&self, day_start: u64) -> Result<crate::HistoryOverview, StoreError> {
         self.0
             .history_reader

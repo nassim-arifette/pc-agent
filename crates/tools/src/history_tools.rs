@@ -44,6 +44,41 @@ pub fn run(
     let privacy = PrivacyContext::local();
     let mut out = empty(Status::Partial, "No measurements in the requested window.");
     match spec.name {
+        "get_watch_alerts" => {
+            let now = unix_ms();
+            let (Some(from), Some(to), Some(limit), Some(offset)) = (
+                args.integer("from_unix_ms"),
+                args.integer("to_unix_ms"),
+                args.integer("limit"),
+                args.integer("offset"),
+            ) else {
+                return Some(empty(
+                    Status::Error,
+                    "Missing closed alert pagination arguments.",
+                ));
+            };
+            if from > to || to > now || from < now.saturating_sub(604_800_000) {
+                return Some(empty(
+                    Status::Error,
+                    "Alert window is outside the retained seven days.",
+                ));
+            }
+            out = match context.sampler.watch_alerts(from, to, limit, offset) {
+                Ok(page) => pcagent_agent::projections::watches::project(
+                    &page.alerts,
+                    page.total,
+                    offset,
+                    sharing,
+                    &privacy,
+                ),
+                Err(_) => {
+                    return Some(empty(
+                        Status::Error,
+                        "The local alert history could not be read.",
+                    ))
+                }
+            };
+        }
         "get_metric_history" => {
             let Some((from, to)) = bounds(args) else {
                 return Some(empty(Status::Error, "Invalid or future history window."));
@@ -242,7 +277,9 @@ pub fn run(
         }
         _ => return None,
     }
-    out.cloud["measured_at_unix_ms"] = measured_at(&out.cloud).into();
+    out.cloud["measured_at_unix_ms"] = measured_at(&out.cloud)
+        .or_else(|| out.cloud["measured_at_unix_ms"].as_u64())
+        .into();
     out.cloud["historical"] = true.into();
     out.cloud["queried_at_unix_ms"] = unix_ms().into();
     Some(out)
@@ -253,12 +290,20 @@ mod tests {
     use super::*;
     #[test]
     fn history_schemas_reject_arbitrary_paths_future_windows_and_unbounded_recording() {
-        assert!(TOOLS[0]
+        let history = TOOLS
+            .iter()
+            .find(|spec| spec.name == "get_metric_history")
+            .unwrap();
+        let recording = TOOLS
+            .iter()
+            .find(|spec| spec.name == "record_activity")
+            .unwrap();
+        assert!(history
             .validate(r#"{"metric":"cpu_busy_basis_points","window_seconds":604801}"#)
             .is_err());
-        assert!(TOOLS[0].validate(r#"{"metric":"cpu_busy_basis_points","window_seconds":60,"entity_ref":"C:\\private"}"#).is_err());
-        assert!(TOOLS[2].validate(r#"{"duration_seconds":121}"#).is_err());
-        let args = TOOLS[0]
+        assert!(history.validate(r#"{"metric":"cpu_busy_basis_points","window_seconds":60,"entity_ref":"C:\\private"}"#).is_err());
+        assert!(recording.validate(r#"{"duration_seconds":121}"#).is_err());
+        let args = history
             .validate(&format!(
                 r#"{{"metric":"cpu_busy_basis_points","window_seconds":60,"end_unix_ms":{}}}"#,
                 unix_ms() + 10_000
@@ -266,7 +311,7 @@ mod tests {
             .unwrap();
         assert!(bounds(&args).is_none());
         assert_eq!(
-            run(&TOOLS[0], &Args::default(), None, Sharing::Complete)
+            run(history, &Args::default(), None, Sharing::Complete)
                 .unwrap()
                 .status,
             Status::Unsupported

@@ -16,6 +16,7 @@ pub enum SelectionSource {
     History(HistorySeries),
     Events(HistorySeries),
     Chart(HistoryChart),
+    WatchAlert(pcagent_store::watches::WatchAlert),
     Recording(RecordingSource),
     Storage(StorageSource),
     /// One live battery read: C4 observations of the batteries the window shows. The host keeps
@@ -44,6 +45,9 @@ impl SelectionSource {
     pub fn targets(&self) -> Vec<SelectionTarget> {
         let mut targets = Vec::new();
         match self {
+            Self::WatchAlert(alert) => targets.push(SelectionTarget::WatchAlert {
+                alert_id: alert.id.clone(),
+            }),
             Self::Snapshot(snapshot) => {
                 for resource in [
                     Resource::Memory,
@@ -183,6 +187,7 @@ impl SelectionSource {
                 bytes(&value.page).saturating_add(value.context.retained_bytes())
             }
             Self::Battery(value) => bytes(value),
+            Self::WatchAlert(value) => bytes(value),
         }
     }
 
@@ -211,12 +216,23 @@ impl SelectionSource {
     pub fn is_history(&self) -> bool {
         matches!(
             self,
-            Self::History(_) | Self::Events(_) | Self::Chart(_) | Self::Recording(_)
+            Self::History(_)
+                | Self::Events(_)
+                | Self::Chart(_)
+                | Self::Recording(_)
+                | Self::WatchAlert(_)
         )
     }
 
     pub fn measured_at(&self, target: &SelectionTarget) -> Option<u64> {
         let at = match (self, target) {
+            (Self::WatchAlert(alert), SelectionTarget::WatchAlert { .. }) => [
+                alert.observation.measured_at_unix_ms,
+                alert.extreme_observation.measured_at_unix_ms,
+            ]
+            .into_iter()
+            .flatten()
+            .max(),
             (Self::Snapshot(snapshot), SelectionTarget::Resource { resource }) => snapshot
                 .evidence
                 .iter()

@@ -220,6 +220,16 @@ impl FrozenSelection {
                     json!({"kind":"resource","resource":"battery"}),
                 )
             }
+            (SelectionSource::WatchAlert(alert), SelectionTarget::WatchAlert { .. }) => (
+                crate::projections::watches::project(
+                    std::slice::from_ref(alert),
+                    1,
+                    0,
+                    sharing,
+                    privacy,
+                ),
+                json!({"kind":"watch_alert"}),
+            ),
             _ => return Err("The target does not belong to this source type."),
         };
         // Every name crosses the same final C5 projection as regular tool results.

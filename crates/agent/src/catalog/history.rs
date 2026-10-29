@@ -46,6 +46,14 @@ const END: Param = Param {
     required: false,
 };
 pub const TOOLS: &[ToolSpec] = &[
+    ToolSpec { name: "get_watch_alerts", class: ToolClass::Inspection,
+        description: "Read stored watch alerts, never change rules or send notifications. Paginated seven-day history: configured threshold, measured initial/extreme observations, dated windows, lower-bound coverage and closure reasons. No fresh measurement; use next_offset when more alerts remain.",
+        params: &[
+            Param {name:"from_unix_ms", description:"Start of retained window, Unix milliseconds.",kind:ParamKind::Integer{min:0,max:i64::MAX as u64},required:true},
+            Param {name:"to_unix_ms", description:"End of retained window, no future time.",kind:ParamKind::Integer{min:1,max:i64::MAX as u64},required:true},
+            Param {name:"limit", description:"Maximum alerts per page; response byte bound may return fewer, with next_offset.",kind:ParamKind::Integer{min:1,max:200},required:true},
+            Param {name:"offset", description:"Zero for the first page, then next_offset from the previous page.",kind:ParamKind::Integer{min:0,max:i64::MAX as u64},required:true},
+        ]},
     ToolSpec { name:"get_metric_history", class:ToolClass::Inspection,
         description:"Read persisted local samples, including previous app sessions. Seven-day retention; one-minute averages/minima/maxima after 24 hours. At most 120 response points retain weighted averages, extrema and coverage. Gaps and missing process rows remain unknown. Use end_unix_ms to investigate a past time.",
         params:&[Param {name:"metric",description:"Recorded metric.",kind:ParamKind::OneOf(METRICS),required:true},WINDOW,END,
