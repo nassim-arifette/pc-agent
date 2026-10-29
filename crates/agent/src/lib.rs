@@ -82,7 +82,7 @@ pub const MAX_OUTPUT_TOKENS: u32 = 8192;
 /// Answers or tool calls sent back to the model for correction, per investigation.
 pub const MAX_REPAIRS: usize = 3;
 
-#[derive(Debug, Clone, Serialize, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Error, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentError {
     #[error("NEBIUS_API_KEY is missing or empty")]

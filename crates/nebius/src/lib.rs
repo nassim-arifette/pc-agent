@@ -1,5 +1,6 @@
 //! Bounded Nebius HTTP/SSE transport. The agent depends only on the Model interface, not this client.
 #![forbid(unsafe_code)]
+pub mod accounting;
 mod config;
 mod models;
 #[cfg(test)]
@@ -60,6 +61,8 @@ pub struct Nebius {
     image_catalog_checked: bool,
     pricing: Option<Pricing>,
     interrupt: Option<Arc<AtomicBool>>,
+    eval_requests: Option<Vec<accounting::RequestAccounting>>,
+    eval_pending: Vec<(usize, accounting::PendingUsage<Response>)>,
 }
 impl Nebius {
     /// Builds a client without making a network request. No custom endpoint or redirects.
@@ -77,7 +80,31 @@ impl Nebius {
             image_catalog_checked: false,
             pricing: None,
             interrupt: None,
+            eval_requests: None,
+            eval_pending: Vec::new(),
         })
+    }
+    /// Explicit, in-memory evaluation opt-in; the GUI and ordinary CLI never call this.
+    pub fn enable_eval_usage_drain(&mut self) {
+        self.eval_pending.clear();
+        self.eval_requests = Some(Vec::new());
+    }
+
+    /// Call only after the investigation is frozen, so accounting cannot consume its budget.
+    /// Repeated calls are harmless; every retained response is closed on every exit.
+    pub fn finish_eval_usage_drain(&mut self) {
+        for (index, pending) in std::mem::take(&mut self.eval_pending) {
+            if let Some(request) = self.eval_requests.as_mut().and_then(|r| r.get_mut(index)) {
+                request.record(pending.drain(self.interrupt.as_deref()));
+                request.finish(self.pricing.as_ref());
+            }
+        }
+    }
+
+    pub fn eval_accounting(&self) -> Option<accounting::EvalAccounting<'_>> {
+        self.eval_requests
+            .as_deref()
+            .map(accounting::EvalAccounting::new)
     }
     /// Sends with the key and a deadline that covers reading the whole body.
     fn send(&self, request: RequestBuilder, timeout: Duration) -> Result<Response, AgentError> {
@@ -202,14 +229,14 @@ struct Envelope {
     choices: Vec<Choice>,
     usage: Option<Usage>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Usage {
     total_tokens: Option<u64>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     completion_tokens_details: Option<CompletionDetails>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CompletionDetails {
     reasoning_tokens: Option<u64>,
 }
@@ -344,6 +371,30 @@ fn read_stream(
     on_call: &mut dyn FnMut(&str, &str),
     interrupt: Option<&AtomicBool>,
 ) -> Result<Envelope, AgentError> {
+    read_stream_deferred(reader, on_call, interrupt, None).map(|(envelope, _)| envelope)
+}
+
+#[cfg(test)]
+fn read_stream_observed(
+    reader: impl Read,
+    on_call: &mut dyn FnMut(&str, &str),
+    interrupt: Option<&AtomicBool>,
+    mut accounting: Option<&mut accounting::RequestAccounting>,
+) -> Result<Envelope, AgentError> {
+    let (envelope, pending) =
+        read_stream_deferred(reader, on_call, interrupt, accounting.as_deref_mut())?;
+    if let (Some(pending), Some(accounting)) = (pending, accounting) {
+        accounting.record(pending.drain(interrupt));
+    }
+    Ok(envelope)
+}
+
+fn read_stream_deferred<R: Read>(
+    reader: R,
+    on_call: &mut dyn FnMut(&str, &str),
+    interrupt: Option<&AtomicBool>,
+    mut accounting: Option<&mut accounting::RequestAccounting>,
+) -> Result<(Envelope, Option<accounting::PendingUsage<R>>), AgentError> {
     let mut lines = BufReader::new(reader.take((MAX_STREAM_BYTES + 1) as u64));
     let mut read = 0usize;
     let mut line = String::new();
@@ -353,6 +404,8 @@ fn read_stream(
     let mut usage = None;
     let mut seen = false;
     let mut malformed = false;
+    let mut frozen = false;
+    let mut done = false;
     'events: loop {
         line.clear();
         let n = lines.read_line(&mut line).map_err(|e| body_error(&e))?;
@@ -372,6 +425,7 @@ fn read_stream(
         };
         let data = data.trim_start();
         if data == "[DONE]" {
+            done = true;
             break;
         }
         let Ok(chunk) = serde_json::from_str::<Chunk>(data) else {
@@ -420,6 +474,11 @@ fn read_stream(
                             && whole_object(&call.arguments)
                         {
                             finish = Some("tool_calls".into());
+                            frozen = true;
+                            if let Some(accounting) = accounting.as_deref_mut() {
+                                accounting.answer_completed_ms =
+                                    Some(accounting.started.elapsed().as_millis() as u64);
+                            }
                             break 'events;
                         }
                     }
@@ -427,12 +486,35 @@ fn read_stream(
             }
         }
     }
+    let mut pending = None;
+    if let Some(accounting) = accounting {
+        if frozen {
+            pending = Some(accounting::PendingUsage {
+                reader: lines,
+                read,
+                first_usage: usage.clone(),
+                deadline: accounting.deadline,
+            });
+        } else if done {
+            accounting.record(
+                usage
+                    .clone()
+                    .map(accounting::DrainedUsage::validated)
+                    .transpose(),
+            );
+        } else {
+            accounting.record(Err(AgentError::IncompleteResponse));
+        }
+    }
     let identified = calls.iter().all(|c| !c.id.is_empty() && !c.name.is_empty());
     if !seen || malformed || !identified {
-        return Ok(Envelope {
-            choices: Vec::new(),
-            usage,
-        });
+        return Ok((
+            Envelope {
+                choices: Vec::new(),
+                usage,
+            },
+            pending,
+        ));
     }
     let tool_calls: Vec<ToolCall> = calls
         .into_iter()
@@ -445,17 +527,20 @@ fn read_stream(
             },
         })
         .collect();
-    Ok(Envelope {
-        choices: vec![Choice {
-            message: Message {
-                content,
-                tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
-            },
-            // A stream cut before its last event never says why it finished.
-            finish_reason: finish.unwrap_or_default(),
-        }],
-        usage,
-    })
+    Ok((
+        Envelope {
+            choices: vec![Choice {
+                message: Message {
+                    content,
+                    tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+                },
+                // A stream cut before its last event never says why it finished.
+                finish_reason: finish.unwrap_or_default(),
+            }],
+            usage,
+        },
+        pending,
+    ))
 }
 
 impl Model for Nebius {
@@ -476,7 +561,54 @@ impl Model for Nebius {
         timeout: Duration,
         on_call: &mut dyn FnMut(&str, &str),
     ) -> Result<Reply, AgentError> {
+        let mut accounting = self.eval_requests.as_ref().map(|requests| {
+            accounting::RequestAccounting::new(requests.len() + 1, self.config.model_id.clone())
+        });
+        let reply = self.complete_observed(
+            messages,
+            tools,
+            choice,
+            timeout,
+            on_call,
+            accounting.as_mut(),
+        );
+        if let Some(mut accounting) = accounting {
+            if let Err(error) = &reply {
+                accounting.accounting_error = Some(error.clone());
+            }
+            accounting.finish(self.pricing.as_ref());
+            self.eval_requests
+                .as_mut()
+                .expect("eval accounting enabled")
+                .push(accounting);
+        }
+        reply
+    }
+    fn interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt = Some(flag);
+    }
+    fn pricing(&self) -> Option<Pricing> {
+        self.pricing.clone()
+    }
+    fn model_id(&self) -> Option<&str> {
+        Some(&self.config.model_id)
+    }
+}
+
+impl Nebius {
+    fn complete_observed(
+        &mut self,
+        messages: &[Value],
+        tools: &Value,
+        choice: ToolChoice,
+        timeout: Duration,
+        on_call: &mut dyn FnMut(&str, &str),
+        mut accounting: Option<&mut accounting::RequestAccounting>,
+    ) -> Result<Reply, AgentError> {
         let started = Instant::now();
+        if let Some(accounting) = accounting.as_deref_mut() {
+            accounting.deadline = started.checked_add(timeout).unwrap_or(started);
+        }
         let images = messages
             .iter()
             .filter_map(|message| message["content"].as_array())
@@ -508,20 +640,27 @@ impl Model for Nebius {
                 .json(&body),
             remaining,
         )?;
-        Ok(parse_reply(read_stream(
-            response,
-            on_call,
-            self.interrupt.as_deref(),
-        )?))
-    }
-    fn interrupt(&mut self, flag: Arc<AtomicBool>) {
-        self.interrupt = Some(flag);
-    }
-    fn pricing(&self) -> Option<Pricing> {
-        self.pricing.clone()
-    }
-    fn model_id(&self) -> Option<&str> {
-        Some(&self.config.model_id)
+        let envelope = if let Some(accounting) = accounting {
+            let (envelope, pending) = read_stream_deferred(
+                response,
+                on_call,
+                self.interrupt.as_deref(),
+                Some(accounting),
+            )?;
+            if let Some(pending) = pending {
+                if self.eval_pending.len()
+                    < pcagent_agent::MAX_ROUNDS * (1 + pcagent_agent::MAX_EXTENSIONS)
+                {
+                    self.eval_pending.push((accounting.request - 1, pending));
+                } else {
+                    accounting.record(Err(AgentError::Budget));
+                }
+            }
+            envelope
+        } else {
+            read_stream(response, on_call, self.interrupt.as_deref())?
+        };
+        Ok(parse_reply(envelope))
     }
 }
 

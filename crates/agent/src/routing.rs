@@ -53,6 +53,7 @@ impl CalibrationRuntime {
             include_str!("conversation.rs"),
             include_str!("tool_context.rs"),
             include_str!("../../nebius/src/lib.rs"),
+            include_str!("../../nebius/src/accounting.rs"),
             include_str!("../../nebius/src/config.rs"),
             include_str!("privacy.rs"),
             include_str!("tools.rs"),

@@ -76,6 +76,7 @@ struct Annotations {
 #[serde(rename_all = "snake_case")]
 enum ReplayMode {
     NebiusReplay,
+    NebiusAccountingDiagnostic,
 }
 /// Import only the result envelope this harness actually emits. Raw reports remain local.
 #[derive(Debug, Deserialize)]
@@ -100,6 +101,40 @@ struct ReplayResult {
     unused_captures: usize,
     duration_ms: u64,
     replay_complete: bool,
+    #[serde(default)]
+    accounting: Option<DiagnosticAccounting>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticAccounting {
+    #[serde(rename = "usage_policy")]
+    _usage_policy: pcagent_nebius::accounting::UsagePolicy,
+    #[serde(rename = "requests")]
+    _requests: Vec<DiagnosticRequest>,
+    #[serde(rename = "full_stream_cost")]
+    _full_stream_cost: Option<RecordedCost>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticRequest {
+    #[serde(rename = "request")]
+    _request: usize,
+    #[serde(rename = "model_id")]
+    _model_id: String,
+    #[serde(rename = "answer_completed_ms")]
+    _answer_completed_ms: Option<u64>,
+    #[serde(rename = "stream_total_ms")]
+    _stream_total_ms: u64,
+    #[serde(rename = "stream_complete")]
+    _stream_complete: bool,
+    #[serde(rename = "usage")]
+    _usage: Option<pcagent_nebius::accounting::DrainedUsage>,
+    #[serde(rename = "full_stream_cost")]
+    _full_stream_cost: Option<RecordedCost>,
+    #[serde(rename = "accounting_error")]
+    _accounting_error: Option<pcagent_agent::AgentError>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -458,6 +493,10 @@ fn validate_replay(
     pair: &AnnotatedPair,
     runtime: &CalibrationRuntime,
 ) -> Result<()> {
+    if matches!(result.mode, ReplayMode::NebiusAccountingDiagnostic) || result.accounting.is_some()
+    {
+        return Err("calibration_disallows_full_stream_accounting".into());
+    }
     if &result.runtime != runtime
         || result.run.runtime.as_ref() != Some(runtime)
         || result.harness_version != REPLAY_HARNESS_VERSION
@@ -479,9 +518,6 @@ fn validate_replay(
         || !result.replay_misses.is_empty()
     {
         return Err("calibration_requires_identical_complete_live_replays".into());
-    }
-    match result.mode {
-        ReplayMode::NebiusReplay => {}
     }
     let mut replay = ReplayTools::new(scenario, pair.sharing)?;
     if !same_hash(
@@ -1011,6 +1047,62 @@ mod tests {
         }
         assert!(fixture.compile().is_err());
     }
+    #[test]
+    fn full_stream_accounting_is_typed_and_never_imported_as_product_cost() {
+        let diagnostic = json!({
+            "usage_policy":"full_stream_drain",
+            "requests":[{
+                "request":1,"model_id":"nvidia/nemotron-super-unit-fixture",
+                "answer_completed_ms":8,"stream_total_ms":90,"stream_complete":true,
+                "usage":{"prompt_tokens":100,"completion_tokens":200,"total_tokens":300,
+                    "reasoning_tokens":50},
+                "full_stream_cost":null,"accounting_error":null
+            }],
+            "full_stream_cost":null
+        });
+        assert!(serde_json::from_value::<DiagnosticAccounting>(diagnostic.clone()).is_ok());
+        for field in [
+            "answer_completed_ms",
+            "stream_total_ms",
+            "usage",
+            "accounting_error",
+            "full_stream_cost",
+        ] {
+            let mut malformed = diagnostic.clone();
+            malformed["requests"][0][field] = json!({"unexpected":"not typed metadata"});
+            assert!(serde_json::from_value::<DiagnosticAccounting>(malformed).is_err());
+        }
+        let mut unknown = diagnostic.clone();
+        unknown["requests"][0]["invented"] = true.into();
+        assert!(serde_json::from_value::<DiagnosticAccounting>(unknown).is_err());
+
+        // The reports already have complete, verified product-looking costs in this fixture:
+        // neither a known cost nor explicit human labels override the usage-policy rejection.
+        for variant in 0..3 {
+            let mut fixture = Fixture::new();
+            fixture.replace_result(
+                true,
+                |result| {
+                    if variant != 1 {
+                        result["mode"] = json!("nebius_accounting_diagnostic");
+                    }
+                    if variant != 0 {
+                        result["accounting"] = diagnostic.clone();
+                        result["accounting"]["full_stream_cost"] =
+                            result["run"]["report"]["stats"]["cost"].clone();
+                        result["accounting"]["requests"][0]["full_stream_cost"] =
+                            result["run"]["report"]["stats"]["model_requests"][0]["cost"].clone();
+                    }
+                },
+                true,
+            );
+            assert_eq!(
+                fixture.compile().unwrap_err().to_string(),
+                "calibration_disallows_full_stream_accounting"
+            );
+        }
+    }
+
     #[test]
     fn full_production_stats_and_older_optional_field_absence_are_accepted() {
         let mut fixture = Fixture::new();

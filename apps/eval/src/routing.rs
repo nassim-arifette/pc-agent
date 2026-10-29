@@ -55,6 +55,31 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn accounting_opt_in_requires_cloud_and_cannot_change_product_automatic_calibration() {
+        let args = ["pcagent-eval", "replay", "capture.json", "--drain-usage"];
+        assert!(crate::Cli::try_parse_from(args).is_err());
+        assert!(crate::Cli::try_parse_from(args.into_iter().chain(["--allow-cloud"])).is_ok());
+        assert!(crate::Cli::try_parse_from(args.into_iter().chain([
+            "--allow-cloud",
+            "--calibration",
+            "reviewed.json",
+            "--super-model",
+            "nvidia/super",
+            "--ultra-model",
+            "nvidia/ultra",
+        ]))
+        .is_err());
+        assert!(crate::Cli::try_parse_from(args.into_iter().chain(["--preview-cloud"])).is_err());
+        assert!(crate::Cli::try_parse_from([
+            "pcagent-eval",
+            "capture",
+            "--drain-usage",
+            "--allow-cloud",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn replay_cannot_request_automatic_without_cloud_consent_and_both_models() {
         let prefix = [
             "pcagent-eval",

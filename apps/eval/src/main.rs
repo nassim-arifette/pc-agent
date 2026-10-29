@@ -126,6 +126,9 @@ enum Command {
         super_model: Option<String>,
         #[arg(long, requires = "calibration")]
         ultra_model: Option<String>,
+        /// Eval-only: read final usage after accepting the first answer. Extra tail tokens may be billed.
+        #[arg(long, requires = "allow_cloud", conflicts_with = "calibration")]
+        drain_usage: bool,
         #[arg(long)]
         anonymize: bool,
         /// Show the initial message and all recorded model-facing outputs. Sends nothing.
@@ -410,6 +413,7 @@ fn run(cli: Cli) -> Result<u8> {
             calibration,
             super_model,
             ultra_model,
+            drain_usage,
             anonymize,
             preview_cloud,
             out,
@@ -471,7 +475,17 @@ fn run(cli: Cli) -> Result<u8> {
                     investigate(&mut model, id, &asked, &scenario.initial, &mut recorder)
                 } else {
                     let (mut model, id) = model(id)?;
-                    investigate(&mut model, id, &asked, &scenario.initial, &mut recorder)
+                    if drain_usage {
+                        model.enable_eval_usage_drain();
+                    }
+                    let investigated =
+                        investigate(&mut model, id, &asked, &scenario.initial, &mut recorder);
+                    model.finish_eval_usage_drain();
+                    if let Some(accounting) = model.eval_accounting() {
+                        result["mode"] = json!("nebius_accounting_diagnostic");
+                        result["accounting"] = serde_json::to_value(accounting)?;
+                    }
+                    investigated
                 };
                 result["run"] = serde_json::to_value(run)?;
                 let (tools, actual_calls) = recorder.into_parts();
