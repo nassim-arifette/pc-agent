@@ -5,6 +5,7 @@ use super::{
     trace_native::{stop_session, Identity, OwnedSession, Properties},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     io::Write,
     mem::size_of,
@@ -19,8 +20,8 @@ use windows_sys::{
     Win32::{
         Foundation::{
             CloseHandle, GetLastError, LocalFree, ERROR_ALREADY_EXISTS, ERROR_BROKEN_PIPE,
-            ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND, HANDLE,
-            WAIT_OBJECT_0, WAIT_TIMEOUT,
+            ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
+            HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Security::{
             Authorization::ConvertStringSidToSidW, GetTokenInformation, IsValidSid, TokenElevation,
@@ -38,9 +39,9 @@ use windows_sys::{
             Pipes::{GetNamedPipeServerProcessId, PeekNamedPipe},
             Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_BINARY},
             Threading::{
-                GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-                WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+                CreateMutexW, GetCurrentProcess, OpenProcess, OpenProcessToken,
+                QueryFullProcessImageNameW, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB,
+                CREATE_NO_WINDOW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
             },
         },
     },
@@ -52,6 +53,16 @@ const POLL: Duration = Duration::from_millis(10);
 // QUERY + CREATE_REALTIME + GUID_ENABLE. No group or provider permission is touched.
 const PARENT_RIGHTS: u32 = WMIGUID_QUERY | TRACELOG_CREATE_REALTIME | TRACELOG_GUID_ENABLE;
 const MAX_MESSAGE: usize = MAX_REQUEST_BYTES + 512;
+
+#[path = "trace_receipt.rs"]
+mod receipt;
+
+pub(super) fn cleanup_for_request(
+    request: &ElevationRequest,
+    owner_sid: &str,
+) -> Result<super::trace_native::TraceCleanupStatus, ElevationError> {
+    receipt::cleanup(request, owner_sid)
+}
 
 struct Handle(HANDLE);
 impl Drop for Handle {
@@ -175,7 +186,7 @@ fn available(pipe: HANDLE) -> Result<Option<u32>, ElevationError> {
     // SAFETY: live pipe, no payload requested, initialized byte-count output.
     if unsafe { PeekNamedPipe(pipe, null_mut(), 0, null_mut(), &mut bytes, null_mut()) } == 0 {
         // SAFETY: last error belongs to the immediately preceding PeekNamedPipe call.
-        if unsafe { GetLastError() } == ERROR_BROKEN_PIPE {
+        if matches!(unsafe { GetLastError() }, ERROR_BROKEN_PIPE | ERROR_NO_DATA) {
             return Ok(None);
         }
         return Err(last_error());
@@ -244,6 +255,10 @@ fn send(output: &mut impl Write, message: &impl Serialize) -> Result<(), Elevati
 }
 
 fn acl_absent(guid: &GUID) -> Result<bool, ElevationError> {
+    Ok(acl_value(guid)?.is_none())
+}
+
+fn acl_value(guid: &GUID) -> Result<Option<Vec<u8>>, ElevationError> {
     let value = wide(&format!(
         "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         guid.data1,
@@ -272,20 +287,58 @@ fn acl_absent(guid: &GUID) -> Result<bool, ElevationError> {
             &mut size,
         )
     } {
-        ERROR_FILE_NOT_FOUND => Ok(true),
-        ERROR_SUCCESS => Ok(false),
-        code => Err(ElevationError::LaunchFailed(code)),
+        ERROR_FILE_NOT_FOUND => return Ok(None),
+        ERROR_SUCCESS => {}
+        code => return Err(ElevationError::LaunchFailed(code)),
     }
+    if size == 0 || size as usize > MAX_MESSAGE {
+        return Err(ElevationError::InsecureJob);
+    }
+    let mut bytes = vec![0u8; size as usize];
+    // SAFETY: same fixed GUID value, bounded initialized output and its exact byte capacity.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_BINARY,
+            null_mut(),
+            bytes.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if status != ERROR_SUCCESS || size as usize != bytes.len() {
+        return Err(ElevationError::InsecureJob);
+    }
+    Ok(Some(bytes))
 }
 
 struct Lease {
     session: Option<OwnedSession>,
     guid: GUID,
     acl_changed: bool,
+    acl_after_grant: Option<Vec<u8>>,
+    _reservation: Handle,
 }
 impl Lease {
     fn start(start: &Start) -> Result<Self, ElevationError> {
         let identity = Identity::request(&start.request)?;
+        let name = format!(
+            r"Global\PCagent.etw.{:x}",
+            Sha256::digest(start.request.nonce.as_bytes())
+        );
+        let name = wide(&name);
+        // SAFETY: local secret-bound name; retain the object without acquiring a mutex lock.
+        // Existing instances fail closed, serializing our controllers before any registry effect.
+        let reservation = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if reservation.is_null() {
+            return Err(last_error());
+        }
+        let reservation = Handle(reservation);
+        // SAFETY: immediately observes CreateMutexW's already-exists indication.
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            return Err(ElevationError::InsecureJob);
+        }
         let mut properties = Properties::new(&identity);
         // SAFETY: only the approved request's name is queried, before any permission is changed.
         let query = unsafe {
@@ -339,9 +392,11 @@ impl Lease {
             guid: identity.guid,
             session: None,
             acl_changed: true,
+            acl_after_grant: None,
+            _reservation: reservation,
         };
         // SAFETY: only the approved private session GUID, bounded requester SID.
-        // Marked for rollback before the call so even a partial failure removes our new value.
+        // Unknown/partial permission writes are never blindly removed.
         let status = unsafe {
             EventAccessControl(
                 &lease.guid,
@@ -354,9 +409,8 @@ impl Lease {
         if status != ERROR_SUCCESS {
             return Err(ElevationError::LaunchFailed(status));
         }
-        if acl_absent(&lease.guid)? {
-            #[cfg(test)]
-            eprintln!("guardian ACL absent after successful grant");
+        lease.acl_after_grant = acl_value(&lease.guid)?;
+        if lease.acl_after_grant.is_none() {
             return Err(ElevationError::InsecureJob);
         }
         lease.session = Some(OwnedSession::start(&start.request)?);
@@ -370,6 +424,15 @@ impl Lease {
         };
         self.session.take();
         if self.acl_changed {
+            let current = acl_value(&self.guid)?;
+            if current.is_none() {
+                self.acl_changed = false;
+                return Ok(lost);
+            }
+            if self.acl_after_grant.is_none() || current != self.acl_after_grant {
+                // An unrecognized security change belongs to someone else; never erase it.
+                return Err(ElevationError::InsecureJob);
+            }
             // SAFETY: only our private GUID, proved absent before creation; no global/provider ACL.
             let status = unsafe { EventAccessRemove(&self.guid) };
             if status != ERROR_SUCCESS {
@@ -425,9 +488,15 @@ pub(super) fn worker() -> Result<(), ElevationError> {
     let deadline = Instant::now() + Duration::from_secs(u64::from(duration_seconds) + 3);
     // This process owns StartTrace itself: no controller/proof-write crash gap.
     let mut lease = Lease::start(&start)?;
+    let mut receipt = receipt::Server::after_creation(&start, &lease)?;
     let mut output = std::io::stderr().lock();
     send(&mut output, &Reply::Ready {})?;
+    let mut recovery_requested = false;
     while Instant::now() < deadline && alive(controller.0)? {
+        if receipt.stop_requested()? {
+            recovery_requested = true;
+            break;
+        }
         match available(input)? {
             Some(0) => std::thread::sleep(POLL),
             // EOF is cancellation; any post-start byte requests cleanup, never another operation.
@@ -435,6 +504,9 @@ pub(super) fn worker() -> Result<(), ElevationError> {
         }
     }
     let lost = lease.finish()?;
+    if recovery_requested {
+        receipt.acknowledge_cleanup()?;
+    }
     send(&mut output, &Reply::Finished { lost })
 }
 
@@ -566,6 +638,7 @@ mod tests {
         KillJob,
         DeniedBreakaway,
         StartupFailure,
+        ParentRecovery,
     }
 
     fn entry(name: &str) -> Command {
@@ -680,6 +753,8 @@ mod tests {
     struct StandardProbe {
         own: ElevationRequest,
         sentinel: ElevationRequest,
+        recovery: ElevationRequest,
+        owner_sid: String,
     }
 
     fn probe_directory() -> std::path::PathBuf {
@@ -717,12 +792,22 @@ mod tests {
             Ok(TraceCleanupStatus::Stopped)
         ));
         assert_eq!(query(&probe.own), ERROR_WMI_INSTANCE_NOT_FOUND);
+        assert_eq!(
+            cleanup_for_request(&probe.sentinel, &probe.owner_sid).unwrap(),
+            TraceCleanupStatus::Unvalidated
+        );
+        assert_eq!(
+            cleanup_for_request(&probe.recovery, &probe.owner_sid).unwrap(),
+            TraceCleanupStatus::Stopped
+        );
+        assert_eq!(query(&probe.recovery), ERROR_WMI_INSTANCE_NOT_FOUND);
         std::fs::write(
             directory.join("result").join("passed"),
             b"standard-peer-passed",
         )
         .unwrap();
         println!("guardian_standard elevated=0 integrity=8192 own_query=0 own_stop=0 own_remove=5 sentinel_query=5 sentinel_stop=5");
+        println!("guardian_standard authenticated_recovery=true missing_receipt_no_effect=true");
     }
 
     #[test]
@@ -744,9 +829,13 @@ mod tests {
         let sentinel_request = make_request();
         let sentinel = Sentinel(OwnedSession::start(&sentinel_request).unwrap());
         let mut guardian = Client::start(&request, &sid).unwrap();
+        let recovery_request = make_request();
+        let mut recovery_guardian = Client::start(&recovery_request, &sid).unwrap();
         let probe = StandardProbe {
             own: request.clone(),
             sentinel: sentinel_request.clone(),
+            recovery: recovery_request.clone(),
+            owner_sid: sid,
         };
         std::fs::write(
             directory.join("probe.json"),
@@ -763,9 +852,12 @@ mod tests {
         // The standard account cannot read WMI's security registry; verify retained ACL here.
         let acl_retained = !acl_absent(&Identity::request(&request).unwrap().guid).unwrap();
         let cleanup = guardian.finish();
+        let recovery_cleanup = recovery_guardian.finish();
         stop_session(&sentinel.0).unwrap();
         cleanup.unwrap();
+        recovery_cleanup.unwrap();
         await_absent(&request);
+        await_absent(&recovery_request);
         assert!(sentinel_preserved);
         assert!(acl_retained);
         assert!(
@@ -829,7 +921,10 @@ mod tests {
             }
             Scenario::Watchdog => std::process::exit(124),
             Scenario::ProcessExit => std::process::exit(2),
-            Scenario::BlockedConsumer | Scenario::Terminate | Scenario::KillJob => {
+            Scenario::BlockedConsumer
+            | Scenario::Terminate
+            | Scenario::KillJob
+            | Scenario::ParentRecovery => {
                 // No consumer makes progress; only the independent guardian can expire the lease.
                 std::thread::sleep(Duration::from_secs(40));
             }
@@ -864,6 +959,7 @@ mod tests {
             Scenario::KillJob,
             Scenario::DeniedBreakaway,
             Scenario::StartupFailure,
+            Scenario::ParentRecovery,
         ] {
             let request = make_request();
             let start = Start {
@@ -897,6 +993,13 @@ mod tests {
                 assert!(matches!(reply, Reply::Ready {}));
             }
             match scenario {
+                Scenario::ParentRecovery => {
+                    assert_eq!(
+                        cleanup_for_request(&request, &sid).unwrap(),
+                        TraceCleanupStatus::Stopped
+                    );
+                    child.kill().unwrap();
+                }
                 Scenario::Terminate => child.kill().unwrap(),
                 Scenario::KillJob => drop(job.take()),
                 Scenario::BlockedConsumer => {
@@ -929,7 +1032,7 @@ mod tests {
         // A pre-existing matching session is not adopted, stopped or assigned an ACL.
         let duplicate = Start {
             request: sentinel_request.clone(),
-            owner_sid: sid,
+            owner_sid: sid.clone(),
         };
         assert!(matches!(
             Lease::start(&duplicate),
@@ -938,6 +1041,76 @@ mod tests {
         assert_eq!(query(&sentinel_request), ERROR_SUCCESS);
         assert!(acl_absent(&Identity::request(&sentinel_request).unwrap().guid).unwrap());
         println!("guardian_acceptance already_exists=183 no_adoption=true");
+        assert_eq!(
+            cleanup_for_request(&sentinel_request, &sid).unwrap(),
+            TraceCleanupStatus::Unvalidated
+        );
+        receipt::forged_acceptance(&duplicate);
+        assert_eq!(query(&sentinel_request), ERROR_SUCCESS);
+        assert!(acl_absent(&Identity::request(&sentinel_request).unwrap().guid).unwrap());
+        println!(
+            "guardian_acceptance missing_forged_receipt_rejected=true sentinel_preserved=true"
+        );
+
+        let preexisting = Start {
+            request: make_request(),
+            owner_sid: sid.clone(),
+        };
+        let guid = Identity::request(&preexisting.request).unwrap().guid;
+        grant_fixture(&guid, &sid);
+        let original_acl = acl_value(&guid).unwrap().unwrap();
+        assert!(matches!(
+            Lease::start(&preexisting),
+            Err(ElevationError::InsecureJob)
+        ));
+        assert_eq!(acl_value(&guid).unwrap().as_ref(), Some(&original_acl));
+        receipt::forged_acceptance(&preexisting);
+        assert_eq!(acl_value(&guid).unwrap().as_ref(), Some(&original_acl));
+        assert_eq!(query(&preexisting.request), ERROR_WMI_INSTANCE_NOT_FOUND);
+        // SAFETY: remove only the fixture's own exact GUID permission value after comparison.
+        assert_eq!(unsafe { EventAccessRemove(&guid) }, ERROR_SUCCESS);
+        assert!(acl_absent(&guid).unwrap());
+        println!("guardian_acceptance preexisting_acl_preserved=true no_session_created=true");
+
+        let changed = Start {
+            request: make_request(),
+            owner_sid: sid,
+        };
+        let mut lease = Lease::start(&changed).unwrap();
+        grant_fixture(&lease.guid, "S-1-5-32-545");
+        let external_acl = acl_value(&lease.guid).unwrap().unwrap();
+        assert_ne!(lease.acl_after_grant.as_ref(), Some(&external_acl));
+        assert!(matches!(lease.finish(), Err(ElevationError::InsecureJob)));
+        assert_eq!(
+            acl_value(&lease.guid).unwrap().as_ref(),
+            Some(&external_acl)
+        );
+        assert_eq!(query(&changed.request), ERROR_WMI_INSTANCE_NOT_FOUND);
+        let guid = lease.guid;
+        drop(lease);
+        assert_eq!(acl_value(&guid).unwrap().as_ref(), Some(&external_acl));
+        // SAFETY: the test explicitly owns both fixture grants, unlike the production guardian.
+        assert_eq!(unsafe { EventAccessRemove(&guid) }, ERROR_SUCCESS);
+        assert!(acl_absent(&guid).unwrap());
+        assert_eq!(query(&sentinel_request), ERROR_SUCCESS);
+        println!("guardian_acceptance changed_acl_preserved=true cleanup_ack_refused=true sentinel_preserved=true");
+    }
+
+    fn grant_fixture(guid: &GUID, sid_text: &str) {
+        let mut sid = null_mut();
+        let sid_text = wide(sid_text);
+        // SAFETY: valid test SID and initialized LocalAlloc output.
+        assert_ne!(
+            unsafe { ConvertStringSidToSidW(sid_text.as_ptr(), &mut sid) },
+            0
+        );
+        // SAFETY: fixture GUID, live SID; no global/provider GUID or privilege is changed.
+        let status = unsafe {
+            EventAccessControl(guid, EventSecurityAddDACL as u32, sid, PARENT_RIGHTS, true)
+        };
+        // SAFETY: uniquely owned ConvertStringSidToSidW allocation.
+        unsafe { LocalFree(sid) };
+        assert_eq!(status, ERROR_SUCCESS);
     }
 
     #[test]

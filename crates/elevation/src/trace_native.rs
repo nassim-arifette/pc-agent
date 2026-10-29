@@ -227,23 +227,23 @@ fn finish_owned() -> Result<Option<(u64, u64)>, ElevationError> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TraceCleanupStatus {
+    #[cfg(test)]
     NotRunning,
     Stopped,
+    #[cfg(test)]
     IdentityMismatch,
     Unvalidated,
 }
 
-/// Local-only parent recovery seam. It is deliberately inactive until forced-exit cleanup is certified.
+/// Recovery is exclusively delegated to an authenticated guardian that owns successful StartTrace.
 pub(crate) fn cleanup_for_request(
     request: &ElevationRequest,
     owner_sid: &str,
 ) -> Result<TraceCleanupStatus, ElevationError> {
-    if proven_cleanup_for_operation(request, owner_sid).is_none() {
-        return Ok(TraceCleanupStatus::Unvalidated);
-    }
-    stop_private_request(request)
+    super::trace_guardian::cleanup_for_request(request, owner_sid)
 }
 
+#[cfg(test)]
 pub(super) fn stop_private_request(
     request: &ElevationRequest,
 ) -> Result<TraceCleanupStatus, ElevationError> {
