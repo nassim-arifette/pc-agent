@@ -12,6 +12,7 @@ mod settings_commands;
 mod state;
 mod storage_commands;
 mod turn_commands;
+mod voice_commands;
 mod worker;
 
 use crate::images::ImageSlot;
@@ -28,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -165,9 +166,30 @@ pub fn run() {
             settings_commands::privacy_get,
             settings_commands::privacy_set,
             turn_commands::send_message,
-            turn_commands::stop_turn
+            turn_commands::stop_turn,
+            voice_commands::voice_start,
+            voice_commands::voice_stop,
+            voice_commands::voice_state,
+            voice_commands::voice_devices,
+            voice_commands::voice_settings_get,
+            voice_commands::voice_settings_set,
+            voice_commands::voice_model_state,
+            voice_commands::voice_model_download,
+            voice_commands::voice_model_cancel,
+            voice_commands::voice_model_delete
         ])
         .setup(|app| {
+            let voice_app = app.handle().clone();
+            let model_app = app.handle().clone();
+            app.manage(pcagent_voice::VoiceService::new(
+                app.path().app_local_data_dir()?.join("voice"),
+                move |state| {
+                    let _ = voice_app.emit("voice:state", state);
+                },
+                move |model| {
+                    let _ = model_app.emit("voice:model", model);
+                },
+            ));
             use tauri::{
                 menu::{Menu, MenuItem},
                 tray::{TrayIconBuilder, TrayIconEvent},
@@ -211,6 +233,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.state::<pcagent_voice::VoiceService>().cancel();
                 if pcagent_inspect::autostart::get().unwrap_or(false) {
                     api.prevent_close();
                     let _ = window.hide();
@@ -226,6 +249,9 @@ pub fn run() {
 }
 
 fn shutdown(app: &AppHandle) {
+    let voice = app.state::<pcagent_voice::VoiceService>();
+    voice.cancel();
+    voice.cancel_download();
     let state = app.state::<AppState>();
     let Some(shutdown) = state.elevation.begin_shutdown() else {
         return;
