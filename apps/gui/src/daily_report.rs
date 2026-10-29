@@ -3,7 +3,7 @@
 //! tests run everywhere; the task itself exists on Windows only.
 use pcagent_actions::scheduled_report::{self as task, ScheduleState};
 use pcagent_diagnostics::{Classification, Support};
-use pcagent_report::{HistoryStatus, Report};
+use pcagent_report::{HistoryStatus, Report, RunStatus};
 use pcagent_shared::presentation::Language;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,38 @@ use std::path::{Path, PathBuf};
 /// OS strings: a launch with arguments that are not Unicode must not panic here.
 pub fn requested(args: &[std::ffi::OsString]) -> bool {
     args.len() == 2 && args[1] == task::GUI_ARGUMENTS
+}
+
+/// The fixed invocation an uninstaller (or the person) runs to remove this account's task.
+pub const REMOVE_ARGUMENT: &str = "--remove-scheduled-report";
+
+pub fn remove_requested(args: &[std::ffi::OsString]) -> bool {
+    args.len() == 2 && args[1] == REMOVE_ARGUMENT
+}
+
+/// The local action journal, the same folder the window's actions use.
+pub fn journal_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pcagent")
+        .join("journal")
+}
+
+/// Removes the daily task without a window; journaled like the switch in Settings. Exit codes:
+/// 0 removed or absent, 1 failed, 2 refused (elevated).
+pub fn remove_headless() -> i32 {
+    if pcagent_inspect::elevation::ensure_unelevated_host().is_err() {
+        return 2;
+    }
+    let scheduler = task::WindowsScheduler::for_current_user();
+    match pcagent_actions::Journal::open(journal_dir())
+        .and_then(|journal| task::disable(&journal, &scheduler))
+    {
+        Ok(_) => 0,
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => 0,
+        Err(_) => 1,
+    }
 }
 
 fn app_dir() -> Option<PathBuf> {
@@ -54,8 +86,20 @@ pub fn run_once(scheduled: bool) -> Result<Report, String> {
     Ok(report)
 }
 
-/// The toast text, only when something needs a look: a quiet day stays quiet.
+/// The toast text, only when something needs a look or the run failed: a quiet day stays quiet.
 pub fn toast_text(report: &Report, language: Language) -> Option<(String, String)> {
+    if report.status == RunStatus::Failed {
+        return Some(match language {
+            Language::En => (
+                "PC Agent daily report".into(),
+                "Today's check could not measure the PC. The next run tries again.".into(),
+            ),
+            Language::Fr => (
+                "Rapport quotidien de PC Agent".into(),
+                "La vérification du jour n’a pas pu mesurer le PC. La prochaine réessaiera.".into(),
+            ),
+        });
+    }
     if report.points_to_review == 0 {
         return None;
     }
@@ -81,6 +125,10 @@ pub fn run_headless() -> i32 {
         Ok(report) => report,
         Err(_) => return 1,
     };
+    let notify = reports_dir().is_none_or(|dir| pcagent_report::settings(&dir).notify);
+    if !notify {
+        return 0;
+    }
     if let Some((title, body)) = toast_text(&report, language(database().as_deref())) {
         let service = pcagent_actions::notifications::Service::start(std::sync::Arc::new(|_| {}));
         let _ = service.show(pcagent_actions::notifications::Notification {
@@ -112,6 +160,9 @@ pub struct ReportView {
     pub alerts_total: u64,
     pub history_status: HistoryStatus,
     pub events_last_day: Option<u64>,
+    /// Fixed drives almost full, by root (`C:\\`).
+    pub low_drives: Vec<String>,
+    pub failed: bool,
 }
 
 pub fn view(report: &Report) -> ReportView {
@@ -133,6 +184,13 @@ pub fn view(report: &Report) -> ReportView {
         alerts_total: report.alerts_total,
         history_status: report.history.status,
         events_last_day: report.history.events_last_day,
+        low_drives: report
+            .volumes
+            .iter()
+            .filter(|v| v.low)
+            .map(|v| v.root.clone())
+            .collect(),
+        failed: report.status == RunStatus::Failed,
     }
 }
 
@@ -145,6 +203,8 @@ pub struct ScheduleView {
     pub command: String,
     pub stale: bool,
     pub default_time: String,
+    /// Whether a scheduled run shows a notification when something needs review.
+    pub notify: bool,
 }
 
 pub fn schedule_view(state: ScheduleState, program: &Path) -> ScheduleView {
@@ -158,6 +218,7 @@ pub fn schedule_view(state: ScheduleState, program: &Path) -> ScheduleView {
         state,
         command,
         default_time: task::format_time(task::DEFAULT_TIME),
+        notify: reports_dir().is_none_or(|dir| pcagent_report::settings(&dir).notify),
     }
 }
 
@@ -195,6 +256,9 @@ mod tests {
         assert!(!requested(&args(&[])));
         assert!(!requested(&args(&["--scheduled-report", "--extra"])));
         assert!(!requested(&args(&["report"])));
+        assert!(remove_requested(&args(&["--remove-scheduled-report"])));
+        assert!(!remove_requested(&args(&["--scheduled-report"])));
+        assert!(!requested(&args(&["--remove-scheduled-report"])));
     }
 
     #[test]
@@ -220,6 +284,13 @@ mod tests {
         let (title, body) = toast_text(&busy, Language::Fr).unwrap();
         assert_eq!(title, "Rapport quotidien de PC Agent");
         assert!(body.starts_with("2 point(s)"));
+        // A failed run is never silent, and the home card says it failed.
+        let failed = pcagent_report::failed(1, true, "measurement_failed");
+        assert!(toast_text(&failed, Language::En)
+            .unwrap()
+            .1
+            .contains("could not measure"));
+        assert!(super::view(&failed).failed);
     }
 
     #[test]

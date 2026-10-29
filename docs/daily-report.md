@@ -11,6 +11,10 @@ Contract: `docs/plan.md`, chantier 17 (plan PR #117).
 - One measurement (`Collector::snapshot`), the local rules (`pcagent-diagnostics`), and what the
   local history recorded in the last 24 hours: activity events and watch alerts
   (`pcagent-report::read_history`). A missing history file is reported, never created.
+- The space of fixed drives (`hardware_inventory`); a drive almost full (under 5 % or 5 GiB free,
+  the same limit as Live PC) is one more point to review.
+- A run that cannot measure still writes a dated report with `status: failed` and a closed
+  `failure` code, and its notification says so: a failed day is never silent.
 - No network, no model, no administrator. An elevated process refuses to run it.
 
 ## Files
@@ -41,9 +45,15 @@ next occurrence of the chosen local time. Report file names use the UTC day.
   report file".
 - Home: the latest report (points to review first), "Ask PC Agent about it" (drafts a question
   in the composer; nothing is sent), and an invitation when no task exists.
-- A toast at the end of a scheduled run, only when something needs review.
+- A toast at the end of a scheduled run, only when something needs review or the run failed.
+  Settings > Daily report > Notify me turns it off (`reports\settings.json`, local only).
+- Removal: turning the switch off, `pcagent schedule disable`, or
+  `pcagent-gui.exe --remove-scheduled-report` (fixed argument, journaled, refused when elevated).
+  PC Agent ships without an installer today; an installer's uninstall step should run the last
+  command for each account that used it.
 - Tauri commands: `report_schedule_get`, `report_schedule_set`, `report_latest`,
-  `report_run_now`, `report_reveal`. Mock: `?report=none|quiet|unsupported|stale`.
+  `report_run_now`, `report_reveal`, `report_notify_set`. Mock:
+  `?report=none|quiet|unsupported|stale|failed`.
 
 ## Validation
 

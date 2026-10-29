@@ -81,6 +81,8 @@ export async function exerciseMock(bridge, clock, search) {
   } else {
     await reject("report_schedule_set", { enabled: true, time: "07:45" }, "schedule_failed");
   }
+  assert.equal((await ok("report_notify_set", { enabled: false })).notify, false);
+  await reject("report_notify_set", { enabled: "no" });
   await ok("report_latest");
   assert.equal(typeof (await ok("report_run_now")).points_to_review, "number");
   await ok("report_reveal");

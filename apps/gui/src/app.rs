@@ -193,6 +193,7 @@ pub fn run() {
             settings_commands::startup_set,
             report_commands::report_schedule_get,
             report_commands::report_schedule_set,
+            report_commands::report_notify_set,
             report_commands::report_latest,
             report_commands::report_run_now,
             report_commands::report_reveal,

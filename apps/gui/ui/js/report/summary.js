@@ -16,10 +16,26 @@ export function historyNote(report) {
 }
 
 export function reportSummary(report, { compact = false } = {}) {
+  if (report.failed) {
+    return h(
+      "div",
+      { class: `report-summary${compact ? " compact" : ""}` },
+      h(
+        "div",
+        { class: "report-headline" },
+        badge(t("report.failed"), "bad", "alert"),
+        h("span", { class: "hint" }, t(report.scheduled ? "report.when.scheduled" : "report.when.manual", { when: when(report) })),
+      ),
+      h("p", { class: "hint" }, t("report.failed.note")),
+    );
+  }
   const count = report.points_to_review;
   const tone = count === 0 ? "good" : "warn";
   const items = report.items.map((item) =>
     h("li", { class: "report-item" }, icon("alert"), h("span", null, classificationLabel(item))));
+  for (const root of report.low_drives ?? []) {
+    items.push(h("li", { class: "report-item" }, icon("drive"), h("span", null, t("report.drive.low", { drive: root.replace(/\\$/, "") }))));
+  }
   if (report.alerts_total > 0) {
     items.push(h("li", { class: "report-item" }, icon("bell"), h("span", null, t("report.alerts", { count: report.alerts_total }))));
   }

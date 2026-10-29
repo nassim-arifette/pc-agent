@@ -66,6 +66,23 @@ export function dailyReportCard() {
     }
   };
 
+  function notifySwitch() {
+    const sw = toggle(view.notify !== false, async (next) => {
+      if (busy) return;
+      busy = true;
+      try {
+        view = await call("report_notify_set", { enabled: next });
+      } catch (error) {
+        toast(failureText(error), "bad");
+      } finally {
+        busy = false;
+        if (!disposed) render();
+      }
+    }, t("report.notify.title"));
+    sw.disabled = busy;
+    return sw;
+  }
+
   function render() {
     if (!view) return;
     if (!view.supported) {
@@ -101,6 +118,12 @@ export function dailyReportCard() {
         h("span", { class: "hint" }, t(view.stale ? "report.schedule.commandRepaired" : "report.schedule.command")),
         h("code", { class: "mono report-command" }, view.command),
         h("span", { class: "hint" }, t("report.schedule.guarantees")),
+        h(
+          "div",
+          { class: "setting-row report-notify" },
+          h("div", { class: "setting-text" }, h("strong", null, t("report.notify.title")), h("span", { class: "hint" }, t("report.notify.note"))),
+          notifySwitch(),
+        ),
       );
     }
     fill(

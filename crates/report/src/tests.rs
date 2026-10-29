@@ -206,3 +206,95 @@ fn a_damaged_newest_report_falls_back_to_the_previous_one() {
     assert_eq!(path, dir.join("rapport-2026-10-30.md"));
     fs::remove_dir_all(dir).unwrap();
 }
+
+fn volume(
+    root: &str,
+    total_gib: u64,
+    free_gib: u64,
+    kind: pcagent_shared::VolumeKind,
+) -> pcagent_shared::VolumeInfo {
+    pcagent_shared::VolumeInfo {
+        root: root.into(),
+        kind,
+        total_bytes: Some(total_gib << 30),
+        free_bytes: Some(free_gib << 30),
+        available_to_caller_bytes: None,
+        source: "fixture".into(),
+        status: pcagent_shared::Status::Ok,
+        limitations: Vec::new(),
+    }
+}
+
+#[test]
+fn only_fixed_drives_are_listed_and_almost_full_ones_count() {
+    use pcagent_shared::VolumeKind::*;
+    let list = volumes(&[
+        volume("D:\\", 1000, 400, Fixed),
+        volume("C:\\", 500, 4, Fixed),
+        volume("E:\\", 64, 1, Removable),
+        volume("F:\\", 2000, 60, Fixed),
+    ]);
+    assert_eq!(
+        list.iter().map(|v| v.root.as_str()).collect::<Vec<_>>(),
+        ["C:\\", "D:\\", "F:\\"]
+    );
+    assert_eq!(
+        list.iter().map(|v| v.low).collect::<Vec<_>>(),
+        [true, false, true]
+    );
+    let report = with_volumes(assemble(Vec::new(), no_history(), OCT_29, true), list);
+    assert_eq!(report.points_to_review, 2);
+    let en = markdown(&report, Language::En);
+    assert!(en.contains("## Drives"));
+    assert!(en.contains("- C: 4"));
+    assert!(en.contains("(almost full)"));
+    assert!(markdown(&report, Language::Fr).contains("(presque plein)"));
+}
+
+#[test]
+fn a_failed_run_leaves_a_dated_report_that_says_so() {
+    let report = failed(OCT_29, true, "measurement_failed");
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.points_to_review, 0);
+    let fr = markdown(&report, Language::Fr);
+    assert!(fr.contains("n’a pas pu mesurer"));
+    assert!(fr.contains("une mesure a échoué"));
+    let dir = temp_dir("failed");
+    write(&dir, &report, Language::En).unwrap();
+    let read = latest(&dir).unwrap().unwrap();
+    assert_eq!(read.status, RunStatus::Failed);
+    assert_eq!(read.failure.as_deref(), Some("measurement_failed"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn reports_from_before_volumes_and_status_still_read() {
+    let mut json = serde_json::to_value(assemble(Vec::new(), no_history(), OCT_29, true)).unwrap();
+    let object = json.as_object_mut().unwrap();
+    for key in ["volumes", "status", "failure"] {
+        object.remove(key);
+    }
+    let report: Report = serde_json::from_value(json).unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert!(report.volumes.is_empty());
+}
+
+#[test]
+fn notification_setting_defaults_on_and_survives_a_damaged_file() {
+    let dir = temp_dir("settings");
+    assert!(settings(&dir).notify);
+    save_settings(&dir, ReportSettings { notify: false }).unwrap();
+    assert!(!settings(&dir).notify);
+    fs::write(dir.join("settings.json"), "{ broken").unwrap();
+    assert!(settings(&dir).notify);
+    // The settings file is not a report and is never rotated away or read as one.
+    write(
+        &dir,
+        &assemble(Vec::new(), no_history(), OCT_29, true),
+        Language::En,
+    )
+    .unwrap();
+    assert!(dir.join("settings.json").exists());
+    assert_eq!(latest(&dir).unwrap().unwrap().date, "2026-10-29");
+    fs::remove_dir_all(dir).unwrap();
+}

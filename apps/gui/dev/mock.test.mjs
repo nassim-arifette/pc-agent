@@ -11,6 +11,6 @@ for (const [index, search] of scenarios.entries()) {
     globalThis.window = { location: { search }, setTimeout: clock.setTimeout };
     const { createMock } = await import(`./mock.js?contracts-${index}`);
     const result = await exerciseMock(createMock(), clock, search);
-    if (!search) assert.equal(result.commands.length, 77); // 76 IPC commands and one rejected name.
+    if (!search) assert.equal(result.commands.length, 78); // 77 IPC commands and one rejected name.
   });
 }

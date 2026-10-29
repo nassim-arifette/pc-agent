@@ -159,3 +159,23 @@ test("a card drawn while a change is still running reads the state after it", as
   await flush();
   assert.match(second.el.textContent, /On, every day at 09:00\./);
 });
+
+test("the notification switch is local, and a failed run or a full drive is said on home", async () => {
+  use("");
+  const card = dailyReportCard();
+  await flush();
+  assert.match(card.el.textContent, /Notify me/);
+  const switches = card.el.querySelectorAll(".switch");
+  switches.at(-1).listeners.click();
+  await flush();
+  assert.deepEqual(calls.at(-1), { command: "report_notify_set", args: { enabled: false } });
+  const home = homeReportCard({ ask: () => {} });
+  await flush();
+  assert.match(home.el.textContent, /C: almost full/);
+  use("?report=failed");
+  const failed = homeReportCard({ ask: () => assert.fail("nothing to ask") });
+  await flush();
+  assert.match(failed.el.textContent, /Run failed/);
+  assert.match(failed.el.textContent, /could not measure the PC/);
+  assert.equal(byText(failed.el, "Ask PC Agent"), undefined);
+});

@@ -1,7 +1,8 @@
 // Synthetic daily report (chantier 17): the Windows task and the latest report file.
 // ?report=none (no report written yet), ?report=quiet (nothing to review),
 // ?report=unsupported (not Windows: no task, a report can still be written on request),
-// ?report=stale (the installed task starts an older copy of the app: Settings offers a repair).
+// ?report=stale (the installed task starts an older copy of the app: Settings offers a repair),
+// ?report=failed (the last scheduled run could not measure).
 import { fail } from "./common.js";
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -10,6 +11,7 @@ export function createDailyReportFixture(params) {
   const mode = params.get("report");
   const supported = mode !== "unsupported";
   const COMMAND = "\"C:\\Program Files\\PC Agent\\pcagent-gui.exe\" --scheduled-report";
+  let notify = true;
   let installed = mode === "stale";
   let time = installed ? "08:00" : null;
   let taskCommand = installed ? "\"D:\\Old\\PC Agent\\pcagent-gui.exe\" --scheduled-report" : null;
@@ -25,8 +27,10 @@ export function createDailyReportFixture(params) {
     alerts_total: points === 0 ? 0 : 1,
     history_status: scheduled ? "stale" : "recent",
     events_last_day: scheduled ? null : 4,
+    low_drives: points >= 3 ? ["C:\\"] : [],
+    failed: false,
   });
-  let latest = mode === "none" ? null : report(mode === "quiet" ? 0 : 3, true);
+  let latest = mode === "none" ? null : mode === "failed" ? { ...report(0, true), failed: true } : report(mode === "quiet" ? 0 : 3, true);
   const view = () => ({
     supported,
     installed,
@@ -36,6 +40,7 @@ export function createDailyReportFixture(params) {
     command: COMMAND,
     stale: installed && taskCommand !== COMMAND,
     default_time: "09:00",
+    notify,
   });
   return {
     commands: {
@@ -52,6 +57,11 @@ export function createDailyReportFixture(params) {
           installed = false;
           time = null;
         }
+        return view();
+      },
+      report_notify_set: ({ enabled }) => {
+        if (typeof enabled !== "boolean") fail("unknown", "enabled must be a boolean");
+        notify = enabled;
         return view();
       },
       report_latest: () => latest,

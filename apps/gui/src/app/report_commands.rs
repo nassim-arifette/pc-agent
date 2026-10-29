@@ -54,6 +54,22 @@ pub(super) async fn report_schedule_set(
     .map_err(failure::schedule)?
 }
 
+/// Turns the end-of-run notification of the scheduled report on or off (local file).
+#[tauri::command]
+pub(super) async fn report_notify_set(enabled: bool) -> Result<ScheduleView, Failure> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = daily_report::reports_dir()
+            .ok_or_else(|| Failure::new(Code::ReportFailed, "The APPDATA folder is unknown."))?;
+        pcagent_report::save_settings(&dir, pcagent_report::ReportSettings { notify: enabled })
+            .map_err(failure::report)?;
+        let state =
+            task::state(&WindowsScheduler::for_current_user()).map_err(failure::schedule)?;
+        Ok(daily_report::schedule_view(state, &program()?))
+    })
+    .await
+    .map_err(failure::report)?
+}
+
 #[tauri::command]
 pub(super) async fn report_latest() -> Result<Option<ReportView>, Failure> {
     tauri::async_runtime::spawn_blocking(|| {

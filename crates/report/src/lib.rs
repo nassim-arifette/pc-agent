@@ -56,6 +56,51 @@ pub struct AlertSummary {
     pub close_reason: Option<String>,
 }
 
+/// A fixed drive's space at the time of the report. `low` uses the same limit as Live PC's
+/// "almost full" (under 5 % or 5 GiB free).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeSummary {
+    pub root: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub low: bool,
+}
+
+/// Whether the run measured anything. A failed run still leaves a dated report saying so.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    #[default]
+    Completed,
+    /// The measurement could not be taken; `failure` names why with a closed code.
+    Failed,
+}
+
+const LOW_FREE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+pub fn low_space(total_bytes: u64, free_bytes: u64) -> bool {
+    free_bytes < LOW_FREE_BYTES || (free_bytes as u128) * 20 < total_bytes as u128
+}
+
+/// Fixed drives whose size and free space were both read, in drive order.
+pub fn volumes(inventory: &[pcagent_shared::VolumeInfo]) -> Vec<VolumeSummary> {
+    let mut list: Vec<VolumeSummary> = inventory
+        .iter()
+        .filter(|v| v.kind == pcagent_shared::VolumeKind::Fixed)
+        .filter_map(|v| {
+            let (total, free) = (v.total_bytes?, v.free_bytes?);
+            (total > 0).then(|| VolumeSummary {
+                root: v.root.clone(),
+                total_bytes: total,
+                free_bytes: free.min(total),
+                low: low_space(total, free),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a.root.cmp(&b.root));
+    list
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
     pub schema_version: u32,
@@ -68,6 +113,13 @@ pub struct Report {
     pub history: HistoryContext,
     pub alerts: Vec<AlertSummary>,
     pub alerts_total: u64,
+    #[serde(default)]
+    pub volumes: Vec<VolumeSummary>,
+    #[serde(default)]
+    pub status: RunStatus,
+    /// `measurement_failed` or `history_unreadable`; `None` when the run completed.
+    #[serde(default)]
+    pub failure: Option<String>,
 }
 
 /// `YYYY-MM-DD` (UTC) from a Unix time in milliseconds.
@@ -155,14 +207,59 @@ pub fn assemble(
         history,
         alerts,
         alerts_total,
+        volumes: Vec::new(),
+        status: RunStatus::Completed,
+        failure: None,
+    }
+}
+
+/// Adds the drives' space; each drive almost full is one more point to review.
+pub fn with_volumes(mut report: Report, volumes: Vec<VolumeSummary>) -> Report {
+    report.points_to_review += volumes.iter().filter(|v| v.low).count();
+    report.volumes = volumes;
+    report
+}
+
+/// The report of a run that could not measure: dated, explicit, nothing invented.
+pub fn failed(now: u64, scheduled: bool, failure: &str) -> Report {
+    Report {
+        status: RunStatus::Failed,
+        failure: Some(failure.to_owned()),
+        ..assemble(
+            Vec::new(),
+            (
+                HistoryContext {
+                    status: HistoryStatus::Unavailable,
+                    latest_sample_unix_ms: None,
+                    events_last_day: None,
+                },
+                Vec::new(),
+                0,
+            ),
+            now,
+            scheduled,
+        )
     }
 }
 
 /// Measures now and reads the local history at `database` when that file already exists; a
 /// missing history is reported, never created.
 pub fn collect(database: Option<&Path>, now: u64, scheduled: bool) -> Report {
-    let mut collector = pcagent_telemetry::Collector::new();
-    let findings = analyze(&collector.snapshot(true, 5));
+    // A panic in a native reader must still leave a report that says the run failed.
+    let measured = std::panic::catch_unwind(|| {
+        let mut collector = pcagent_telemetry::Collector::new();
+        let findings = analyze(&collector.snapshot(true, 5));
+        let drives = collector
+            .hardware_inventory()
+            .volumes
+            .value
+            .map(|list| volumes(&list))
+            .unwrap_or_default();
+        (findings, drives)
+    });
+    let Ok((findings, drives)) = measured else {
+        return failed(now, scheduled, "measurement_failed");
+    };
     let history = match database.filter(|path| path.is_file()) {
         None => (
             HistoryContext {
@@ -186,7 +283,7 @@ pub fn collect(database: Option<&Path>, now: u64, scheduled: bool) -> Report {
             ),
         },
     };
-    assemble(findings, history, now, scheduled)
+    with_volumes(assemble(findings, history, now, scheduled), drives)
 }
 
 struct Words {
@@ -205,6 +302,12 @@ struct Words {
     events: &'static str,
     coverage: &'static str,
     scheduled: &'static str,
+    drives: &'static str,
+    drive_low: &'static str,
+    drive_line: &'static str,
+    failed: &'static str,
+    failure_measurement: &'static str,
+    failure_other: &'static str,
 }
 
 const EN: Words = Words {
@@ -223,6 +326,12 @@ const EN: Words = Words {
     events: "activity event(s) recorded in the last 24 hours.",
     coverage: "Coverage: one measurement taken when this report ran. A single sample cannot prove a sustained problem.",
     scheduled: "Written by the daily scheduled task. Nothing was sent anywhere.",
+    drives: "Drives",
+    drive_low: "almost full",
+    drive_line: "{free} free of {total}",
+    failed: "This run could not measure the PC.",
+    failure_measurement: "Reason: a measurement failed. The next run tries again.",
+    failure_other: "Reason: unknown. The next run tries again.",
 };
 
 const FR: Words = Words {
@@ -241,6 +350,12 @@ const FR: Words = Words {
     events: "événement(s) d’activité enregistré(s) dans les dernières 24 heures.",
     coverage: "Couverture : une seule mesure, prise au moment du rapport. Un seul relevé ne prouve pas un problème durable.",
     scheduled: "Écrit par la tâche planifiée quotidienne. Rien n’a été envoyé.",
+    drives: "Disques",
+    drive_low: "presque plein",
+    drive_line: "{free} libres sur {total}",
+    failed: "Cette exécution n’a pas pu mesurer le PC.",
+    failure_measurement: "Raison : une mesure a échoué. La prochaine exécution réessaiera.",
+    failure_other: "Raison : inconnue. La prochaine exécution réessaiera.",
 };
 
 fn words(language: Language) -> &'static Words {
@@ -286,6 +401,20 @@ fn value(language: Language, value: u64, unit: &str) -> String {
 pub fn markdown(report: &Report, language: Language) -> String {
     let w = words(language);
     let mut out = format!("# {}, {}\n\n", w.title, report.date);
+    if report.status == RunStatus::Failed {
+        out.push_str(&format!(
+            "{}\n\n{}\n",
+            w.failed,
+            match report.failure.as_deref() {
+                Some("measurement_failed") => w.failure_measurement,
+                _ => w.failure_other,
+            }
+        ));
+        if report.scheduled {
+            out.push_str(&format!("\n{}\n", w.scheduled));
+        }
+        return out;
+    }
     if report.points_to_review == 0 {
         out.push_str(&format!("{}\n\n", w.none));
     } else {
@@ -341,6 +470,25 @@ pub fn markdown(report: &Report, language: Language) -> String {
         }
         out.push('\n');
     }
+    if !report.volumes.is_empty() {
+        out.push_str(&format!("## {}\n\n", w.drives));
+        for drive in &report.volumes {
+            let line = w
+                .drive_line
+                .replace("{free}", &language.bytes(drive.free_bytes))
+                .replace("{total}", &language.bytes(drive.total_bytes));
+            out.push_str(&format!(
+                "- {} {line}{}\n",
+                drive.root.trim_end_matches('\\'),
+                if drive.low {
+                    format!(" ({})", w.drive_low)
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        out.push('\n');
+    }
     out.push_str(match report.history.status {
         HistoryStatus::Recent => w.recent,
         HistoryStatus::Stale => w.stale,
@@ -356,6 +504,35 @@ pub fn markdown(report: &Report, language: Language) -> String {
         out.push_str(&format!("{}\n", w.scheduled));
     }
     out
+}
+
+const SETTINGS: &str = "settings.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportSettings {
+    /// Show a Windows notification after a scheduled run that found something to review.
+    pub notify: bool,
+}
+
+impl Default for ReportSettings {
+    fn default() -> Self {
+        Self { notify: true }
+    }
+}
+
+/// The local report settings; an absent or damaged file means the defaults.
+pub fn settings(dir: &Path) -> ReportSettings {
+    fs::read(dir.join(SETTINGS))
+        .ok()
+        .filter(|bytes| bytes.len() < 4096)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_settings(dir: &Path, settings: ReportSettings) -> io::Result<ReportSettings> {
+    fs::create_dir_all(dir)?;
+    write_atomic(&dir.join(SETTINGS), &serde_json::to_vec(&settings)?)?;
+    Ok(settings)
 }
 
 fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
