@@ -1732,6 +1732,57 @@ ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent
   `-D warnings`, tests, build release des quatre binaires) ; GUI native lancée sur le Mac de la
   session avec captures EN/FR, clair/sombre ; `docs/macos.md` et section plateformes du README.
 
+### Chantier 17 — Rapport quotidien planifié (piste B, A et C ; proposé le 29 octobre)
+
+Besoin du porteur : une vérification qui tourne **même si PC Agent est fermé**, une fois par
+jour, qui regarde ce qui ne va pas et laisse un rapport. Ce chantier lève, pour ce seul cas, la
+phrase « Aucun service ni tâche planifiée » du chantier 8 ; celle-ci reste vraie pour le helper
+élevé (`pcagent-elevated`).
+
+- **Ce qui tourne.** Une sous-commande sans interface, `pcagent report --scheduled`, lancée par le
+  Planificateur de tâches. Elle prend son propre relevé ponctuel (mémoire, CPU, disque, GPU,
+  processus, démarrage, espace des volumes), applique les règles locales de `diagnostics`, relit
+  l'historique de 7 jours et les alertes de surveillance déjà enregistrées s'il en existe, puis
+  écrit le rapport. Sans l'app ouverte, aucun échantillonneur ne tourne : le rapport le dit
+  (« historique incomplet : l'app était fermée ») et n'invente aucune tendance. Chaque chiffre
+  garde sa date et sa nature (exacte ou borne basse), comme en C4.
+- **Aucun réseau, aucun LLM, aucun administrateur.** La tâche s'exécute sous le compte courant, en
+  privilèges limités, jamais élevée. Elle n'envoie rien : le contrat C5 n'est donc pas
+  concerné. Le rapport est local ; l'ouvrir dans la conversation (« Expliquer ce rapport ») passe
+  par le flux normal et son aperçu exact C5. La clé API n'est ni lue ni nécessaire.
+- **Stockage.** Fichiers `rapport-AAAA-MM-JJ.json` (schéma versionné) et `.md` lisible dans
+  `%APPDATA%\pcagent\reports`, 30 derniers jours conservés, taille bornée, écriture atomique.
+  Le JSON suit les observations C4 ; le Markdown ne contient ni nom d'utilisateur ni ligne de
+  commande ni chemin de profil en clair (mêmes projections que C5 pour tout texte exporté).
+- **Tâche planifiée.** Une seule tâche par compte, `PCAgent DailyReport (<compte>)`, à la racine
+  de la bibliothèque (un compte standard ne peut pas y créer de dossier), créée par le Planificateur de
+  tâches (COM, crate `windows`, ou `schtasks.exe` à arguments fixes) : déclencheur quotidien
+  (heure par défaut 09:00, réglable), « exécuter dès que possible si manquée », seulement session
+  ouverte, niveau d'exécution le plus bas, limite 5 minutes, pas de réveil de la machine, une
+  seule instance. L'action est le `pcagent.exe` installé avec des arguments fixes ; aucun argument
+  ne vient du modèle ni d'une saisie libre.
+- **Consentement.** Désactivé par défaut. Réglages > Rapport quotidien : un interrupteur, l'heure,
+  et l'affichage exact de ce qui sera lancé. Activer, modifier l'heure et supprimer sont des
+  actions locales par clic, inscrites dans le journal des actions avec leur restauration
+  (suppression de la tâche). L'état affiché, y compris la commande lancée, est relu depuis le
+  Planificateur, jamais mémorisé ; une tâche qui lance une autre copie est signalée et réparable.
+  Désinstaller ou désactiver supprime la tâche. Le modèle ne peut ni créer ni modifier cette
+  tâche ; au plus il peut proposer d'ouvrir la page des réglages.
+- **Restitution.** Notification locale discrète à la fin (« Rapport du jour : N points à voir »),
+  désactivable. Au prochain lancement, l'app affiche le dernier rapport sur l'accueil : la
+  réponse d'abord, les preuves à un clic. Une exécution manquée ou en échec laisse un rapport
+  d'état (« non exécuté », raison) plutôt que le silence.
+- **Plateformes.** Windows d'abord. Sur Linux et macOS, la sous-commande `report` tourne avec les
+  bouchons ; la planification native (systemd/launchd) relève du chantier 16 et n'est pas
+  promise ici.
+- **Hors périmètre.** Surveillance continue app fermée, alertes en direct sans l'app, service
+  Windows, élévation planifiée, envoi du rapport par e-mail ou vers un tiers.
+- **Acceptation.** Tests sur données synthétiques (règles, bornes, rotation, absence d'historique,
+  absence de données personnelles) ; sous Windows, compte standard : création, exécution à
+  l'heure, exécution manquée rattrapée, suppression, état relu ; captures FR/EN claires et
+  sombres de la page de réglages et de la carte d'accueil. Rien n'est déclaré validé avant ces
+  preuves.
+
 ## 5. Calendrier
 
 | Semaine | Travail |
@@ -2023,7 +2074,10 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | Textes français, accessibilité et finitions #71 | C | contrat approuvé par le porteur ; implémentation et preuves Windows standard, Narrateur/NVDA, axe et parcours FR/EN clair/sombre/contraste élevé en cours ; aucune validation non exécutée n'est considérée acquise | PR plan puis PR code séparées |
-| Intégration des branches feature (29 octobre) | toutes | une branche d'intégration fusionne eval-stream-drain, cache-auto-escalation, browser-process-details, storage-map, local-voice, french-accessibility, deep-checks, etw-e06, wp6-watches et l'interface de history-complete (backend history-complete non repris : déjà couvert par wp6-watches) ; schéma store v9 ; fmt/Clippy/tests Rust et JavaScript verts sous Linux ; **non validé** : Windows natif, ETW (acceptation LaunchFailed(5) sur etw-e06), UAC, Nebius réel, captures | [#116](https://github.com/nassim-arifette/pc-agent/pull/116) |
+| Intégration des branches feature (29 octobre) | toutes | une branche d'intégration fusionne eval-stream-drain, cache-auto-escalation, browser-process-details, storage-map, local-voice, french-accessibility, deep-checks, etw-e06, wp6-watches et l'interface de history-complete (backend history-complete non repris : déjà couvert par wp6-watches) ; schéma store v9 ; fmt/Clippy/tests Rust et JavaScript verts sous Linux ; **non validé** : Windows natif, ETW (acceptation LaunchFailed(5) sur etw-e06), UAC, Nebius réel, captures | [#116](https://github.com/nassim-arifette/pc-agent/pull/116) fusionné (29 oct., `b7f1107`) |
+| 17 — Rapport quotidien planifié (29 octobre) | B, A, C | implémenté dans [#118](https://github.com/nassim-arifette/pc-agent/pull/118) : rapport local (mesure, règles, historique 24 h, alertes, espace des disques), rapport d’échec daté, tâche par compte à la racine (privilèges minimaux, 5 min, rattrapage), journal des actions, commande relue et réparable, notification désactivable, retrait sans fenêtre pour un futur installateur ; carte des Réglages et de l’accueil ; tests Linux et compilation Windows ; **non validé** sous Windows natif avec un compte standard | [#117](https://github.com/nassim-arifette/pc-agent/pull/117), [#118](https://github.com/nassim-arifette/pc-agent/pull/118) |
+| C7 — Surveillances : interface (29 octobre) | C | dans [#118](https://github.com/nassim-arifette/pc-agent/pull/118), d’après le point d’arrêt de feature/wp6-watches (#72) : vue Surveillances (règles et état en direct, alertes 7 jours, Expliquer par la source figée et l’aperçu exact, bilan local, notification de test), badge des alertes non vues, ouverture au clic d’une notification, Surveiller depuis PC en direct, fenêtre masquée dans la zone de notification tant qu’une règle est active ; mock, tests Node, captures FR/EN ; **non validé** : alerte réelle, toast et clic sous Windows, Expliquer avec Nebius | [#118](https://github.com/nassim-arifette/pc-agent/pull/118) |
+| #71 — Français de la CLI et audit rendu (29 octobre) | C | dans [#118](https://github.com/nassim-arifette/pc-agent/pull/118) : rapports Stockage et doctor, revue et approbation des actions, relance d’enquête et erreurs de question en français, phrases fixes du cœur rendues par table fermée ; noms de dossiers du Stockage marqués comme noms locaux ; audit rendu sous Chromium (Linux) : 0 fuite d’anglais sur 222 états ; **non mesuré** : Narrateur, NVDA, axe, contrastes | [#118](https://github.com/nassim-arifette/pc-agent/pull/118), docs/accessibility.md |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Réorganisation C — cœur / outils / Nebius | A, B | client Nebius, catalogue déclaratif, projections pures et implémentations `pcagent-tools` séparés ; apps raccordées ; validation locale : 828 tests Rust réussis, 3 ignorés, sur 22 exécutables sous compte standard (intégrité moyenne, hors groupe administrateurs), fmt, Clippy, doctests et quatre builds release ; 46 constantes de catalogue comparées à leur définition avant refactor sans changement de valeur ; aucun parcours GUI natif ni test Linux rejoué ; découpage des gros fichiers détaillé ci-dessous | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
 | Réorganisation C — gros fichiers du cœur | A | réponse et sélections figées séparées en modules par responsabilité, API conservées et sources ajoutées à l'identité de calibration ; 41 tests déplacés et 68 corps de fonctions comparés sans changement de comportement (l'adaptateur de sélection utilise ses accesseurs existants) ; 828 tests Rust réussis sous compte standard, 3 ignorés, Clippy et quatre builds release validés ; 51 tests d'orchestration ensuite regroupés par comportement sans modifier leurs corps, 184 tests du cœur et Clippy repassés ; aucun changement visuel | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
