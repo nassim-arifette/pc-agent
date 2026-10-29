@@ -10,6 +10,7 @@ mod captures;
 mod engine;
 mod history;
 mod storage;
+mod watches;
 
 #[test]
 fn elevated_selection_is_dated_private_bound_to_host_and_expires() {

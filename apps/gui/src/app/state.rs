@@ -74,6 +74,7 @@ pub(super) struct AppState {
     /// Local conversation history; `None` when its file cannot be opened.
     pub(super) history: Arc<Mutex<Option<Store>>>,
     pub(super) sampler: Option<Sampler>,
+    pub(super) watches: super::watch_commands::Runtime,
     pub(super) preview: Mutex<Option<PreparedTurn>>,
     pub(super) images: Mutex<ImageSlot>,
     pub(super) image_decoding: Arc<AtomicBool>,

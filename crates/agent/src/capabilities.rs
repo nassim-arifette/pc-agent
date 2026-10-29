@@ -179,6 +179,7 @@ pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
     // The persistent sampler stores Windows measurements.
     ("get_metric_history", &[Windows, HistorySampler]),
     ("get_activity_events", &[Windows, HistorySampler]),
+    ("get_watch_alerts", &[Windows, HistorySampler]),
     ("record_activity", &[Windows, HistorySampler]),
     // Results of helper tasks the person approves in the desktop app.
     (
@@ -373,6 +374,7 @@ mod tests {
         "query_system",
         "get_metric_history",
         "get_activity_events",
+        "get_watch_alerts",
         "record_activity",
         "get_approved_elevated_inspection",
         "propose_elevated_check",
@@ -385,6 +387,7 @@ mod tests {
     const HISTORY: &[&str] = &[
         "get_metric_history",
         "get_activity_events",
+        "get_watch_alerts",
         "record_activity",
     ];
     const SCOPES: &[&str] = &[

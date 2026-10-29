@@ -441,8 +441,7 @@ mod tests {
                 to_unix_ms: (count + 1) * 1000,
             })
             .unwrap();
-        // These projection fixtures inject events below; the store no longer returns names
-        // unrelated to events or values. Supply the matching local-only fixture identities.
+        // These projection tests add events after the store read, with their own name context.
         series.process_names = [
             (
                 "proc-aabbccdd".into(),
@@ -451,8 +450,7 @@ mod tests {
             ("proc-aabbccde".into(), "editor.exe".into()),
             ("proc-aabbccdf".into(), "unrelated.exe".into()),
         ]
-        .into_iter()
-        .collect();
+        .into();
         series
     }
 

@@ -21,6 +21,7 @@ pub(crate) trait Backend {
     fn process_tree(collector: &mut Collector) -> ProcessTree;
     fn revalidate(pid: u32, created: u64) -> InstanceState;
     fn hardware_inventory() -> HardwareInventory;
+    fn volume_inventory() -> pcagent_shared::Observed<Vec<pcagent_shared::VolumeInfo>>;
 }
 
 #[cfg(windows)]

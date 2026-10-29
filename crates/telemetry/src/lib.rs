@@ -43,6 +43,11 @@ pub fn current_resource_usage() -> ResourceUsage {
     os::Selected::resource_usage()
 }
 
+/// The narrow drive/free-space read used by the watch sampler's minute maintenance.
+pub fn volume_inventory() -> pcagent_shared::Observed<Vec<pcagent_shared::VolumeInfo>> {
+    os::Selected::volume_inventory()
+}
+
 /// Evidence older than this is reported `stale` by `process_details`.
 pub const DETAILS_FRESHNESS: Duration = Duration::from_secs(30);
 

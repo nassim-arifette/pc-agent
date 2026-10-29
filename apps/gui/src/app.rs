@@ -12,7 +12,7 @@ mod settings_commands;
 mod state;
 mod storage_commands;
 mod turn_commands;
-mod voice_commands;
+mod watch_commands;
 mod worker;
 
 use crate::images::ImageSlot;
@@ -26,7 +26,7 @@ use pcagent_storage::StorageService;
 use pcagent_telemetry::ProgramNames;
 use state::{AppState, ScanSlot};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -87,6 +87,10 @@ pub fn run() {
             )
         })
         .expect("the measurement thread starts");
+    let history = Arc::new(Mutex::new(open_history()));
+    let handle = Arc::new(OnceLock::new());
+    let watches = watch_commands::Runtime::start(history.clone(), handle.clone());
+    let sampler = open_sampler(watches.hooks(history.clone(), handle.clone()));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -95,8 +99,9 @@ pub fn run() {
             scan: Arc::new(Mutex::new(ScanSlot::default())),
             investigation: Mutex::new(None),
             next_id: AtomicU64::new(1),
-            history: Arc::new(Mutex::new(open_history())),
-            sampler: open_sampler(),
+            history,
+            sampler,
+            watches,
             privacy: Mutex::new(settings::load()),
             actions: Arc::new(Mutex::new(None)),
             elevation: Arc::new(elevation::Slot::default()),
@@ -160,10 +165,28 @@ pub fn run() {
             history_commands::conversations_clear,
             history_commands::history_status,
             history_commands::metric_history,
+            history_commands::history_chart,
+            history_commands::history_overview,
+            history_commands::history_recordings,
+            history_commands::recording_detail,
+            history_commands::history_collection,
+            history_commands::history_collection_set_budget,
             history_commands::record_activity_start,
             history_commands::battery_recording,
             history_commands::record_activity_cancel,
             history_commands::history_clear,
+            watch_commands::watches_list,
+            watch_commands::watch_create,
+            watch_commands::watch_update,
+            watch_commands::watch_set_enabled,
+            watch_commands::watch_delete,
+            watch_commands::watch_alerts,
+            watch_commands::watch_alert_detail,
+            watch_commands::watch_alerts_seen,
+            watch_commands::watch_language_set,
+            watch_commands::watch_notification_test,
+            watch_commands::watch_weekly_summary,
+            watch_commands::watch_activation_take,
             settings_commands::startup_get,
             settings_commands::startup_set,
             settings_commands::privacy_get,
@@ -181,18 +204,8 @@ pub fn run() {
             voice_commands::voice_model_cancel,
             voice_commands::voice_model_delete
         ])
-        .setup(|app| {
-            let voice_app = app.handle().clone();
-            let model_app = app.handle().clone();
-            app.manage(pcagent_voice::VoiceService::new(
-                app.path().app_local_data_dir()?.join("voice"),
-                move |state| {
-                    let _ = voice_app.emit("voice:state", state);
-                },
-                move |model| {
-                    let _ = model_app.emit("voice:model", model);
-                },
-            ));
+        .setup(move |app| {
+            let _ = handle.set(app.handle().clone());
             use tauri::{
                 menu::{Menu, MenuItem},
                 tray::{TrayIconBuilder, TrayIconEvent},

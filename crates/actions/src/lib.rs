@@ -12,6 +12,7 @@ mod cancellation;
 mod cleanup;
 mod journal;
 mod native;
+pub mod notifications;
 mod os;
 mod plan;
 mod startup;

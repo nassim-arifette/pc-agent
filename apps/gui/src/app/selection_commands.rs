@@ -13,10 +13,9 @@ use pcagent_agent::selection::{
 };
 use pcagent_agent::{PrivacyContext, Sharing, StorageContext};
 use pcagent_nebius::Config;
-use pcagent_shared::unix_ms;
 use pcagent_storage::StorageService;
 use pcagent_store::sampler::Sampler;
-use pcagent_store::HistoryQuery;
+use pcagent_store::RecordingDetail;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -35,45 +34,30 @@ pub(super) fn retain_capture(
 
 pub(super) fn retain_recording(registry: &Mutex<SelectionRegistry>, sampler: &Sampler, id: &str) {
     let revision = lock(registry).history_revision();
-    let Ok(Some(recording)) = sampler.recording(id) else {
+    let Ok(Some(detail)) = sampler.recording_detail(id) else {
         return;
     };
-    let to = recording.ended_at_unix_ms.unwrap_or_else(unix_ms);
-    if to <= recording.started_at_unix_ms {
-        return;
+    let _ = retain_recording_detail(registry, &detail, revision);
+}
+
+pub(super) fn retain_recording_detail(
+    registry: &Mutex<SelectionRegistry>,
+    detail: &RecordingDetail,
+    revision: u64,
+) -> Result<String, String> {
+    let mut histories = detail.chart.histories.clone();
+    if let Some(first) = histories.first_mut() {
+        first.events = detail.chart.events.clone();
+        first.process_names = detail.chart.process_names.clone();
     }
-    let histories = [
-        pcagent_shared::Metric::CpuBusyBasisPoints,
-        pcagent_shared::Metric::PhysicalAvailableBytes,
-        pcagent_shared::Metric::DiskReadLatencyMicroseconds,
-        pcagent_shared::Metric::DiskWriteLatencyMicroseconds,
-    ]
-    .into_iter()
-    .filter_map(|metric| {
-        let mut series = sampler
-            .history(&HistoryQuery {
-                metric,
-                entity_ref: "system".into(),
-                from_unix_ms: recording.started_at_unix_ms,
-                to_unix_ms: to,
-            })
-            .ok()?;
-        series.limit_points(120);
-        Some(series)
-    })
-    .collect();
     let source = RecordingSource {
-        cpu_peaks: sampler
-            .process_peaks(recording.started_at_unix_ms, to, 10)
-            .ok(),
-        resource_peaks: sampler
-            .process_resource_peaks(recording.started_at_unix_ms, to, 10)
-            .ok(),
-        battery: sampler.battery_recording(id).ok().flatten(),
-        recording,
+        cpu_peaks: Some(detail.cpu_peaks.clone()),
+        resource_peaks: Some(detail.resource_peaks.clone()),
+        battery: detail.battery.clone(),
+        recording: detail.recording.clone(),
         histories,
     };
-    let _ = lock(registry).publish_history(SelectionSource::Recording(source), revision);
+    lock(registry).publish_history(SelectionSource::Recording(source), revision)
 }
 
 pub(super) fn retain_storage_page(

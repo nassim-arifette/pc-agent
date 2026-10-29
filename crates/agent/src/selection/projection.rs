@@ -141,6 +141,36 @@ impl FrozenSelection {
                 history::project(capture.clone(), sharing, privacy, Some(120)),
                 json!({"kind":"resource","resource":resource}),
             ),
+            (SelectionSource::Chart(chart), SelectionTarget::Event { event_id }) => {
+                let mut series = chart
+                    .histories
+                    .first()
+                    .ok_or("The chart has no retained series.")?
+                    .clone();
+                series.points.clear();
+                series.events = chart
+                    .events
+                    .iter()
+                    .filter(|event| &event.id == event_id)
+                    .cloned()
+                    .collect();
+                series.process_names = chart.process_names.clone();
+                (
+                    history::project(series, sharing, privacy, None),
+                    json!({"kind":"event"}),
+                )
+            }
+            (SelectionSource::Chart(chart), SelectionTarget::Resource { resource }) => {
+                let series = chart
+                    .histories
+                    .iter()
+                    .find(|series| resource.contains(series.metric))
+                    .ok_or("The chart has no retained series for this resource.")?;
+                (
+                    history::project(series.clone(), sharing, privacy, Some(120)),
+                    json!({"kind":"resource","resource":resource}),
+                )
+            }
             (SelectionSource::History(capture), SelectionTarget::Process { entity_ref }) => (
                 history::project(capture.clone(), sharing, privacy, Some(120)),
                 json!({"kind":"process","entity_ref":entity_ref}),
@@ -226,6 +256,16 @@ impl FrozenSelection {
                     json!({"kind":"resource","resource":"battery"}),
                 )
             }
+            (SelectionSource::WatchAlert(alert), SelectionTarget::WatchAlert { .. }) => (
+                crate::projections::watches::project(
+                    std::slice::from_ref(alert),
+                    1,
+                    0,
+                    sharing,
+                    privacy,
+                ),
+                json!({"kind":"watch_alert"}),
+            ),
             _ => return Err("The target does not belong to this source type."),
         };
         // Every name crosses the same final C5 projection as regular tool results.

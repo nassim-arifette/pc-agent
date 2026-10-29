@@ -76,6 +76,9 @@ impl super::Backend for Native {
     fn hardware_inventory() -> pcagent_shared::HardwareInventory {
         hardware_inventory()
     }
+    fn volume_inventory() -> pcagent_shared::Observed<Vec<pcagent_shared::VolumeInfo>> {
+        inventory::volumes()
+    }
 }
 const BOOT_NOTE: &str = "boot_id is an estimate (GetSystemTimeAsFileTime minus GetTickCount64, rounded to one minute), fixed per collector; clock changes can shift it between sessions.";
 

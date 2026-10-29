@@ -4,7 +4,7 @@ use crate::StorageContext;
 use pcagent_inspect::{CoverageStatus, Inspection};
 use pcagent_shared::{Origin, Snapshot, Window};
 use pcagent_storage::LargestItemsPage;
-use pcagent_store::{BatteryRecording, HistorySeries, ProcessPeaks, Recording};
+use pcagent_store::{BatteryRecording, HistoryChart, HistorySeries, ProcessPeaks, Recording};
 use pcagent_telemetry::ProcessActivity;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -15,6 +15,8 @@ pub enum SelectionSource {
     ProcessActivity(ProcessActivity),
     History(HistorySeries),
     Events(HistorySeries),
+    Chart(HistoryChart),
+    WatchAlert(pcagent_store::watches::WatchAlert),
     Recording(RecordingSource),
     Storage(StorageSource),
     /// One live battery read: C4 observations of the batteries the window shows. The host keeps
@@ -48,6 +50,9 @@ impl SelectionSource {
     pub fn targets(&self) -> Vec<SelectionTarget> {
         let mut targets = Vec::new();
         match self {
+            Self::WatchAlert(alert) => targets.push(SelectionTarget::WatchAlert {
+                alert_id: alert.id.clone(),
+            }),
             Self::Snapshot(snapshot) => {
                 for resource in [
                     Resource::Memory,
@@ -104,6 +109,25 @@ impl SelectionSource {
                     event_id: event.id.clone(),
                 }))
             }
+            Self::Chart(chart) => {
+                for resource in [
+                    Resource::Memory,
+                    Resource::Cpu,
+                    Resource::Disk,
+                    Resource::Gpu,
+                ] {
+                    if chart
+                        .histories
+                        .iter()
+                        .any(|series| resource.contains(series.metric))
+                    {
+                        targets.push(SelectionTarget::Resource { resource });
+                    }
+                }
+                targets.extend(chart.events.iter().map(|event| SelectionTarget::Event {
+                    event_id: event.id.clone(),
+                }));
+            }
             Self::Recording(recording) => targets.push(SelectionTarget::Recording {
                 recording_id: recording.recording.id.clone(),
             }),
@@ -144,7 +168,9 @@ impl SelectionSource {
             target.validate()
                 && seen.insert(serde_json::to_string(target).expect("target serializes"))
         });
-        targets.truncate(MAX_SOURCE_TARGETS);
+        if !self.is_history() {
+            targets.truncate(MAX_SOURCE_TARGETS);
+        }
         targets
     }
 
@@ -157,6 +183,7 @@ impl SelectionSource {
             Self::Snapshot(value) => bytes(value),
             Self::ProcessActivity(value) => bytes(value),
             Self::History(value) | Self::Events(value) => bytes(value),
+            Self::Chart(value) => bytes(value).saturating_add(bytes(&value.histories)),
             Self::Recording(value) => [
                 bytes(&value.recording),
                 bytes(&value.histories),
@@ -170,10 +197,7 @@ impl SelectionSource {
                 .saturating_add(bytes(&value.facts))
                 .saturating_add(value.context.retained_bytes()),
             Self::Battery(value) => bytes(value),
-            Self::ElevatedInspection { id, inspection } => id
-                .len()
-                .saturating_add(bytes(inspection))
-                .saturating_add(bytes(&inspection.names)),
+            Self::WatchAlert(value) => bytes(value),
         }
     }
 
@@ -204,8 +228,9 @@ impl SelectionSource {
             self,
             Self::History(_)
                 | Self::Events(_)
+                | Self::Chart(_)
                 | Self::Recording(_)
-                | Self::ElevatedInspection { .. }
+                | Self::WatchAlert(_)
         )
     }
 
@@ -220,10 +245,13 @@ impl SelectionSource {
 
     pub fn measured_at(&self, target: &SelectionTarget) -> Option<u64> {
         let at = match (self, target) {
-            (
-                Self::ElevatedInspection { inspection, .. },
-                SelectionTarget::ElevatedInspection { .. },
-            ) => Some(inspection.measured_at_unix_ms),
+            (Self::WatchAlert(alert), SelectionTarget::WatchAlert { .. }) => [
+                alert.observation.measured_at_unix_ms,
+                alert.extreme_observation.measured_at_unix_ms,
+            ]
+            .into_iter()
+            .flatten()
+            .max(),
             (Self::Snapshot(snapshot), SelectionTarget::Resource { resource }) => snapshot
                 .evidence
                 .iter()
@@ -255,6 +283,26 @@ impl SelectionSource {
                     })
                     .max()
             }
+            (Self::Chart(chart), SelectionTarget::Event { event_id }) => chart
+                .events
+                .iter()
+                .filter(|event| &event.id == event_id)
+                .flat_map(|event| [&event.peak_observation, &event.contributor_observation])
+                .filter_map(|observation| {
+                    observation
+                        .as_ref()
+                        .and_then(|value| value.measured_at_unix_ms)
+                })
+                .max(),
+            (Self::Chart(chart), SelectionTarget::Resource { resource }) => chart
+                .histories
+                .iter()
+                .find(|series| resource.contains(series.metric))
+                .into_iter()
+                .flat_map(|series| &series.points)
+                .filter(|point| point.value.is_some() || point.min.is_some() || point.max.is_some())
+                .map(|point| point.observed_to_unix_ms.unwrap_or(point.unix_ms))
+                .max(),
             (
                 Self::History(series),
                 SelectionTarget::Resource { .. } | SelectionTarget::Process { .. },

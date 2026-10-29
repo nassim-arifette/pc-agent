@@ -74,7 +74,7 @@ fn chart_uses_one_system_projection_and_never_decodes_process_payloads() {
         .execute("UPDATE samples SET payload='not JSON'", [])
         .unwrap();
     let chart = store.history_chart(0, 601_000, 300).unwrap();
-    assert_eq!(chart.series.len(), 5);
+    assert_eq!(chart.series.len(), SYSTEM_CHARTS.len());
     assert!(chart.series.iter().all(|s| s.points.len() <= 300));
     let cpu = &chart.histories[0];
     assert_eq!(cpu.points.iter().filter_map(|p| p.max).max(), Some(9_999));
@@ -257,8 +257,7 @@ fn drop_history_projection(store: &Store) {
     store
         .conn
         .execute_batch(
-            "DROP TABLE elevated_inspections;
-             DROP TABLE system_samples; DROP TABLE history_names; DROP TABLE collection_policy;
+            "DROP TABLE system_samples; DROP TABLE history_names; DROP TABLE collection_policy;
          PRAGMA user_version=7;",
         )
         .unwrap();
@@ -299,7 +298,7 @@ fn release_v6_upgrades_through_real_watch_v7_and_history_v8_losslessly() {
             .conn
             .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        crate::SCHEMA_VERSION
+        8
     );
     assert_eq!(
         serde_json::to_value(store.history_chart(0, 20_000, 300).unwrap()).unwrap(),
