@@ -13,6 +13,7 @@ pub(crate) fn offered(mut spec: ToolSpec, scopes: bool) -> ToolSpec {
         "get_hardware_inventory" => "Read Linux kernel, architecture, usable RAM, volume space, DMI model/vendor and block-device metadata. If installed and authorized, smartctl contributes only allowlisted numeric health data. No serial numbers or device identifiers.",
         "get_drivers" => "Read loaded Linux kernel modules and locally cached apt, dnf or Flatpak update offers. No network refresh, install or downgrade is performed. Missing or stale caches have explicit coverage.",
         "get_cleanup_opportunities" => "Read metadata-only lower bounds for the user's XDG cache and trash. Cache files require exact local review before moving to recoverable trash. Moving to trash does not reclaim disk space. No file contents are shared.",
+        "get_approved_elevated_inspection" => "Read the already measured numeric SMART disk-health result approved locally through polkit. This tool never invokes pkexec, grants approval or collects fresh data. Without a cached result, needs_admin lets the app offer the read-only check for explicit local consent. Missing hardware or fields stay unknown. No serial numbers, device paths or raw SMART logs are shared.",
         "query_system" => "Run one named, fixed Linux inspection. No shell, query language, paths, usernames or arbitrary executable arguments are accepted. Windows-specific query names return unsupported.",
         _ => spec.description,
     };
@@ -24,6 +25,14 @@ pub(crate) fn offered(mut spec: ToolSpec, scopes: bool) -> ToolSpec {
     }
     if spec.name == "prepare_action_plan" {
         spec = super::proposals::linux(scopes);
+    }
+    if spec.name == "get_approved_elevated_inspection" {
+        spec.params = &[Param {
+            name: "task",
+            description: "The fixed read-only Linux task approved locally.",
+            kind: ParamKind::OneOf(&["disk_reliability"]),
+            required: true,
+        }];
     }
     spec
 }

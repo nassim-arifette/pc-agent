@@ -239,7 +239,7 @@ pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
     // Results of helper tasks the person approves in the desktop app.
     (
         "get_approved_elevated_inspection",
-        &[Windows, ElevatedHelper],
+        &[NativeActions, ElevatedHelper],
     ),
     // Proposals act on Windows targets: Settings pages, Explorer, Run entries, processes.
     (
@@ -261,11 +261,11 @@ pub const REQUIREMENTS: &[(&str, &[Capability])] = &[
 /// Helper tasks `get_approved_elevated_inspection` offers, with what each needs beyond the tool
 /// itself. Process images and the performance trace are never offered: no host prepares them.
 pub const ELEVATED_TASKS: &[(&str, &[Capability])] = &[
-    ("system_caches", &[]),
-    ("mft_inventory", &[NtfsVolumes]),
-    ("shadow_storage", &[]),
+    ("system_caches", &[Windows]),
+    ("mft_inventory", &[Windows, NtfsVolumes]),
+    ("shadow_storage", &[Windows]),
     ("disk_reliability", &[]),
-    ("battery_energy", &[Battery]),
+    ("battery_energy", &[Windows, Battery]),
 ];
 
 /// A constant variant of a tool, offered when every capability in `missing` is absent. Its

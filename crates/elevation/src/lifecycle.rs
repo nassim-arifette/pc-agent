@@ -17,7 +17,7 @@ struct CompletionState {
 pub struct ElevationCompletion(Arc<CompletionState>);
 
 impl ElevationCompletion {
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn pending() -> Self {
         Self(Arc::new(CompletionState {
             callbacks: Mutex::new(Some(Vec::new())),
@@ -86,7 +86,7 @@ impl ElevationCompletion {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn complete(&self) {
         let callbacks = self
             .0
@@ -102,15 +102,15 @@ impl ElevationCompletion {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 use super::{
     protocol::ElevationError,
     worker::{supervise, ElevatedProcess},
 };
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 use pcagent_storage::CancelToken;
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) trait HostJob: Send + Sync + 'static {
     type Response: Send + 'static;
     fn signal_cancel(&self);
@@ -118,7 +118,7 @@ pub(crate) trait HostJob: Send + Sync + 'static {
 }
 
 /// A persistent supervisor owns launch, process and job even after the caller receives an error.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn run_supervised<J: HostJob, P: ElevatedProcess + Send + 'static>(
     job: Arc<J>,
     cancel: &CancelToken,
@@ -187,7 +187,7 @@ pub(crate) fn run_supervised<J: HostJob, P: ElevatedProcess + Send + 'static>(
 
 /// Retry only the owned process; keep its capability when termination or exit queries fail.
 /// This runs on the supervisor, never on the GUI thread. No elapsed time implies confirmed exit.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn retain_until_exit(process: &mut impl ElevatedProcess) {
     while !matches!(process.has_exited(), Ok(true)) {
         let _ = process.terminate();

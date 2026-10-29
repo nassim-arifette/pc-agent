@@ -30,7 +30,7 @@ pub(super) fn run(program: &str, args: &[&str]) -> Result<String, C> {
         .env("SYSTEMD_COLORS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => C::Unsupported,
@@ -38,6 +38,13 @@ pub(super) fn run(program: &str, args: &[&str]) -> Result<String, C> {
             _ => C::Error,
         })?;
     let stdout = child.stdout.take().ok_or(C::Error)?;
+    let stderr = child.stderr.take().ok_or(C::Error)?;
+    let (errors_tx, errors_rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.take(65_536).read_to_end(&mut bytes);
+        let _ = errors_tx.send(bytes);
+    });
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -71,8 +78,55 @@ pub(super) fn run(program: &str, args: &[&str]) -> Result<String, C> {
     if !(status.success() || program == "/usr/bin/dnf" && status.code() == Some(100)) {
         // smartctl bit flags report drive health as well as invocation errors.
         if program != "/usr/sbin/smartctl" || status.code().is_none_or(|code| code & 7 != 0) {
-            return Err(C::Denied);
+            let errors = errors_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap_or_default();
+            return Err(failure(&errors, &bytes));
         }
     }
     String::from_utf8(bytes).map_err(|_| C::Error)
+}
+
+fn failure(stderr: &[u8], stdout: &[u8]) -> C {
+    let denied = [stderr, stdout].into_iter().any(|bytes| {
+        let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+        [
+            "permission denied",
+            "access denied",
+            "not authorized",
+            "operation not permitted",
+        ]
+        .iter()
+        .any(|message| text.contains(message))
+    });
+    if denied {
+        C::Denied
+    } else {
+        C::Error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_commands_do_not_invent_permission_denials_or_expose_raw_errors() {
+        assert_eq!(
+            failure(b"Failed to connect to bus: No such file or directory", b""),
+            C::Error
+        );
+        assert_eq!(
+            failure(b"Permission denied: /home/private/path", b""),
+            C::Denied
+        );
+        assert_eq!(
+            failure(
+                b"",
+                br#"{"messages":[{"string":"Open device: Permission denied"}]}"#
+            ),
+            C::Denied
+        );
+        assert_eq!(failure(b"Invalid command option", b""), C::Error);
+    }
 }

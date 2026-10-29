@@ -8,6 +8,9 @@ pub mod energy;
 mod energy_native;
 mod job;
 mod lifecycle;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod linux;
 #[cfg(unix)]
 #[allow(unsafe_code)]
 mod unix_host;
@@ -45,11 +48,26 @@ pub const HELPER_FILE_NAME: &str = "pcagent-elevated.exe";
 /// locally approved tasks at all. One file-system check, no launch; the launch checks again.
 /// Always false on other systems.
 pub fn helper_installed() -> bool {
-    cfg!(windows)
-        && std::env::current_exe()
-            .ok()
-            .and_then(|exe| Some(exe.parent()?.join(HELPER_FILE_NAME)))
-            .is_some_and(|helper| helper.is_file())
+    #[cfg(target_os = "linux")]
+    return linux::helper_installed();
+    #[cfg(not(target_os = "linux"))]
+    {
+        cfg!(windows)
+            && std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.parent()?.join(HELPER_FILE_NAME)))
+                .is_some_and(|helper| helper.is_file())
+    }
+}
+
+/// Closed task support is checked again by the platform worker, not just the page.
+pub fn task_supported(task: &ElevatedTask) -> bool {
+    #[cfg(target_os = "linux")]
+    return matches!(task, ElevatedTask::DiskReliability);
+    #[cfg(not(target_os = "linux"))]
+    {
+        cfg!(windows) && !matches!(task, ElevatedTask::PerformanceTrace { .. })
+    }
 }
 
 /// The desktop and model host must remain unelevated; only the fixed worker may be admin.

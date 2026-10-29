@@ -10,7 +10,7 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::{Component, Path, PathBuf},
 };
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use {crate::VolumeSpace, pcagent_shared::Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,7 +221,7 @@ fn modified_ms(stat: &Stat) -> Option<u64> {
 pub(crate) fn check_root(root: &Path) -> Result<VolumeId, StorageError> {
     Ok(VolumeId(Directory::open_root(root, None)?.identity()?.0))
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn volume_space(_root: &Path) -> VolumeSpace {
     VolumeSpace {
         total_bytes: None,

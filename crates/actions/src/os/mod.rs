@@ -3,6 +3,9 @@ mod adapter;
 pub use adapter::{NativeEffects, NativeGuard};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod desktop;
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) mod unix;
 
 #[cfg(target_os = "linux")]
 mod linux;

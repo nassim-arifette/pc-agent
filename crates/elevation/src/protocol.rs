@@ -179,7 +179,7 @@ impl ElevationRequest {
         }
         Ok(())
     }
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn encode(&self) -> Result<Vec<u8>, ElevationError> {
         serde_json::to_vec(self).map_err(|_| ElevationError::InvalidRequest)
     }
@@ -343,7 +343,7 @@ impl fmt::Debug for ElevationResponse {
     }
 }
 impl ElevationResponse {
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn empty(
         request: &ElevationRequest,
         status: ElevationStatus,

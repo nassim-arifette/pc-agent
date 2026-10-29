@@ -1,8 +1,13 @@
-use super::protocol::{ElevationError, WorkerArguments};
+use super::protocol::ElevationError;
+#[cfg(not(target_os = "linux"))]
+use super::protocol::WorkerArguments;
 use std::ffi::OsString;
 
 /// The separate helper's only entry point. Arguments carry no command, target path or output path.
 pub fn worker_main(args: impl IntoIterator<Item = OsString>) -> Result<(), ElevationError> {
+    #[cfg(target_os = "linux")]
+    return super::linux::worker(args);
+    #[cfg(not(target_os = "linux"))]
     let arguments = WorkerArguments::parse(args)?;
     #[cfg(windows)]
     {
@@ -10,14 +15,14 @@ pub fn worker_main(args: impl IntoIterator<Item = OsString>) -> Result<(), Eleva
         let cleanup = super::trace_native::abort_owned_session();
         result.and(cleanup)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = arguments;
         Err(ElevationError::Unsupported)
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) trait ElevatedProcess {
     fn poll(&mut self) -> Result<Option<u32>, ElevationError>;
     fn terminate(&mut self) -> Result<(), ElevationError>;
@@ -26,7 +31,7 @@ pub(crate) trait ElevatedProcess {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn supervise(
     process: &mut impl ElevatedProcess,
     cancel: &pcagent_storage::CancelToken,

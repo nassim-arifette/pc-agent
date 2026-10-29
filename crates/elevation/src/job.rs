@@ -12,6 +12,8 @@ pub struct PreparedElevation {
     completion: ElevationCompletion,
     #[cfg(windows)]
     job: std::sync::Arc<super::native::NativeJob>,
+    #[cfg(target_os = "linux")]
+    job: std::sync::Arc<super::linux::LinuxJob>,
 }
 
 /// A consumable permit produced by the local approval gesture. It is neither Clone nor serde.
@@ -25,7 +27,7 @@ impl PreparedElevation {
     pub fn prepare(task: ElevatedTask, budget: Duration) -> Result<Self, ElevationError> {
         let request = ElevationRequest::new(task, budget)?;
         // No UAC prompt, trace session or ACL changes until hard-exit cleanup is validated.
-        if matches!(request.task, ElevatedTask::PerformanceTrace { .. }) {
+        if !super::task_supported(&request.task) {
             return Err(ElevationError::Unsupported);
         }
         super::ensure_unelevated_host()?;
@@ -39,7 +41,17 @@ impl PreparedElevation {
                 job,
             })
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            let job = std::sync::Arc::new(super::linux::LinuxJob::create(&request)?);
+            Ok(Self {
+                request,
+                approval_issued: false,
+                completion: job.completion(),
+                job,
+            })
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = request;
             Err(ElevationError::Unsupported)
@@ -93,7 +105,11 @@ impl PreparedElevation {
         {
             super::native::run_approved(self.job, &self.request, cancel)
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            super::linux::run_approved(self.job, &self.request, cancel)
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             Err(ElevationError::Unsupported)
         }

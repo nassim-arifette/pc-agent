@@ -29,13 +29,17 @@ fn instructions_name_the_elevated_tool_only_when_it_is_declared() {
     assert!(!desktop.contains("energy apps used on battery"));
     for capabilities in [
         Capabilities::all().with(Capability::ElevatedHelper, false),
-        Capabilities::all().with(Capability::Windows, false),
+        Capabilities::all().with(Capability::NativeActions, false),
         Capabilities::none(),
     ] {
         let text = prompt(&capabilities);
         assert!(text.contains(NO_ELEVATED), "{capabilities:?}");
         assert!(!text.contains("get_approved_elevated_inspection"));
     }
+    let linux = prompt(&Capabilities::all().with(Capability::Windows, false));
+    assert!(linux.contains(ELEVATED_DISK));
+    assert!(!linux.contains("Windows.old"));
+    assert!(!linux.contains("energy apps used on battery"));
     // Explain declares only the frozen evidence.
     let explain = system_prompt(
         &[selection::GET_SELECTED_EVIDENCE],
