@@ -39,12 +39,12 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
         return Err(StoreError::Corrupt);
     }
     tx.execute_batch(
-        "CREATE TABLE elevated_inspections (
+        "CREATE TABLE IF NOT EXISTS elevated_inspections (
             id TEXT PRIMARY KEY,
             measured_at INTEGER NOT NULL CHECK(measured_at >= 0),
             payload TEXT NOT NULL
         );
-        CREATE INDEX elevated_inspections_by_time ON elevated_inspections(measured_at);
+        CREATE INDEX IF NOT EXISTS elevated_inspections_by_time ON elevated_inspections(measured_at);
         PRAGMA user_version = 9;",
     )?;
     tx.commit()?;

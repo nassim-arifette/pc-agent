@@ -298,7 +298,7 @@ fn release_v6_upgrades_through_real_watch_v7_and_history_v8_losslessly() {
             .conn
             .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        8
+        9
     );
     assert_eq!(
         serde_json::to_value(store.history_chart(0, 20_000, 300).unwrap()).unwrap(),

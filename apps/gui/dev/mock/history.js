@@ -90,7 +90,7 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
       }
     }
     const active = recording && recording.ended_at_unix_ms == null ? recording : null;
-    return { running: true, samples: historyCleared ? 12 : 7800, last_sample_unix_ms: Date.now() - 2000, recording: active, error: null, thread_cpu_basis_points: 160, total_cpu_basis_points: 20, logical_processors: 8, resource_window_ms: 60000, host_working_set_bytes: 96 * MiB, cpu_target_basis_points: 50, memory_target_bytes: 50 * MiB };
+    return { running: true, samples: historyCleared ? 12 : 98213, last_sample_unix_ms: Date.now() - 2000, recording: active, error: null, thread_cpu_basis_points: 160, total_cpu_basis_points: 20, logical_processors: 8, resource_window_ms: 60000, host_working_set_bytes: 96 * MiB, cpu_target_basis_points: 50, memory_target_bytes: 50 * MiB };
   }
 
   function groupedChart(from, to, buckets) {
@@ -237,7 +237,9 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
     },
     history_clear: () => {
       historyCleared = true;
-      return 7800;
+      recording = null;
+      records = [];
+      return 98213;
     },
     startup_get: () => startupEnabled,
     startup_set: ({ enabled }) => {

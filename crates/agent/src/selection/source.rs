@@ -198,6 +198,7 @@ impl SelectionSource {
                 .saturating_add(value.context.retained_bytes()),
             Self::Battery(value) => bytes(value),
             Self::WatchAlert(value) => bytes(value),
+            Self::ElevatedInspection { inspection, .. } => bytes(inspection),
         }
     }
 

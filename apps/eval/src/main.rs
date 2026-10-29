@@ -127,7 +127,7 @@ enum Command {
         #[arg(long, requires = "calibration")]
         ultra_model: Option<String>,
         /// Eval-only: read final usage after accepting the first answer. Extra tail tokens may be billed.
-        #[arg(long, requires = "allow_cloud", conflicts_with = "calibration")]
+        #[arg(long, requires = "allow_cloud", conflicts_with_all = ["calibration", "preview_cloud"])]
         drain_usage: bool,
         #[arg(long)]
         anonymize: bool,
