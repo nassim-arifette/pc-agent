@@ -27,6 +27,7 @@ export const state = {
   /** Saved conversations, most recently updated first. */
   conversations: [],
   scan: { status: "idle", root: null, scopeId: null, progress: null, view: null, error: null },
+  recentScans: [],
   /** The scan the person detached from their questions with the composer's folder chip. */
   scanDetached: null,
   /**
@@ -730,6 +731,8 @@ export function wireEvents() {
     scan.status = "done";
     scan.view = view;
     scan.root = view.root;
+    state.recentScans.unshift({ root: view.root, at: view.scanned_at_unix_ms,
+      size: view.scanned?.allocated_bytes, status: view.status });
     notify("scan");
   });
   on("scan:failed", ({ scope_id: scopeId, code, message }) => {

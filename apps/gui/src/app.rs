@@ -138,6 +138,8 @@ pub fn run() {
             storage_commands::cancel_scan,
             storage_commands::scan_page,
             storage_commands::reveal,
+            storage_commands::scan_children,
+            storage_commands::scan_item_facts,
             settings_commands::save_cloud_settings,
             settings_commands::save_search_key,
             settings_commands::open_web_source,

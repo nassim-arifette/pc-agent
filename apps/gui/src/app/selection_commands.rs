@@ -82,6 +82,16 @@ pub(super) fn retain_storage_page(
     scan: &Mutex<ScanSlot>,
     page: pcagent_storage::LargestItemsPage,
 ) -> Option<String> {
+    retain_storage_facts(registry, storage, scan, page, None)
+}
+
+pub(super) fn retain_storage_facts(
+    registry: &Mutex<SelectionRegistry>,
+    storage: &StorageService,
+    scan: &Mutex<ScanSlot>,
+    page: pcagent_storage::LargestItemsPage,
+    facts: Option<pcagent_storage::StorageItemEvidence>,
+) -> Option<String> {
     let current = lock(scan);
     if current.scope_id.as_deref() != Some(page.scope_id.as_str()) {
         return None;
@@ -93,6 +103,7 @@ pub(super) fn retain_storage_page(
     let mut context = StorageContext::default();
     let _ = context.authorize_useful_names_with_privacy(&index, &PrivacyContext::local());
     let source = StorageSource {
+        facts: facts.map(Box::new),
         page,
         window: index.measurement_window().clone(),
         origin: pcagent_shared::Origin::Live,

@@ -26,6 +26,8 @@ pub use labels::{
 pub use measurement::Measure;
 pub use report::{error_code, report, ErrorView, Report, LOCAL_EVIDENCE_NOTE};
 pub use settings::{app_info, capabilities, cloud, AppInfo, Cloud, MODELS};
+#[cfg(windows)]
+pub use storage::{item as storage_item, Item as StorageItem};
 pub use storage::{page, progress, storage, Page};
 pub use usage::{price, usage, PriceView, Usage};
 

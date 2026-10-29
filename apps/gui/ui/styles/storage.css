@@ -1,0 +1,29 @@
+.storage-browser { min-width: 0; }
+.storage-crumbs { margin: 16px 0; }
+.storage-crumbs button { overflow-wrap: anywhere; max-width: 100%; }
+.storage-browser .chip[aria-pressed="true"] { background: var(--hover); border-color: var(--text); }
+.storage-nodes { list-style: none; padding: 0; margin: 0; }
+.storage-node-line { display: flex; gap: 6px; align-items: start; min-width: 0; }
+.storage-node-line > .chip { margin-top: 14px; flex: 0 0 auto; }
+.storage-browser-row { min-width: 0; flex: 1; }
+.storage-browser .item-row { width: 100%; }
+.storage-branch { margin-left: 16px; padding-left: 8px; border-left: 1px solid var(--stroke); }
+.storage-map { position: relative; width: 100%; aspect-ratio: 1000 / 520; margin: 12px 0; min-height: 260px; }
+.storage-tile { position: absolute; border: 2px solid var(--surface); border-radius: 7px; background: hsl(var(--tile-hue) 48% 87%); color: #172631; padding: 6px; overflow: hidden; display: flex; flex-direction: column; text-align: left; gap: 3px; }
+.storage-tile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.storage-tile strong { white-space: nowrap; }
+.storage-tile.selected, .storage-tile:focus-visible { outline: 3px solid var(--text); outline-offset: -4px; z-index: 1; }
+.storage-other { background: repeating-linear-gradient(45deg, var(--hover), var(--hover) 6px, var(--surface) 6px, var(--surface) 12px); color: var(--text); }
+:root[data-theme="dark"] .storage-tile:not(.storage-other) { background: hsl(var(--tile-hue) 36% 26%); color: #f2f6fc; }
+.storage-facts { padding-top: 12px; }
+.storage-facts h3 { font-size: 13px; margin-block: 14px 8px; }
+.storage-facts .insp-kv dd { overflow-wrap: anywhere; }
+@media (max-width: 680px) {
+  .actbar { width: 100%; }
+  .actbar-btn { padding-inline: 6px; white-space: normal; height: auto; min-height: 36px; }
+  .actbar-hint, .actbar-sep { display: none; }
+  .storage-node-line { flex-wrap: wrap; }
+  .storage-browser-row { flex-basis: 100%; }
+  .storage-branch { margin-left: 6px; padding-left: 4px; }
+  .storage-map { min-height: 300px; }
+}

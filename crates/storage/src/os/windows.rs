@@ -714,6 +714,17 @@ pub(crate) fn check_root(root: &Path) -> Result<VolumeId, StorageError> {
     Ok(VolumeId(info.VolumeSerialNumber))
 }
 
+pub(crate) fn volume_location(root: &Path) -> Option<(String, bool)> {
+    let volume = volume_path(root).ok()?;
+    // SAFETY: volume_path returns a NUL-terminated volume root.
+    let fixed = unsafe { GetDriveTypeW(volume.as_ptr()) } == DRIVE_FIXED;
+    let path = String::from_utf16_lossy(&volume[..volume.len().saturating_sub(1)]);
+    Some((
+        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned(),
+        fixed,
+    ))
+}
+
 pub(crate) fn volume_space(root: &Path) -> VolumeSpace {
     const SOURCE: &str = "Win32.GetDiskFreeSpaceExW";
     let name = wide(root);

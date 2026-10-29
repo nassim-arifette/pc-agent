@@ -3829,22 +3829,15 @@ details.more > div {
 }
 /* The bar never covers the next row: the selected item makes room for it on its side. In the
    card grid the rows open up instead, so the selected card's neighbours keep its height. */
-.actbar-anchor:not(.livepage-card-slot):has(> .actbar:not(.actbar-above)) {
-  margin-bottom: 52px;
-}
-.actbar-anchor:not(.livepage-card-slot):has(> .actbar.actbar-above) {
-  margin-top: 52px;
-}
-.livepage-cards:has(.actbar) {
-  row-gap: 62px;
-  padding-bottom: 52px;
-}
 .actbar {
-  position: absolute;
+  position: relative;
   z-index: 5;
-  left: 0;
-  top: calc(100% + 8px);
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+  max-width: 100%;
+  margin-block: 8px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
   padding: 4px;
@@ -3860,12 +3853,10 @@ details.more > div {
 }
 /* Kept in view: aligned to the item's end near the right edge, above it near the bottom. */
 .actbar.actbar-end {
-  left: auto;
-  right: 0;
+  margin-left: auto;
 }
 .actbar.actbar-above {
-  top: auto;
-  bottom: calc(100% + 8px);
+  position: relative;
 }
 .actbar-in {
   animation: actbar-in 140ms var(--ease);

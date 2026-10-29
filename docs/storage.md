@@ -6,6 +6,37 @@ MFT/USN backend (9.2, P1) is not implemented; `ScanBackend` is the seam for it.
 
 ## Design
 
+### Hierarchy and scan-time facts
+
+The index stores first-child/next-sibling links with parents before children. Links are rebuilt
+at finalization; hard-link aliases never contribute twice to sizes or facts. The desktop's
+`scan_children(scope_id, item_ref?, kind, offset)` reads direct children in groups of 50, using
+the same allocation/logical-size ordering as the global ranking. Omitting the parent means the
+scan root; the root itself is not selectable. Browsing children publishes no selection source.
+The response includes the parent, its partial flag and the remainder of that page. The UI
+recalculates **Other** over all pages it has displayed: parent size minus displayed children,
+clamped to zero. This is neither free volume space nor a selectable item.
+
+`scan_item_facts(scope_id, item_ref)` resolves only a scan-issued item reference, never a path
+from JavaScript. It walks the in-memory descendants and caches completed facts per scan/item:
+largest file, counts and bytes unmodified for 182 days, undated files and closed extension-only
+file-type totals. Unknown allocation stays null. Starting another facts request cancels the
+previous walk before queuing work on the blocking pool. Cancellation and cache publication
+share a completion lock; cancelled walks never enter the cache.
+
+The command issues an exact C3 selection source containing the one item's sibling rank,
+`parent_ref`, `parent_alias`, `rank_scope: "siblings_of_parent"`, `item_facts` and
+`volume_total_bytes`. Facts are frozen at scan completion, not current readings; C1 recognizes
+`*_count` and flags current-tense historical claims. C5 sends file types only as nameless totals
+and always aliases the largest file, even with file-name consent. Scan IDs, real parent paths
+and the local system-folder hint are excluded.
+
+The desktop offers map/tree/list navigation, a local facts inspector and session-only recent
+summaries. Reopening an older scan starts a new scan; only the latest full index is retained.
+The fixed-volume mount point is read locally for the C7 `requestWatch(rule)` proposal.
+That hook only opens a prefilled form, never saves a watch. Removable/unsupported or unknown
+volumes cannot propose a watch; creation revalidates the volume in the Watches backend.
+
 - **Scope.** `ScanScope::authorize(path)` (or `StorageService::authorize`) is a local, user-initiated
   step that captures a non-link root object before canonicalizing, binds its filesystem identity,
   refuses a root that is itself a link/reparse point, refuses
