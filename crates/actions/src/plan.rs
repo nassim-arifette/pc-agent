@@ -13,6 +13,7 @@ const MAX_INTENT_BYTES: usize = 16 * 1024;
 pub enum ActionKind {
     OpenInExplorer,
     OpenSettingsPage,
+    OpenBrowserProcessManager,
     RequestNormalClose,
     RecycleSelectedFiles,
     RunCleanupAdapter,
@@ -171,6 +172,7 @@ pub struct CleanupTarget {
 pub enum ResolvedTarget {
     File(FileTarget),
     Process(ProcessTarget),
+    BrowserManager(crate::BrowserManagerTarget),
     SettingsPage { page: SettingsPage },
     CleanupAdapter(CleanupTarget),
     RecycleCleanup(crate::RecycleCleanupTarget),
@@ -201,6 +203,7 @@ pub enum Precondition {
     NotReparsePoint,
     SameProcessInstance,
     SettingsPageAllowlisted,
+    BrowserManagerAllowlisted,
     SyntheticCacheMarkerPresent,
     RecycleBinAvailable,
     UserStartupEntryUnchanged,

@@ -16,6 +16,7 @@ mod storage;
 mod usage;
 
 pub use actions::{outcome, plan, ActionOutcome, PlanView};
+pub(crate) use activity::application_key;
 pub use activity::{activity, ActivityView};
 pub use battery::{battery_read, BatteryView, LiveBattery};
 pub use dashboard::{dashboard, ntfs_volumes, volumes, Dashboard, VolumeView};

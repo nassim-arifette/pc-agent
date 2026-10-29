@@ -7,6 +7,7 @@ pub const PROPOSABLE_KINDS: &[&str] = &[
     "run_cleanup_adapter",
     "disable_user_startup",
     "request_normal_close",
+    "open_browser_process_manager",
     "recycle_selected_files",
 ];
 pub const SETTINGS_PAGES: &[&str] = &[
@@ -28,7 +29,9 @@ pub const PREPARE_ACTION_PLAN: ToolSpec = ToolSpec {
         settings_page. open_in_explorer needs scope_id + item_ref from get_largest_items or \
         get_cleanup_candidates. recycle_selected_files needs a file scope_id + item_ref listed \
         as proposable_actions by those tools. request_normal_close needs process_ref from \
-        get_processes. disable_user_startup needs startup_ref from get_startup_programs. \
+        get_processes. open_browser_process_manager needs a browser process_ref; it opens only \
+        Chrome/Edge Task Manager or Firefox about:processes after local approval, never closes \
+        a process. disable_user_startup needs startup_ref from get_startup_programs. \
         run_cleanup_adapter needs adapter_id from get_cleanup_opportunities, or scope_id + \
         item_ref of a validated synthetic demo directory from get_cleanup_candidates. Use \
         only locally issued references; never send a path, command, PID or registry name.",
@@ -89,7 +92,8 @@ const PROCESS_REF: Param = Param {
 pub(crate) const PREPARE_WITHOUT_STORAGE: ToolSpec = ToolSpec {
     description: "Propose one action for the user to review locally after the investigation. \
         Nothing runs now; you cannot approve or execute it. open_settings_page needs \
-        settings_page. request_normal_close needs process_ref from get_processes. \
+        settings_page. request_normal_close and open_browser_process_manager need process_ref \
+        from get_processes (browser manager only for Firefox, Chrome or Edge). \
         disable_user_startup needs startup_ref from get_startup_programs. run_cleanup_adapter \
         needs adapter_id from get_cleanup_opportunities. Use only locally issued references; \
         never send a path, command, PID or registry name.",
@@ -100,6 +104,7 @@ pub(crate) const PREPARE_WITHOUT_STORAGE: ToolSpec = ToolSpec {
                 "run_cleanup_adapter",
                 "disable_user_startup",
                 "request_normal_close",
+                "open_browser_process_manager",
             ]),
             ..ACTION_KIND
         },

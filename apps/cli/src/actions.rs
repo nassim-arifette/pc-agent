@@ -56,6 +56,10 @@ pub(super) fn review_actions(
                     c.bytes.map_or_else(|| "size unknown".into(), format_bytes)
                 ),
                 ResolvedTarget::Process(t) => format!("process {}", t.identity.pid),
+                ResolvedTarget::BrowserManager(t) => format!(
+                    "{:?} for process {} (open only; no process is closed)",
+                    t.destination, t.process.identity.pid
+                ),
                 ResolvedTarget::UserStartup(t) => format!("user startup entry {}", t.value_name()),
                 ResolvedTarget::RecycleCleanup(c) => format!(
                     "{} ({}, {})",

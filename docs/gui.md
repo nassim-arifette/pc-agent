@@ -6,6 +6,29 @@ diagnostic logic of its own.
 
 ## Layout
 
+### Browser details in Live PC
+
+A browser application's row includes process count, working set and the largest closed
+process categories. Its inspector adds an EN/FR table sorted by working set, process count
+or type, plus classification coverage and the shared-working-set warning. No column claims
+to measure exact RAM per tab/site. Application selection survives fresh captures using a
+local stable process reference; model selections still use the current snapshot's references.
+
+**Read window titles** and **Read tab titles** are explicit local requests. Captions and
+accessible tab names appear only in this view, not in selection chips, saved conversations,
+SQLite, evaluation output or provider requests. Leaving Live PC discards them. Unknown,
+exited and inaccessible windows keep honest status messages. Use **See what is sent** on
+Explain/Investigate to inspect the exact measured breakdown without these titles.
+
+Each supported browser window offers **Open browser process manager**. The dialog lists the
+fixed destination and identity checks, offers decline, and requires a separate confirmation
+before execution. It never closes processes or grants approval to a model. Existing
+in-flight plans block preparation rather than silently replacing the pending decision.
+
+The design mock includes Chrome and Firefox groups, every closed process type, and synthetic
+`LOCAL-ONLY` titles in a separate fixture. Those fixtures validate rendering and IPC contracts,
+not native command delivery or browser accessibility support.
+
 One window after the hybrid direction chosen on 2026-10-01 (chat first, context on demand), with
 the rail of the phase 2 desktop mockups:
 

@@ -28,6 +28,12 @@ pub trait TargetResolver {
 pub trait Guard {
     fn observe_file(&self, path: &Path) -> Result<Option<FileIdentity>, Status>;
     fn observe_process(&self, pid: u32) -> Result<Option<ProcessIdentity>, Status>;
+    fn observe_browser(
+        &self,
+        _process: &ProcessTarget,
+    ) -> Result<Option<crate::BrowserManagerTarget>, Status> {
+        Err(Status::Unsupported)
+    }
     fn observe_user_startup(&self, _value_name: &str) -> Result<Option<StartupIdentity>, Status> {
         Err(Status::Unsupported)
     }
@@ -71,6 +77,16 @@ impl EffectError {
 /// shell interpreter or fall back to permanent deletion.
 pub trait Effects {
     fn capability(&self, kind: ActionKind) -> Capability;
+    fn open_browser_process_manager(
+        &self,
+        _permit: &Permit,
+        _browser: &crate::BrowserManagerTarget,
+    ) -> Result<EffectOutcome, EffectError> {
+        Err(EffectError::new(
+            Status::Unsupported,
+            "browser manager is unsupported",
+        ))
+    }
     fn open_in_explorer(
         &self,
         permit: &Permit,
@@ -271,6 +287,15 @@ impl Broker<'_> {
             ActionKind::OpenSettingsPage => {
                 (None, Recovery::NotApplicable, vec![SettingsPageAllowlisted])
             }
+            ActionKind::OpenBrowserProcessManager => (
+                None,
+                Recovery::NotApplicable,
+                vec![
+                    IdentityRevalidated,
+                    SameProcessInstance,
+                    BrowserManagerAllowlisted,
+                ],
+            ),
             ActionKind::RequestNormalClose => (
                 None,
                 Recovery::UserCanRestartApplication,
@@ -370,6 +395,22 @@ impl Broker<'_> {
             (ResolvedTarget::Process(p), ActionKind::RequestNormalClose) => {
                 self.check_process(p).err()
             }
+            (ResolvedTarget::Process(p), ActionKind::OpenBrowserProcessManager) => {
+                self.check_process(p)
+                    .map_err(|_| ActionError::IdentityChanged(target_ref.into()))?;
+                let browser = self
+                    .guard
+                    .observe_browser(p)
+                    .map_err(|status| ActionError::Resolve {
+                        target_ref: target_ref.into(),
+                        status,
+                    })?
+                    .filter(|b| b.valid())
+                    .ok_or(ActionError::InvalidIntent(
+                        "not an allowlisted browser instance",
+                    ))?;
+                return Ok(ResolvedTarget::BrowserManager(browser));
+            }
             (
                 ResolvedTarget::UserStartup(startup),
                 ActionKind::DisableUserStartup | ActionKind::RestoreUserStartup,
@@ -449,6 +490,17 @@ impl Broker<'_> {
     }
     fn revalidate(&self, target: &ResolvedTarget) -> Result<PreState, Refusal> {
         match target {
+            ResolvedTarget::BrowserManager(browser) => {
+                if !browser.valid() {
+                    return Err(Refusal::TargetReplaced);
+                }
+                let identity = self.check_process(&browser.process)?;
+                match self.guard.observe_browser(&browser.process) {
+                    Ok(Some(current)) if &current == browser => Ok(PreState::Process { identity }),
+                    Ok(_) => Err(Refusal::TargetReplaced),
+                    Err(status) => Err(Refusal::Unverifiable { status }),
+                }
+            }
             ResolvedTarget::File(f) => self.check_file(f).map(|identity| PreState::File {
                 path: f.path.clone(),
                 identity,
@@ -490,6 +542,9 @@ impl Broker<'_> {
         cancel: &AtomicBool,
     ) -> ItemOutcome {
         let effect = match (kind, target) {
+            (ActionKind::OpenBrowserProcessManager, ResolvedTarget::BrowserManager(browser)) => {
+                self.effects.open_browser_process_manager(permit, browser)
+            }
             (ActionKind::OpenInExplorer, ResolvedTarget::File(f)) => {
                 self.effects.open_in_explorer(permit, f)
             }

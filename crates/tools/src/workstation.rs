@@ -348,7 +348,7 @@ impl Workstation<'_> {
                         synthetic_cache: None,
                     }
                 }
-                ActionKind::RequestNormalClose => {
+                ActionKind::RequestNormalClose | ActionKind::OpenBrowserProcessManager => {
                     let reference = args.text("process_ref").ok_or("process_ref is required")?;
                     Proposal {
                         kind,

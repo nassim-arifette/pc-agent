@@ -515,7 +515,8 @@ mod tests {
                 "open_settings_page",
                 "run_cleanup_adapter",
                 "disable_user_startup",
-                "request_normal_close"
+                "request_normal_close",
+                "open_browser_process_manager"
             ]
         );
         assert!(spec

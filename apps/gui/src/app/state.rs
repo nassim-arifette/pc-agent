@@ -24,6 +24,10 @@ use std::sync::{mpsc, Arc, Mutex};
 pub(super) enum Measure {
     Dashboard(mpsc::Sender<view::Dashboard>),
     Activity(mpsc::Sender<view::ActivityView>),
+    BrowserTargets {
+        application_ref: String,
+        reply: mpsc::Sender<Vec<pcagent_telemetry::local_browser::BrowserWindowTarget>>,
+    },
     Preview(mpsc::Sender<Snapshot>),
 }
 
