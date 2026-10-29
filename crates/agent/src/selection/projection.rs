@@ -40,12 +40,22 @@ impl FrozenSelection {
         if !target.validate() || !source.targets().contains(target) {
             return Err("The selected target is absent from this immutable capture.");
         }
+        if !source.available_at(previewed_at_unix_ms) {
+            return Err("The administrator inspection has expired.");
+        }
         if file_names && sharing != Sharing::Complete {
             return Err("File names require complete sharing and the finite scan name preview.");
         }
         let mut snapshot = Snapshot::empty("selected-local-capture");
         let mut storage_context = StorageContext::default();
         let (mut output, wire_target) = match (source, target) {
+            (
+                SelectionSource::ElevatedInspection { inspection, .. },
+                SelectionTarget::ElevatedInspection { .. },
+            ) => (
+                crate::projections::system::project(inspection, sharing, privacy),
+                json!({"kind":"elevated_inspection"}),
+            ),
             (SelectionSource::Snapshot(capture), SelectionTarget::Resource { resource }) => {
                 snapshot = capture.clone();
                 snapshot
@@ -83,12 +93,24 @@ impl FrozenSelection {
             ) => {
                 let mut activity = capture.clone();
                 activity
-                    .evidence
-                    .retain(|evidence| &evidence.entity_ref == entity_ref);
-                activity
                     .processes
                     .retain(|process| &process.instance.entity_ref == entity_ref);
-                activity.applications.clear();
+                // The selected browser process keeps its application's measured type breakdown.
+                // No window/tab text exists in this source or projection.
+                let app_ref = activity.processes.first().map(|p| &p.application_ref);
+                activity.applications.retain(|app| {
+                    app_ref == Some(&app.entity_ref) && !app.browser_types.is_empty()
+                });
+                let mut included = std::collections::HashSet::from([entity_ref.as_str()]);
+                for app in &activity.applications {
+                    included.insert(&app.entity_ref);
+                    for row in &app.browser_types {
+                        included.insert(&row.entity_ref);
+                    }
+                }
+                activity
+                    .evidence
+                    .retain(|evidence| included.contains(evidence.entity_ref.as_str()));
                 snapshot.origin = activity.origin;
                 snapshot.evidence = activity.evidence.clone();
                 snapshot.processes = activity
@@ -119,6 +141,36 @@ impl FrozenSelection {
                 history::project(capture.clone(), sharing, privacy, Some(120)),
                 json!({"kind":"resource","resource":resource}),
             ),
+            (SelectionSource::Chart(chart), SelectionTarget::Event { event_id }) => {
+                let mut series = chart
+                    .histories
+                    .first()
+                    .ok_or("The chart has no retained series.")?
+                    .clone();
+                series.points.clear();
+                series.events = chart
+                    .events
+                    .iter()
+                    .filter(|event| &event.id == event_id)
+                    .cloned()
+                    .collect();
+                series.process_names = chart.process_names.clone();
+                (
+                    history::project(series, sharing, privacy, None),
+                    json!({"kind":"event"}),
+                )
+            }
+            (SelectionSource::Chart(chart), SelectionTarget::Resource { resource }) => {
+                let series = chart
+                    .histories
+                    .iter()
+                    .find(|series| resource.contains(series.metric))
+                    .ok_or("The chart has no retained series for this resource.")?;
+                (
+                    history::project(series.clone(), sharing, privacy, Some(120)),
+                    json!({"kind":"resource","resource":resource}),
+                )
+            }
             (SelectionSource::History(capture), SelectionTarget::Process { entity_ref }) => (
                 history::project(capture.clone(), sharing, privacy, Some(120)),
                 json!({"kind":"process","entity_ref":entity_ref}),
@@ -153,8 +205,22 @@ impl FrozenSelection {
                 cloud["window"] = json!(capture.window);
                 cloud["measured_at_unix_ms"] = json!(capture.window.finished_at_unix_ms);
                 cloud["origin"] = json!(capture.origin);
+                if let Some(evidence) = &capture.facts {
+                    cloud["item_facts"] = json!(evidence.item_facts.without_names());
+                    cloud["volume_total_bytes"] = json!(evidence.volume_total_bytes);
+                    cloud["parent_ref"] = json!(evidence.parent_alias);
+                    cloud["parent_alias"] = json!(evidence.parent_alias);
+                    cloud["rank_scope"] = json!(evidence.rank_scope);
+                    // The verifier derives shares within one measured object, not across siblings.
+                    cloud["items"][0]["volume_total_bytes"] = json!(evidence.volume_total_bytes);
+                    cloud["items"][0]["parent_ref"] = json!(evidence.parent_alias);
+                }
                 let status = if page.scan_status == Status::Ok
                     && page.items.iter().all(|item| item.status == Status::Ok)
+                    && capture
+                        .facts
+                        .as_ref()
+                        .is_none_or(|f| f.item_facts.status == Status::Ok)
                 {
                     Status::Ok
                 } else {
@@ -190,6 +256,16 @@ impl FrozenSelection {
                     json!({"kind":"resource","resource":"battery"}),
                 )
             }
+            (SelectionSource::WatchAlert(alert), SelectionTarget::WatchAlert { .. }) => (
+                crate::projections::watches::project(
+                    std::slice::from_ref(alert),
+                    1,
+                    0,
+                    sharing,
+                    privacy,
+                ),
+                json!({"kind":"watch_alert"}),
+            ),
             _ => return Err("The target does not belong to this source type."),
         };
         // Every name crosses the same final C5 projection as regular tool results.

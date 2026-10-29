@@ -16,6 +16,8 @@ import { runSelection } from "../selection/actions.js";
 import { actionBar, selectionKeys } from "../actionbar.js";
 import { currentRoute } from "../router.js";
 import { failureDetail, failureText } from "../failure.js";
+import { browserSummary, browserBreakdown, browserLocalInspection, clearLocalBrowsers } from "./browser.js";
+import { adminChecksCard } from "../elevation/checks.js";
 
 // Kept across visits so coming back to the view shows the same selection.
 let selected = null;
@@ -94,7 +96,7 @@ function rankValue(app) {
 }
 
 function findApp(ref) {
-  return state.live.activity?.applications.find((a) => a.entity_ref === ref) || null;
+  return state.live.activity?.applications.find((a) => a.entity_ref === ref || (selected?.appKey && a.local_key === selected.appKey)) || null;
 }
 
 /** Resolves the selection against the latest measurements: what to show and what to send. */
@@ -118,6 +120,8 @@ function resolve(cards) {
   }
   const app = findApp(selected.app);
   if (!app) return null;
+  selected.app = app.entity_ref;
+  selected.appKey = app.local_key;
   const member = selected.kind === "process" ? app.members.find((m) => m.entity_ref === selected.key) : mainMember(app);
   if (selected.kind === "process" && !member) return null;
   const reference = member && activity.selection_source_id ? { source_id: activity.selection_source_id, target: { kind: "process", entity_ref: member.entity_ref } } : null;
@@ -193,6 +197,7 @@ function appDetails(item) {
   const { app, member } = item;
   if (item.kind === "process") {
     return kv([
+      member.browser?.family ? [t("browser.sort.type"), t(`browser.type.${member.browser.process_type}`)] : null,
       [t("metric.cpu"), member.cpu.value != null ? basisPoints(member.cpu.value) : null],
       [t("metric.memory"), member.working_set.value != null ? bytes(member.working_set.value) : null],
     ]);
@@ -206,6 +211,8 @@ function appDetails(item) {
       app.working_set_increase?.value ? [t("live.apps.grew"), `+${bytes(app.working_set_increase.value)}`] : null,
       [t("live.apps.gpu"), app.gpu?.value != null ? basisPoints(app.gpu.value) : null],
     ]),
+    browserBreakdown(app, render),
+    browserLocalInspection(app, render),
     app.services.length ? h("div", { class: "insp-tags" }, h("span", { class: "caption" }, t("live.apps.services")), app.services.map((sv) => h("span", { class: "tag", title: sv.name }, sv.display_name || sv.name))) : null,
     app.members.length
       ? h(
@@ -215,7 +222,7 @@ function appDetails(item) {
           app.members.map((m) =>
             h(
               "button",
-              { type: "button", class: "insp-member", "data-key": `process:${m.entity_ref}`, onclick: () => select({ kind: "process", app: app.entity_ref, key: m.entity_ref }) },
+              { type: "button", class: "insp-member", "data-key": `process:${m.entity_ref}`, onclick: () => select({ kind: "process", app: app.entity_ref, appKey: app.local_key, key: m.entity_ref }) },
               h("span", { class: "insp-member-name", title: m.readable_name || null }, `${processName(m)} · PID ${m.pid}`),
               h("span", null, measureText(m.cpu, "cpu")),
               h("span", null, measureText(m.working_set, "bytes")),
@@ -344,7 +351,7 @@ function applications(item) {
     ),
   );
   if (!activity) return h("section", { class: "livepage-apps" }, head, h("div", { class: "skeleton", style: { height: "160px" } }));
-  const apps = [...activity.applications].sort((a, b) => rankValue(b) - rankValue(a)).slice(0, 12);
+  const apps = [...activity.applications].sort((a, b) => rankValue(b) - rankValue(a));
   const max = Math.max(1, ...apps.map(rankValue));
   return h(
     "section",
@@ -367,14 +374,15 @@ function applications(item) {
               class: ["livepage-app", pressed ? "selected" : ""],
               "aria-pressed": String(pressed),
               "aria-keyshortcuts": bar && item.reference ? "E Enter" : null,
-              "data-key": `app:${app.entity_ref}`,
+              "data-key": `app:${app.local_key || app.entity_ref}`,
               "data-actbar-item": Boolean(bar),
-              onclick: () => select(pressed && selected.kind === "app" ? null : { kind: "app", app: app.entity_ref }),
+              onclick: () => select(pressed && selected.kind === "app" ? null : { kind: "app", app: app.entity_ref, appKey: app.local_key }),
             },
             h("span", { class: "livepage-app-name", title: applicationName(app) }, app.readable_name || applicationName(app)),
             h("span", { class: "livepage-app-count" }, t(app.process_count === 1 ? "live.apps.one" : "live.apps.many", { count: app.process_count })),
             h("span", { class: "livepage-app-value" }, measureText(app.cpu, "cpu")),
             h("span", { class: "livepage-app-value" }, measureText(app.working_set, "bytes")),
+            app.browser_types?.length ? h("span", { class: "browser-summary" }, browserSummary(app)) : null,
             h("span", { class: "meter" }, h("span", { style: { width: `${(Math.max(0, rankValue(app)) / max) * 100}%` } })),
           ),
           bar,
@@ -387,6 +395,7 @@ function applications(item) {
 }
 
 let host = null;
+let adminCard = null;
 
 function select(next) {
   selected = next;
@@ -408,7 +417,7 @@ function render() {
   );
   const head = h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("livepage.title")), h("p", { class: "page-sub" }, t("livepage.sub"))), status);
   if (!dash) {
-    fill(host, head, live.error ? h("p", { class: "note", title: failureDetail(live.error) }, failureText(live.error, "failure.live_unavailable")) : h("div", { class: "skeleton", style: { height: "220px" } }));
+    fill(host, head, live.error ? h("p", { class: "note", title: failureDetail(live.error) }, failureText(live.error, "failure.live_unavailable")) : h("div", { class: "skeleton", style: { height: "220px" } }), adminCard?.el);
     return;
   }
   const cards = resources(dash, live.history);
@@ -430,12 +439,14 @@ function render() {
       ),
       state.panel.open && state.panel.tab === "selection" ? null : inspector(item),
     ),
+    adminCard?.el,
   );
   if (focusedKey) host.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus({ preventScroll: true });
 }
 
 export function mount(page) {
   host = page;
+  adminCard = adminChecksCard();
   const stopWatching = watchActivity(() => currentRoute() === "live");
   // E explains and Enter investigates the selected item; Escape clears the selection.
   const stopKeys = selectionKeys({
@@ -451,7 +462,10 @@ export function mount(page) {
     if (topic === "live" || topic === "panel") render();
   });
   return () => {
+    adminCard?.dispose();
+    adminCard = null;
     host = null;
+    clearLocalBrowsers();
     stopWatching();
     unsubscribe();
     stopKeys();

@@ -5,17 +5,11 @@ use pcagent_agent::{Args, PrivacyContext, Sharing, ToolOutput, ToolSpec};
 use pcagent_inspect::{elevation::ElevatedTask, Inspection};
 use pcagent_shared::{unix_ms, Status};
 use serde_json::json;
-use std::time::{Duration, Instant};
-
-pub const MAX_APPROVED_INSPECTIONS: usize = 8;
-const MAX_INSPECTION_BYTES: usize = 512 * 1024;
-const RETENTION: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub struct ApprovedInspection {
     task_name: &'static str,
     inspection: Inspection,
-    expires_at: Instant,
 }
 impl ApprovedInspection {
     pub fn new(task: &ElevatedTask, inspection: Inspection) -> Result<Self, &'static str> {
@@ -27,25 +21,27 @@ impl ApprovedInspection {
             ElevatedTask::ProcessImages { .. } => "process_images",
             ElevatedTask::BatteryEnergy => "battery_energy",
             ElevatedTask::PerformanceTrace { .. } => "performance_trace",
+            ElevatedTask::DeepAnalysis { .. } => "deep_analysis",
         };
         if serde_json::to_vec(&inspection)
             .map_err(|_| "invalid_inspection")?
             .len()
-            > MAX_INSPECTION_BYTES
+            > pcagent_store::MAX_ELEVATED_RECORD_BYTES
         {
             return Err("inspection_too_large");
         }
         Ok(Self {
             task_name,
             inspection,
-            expires_at: Instant::now() + RETENTION,
         })
     }
     pub fn task_name(&self) -> &'static str {
         self.task_name
     }
     pub fn available(&self) -> bool {
-        Instant::now() < self.expires_at
+        unix_ms()
+            .checked_sub(self.inspection.measured_at_unix_ms)
+            .is_some_and(|age| age < pcagent_store::ELEVATED_RETENTION_MS)
     }
     /// Same privacy projection as execution, for the locally reviewed context.
     pub fn preview(&self, sharing: Sharing, privacy: &PrivacyContext) -> ToolOutput {
@@ -65,6 +61,23 @@ pub fn run(
     sharing: Sharing,
     privacy: &PrivacyContext,
 ) -> Option<ToolOutput> {
+    if spec.name == pcagent_agent::catalog::elevated::PROPOSE_ELEVATED_CHECK.name {
+        let tasks = args.texts("tasks")?;
+        return Some(ToolOutput {
+            status: Status::Ok,
+            cloud: json!({"status":"ok", "plan":{
+                "plan_id":pcagent_shared::new_id("plan"),
+                "kind":"elevated_check", "tasks":tasks,
+                "requires_local_review":true, "executed":false
+            }}),
+            evidence: Vec::new(),
+            processes: Vec::new(),
+            findings: Vec::new(),
+            storage_items: Vec::new(),
+            limitations: Vec::new(),
+            inspection_complete: false,
+        });
+    }
     if spec.name != GET_APPROVED_INSPECTION.name {
         return None;
     }
@@ -93,6 +106,47 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn proposal_is_closed_unique_local_review_only_and_never_an_inspection() {
+        use pcagent_agent::catalog::elevated::PROPOSE_ELEVATED_CHECK as spec;
+        for invalid in [
+            r#"{"tasks":[]}"#,
+            r#"{"tasks":["system_caches","system_caches"]}"#,
+            r#"{"tasks":["performance_trace"]}"#,
+            r#"{"tasks":["cmd.exe"]}"#,
+            r#"{"tasks":["deep_analysis"]}"#,
+            r#"{"tasks":[{"kind":"system_caches"}]}"#,
+            r#"{"tasks":["system_caches"],"approve":true}"#,
+            r#"{"tasks":["system_caches"],"budget_ms":1}"#,
+            r#"{"tasks":"system_caches"}"#,
+            r#"{"tasks":[null]}"#,
+        ] {
+            assert!(spec.validate(invalid).is_err(), "{invalid}");
+        }
+        let args = spec
+            .validate(r#"{"tasks":["system_caches","process_images","mft_inventory"]}"#)
+            .unwrap();
+        let output = run(
+            &spec,
+            &args,
+            &[],
+            Sharing::Anonymized,
+            &PrivacyContext::local(),
+        )
+        .unwrap();
+        assert_eq!(args.to_value()["tasks"].as_array().unwrap().len(), 3);
+        assert_eq!(output.cloud["plan"]["tasks"], args.to_value()["tasks"]);
+        assert_eq!(output.cloud["plan"]["requires_local_review"], true);
+        assert_eq!(output.cloud["plan"]["executed"], false);
+        assert!(output.cloud["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("plan-"));
+        assert!(!output.inspection_complete);
+        assert!(
+            output.evidence.is_empty() && output.processes.is_empty() && output.findings.is_empty()
+        );
+    }
     #[test]
     fn missing_approval_is_coverage_only_and_schema_cannot_launch_commands() {
         let args = GET_APPROVED_INSPECTION
@@ -141,7 +195,9 @@ mod tests {
         assert!(output.inspection_complete);
         assert_eq!(output.cloud["measured_at_unix_ms"], 1);
         assert_eq!(output.cloud["historical"], true);
-        captured.expires_at = Instant::now();
+        captured.inspection.measured_at_unix_ms = unix_ms();
+        assert!(captured.available());
+        captured.inspection.measured_at_unix_ms = unix_ms() - pcagent_store::ELEVATED_RETENTION_MS;
         assert!(!captured.available());
     }
 }

@@ -1,16 +1,12 @@
-// Deeper checks: four closed, read-only tasks of the separate elevated helper (pcagent-elevated:
-// no network, no AI). The page shows exactly what one check reads and asks for a local click;
-// only then does Windows ask for administrator consent. The helper changes nothing; the result
-// stays on this PC, and for five minutes the chat's AI answers can read it as a measurement
-// (elevated_tools RETENTION) with the person's sharing choice applied. One elevated task can be
-// prepared or run at a time across this card and the quick drive analysis (slot.js). A check
-// this PC cannot run (battery use without a system battery, capabilities.js) stays listed,
-// disabled, with the reason.
+// One local review and one UAC prompt for a closed read-only batch. Targets are resolved by the
+// host; the model proposes only families. Historical measurements never authorize another run.
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
 import { call } from "../api.js";
-import { askWithAi, cloudReady } from "../chat/composer.js";
+import { cloudReady } from "../chat/composer.js";
+import { runSelection } from "../selection/actions.js";
+import { keepFocus } from "../actionbar.js";
 import { badge, button, toast } from "../ui.js";
 import { bytes, clock, duration, number, percent } from "../format.js";
 import { holdSlot, onSlotChange, slotHeldElsewhere } from "./slot.js";
@@ -18,25 +14,20 @@ import { failureDetail, failureText } from "../failure.js";
 import { capable } from "../capabilities.js";
 import { subscribe } from "../store.js";
 
-/** The checks offered here, in display order. Each is a closed ElevatedTask without fields. */
-export const CHECKS = ["system_caches", "shadow_storage", "disk_reliability", "battery_energy"];
-const ICONS = { system_caches: "folder", shadow_storage: "history", disk_reliability: "disk", battery_energy: "battery" };
+export const CHECKS = ["system_caches", "shadow_storage", "disk_reliability", "battery_energy", "mft_inventory", "process_images"];
+const ICONS = { system_caches: "folder", shadow_storage: "history", disk_reliability: "disk", battery_energy: "battery", mft_inventory: "drive", process_images: "cpu" };
 /** What a check needs beyond the helper (capabilities.js); without it the row says why. */
-const NEEDS = { battery_energy: "battery" };
-/**
- * Budget asked for: the helper's maximum (MAX_BUDGET_MS). It counts from the local click, so the
- * time Windows' consent prompt stays open is included; the reads themselves take seconds.
- */
+const NEEDS = { battery_energy: "battery", mft_inventory: "ntfs_volumes" };
+/** Maximum read time per section; consent has its own separate native deadline. */
 export const BUDGET_MS = 120000;
-/** How long the chat can read a completed result (pcagent_agent::elevated_tools RETENTION). */
-const CHAT_RETENTION_MS = 5 * 60 * 1000;
+const CHAT_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** Groups shown before the rest folds away (a battery history can list up to 32 apps). */
 const VISIBLE_GROUPS = 6;
 const UUID = /-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Kept across visits to the Storage view: a running check outlives the page that started it.
 // `results` keeps the last result of each check; `shown` is the one displayed.
-const admin = { status: "idle", kind: null, request: null, error: null, startedAt: null, results: {}, shown: null };
+const admin = { status: "idle", kind: null, request: null, options: null, selected: new Set(), error: null, startedAt: null, results: {}, shown: null };
 const listeners = new Set();
 let ticker = null;
 let poller = null;
@@ -75,11 +66,13 @@ function waitForFreeSlot(then) {
   publishSlot();
 }
 
-async function prepare(kind) {
-  set({ status: "preparing", kind, error: null });
+async function prepare(kinds = CHECKS) {
+  const requested = kinds === "deep_analysis" ? CHECKS : Array.isArray(kinds) ? kinds : [kinds];
+  set({ status: "preparing", kind: "deep_analysis", error: null, request: null });
   try {
-    const request = await call("elevation_prepare", { task: { kind }, budgetMs: BUDGET_MS });
-    set({ status: "review", request });
+    const options = await call("elevation_options");
+    const selected = new Set(options.tasks.flatMap((task, index) => requested.includes(task.kind) ? [index] : []));
+    set({ status: "review", options, selected });
   } catch (error) {
     set({ status: "failed", error });
     waitForFreeSlot(() => admin.status === "failed" && changed());
@@ -87,17 +80,23 @@ async function prepare(kind) {
 }
 
 async function approve() {
-  const request = admin.request;
-  if (!request) return;
-  const kind = admin.kind;
+  const tasks = (admin.options?.tasks || []).filter((_, i) => admin.selected.has(i));
+  if (admin.status !== "review" || !tasks.length) return;
   const startedAt = Date.now();
-  set({ status: "running", startedAt, error: null });
+  const old = admin.request;
+  set({ status: "preparing", startedAt, error: null });
   try {
+    if (old) await call("elevation_cancel", { requestId: old.request_id });
+    const request = await call("elevation_prepare", { task: { kind: "deep_analysis", tasks }, budgetMs: tasks.length * (BUDGET_MS + 5000) });
+    set({ status: "running", request });
     const result = await call("elevation_run", { requestId: request.request_id });
     // A result that arrives after Stop was clicked is still a complete measurement: show it.
     window.clearInterval(poller);
     poller = null;
-    set({ status: "done", request: null, results: { ...admin.results, [kind]: { result, startedAt, finishedAt: Date.now() } }, shown: kind });
+    const id = result.stored_id || `memory-${startedAt}`;
+    const entry = { kind: "deep_analysis", result, startedAt, finishedAt: Date.now() };
+    set({ status: "done", request: null, results: { ...admin.results, [id]: entry }, shown: id });
+    await restoreResults();
   } catch (error) {
     // After Stop, the cancellation flow reports the outcome once the slot is free.
     if (admin.status === "cancelling") return;
@@ -125,18 +124,49 @@ async function cancel() {
   });
 }
 
+async function restoreResults() {
+  try {
+    const records = await call("elevation_results");
+    const results = {};
+    for (const record of records) {
+      const result = { ...record.inspection, ...record.local_details, stored_id: record.id };
+      results[record.id] = { kind: record.task.kind, result, startedAt: result.window?.started_at_unix_ms ?? result.measured_at_unix_ms, finishedAt: result.measured_at_unix_ms };
+    }
+    // A disk failure must not hide the in-memory result or its persistence warning.
+    for (const [id, entry] of Object.entries(admin.results)) {
+      if (id.startsWith("memory-")) results[id] = entry;
+    }
+    const shown = results[admin.shown] ? admin.shown : Object.keys(results).sort((a, b) => results[b].finishedAt - results[a].finishedAt)[0] ?? null;
+    set({ results, shown });
+  } catch {
+    // The last successful in-memory measurement remains viewable if history is unavailable.
+  }
+}
+
+async function selectResult(entry, intent, question) {
+  try {
+    const reference = await call("elevation_select", { inspectionId: entry.result.stored_id });
+    const title = t(`admin.check.${entry.kind}`);
+    await runSelection({ reference, label: title, subject: title }, intent, { question });
+  } catch (error) {
+    toast(failureText(error), "bad");
+  }
+}
+
 /** Recovers a prepared or running check after the page was reloaded. */
 export async function recoverAdminChecks() {
+  await restoreResults();
   if (admin.status !== "idle") return;
   try {
     const current = await call("elevation_status");
     const kind = current?.task?.kind;
-    if (!CHECKS.includes(kind)) return;
-    if (current.state === "awaiting_local_approval") set({ status: "review", kind, request: current });
+    if (!CHECKS.includes(kind) && kind !== "deep_analysis") return;
+    const tasks = kind === "deep_analysis" ? current.task.tasks : [current.task];
+    if (current.state === "awaiting_local_approval") set({ status: "review", kind, request: current, options: { tasks, unavailable: [] }, selected: new Set(tasks.map((_, i) => i)) });
     else if (current.state === "running" || current.state === "preparing") {
       // The result belongs to the page that started it; this page can only follow or cancel it.
       set({ status: "orphaned", kind, request: current });
-      waitForFreeSlot(() => set({ status: "idle", request: null }));
+      waitForFreeSlot(() => { set({ status: "idle", request: null }); restoreResults(); });
     } else if (current.state === "cancelling") {
       set({ status: "cancelling", kind, request: current });
       waitForFreeSlot(() => set({ status: "idle", request: null }));
@@ -271,12 +301,14 @@ function groupCard(group) {
 
 const STATUS_TONE = { ok: "good", partial: "warn", cancelled: "warn", unsupported: "" };
 
-function resultView(kind, entry, { onAsk, askLabel } = {}) {
+function resultView(kind, entry, { question, askLabel } = {}) {
   const { result, startedAt, finishedAt } = entry;
   const title = t(`admin.check.${kind}`);
   const list = groups(result);
   const notes = (result.coverage || []).filter((c) => c.status !== "ok");
-  const fresh = Date.now() - finishedAt < CHAT_RETENTION_MS;
+  const age = Date.now() - result.measured_at_unix_ms;
+  const fresh = age >= 0 && age < CHAT_RETENTION_MS;
+  const selectable = fresh && Boolean(result.stored_id) && !busySelection();
   const busy = ["preparing", "review", "running", "cancelling", "orphaned"].includes(admin.status) || slotHeldElsewhere("admin");
   const status = result.status || "partial";
   return h(
@@ -305,11 +337,21 @@ function resultView(kind, entry, { onAsk, askLabel } = {}) {
       h("div", null, h("span", null, t(fresh ? "admin.result.chat" : "admin.result.chatExpired"))),
       fresh
         ? cloudReady()
-          ? button(askLabel ?? t("admin.ask"), { iconName: "sparkle", size: "sm", onClick: onAsk ?? (() => askWithAi(t("admin.askQuestion", { check: title }), { followUp: false })) })
+          ? button(askLabel ?? t("admin.ask"), { iconName: "sparkle", size: "sm", disabled: !selectable, onClick: () => selectResult(entry, "investigate", question ?? t("admin.askQuestion", { check: title })) })
           : button(askLabel ?? t("admin.ask"), { iconName: "sparkle", size: "sm", disabled: true, title: t("mode.cloud.setup") })
         : null,
     ),
-    list.length
+    result.persistence_error ? h("p", { class: "callout warn" }, failureText(result.persistence_error)) : null,
+    h("div", { class: "row wrap" },
+      button(t("admin.explain"), { disabled: !selectable, onClick: () => selectResult(entry, "explain") }),
+      button(t("admin.investigate"), { disabled: !selectable, onClick: () => selectResult(entry, "investigate") })),
+    result.sections?.length ? h("div", { class: "admin-sections" }, result.sections.map((section) =>
+      h("details", { class: "more admin-more", open: section.status !== "ok" },
+        h("summary", null, taskLabel(section.task), " · ", label(`admin.status.${section.status}`, humanize(section.status))),
+        h("p", { class: "hint" }, t("admin.result.when", { at: clock(section.measured_at_unix_ms), took: duration(section.window?.duration_ms ?? 0) })),
+        h("div", { class: "admin-groups" }, groups(section).map(groupCard)),
+        (section.coverage || []).filter((c) => c.status !== "ok").map((c) => h("p", { class: "hint" }, c.detail))))) : null,
+    !result.sections?.length && list.length
       ? [
           h("div", { class: "admin-groups" }, list.slice(0, VISIBLE_GROUPS).map(groupCard)),
           list.length > VISIBLE_GROUPS
@@ -321,7 +363,7 @@ function resultView(kind, entry, { onAsk, askLabel } = {}) {
               )
             : null,
         ]
-      : h("p", { class: "muted" }, t("admin.empty")),
+      : !result.sections?.length ? h("p", { class: "muted" }, t("admin.empty")) : null,
     notes.length
       ? h(
           "details",
@@ -350,8 +392,28 @@ function resultView(kind, entry, { onAsk, askLabel } = {}) {
 
 // ---------- Card ----------
 
+function busySelection() {
+  return ["preparing", "review", "running", "cancelling", "orphaned"].includes(admin.status);
+}
+
+function taskLabel(task) {
+  return `${t(`admin.check.${task.kind}`)}${task.volume ? ` · ${task.volume}:\\` : ""}`;
+}
+
+function reviewRow(task, index) {
+  return h("label", { class: "admin-check" },
+    h("input", { type: "checkbox", checked: admin.selected.has(index), "data-key": `admin-section-${index}`, onchange: (event) => {
+      if (event.target.checked) admin.selected.add(index);
+      else admin.selected.delete(index);
+      changed();
+    } }),
+    h("div", { class: "admin-check-text" },
+      h("strong", null, taskLabel(task)),
+      h("span", { class: "hint" }, t(`admin.review.reads.${task.kind}`)),
+      task.targets ? h("span", { class: "hint" }, t("admin.review.processTargets", { pids: task.targets.map((target) => target.pid).join(", ") })) : null));
+}
+
 function checkRow(kind, { busy, blocked }) {
-  const entry = admin.results[kind];
   const preparing = admin.status === "preparing" && admin.kind === kind;
   const missing = NEEDS[kind] && !capable(NEEDS[kind]) ? NEEDS[kind] : null;
   return h(
@@ -362,20 +424,6 @@ function checkRow(kind, { busy, blocked }) {
     h(
       "div",
       { class: "admin-check-actions" },
-      entry
-        ? h(
-            "button",
-            {
-              type: "button",
-              class: ["btn", "btn-ghost", "btn-sm"],
-              "aria-pressed": String(admin.shown === kind),
-              title: t("admin.showResult"),
-              onclick: () => set({ shown: kind }),
-            },
-            icon("check"),
-            t("admin.resultAt", { at: clock(entry.finishedAt) }),
-          )
-        : null,
       button(t(preparing ? "admin.preparing" : "admin.prepare"), { size: "sm", disabled: busy || blocked || Boolean(missing), title: missing ? t(`admin.unavailable.${missing}`) : t("admin.prepareHint"), onClick: () => prepare(kind) }),
     ),
   );
@@ -387,13 +435,13 @@ function checkRow(kind, { busy, blocked }) {
  * turn lacked (`kinds`), with its own title, lead and "ask again" action. Both cards follow the
  * same single flow: a check prepared from one is visible, and cancellable, in the other.
  */
-export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel } = {}) {
+export function adminChecksCard({ kinds = CHECKS, title, lead, question, askLabel } = {}) {
   const offered = CHECKS.filter((kind) => kinds.includes(kind));
   const host = h("section", { class: "card card-pad section admin-card" });
   const resultHost = h("div");
   const render = () => {
     const busy = ["preparing", "running", "cancelling", "orphaned"].includes(admin.status);
-    const blocked = slotHeldElsewhere("admin");
+    const blocked = slotHeldElsewhere("admin") || !capable("elevated_helper");
     const check = admin.kind ? t(`admin.check.${admin.kind}`) : "";
     const head = h(
       "div",
@@ -412,14 +460,16 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
           { class: "bullets" },
           [
             t("admin.review.helper"),
-            t(`admin.review.reads.${admin.kind}`),
             t("admin.review.changes"),
             t("admin.review.consent"),
-            t("admin.review.budget", { time: duration(admin.request?.budget_ms ?? BUDGET_MS) }),
+            t("admin.review.budget", { time: duration(BUDGET_MS) }),
             t("admin.review.local"),
           ].map((x) => h("li", null, x)),
         ),
-        h("div", { class: "row" }, button(t("common.cancel"), { onClick: cancel }), button(t("admin.approve"), { variant: "primary", iconName: "shield", onClick: approve })),
+        h("div", { class: "admin-checks" }, (admin.options?.tasks || []).map(reviewRow)),
+        (admin.options?.unavailable || []).map((kind) => h("p", { class: "hint" }, t("admin.review.unavailable", { check: t(`admin.check.${kind}`) }))),
+        admin.options?.process_targets_omitted ? h("p", { class: "hint" }, t("admin.review.omitted", { count: number(admin.options.process_targets_omitted) })) : null,
+        h("div", { class: "row" }, button(t("common.cancel"), { onClick: cancel }), button(t("admin.approve"), { variant: "primary", iconName: "shield", disabled: !admin.selected.size || blocked, onClick: approve })),
       );
     } else if (admin.status === "running" || admin.status === "orphaned" || admin.status === "cancelling") {
       const cancelling = admin.status === "cancelling";
@@ -439,6 +489,7 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
       body = h(
         "div",
         { class: "admin-list" },
+        button(t("admin.deep"), { variant: "primary", iconName: "shield", disabled: busy || blocked, onClick: () => prepare(offered) }),
         h("div", { class: "admin-checks" }, offered.map((kind) => checkRow(kind, { busy, blocked }))),
         blocked && !busy ? h("p", { class: "hint admin-blocked" }, icon("clock"), t("admin.slotBusy")) : null,
         admin.status === "failed"
@@ -447,14 +498,16 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
         admin.status === "cancelled" ? h("p", { class: "hint" }, t("admin.cancelled")) : null,
       );
     }
-    fill(host, head, body);
+    fill(host, head, body, h("div", { class: "row wrap admin-history" },
+      Object.entries(admin.results).sort(([, a], [, b]) => b.finishedAt - a.finishedAt).map(([id, entry]) =>
+        button(`${t(`admin.check.${entry.kind}`)} · ${clock(entry.finishedAt)}`, { size: "sm", onClick: () => set({ shown: id }) }))));
   };
   let drawn = null;
   let expiry = null;
   const renderAll = () => {
-    render();
+    keepFocus(host, render);
     // The chat card shows only a result of a check it offered; the Storage card shows any.
-    const entry = admin.shown && offered.includes(admin.shown) ? admin.results[admin.shown] : null;
+    const entry = admin.shown ? admin.results[admin.shown] : null;
     // Rebuild the result only when what it shows changes: the running check ticks every second,
     // and a rebuild would close the folded groups and limits the person opened.
     const busy = ["preparing", "review", "running", "cancelling", "orphaned"].includes(admin.status) || slotHeldElsewhere("admin");
@@ -462,7 +515,7 @@ export function adminChecksCard({ kinds = CHECKS, title, lead, onAsk, askLabel }
     const key = entry ? [admin.shown, entry.finishedAt, busy, fresh, cloudReady()].join("|") : null;
     if (key !== drawn) {
       drawn = key;
-      fill(resultHost, entry ? resultView(admin.shown, entry, { onAsk, askLabel }) : null);
+      fill(resultHost, entry ? resultView(entry.kind, entry, { question, askLabel }) : null);
     }
     // Redraw when the shown result stops being readable by the chat.
     window.clearTimeout(expiry);

@@ -10,6 +10,64 @@ mod captures;
 mod engine;
 mod history;
 mod storage;
+mod watches;
+
+#[test]
+fn elevated_selection_is_dated_private_bound_to_host_and_expires() {
+    let inspection = serde_json::from_value(json!({
+        "status":"partial", "measured_at_unix_ms":1000,
+        "window":{"started_at_unix_ms":1000,"finished_at_unix_ms":1000,"duration_ms":0},
+        "origin":"synthetic_fixture",
+        "observations":[{"observation_id":"fixture-local", "measured_at_unix_ms":1000,
+            "window":{"started_at_unix_ms":1000,"finished_at_unix_ms":1000,"duration_ms":0},
+            "origin":"synthetic_fixture", "entity_ref":"system-cache-fixture",
+            "metric":"system_cache_bytes", "value":1234, "unit":"bytes", "status":"partial",
+            "source":"synthetic fixture"}],
+        "coverage":[{"scope":"system_caches","status":"partial","source":"fixture","detail":"Bounded read"}]
+    })).unwrap();
+    let source = SelectionSource::ElevatedInspection {
+        id: "elevated-host-123".into(),
+        inspection,
+    };
+    let target = SelectionTarget::ElevatedInspection {
+        inspection_id: "elevated-host-123".into(),
+    };
+    let selected = frozen(&source, &target);
+    assert_eq!(selected.output().cloud["measured_at_unix_ms"], 1000);
+    assert_eq!(selected.output().cloud["historical"], true);
+    assert_eq!(
+        selected.output().cloud["selection"]["target"]["kind"],
+        "elevated_inspection"
+    );
+    assert!(!selected
+        .output()
+        .cloud
+        .to_string()
+        .contains("elevated-host-123"));
+    let wrong = SelectionTarget::ElevatedInspection {
+        inspection_id: "elevated-guessed".into(),
+    };
+    assert!(FrozenSelection::freeze(
+        &source,
+        &wrong,
+        SelectionIntent::Explain,
+        6000,
+        Sharing::Anonymized,
+        false,
+        &privacy()
+    )
+    .is_err());
+    assert!(FrozenSelection::freeze(
+        &source,
+        &target,
+        SelectionIntent::Explain,
+        1000 + pcagent_store::ELEVATED_RETENTION_MS,
+        Sharing::Anonymized,
+        false,
+        &privacy()
+    )
+    .is_err());
+}
 
 fn capture() -> Snapshot {
     let mut snapshot = Snapshot::empty("private-selection-session");

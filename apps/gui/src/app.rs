@@ -12,6 +12,8 @@ mod settings_commands;
 mod state;
 mod storage_commands;
 mod turn_commands;
+mod voice_commands;
+mod watch_commands;
 mod worker;
 
 use crate::images::ImageSlot;
@@ -25,10 +27,10 @@ use pcagent_storage::StorageService;
 use pcagent_telemetry::ProgramNames;
 use state::{AppState, ScanSlot};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -86,6 +88,10 @@ pub fn run() {
             )
         })
         .expect("the measurement thread starts");
+    let history = Arc::new(Mutex::new(open_history()));
+    let handle = Arc::new(OnceLock::new());
+    let watches = watch_commands::Runtime::start(history.clone(), handle.clone());
+    let sampler = open_sampler(watches.hooks(history.clone(), handle.clone()));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -94,8 +100,9 @@ pub fn run() {
             scan: Arc::new(Mutex::new(ScanSlot::default())),
             investigation: Mutex::new(None),
             next_id: AtomicU64::new(1),
-            history: Arc::new(Mutex::new(open_history())),
-            sampler: open_sampler(),
+            history,
+            sampler,
+            watches,
             privacy: Mutex::new(settings::load()),
             actions: Arc::new(Mutex::new(None)),
             elevation: Arc::new(elevation::Slot::default()),
@@ -114,8 +121,10 @@ pub fn run() {
             turn_commands::current_turn,
             measurements::dashboard,
             measurements::process_activity,
+            measurements::local_browser_windows,
             action_commands::action_plans,
             action_commands::startup_restore_prepare,
+            action_commands::browser_manager_prepare,
             action_commands::action_decline,
             action_commands::action_run,
             preview_commands::cloud_preview,
@@ -136,6 +145,8 @@ pub fn run() {
             storage_commands::cancel_scan,
             storage_commands::scan_page,
             storage_commands::reveal,
+            storage_commands::scan_children,
+            storage_commands::scan_item_facts,
             settings_commands::save_cloud_settings,
             settings_commands::save_search_key,
             settings_commands::open_web_source,
@@ -143,27 +154,70 @@ pub fn run() {
             settings_commands::cloud_models,
             settings_commands::open_nebius_console,
             elevation_commands::elevation_prepare,
+            elevation_commands::elevation_options,
             elevation_commands::elevation_status,
             elevation_commands::elevation_run,
             elevation_commands::elevation_cancel,
+            elevation_commands::elevation_results,
+            elevation_commands::elevation_select,
             history_commands::conversations_list,
             history_commands::conversation_get,
             history_commands::conversation_delete,
             history_commands::conversations_clear,
             history_commands::history_status,
             history_commands::metric_history,
+            history_commands::history_chart,
+            history_commands::history_overview,
+            history_commands::history_recordings,
+            history_commands::recording_detail,
+            history_commands::history_collection,
+            history_commands::history_collection_set_budget,
             history_commands::record_activity_start,
             history_commands::battery_recording,
             history_commands::record_activity_cancel,
             history_commands::history_clear,
+            watch_commands::watches_list,
+            watch_commands::watch_create,
+            watch_commands::watch_update,
+            watch_commands::watch_set_enabled,
+            watch_commands::watch_delete,
+            watch_commands::watch_alerts,
+            watch_commands::watch_alert_detail,
+            watch_commands::watch_alerts_seen,
+            watch_commands::watch_language_set,
+            watch_commands::watch_notification_test,
+            watch_commands::watch_weekly_summary,
+            watch_commands::watch_activation_take,
             settings_commands::startup_get,
             settings_commands::startup_set,
             settings_commands::privacy_get,
             settings_commands::privacy_set,
             turn_commands::send_message,
-            turn_commands::stop_turn
+            turn_commands::stop_turn,
+            voice_commands::voice_start,
+            voice_commands::voice_stop,
+            voice_commands::voice_state,
+            voice_commands::voice_devices,
+            voice_commands::voice_settings_get,
+            voice_commands::voice_settings_set,
+            voice_commands::voice_model_state,
+            voice_commands::voice_model_download,
+            voice_commands::voice_model_cancel,
+            voice_commands::voice_model_delete
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            let _ = handle.set(app.handle().clone());
+            let voice_app = app.handle().clone();
+            let model_app = app.handle().clone();
+            app.manage(pcagent_voice::VoiceService::new(
+                app.path().app_local_data_dir()?.join("voice"),
+                move |state| {
+                    let _ = voice_app.emit("voice:state", state);
+                },
+                move |model| {
+                    let _ = model_app.emit("voice:model", model);
+                },
+            ));
             use tauri::{
                 menu::{Menu, MenuItem},
                 tray::{TrayIconBuilder, TrayIconEvent},
@@ -207,6 +261,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.state::<pcagent_voice::VoiceService>().cancel();
                 if pcagent_inspect::autostart::get().unwrap_or(false) {
                     api.prevent_close();
                     let _ = window.hide();
@@ -222,6 +277,9 @@ pub fn run() {
 }
 
 fn shutdown(app: &AppHandle) {
+    let voice = app.state::<pcagent_voice::VoiceService>();
+    voice.cancel();
+    voice.cancel_download();
     let state = app.state::<AppState>();
     let Some(shutdown) = state.elevation.begin_shutdown() else {
         return;

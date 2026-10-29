@@ -53,7 +53,7 @@ export async function findReference(match) {
  * on this PC only; `name` is the program name a question may carry; `subject` replaces the generic
  * "of …" part of the question and must hold no name or ID.
  */
-export async function runSelection(selection, intent, { conversationId: requestedConversation } = {}) {
+export async function runSelection(selection, intent, { conversationId: requestedConversation, question: requestedQuestion } = {}) {
   if (!INTENTS.includes(intent) || !selection?.reference) return false;
   if (running()) {
     toast(t("select.busy"));
@@ -81,7 +81,7 @@ export async function runSelection(selection, intent, { conversationId: requeste
     if (!sameConversation() || (summary && state.summary !== summary)) throw pageFailure("share.changed");
     const privacyRevision = state.privacyRevision;
     const cloud = effectiveMode() !== "local";
-    const asked = question(selected, intent);
+    const asked = requestedQuestion ?? question(selected, intent);
     const preview = await call("selection_preview", { reference: selected.reference, intent, question: asked, conversationId, names: namesShared(), fileNames: false });
     if (privacyRevision !== state.privacyRevision || !sameConversation() || (summary && state.summary !== summary)) {
       throw pageFailure("share.changed");

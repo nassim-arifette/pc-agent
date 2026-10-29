@@ -28,6 +28,7 @@ pub(crate) trait Platform {
     fn check_root(root: &Path) -> Result<Self::VolumeId, StorageError>;
     fn profile_dir() -> Option<PathBuf>;
     fn volume_space(root: &Path) -> VolumeSpace;
+    fn volume_location(root: &Path) -> Option<(String, bool)>;
 }
 
 pub(crate) struct Native;
@@ -45,5 +46,8 @@ impl Platform for Native {
     }
     fn volume_space(root: &Path) -> VolumeSpace {
         selected::volume_space(root)
+    }
+    fn volume_location(root: &Path) -> Option<(String, bool)> {
+        selected::volume_location(root)
     }
 }

@@ -62,24 +62,31 @@ pub fn plan(
     let named: Vec<(Option<String>, Option<String>)> = plan
         .items()
         .iter()
-        .map(|item| match &item.target {
-            ResolvedTarget::Process(t) => {
-                let instance = ProcessInstance {
-                    entity_ref: String::new(),
-                    pid: t.identity.pid,
-                    creation_time_filetime: t.identity.creation_time_filetime,
-                    boot_id: None,
-                    executable_name: t.executable_name.clone(),
-                };
-                let executable = t
-                    .executable_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned);
-                (readable_name(&instance, readable), executable)
+        .map(|item| {
+            let process = match &item.target {
+                ResolvedTarget::Process(t) => Some(t),
+                ResolvedTarget::BrowserManager(t) => Some(&t.process),
+                _ => None,
+            };
+            match process {
+                Some(t) => {
+                    let instance = ProcessInstance {
+                        entity_ref: String::new(),
+                        pid: t.identity.pid,
+                        creation_time_filetime: t.identity.creation_time_filetime,
+                        boot_id: None,
+                        executable_name: t.executable_name.clone(),
+                    };
+                    let executable = t
+                        .executable_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_owned);
+                    (readable_name(&instance, readable), executable)
+                }
+                None => (None, None),
             }
-            _ => (None, None),
         })
         .collect();
     let shown = |index: usize| {
@@ -122,6 +129,16 @@ pub fn plan(
                     ..target("process", label, None, None)
                 }
             }
+            ResolvedTarget::BrowserManager(t) => TargetView {
+                pid: Some(t.process.identity.pid),
+                executable_name: t.process.executable_name.clone(),
+                ..target(
+                    "browser_manager",
+                    shown(index).unwrap_or("Browser").to_owned(),
+                    None,
+                    None,
+                )
+            },
             ResolvedTarget::UserStartup(t) => target("startup", t.value_name().into(), None, None),
             ResolvedTarget::RecycleCleanup(c) => target(
                 "cleanup",

@@ -1,0 +1,14 @@
+.voice-draft {
+  margin: 0 14px 10px;
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+.voice-draft .row { flex-wrap: wrap; margin-top: 6px; }
+.voice-draft .btn { font-size: 0.8rem; }
+.voice-transcript { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 8rem; overflow-y: auto; }
+.voice-transcript:empty { display: none; }
+.voice-draft meter { width: 100px; height: 16px; }
+.voice-digest { overflow-wrap: anywhere; font-size: 0.75rem; }
+.ask-bar > .btn { white-space: nowrap; font-size: 0.8rem; }
+.voice-draft [hidden] { display: none; }
+.ask-bar { flex-wrap: wrap; }

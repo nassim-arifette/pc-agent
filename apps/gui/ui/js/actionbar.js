@@ -1,5 +1,5 @@
-// The action bar: a small toolbar anchored under the selected item, with Explain, Investigate and
-// Monitor (not available yet). Views own their selection and draw the bar inside the selected
+// The action bar: an in-flow toolbar under the selected item, with Explain, Investigate and
+// an optional local Monitor callback. Views own their selection and draw the bar inside the selected
 // item's `.actbar-anchor`; this module draws it, keeps it in view, gives it one tab stop with the
 // arrow keys between its buttons, and handles E (Explain) and Enter (Investigate) while an item is
 // selected. Explain and Investigate go through runSelection and its exact preview.
@@ -17,6 +17,7 @@ let pending = false;
 // The last item a bar was drawn for: views redraw every few seconds and the bar must not replay
 // its entrance each time.
 let shownKey = null;
+let nextReasonId = 0;
 
 /**
  * Runs one action at a time, from the bar, the shortcuts or a view's own buttons (the Storage
@@ -33,31 +34,15 @@ export async function once(run) {
 }
 
 /**
- * Keeps the bar inside the visible part of the page: on the item's other side when it would
- * overflow its bounds, above the item when there is no room below.
- */
-function place(bar, align) {
-  if (!bar.isConnected) return;
-  const anchor = bar.parentElement;
-  const scroller = bar.closest(".main") || document.documentElement;
-  const view = scroller === document.documentElement ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
-  const bounds = (bar.closest("[data-actbar-bounds]") || bar.closest(".page") || scroller).getBoundingClientRect();
-  bar.classList.remove("actbar-end", "actbar-above");
-  if (align === "end") bar.classList.add("actbar-end");
-  const rect = bar.getBoundingClientRect();
-  if (align === "end" ? rect.left < bounds.left : rect.right > bounds.right) bar.classList.toggle("actbar-end");
-  const item = anchor.getBoundingClientRect();
-  const room = { below: view.bottom - item.bottom, above: item.top - view.top };
-  if (rect.bottom > view.bottom - 8 && room.above > room.below) bar.classList.add("actbar-above");
-}
-
-/**
- * The bar for the selected item: { key, label, ready, unavailable, explain, investigate, align }.
  * `ready` is false while the item has no host-issued reference yet; `unavailable` then says why.
- * `explain` and `investigate` are async functions; the bar runs one at a time. `align: "end"`
+ * `monitor` opens the view's local creation form; its readiness is independent of the cloud
+ * reference. Without it, `monitorUnavailable` is visible and describes the disabled control.
+ * The callbacks may be async; the bar runs one at a time. `align: "end"`
  * puts it under the item's right end, for full-width rows whose left side carries their names.
  */
-export function actionBar({ key, label, ready, unavailable, explain, investigate, align = "start" }) {
+export function actionBar({ key, label, ready, unavailable, explain, investigate, monitor, monitorUnavailable, align = "start" }) {
+  const reason = monitor ? null : monitorUnavailable || t("actbar.monitor.soon");
+  const reasonId = reason ? `actbar-monitor-reason-${++nextReasonId}` : null;
   const tool = (name, { iconName, text, tip, shortcut, enabled, run, tone }) =>
     h(
       "button",
@@ -66,6 +51,7 @@ export function actionBar({ key, label, ready, unavailable, explain, investigate
         class: ["actbar-btn", tone && `actbar-${tone}`],
         "data-key": `actbar:${name}`,
         "aria-disabled": enabled ? null : "true",
+        "aria-describedby": name === "monitor" ? reasonId : null,
         "aria-keyshortcuts": enabled && shortcut ? shortcut : null,
         title: tip,
         tabindex: "-1",
@@ -79,8 +65,7 @@ export function actionBar({ key, label, ready, unavailable, explain, investigate
   const buttons = [
     tool("explain", { iconName: "sparkle", text: t("inspect.explain"), tip: ready ? t("actbar.explain.tip") : unavailable, shortcut: "E", enabled: ready, run: explain, tone: "primary" }),
     tool("investigate", { iconName: "search", text: t("inspect.investigate"), tip: ready ? t("actbar.investigate.tip") : unavailable, shortcut: "Enter", enabled: ready, run: investigate }),
-    // Watching a resource is not built yet: shown so the place is known, never faked.
-    tool("monitor", { iconName: "bell", text: t("actbar.monitor"), tip: t("actbar.monitor.soon"), enabled: false, tone: "muted" }),
+    tool("monitor", { iconName: "bell", text: t("actbar.monitor"), tip: reason || t("actbar.monitor"), enabled: Boolean(monitor), run: monitor, tone: monitor ? null : "muted" }),
   ];
   const enabled = buttons.filter((b) => !b.hasAttribute("aria-disabled"));
   // One tab stop: the first enabled button, or Explain so its reason stays reachable.
@@ -88,7 +73,7 @@ export function actionBar({ key, label, ready, unavailable, explain, investigate
   const bar = h(
     "div",
     {
-      class: ["actbar", key !== shownKey && "actbar-in", !ready && "actbar-idle"],
+      class: ["actbar", key !== shownKey && "actbar-in", !ready && "actbar-idle", align === "end" && "actbar-end"],
       role: "toolbar",
       "aria-label": t("actbar.label", { what: label }),
       onfocusin: (e) => {
@@ -114,11 +99,10 @@ export function actionBar({ key, label, ready, unavailable, explain, investigate
     buttons[1],
     h("span", { class: "actbar-sep", role: "separator", "aria-orientation": "vertical" }),
     buttons[2],
+    reason ? h("span", { class: "actbar-hint", id: reasonId }, reason) : null,
     ready ? h("span", { class: "actbar-hint", "aria-hidden": "true" }, t("actbar.keys")) : null,
   );
   shownKey = key;
-  // Before the next paint, once the bar is in the page and can be measured.
-  requestAnimationFrame(() => place(bar, align));
   return bar;
 }
 

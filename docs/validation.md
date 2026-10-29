@@ -19,7 +19,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked          # from a standard session: see below
 cargo build --release --locked -p pcagent -p pcagent-gui -p pcagent-elevated -p pcagent-eval
 python scripts/test-eval-mcp-client.py
-node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs apps/gui/dev/storage.test.mjs
+node --experimental-default-type=module --test apps/gui/dev/*.test.mjs
 ```
 
 - The toolchain is pinned to Rust 1.90.0 (`rust-toolchain.toml`). `Cargo.lock` is committed and
@@ -109,6 +109,16 @@ python -m http.server 5173 --bind 127.0.0.1
   view they show changes.
 
 ## Native QA of the release app
+
+For browser diagnostics, open real Firefox and Chrome or Edge in the same interactive standard
+account as the release app. Verify family/type classification and group/type evidence totals,
+then read window captions and accessible tabs on demand. Check the exact outgoing preview
+in both name-sharing modes: no title, URL, profile path or command line may occur. Decline
+one browser-manager plan, approve another, visually confirm the destination, and confirm
+the original browser is still running. A delivered Chromium command alone is not visual proof.
+Keep snapshots of the changed Live PC inspector, local-title section, preview and review card;
+run the mock through both languages, both themes and both documented viewports. Record native
+and mock results separately, including any unsupported UI Automation coverage.
 
 - Build the release executables and run them from a standard session, never elevated (starting
   the window as administrator must show the refusal notice: that is a check in itself).
@@ -274,3 +284,25 @@ Short dated pointers; the details stay where they were recorded.
   runs had failed when it was disabled ([plan, phase 0](plan.md#phase-0--remise-en-route-1718-oct)).
 - **27 September 2026.** First live Nemotron runs on the development PC, under an earlier answer
   contract ([archived model comparison](archive/model-comparison.md)).
+
+## Windows acceptance still owed after the 29 October branch integration
+
+Nothing below can run on Linux; none of it is claimed as validated.
+
+1. **ETW guardian (etw-e06):** the last native run failed with `LaunchFailed(5)`. Re-run the
+   guardian acceptance as a standard account, then prove the four cleanup cases (normal stop,
+   crash of the parent, crash of the guardian, forced kill) leave no temporary permission behind.
+2. **Watches:** create a CPU watch, trigger it, confirm one toast per alert, quit the app and
+   confirm the open alert closes as interrupted without a toast.
+3. **Local voice:** dictate in EN and FR with the model present and absent (Windows offline
+   fallback); confirm the draft is reviewed before sending and audio is not kept.
+4. **Deeper checks:** one real UAC prompt from a standard account, results kept 24 h, then
+   selected as evidence in the same thread.
+5. **Eval accounting:** one real Nebius replay with `--drain-usage --allow-cloud`; compare the
+   reported usage with the Token Factory dashboard.
+6. **GUI captures:** EN/FR, light/dark/high contrast for History, Storage, Watches, Voice and the
+   deeper-checks card.
+
+History: the backend of `feature/history-complete` is not merged separately; the integrated
+`wp6-watches` history backend differs from it only by the watch hooks and a shared system
+observation helper (reviewed 29 October).

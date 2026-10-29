@@ -1,11 +1,11 @@
-//! Sentences the desktop window words in its own language (`apps/gui/ui/js/phrases.js`).
+//! Closed sentences for local human renderers (`presentation` and the desktop's `phrases.js`).
 use crate::{gpu_slowdown_codes, Metric};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// One displayed sentence as a closed key and typed values. The English text built beside it
-/// stays the text of record: model payloads, the CLI, traces and the answer checks never read a
-/// phrase. A phrase only lets the local window word the same statement in its interface language
+/// stays the text of record: model payloads, traces and the answer checks never read a phrase.
+/// A phrase only lets a local human renderer word the same statement in its interface language
 /// and format each value by its unit (`{"key":…,"values":{"total":{"unit":"bytes","value":…}}}`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Phrase {

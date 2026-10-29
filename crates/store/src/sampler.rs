@@ -1,5 +1,7 @@
 //! One background collector owns the five-second history and temporary one-second recordings.
 //! Control messages never enter the provider context. Dropping the last handle stops the worker.
+use crate::watch_engine::{WatchEngine, WatchEngineStatus};
+use crate::watches::{WatchAlert, WatchNotification, WatchRule};
 use crate::{HistoryQuery, HistorySeries, Recording, Store, StoreError, StoredSample};
 use pcagent_shared::unix_ms;
 use pcagent_telemetry::{current_resource_usage, Collector, ProcessSort};
@@ -16,6 +18,7 @@ use std::{
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SamplerStatus {
+    pub watches: Option<WatchEngineStatus>,
     pub running: bool,
     pub samples: u64,
     pub last_sample_unix_ms: Option<u64>,
@@ -35,6 +38,8 @@ pub struct SamplerStatus {
 }
 
 enum Command {
+    WatchValidate(WatchRule, mpsc::Sender<Result<(), StoreError>>),
+    WatchChanged(mpsc::Sender<Result<(), StoreError>>),
     Record(
         u64,
         Arc<AtomicBool>,
@@ -65,11 +70,28 @@ impl Drop for Inner {
 #[derive(Clone)]
 pub struct Sampler(Arc<Inner>);
 
+pub type WatchNotify = Arc<dyn Fn(&WatchAlert, &str) -> WatchNotification + Send + Sync>;
+pub type WatchOpened = Arc<dyn Fn(&WatchAlert, u64) + Send + Sync>;
+
+/// Native-only hooks installed by the window; no provider or webview is involved in delivery.
+pub struct WatchHooks {
+    pub notify: WatchNotify,
+    pub opened: WatchOpened,
+}
+
 impl Sampler {
     /// Expired orphan recordings are recovered on startup, maintenance and recording requests.
     /// A recent row is protected for 180 seconds from its start because another CLI/GUI sampler
     /// may still own it; a new recording request retries recovery once that grace period ends.
     pub fn start(path: &Path) -> Result<Self, StoreError> {
+        Self::start_inner(path, None)
+    }
+
+    pub fn start_for_window(path: &Path, hooks: WatchHooks) -> Result<Self, StoreError> {
+        Self::start_inner(path, Some(hooks))
+    }
+
+    fn start_inner(path: &Path, hooks: Option<WatchHooks>) -> Result<Self, StoreError> {
         // Validate the database before reporting a running sampler to the caller.
         let store = Store::open(path)?;
         store.interrupt_old_recordings(unix_ms())?;
@@ -85,7 +107,7 @@ impl Sampler {
         let worker = thread::Builder::new()
             .name("pcagent-sampler".into())
             .spawn(move || {
-                run(store, rx, &worker_status);
+                run(store, rx, &worker_status, hooks);
             })
             .map_err(|e| StoreError::Database(e.to_string()))?;
         Ok(Self(Arc::new(Inner {
@@ -99,6 +121,26 @@ impl Sampler {
     pub fn status(&self) -> SamplerStatus {
         self.0.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
+
+    pub fn validate_watch_target(&self, rule: WatchRule) -> Result<(), StoreError> {
+        let (tx, rx) = mpsc::channel();
+        self.0
+            .tx
+            .send(Command::WatchValidate(rule, tx))
+            .map_err(|_| stopped())?;
+        rx.recv_timeout(Duration::from_secs(10))
+            .map_err(|_| stopped())?
+    }
+
+    pub fn watches_changed(&self) -> Result<(), StoreError> {
+        let (tx, rx) = mpsc::channel();
+        self.0
+            .tx
+            .send(Command::WatchChanged(tx))
+            .map_err(|_| stopped())?;
+        rx.recv_timeout(Duration::from_secs(10))
+            .map_err(|_| stopped())?
+    }
     pub fn stop(&self) {
         let _ = self.0.tx.send(Command::Shutdown);
         if let Ok(mut slot) = self.0.worker.lock() {
@@ -108,11 +150,83 @@ impl Sampler {
         }
     }
     pub fn history(&self, query: &HistoryQuery) -> Result<HistorySeries, StoreError> {
+        if query.entity_ref == "system" && crate::samples::SYSTEM_CHARTS.contains(&query.metric) {
+            let chart = self.history_chart(query.from_unix_ms, query.to_unix_ms, 300)?;
+            let mut series = chart
+                .histories
+                .into_iter()
+                .find(|s| s.metric == query.metric)
+                .ok_or(StoreError::Corrupt)?;
+            series.events = chart.events;
+            series.process_names = chart.process_names;
+            return Ok(series);
+        }
         self.0
             .history_reader
             .lock()
             .map_err(|_| stopped())?
             .metric_history(query)
+    }
+    pub fn history_chart(
+        &self,
+        from: u64,
+        to: u64,
+        buckets: usize,
+    ) -> Result<crate::HistoryChart, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_chart(from, to, buckets)
+    }
+    pub fn watch_alerts(
+        &self,
+        from: u64,
+        to: u64,
+        limit: u64,
+        offset: u64,
+    ) -> Result<crate::watches::WatchAlertPage, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .watch_alerts(from, to, limit, offset)
+    }
+    pub fn history_overview(&self, day_start: u64) -> Result<crate::HistoryOverview, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_overview(day_start, unix_ms())
+    }
+    pub fn history_recordings(&self, offset: u64) -> Result<crate::HistoryRecordings, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_recordings(offset)
+    }
+    pub fn recording_detail(&self, id: &str) -> Result<Option<crate::RecordingDetail>, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .recording_detail(id)
+    }
+    pub fn history_collection(&self) -> Result<crate::HistoryCollection, StoreError> {
+        self.0
+            .history_reader
+            .lock()
+            .map_err(|_| stopped())?
+            .history_collection()
+    }
+    pub fn set_collection_budget(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::HistoryCollection, StoreError> {
+        let mut store = Store::open(&self.0.path)?;
+        store.set_collection_budget(bytes, unix_ms())?;
+        store.history_collection()
     }
     pub fn process_peaks(
         &self,
@@ -253,13 +367,19 @@ fn finish(
         }
     }
 }
-fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStatus>) {
+fn run(
+    mut store: Store,
+    rx: mpsc::Receiver<Command>,
+    status: &Mutex<SamplerStatus>,
+    hooks: Option<WatchHooks>,
+) {
     let mut collector = Collector::new();
     let mut active: Option<(Recording, Instant, u64)> = None;
     let mut next_sample = Instant::now();
     let mut next_maintenance = Instant::now();
     let started = Instant::now();
     let start_cpu = current_resource_usage().thread_cpu_100ns;
+    let mut watches = hooks.as_ref().map(|_| WatchEngine::new());
     loop {
         if active
             .as_ref()
@@ -272,6 +392,35 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
             .min(Duration::from_millis(100));
         match rx.recv_timeout(wait) {
             Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(Command::WatchValidate(rule, reply)) => {
+                let result = watches.as_ref().ok_or_else(stopped).and_then(|engine| {
+                    let volumes = if rule.is_volume() {
+                        pcagent_telemetry::volume_inventory()
+                            .value
+                            .unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
+                    engine.validate_target(&rule, &volumes)
+                });
+                let _ = reply.send(result);
+            }
+            Ok(Command::WatchChanged(reply)) => {
+                let result = watches.as_mut().ok_or_else(stopped).and_then(|engine| {
+                    engine.refresh(
+                        &store,
+                        started.elapsed().as_millis() as u64,
+                        unix_ms(),
+                        true,
+                    )?;
+                    let live = engine.status(&store)?;
+                    update(status, |s| s.watches = Some(live));
+                    Ok(())
+                });
+                let _ = reply.send(result);
+                next_sample = Instant::now();
+                next_maintenance = Instant::now();
+            }
             Ok(Command::Record(seconds, abandoned, reply)) => {
                 if abandoned.load(Ordering::Acquire) {
                     let _ = reply.send(Err(stopped()));
@@ -318,6 +467,9 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
                 let _ = reply.send(result);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if let Some(engine) = &mut watches {
+            engine.recording_changed(active.is_some(), started.elapsed().as_millis() as u64);
         }
         if Instant::now() < next_sample {
             continue;
@@ -375,7 +527,38 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
                 });
             }
         }
+        if let (Some(engine), Some(hooks)) = (&mut watches, &hooks) {
+            let result = engine
+                .sample(
+                    &store,
+                    sample,
+                    sort,
+                    active.is_some(),
+                    started.elapsed().as_millis() as u64,
+                )
+                .and_then(|alerts| notify_watches(&store, hooks, alerts))
+                .and_then(|()| engine.status(&store));
+            publish_watch_status(status, result);
+        }
         if Instant::now() >= next_maintenance {
+            if let (Some(engine), Some(hooks)) = (&mut watches, &hooks) {
+                let result = store.maintain_watches(now).and_then(|_| {
+                    if engine.wants_volumes() {
+                        let volumes = pcagent_telemetry::volume_inventory()
+                            .value
+                            .unwrap_or_default();
+                        let alerts = engine.volumes(
+                            &store,
+                            &volumes,
+                            started.elapsed().as_millis() as u64,
+                            unix_ms(),
+                        )?;
+                        notify_watches(&store, hooks, alerts)?;
+                    }
+                    engine.status(&store)
+                });
+                publish_watch_status(status, result);
+            }
             if store
                 .interrupt_old_recordings(now)
                 .and_then(|_| store.maintain_samples(now))
@@ -412,7 +595,46 @@ fn run(mut store: Store, rx: mpsc::Receiver<Command>, status: &Mutex<SamplerStat
         }
     }
     finish(&store, &mut active, true, status);
+    if let Some(engine) = watches {
+        if engine.stop(&store).is_err() {
+            publish_watch_status(status, Err(stopped()));
+        }
+    }
     update(status, |s| s.running = false);
+}
+
+fn publish_watch_status(
+    status: &Mutex<SamplerStatus>,
+    result: Result<WatchEngineStatus, StoreError>,
+) {
+    match result {
+        Ok(live) => update(status, |s| s.watches = Some(live)),
+        Err(_) => update(status, |s| {
+            s.watches.get_or_insert_with(Default::default).error =
+                Some("Watch evaluation or notification persistence failed.".into())
+        }),
+    }
+}
+
+fn notify_watches(
+    store: &Store,
+    hooks: &WatchHooks,
+    alerts: Vec<WatchAlert>,
+) -> Result<(), StoreError> {
+    for alert in alerts {
+        if let Some(reserved) =
+            store.watch_notification_reserve(&alert.id, pcagent_shared::unix_ms())?
+        {
+            if reserved.notification == WatchNotification::Failed {
+                let result = (hooks.notify)(&reserved, &store.watch_language()?);
+                store.watch_notification_result(&reserved.id, result)?;
+            }
+            if let Some(alert) = store.watch_alert(&reserved.id)? {
+                (hooks.opened)(&alert, store.watch_unseen()?);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -457,7 +679,7 @@ mod tests {
             .unwrap();
         tx.send(Command::Shutdown).unwrap();
         let status = Mutex::new(SamplerStatus::default());
-        run(Store::open_in_memory().unwrap(), rx, &status);
+        run(Store::open_in_memory().unwrap(), rx, &status, None);
         assert!(result.recv().unwrap().is_err());
         assert!(status.lock().unwrap().recording.is_none());
     }

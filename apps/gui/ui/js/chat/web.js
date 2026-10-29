@@ -58,14 +58,15 @@ export function webSourceCard(citation, n, focused, target) {
     web.domain ? h("span", { class: "web-domain" }, web.domain) : null,
     h("span", null, web.published_date ? t("web.published", { date: publishedDate(web.published_date) }) : t("web.date.unknown")),
     web.searched_at_unix_ms ? h("span", null, t("web.readAt", { time: clock(web.searched_at_unix_ms) })) : null,
+    web.cached_at_unix_ms ? h("span", null, t("web.cachedAt", { time: new Date(web.cached_at_unix_ms).toLocaleString() })) : null,
   ].filter(Boolean);
   const canOpen = Boolean(target?.conversationId && target?.turnId);
   return h(
     "article",
     { class: ["source-card", "web-source", focused ? "focused" : ""], dataset: { reference: citation.reference } },
-    h("div", { class: "source-head" }, h("span", { class: "num web-num" }, icon("globe"), String(n)), h("strong", { class: "web-title" }, citationTitle(citation))),
+    h("div", { class: "source-head" }, h("span", { class: "num web-num" }, icon("globe"), String(n)), h("strong", { class: "web-title", "data-i18n-source": "web" }, citationTitle(citation))),
     h("p", { class: "web-meta" }, meta.flatMap((part, i) => (i ? [h("span", { class: "web-dot", "aria-hidden": "true" }, "·"), part] : [part]))),
-    citation.facts.length ? h("blockquote", { class: "web-snippet" }, citation.facts.map((fact) => h("p", null, fact))) : null,
+    citation.facts.length ? h("blockquote", { class: "web-snippet", "data-i18n-source": "web" }, citation.facts.map((fact) => h("p", null, fact))) : null,
     web.query ? h("p", { class: "web-query" }, h("span", { class: "web-query-label" }, t("web.query")), h("q", null, web.query)) : null,
     h("p", { class: "web-note" }, icon("info"), h("span", null, t("web.notMeasured"))),
     h(

@@ -14,6 +14,15 @@ pub fn to_inspection(response: &ElevationResponse) -> crate::Inspection {
     let mut out = crate::Inspection::new();
     out.measured_at_unix_ms = response.window.finished_at_unix_ms;
     out.window = response.window.clone();
+    if matches!(response.task, ElevatedTask::DeepAnalysis { .. }) {
+        for section in &response.sections {
+            let projected = to_inspection(section);
+            out.observations.extend(projected.observations);
+            out.coverage.extend(projected.coverage);
+            out.names.extend(projected.names);
+        }
+        return out.finish();
+    }
     for cache in &response.caches {
         let entity = out.entity("system-cache", None);
         let source = "pcagent-elevated / pcagent-storage ClassicBackend metadata";

@@ -12,6 +12,7 @@ fn processes() -> Result<Vec<ProcessReading>, Status> {
     sysproc::query().map(|rows| {
         rows.into_iter()
             .map(|p| ProcessReading {
+                browser: Default::default(),
                 pid: p.pid,
                 parent_pid: p.parent_pid,
                 created: p.created,
@@ -39,7 +40,8 @@ pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> 
     std::thread::sleep(Duration::from_secs(seconds));
     // Bracket SCM's PID-only attribution with two identity-bearing process lists.
     let services = service_processes();
-    let after = processes();
+    let mut after = processes();
+    let counters_at = collector.started.elapsed();
     let window = Window::finish(started, clock);
     let (gpu, gpu_window): (Sampled<Instances>, Window) = match collector.pdh.as_mut() {
         Some(Ok(query)) => match query.read(collector.started.elapsed()) {
@@ -55,12 +57,23 @@ pub(crate) fn collect(collector: &mut Collector, seconds: u64, limit: usize) -> 
             window.clone(),
         ),
     };
+    // Classification happens after the counter window: slow/inaccessible providers must not
+    // dilute the measured CPU and I/O rates or lengthen the GPU sampling interval.
+    if let Ok(rows) = &mut after {
+        let mut classifier = super::browser::Classifier::default();
+        for row in rows.iter_mut() {
+            row.browser =
+                classifier.classify(row.pid, row.created, row.name.as_deref().unwrap_or(""));
+        }
+        crate::browser::attribute_embedded_main(rows);
+    }
     assemble(
         collector,
         Collection {
             before,
             after,
             window,
+            counters_at,
             gpu,
             gpu_window,
             services,
@@ -76,7 +89,7 @@ mod tests {
     use pcagent_shared::Metric;
 
     #[test]
-    fn native_activity_has_first_window_rates_without_opening_processes() {
+    fn native_activity_keeps_query_only_classification_separate_from_counter_coverage() {
         let mut collector = Collector::new();
         let result = collector.process_activity(1, 50);
         assert!(result.window.duration_ms >= 1000);

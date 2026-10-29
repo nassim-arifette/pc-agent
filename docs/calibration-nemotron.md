@@ -155,3 +155,24 @@ replay-registry/question/sharing fields and Ultra request count. The compiler ch
 those inputs before constructing each case; the separate provenance retains them and
 is bound to the Calibration hash. Keep that provenance as part of the complete campaign
 record.
+
+## Measuring automatic continuation after review
+
+Once a real paired campaign passes human review and compiles, run the automatic policy
+against the same frozen captures. This measures the continuation that independent
+Super/Ultra pairs cannot establish:
+
+```powershell
+& $eval replay D:\pcagent-tmp\nemotron\capture.json --allow-cloud --anonymize `
+  --calibration D:\pcagent-tmp\nemotron\calibration.json `
+  --super-model nvidia/nemotron-3-super-120b-a12b `
+  --ultra-model nvidia/Nemotron-3-Ultra-550b-a55b `
+  --out D:\pcagent-tmp\nemotron\automatic-result.json
+```
+
+The bounded calibration file is validated before credentials are read or an output file
+is reserved. Missing human review, stale runtime identities and unsupported thresholds
+remain errors. `--model` cannot be combined with automatic replay. No default is changed.
+`run.model` names the initial Super model; the report's routing state, model requests,
+handover reason and separate model costs describe any continuation. The original replay
+capture is unchanged; actual calls, misses and reuse counters retain their normal meaning.

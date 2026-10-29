@@ -1,5 +1,7 @@
 //! The only unsafe boundary: documented, read-only Windows API calls.
 pub(crate) mod activity;
+mod browser;
+pub(crate) mod browser_windows;
 mod inventory;
 pub(crate) mod nvml;
 pub(crate) mod pdh;
@@ -73,6 +75,9 @@ impl super::Backend for Native {
     }
     fn hardware_inventory() -> pcagent_shared::HardwareInventory {
         hardware_inventory()
+    }
+    fn volume_inventory() -> pcagent_shared::Observed<Vec<pcagent_shared::VolumeInfo>> {
+        inventory::volumes()
     }
 }
 const BOOT_NOTE: &str = "boot_id is an estimate (GetSystemTimeAsFileTime minus GetTickCount64, rounded to one minute), fixed per collector; clock changes can shift it between sessions.";

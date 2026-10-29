@@ -4,7 +4,8 @@ use super::{
     lifecycle::{retain_until_exit, run_supervised, ElevationCompletion, HostJob},
     protocol::{
         digest, launch_error, CacheCategory, ElevatedTask, ElevationError, ElevationRequest,
-        ElevationResponse, WorkerArguments, MAX_BUDGET_MS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
+        ElevationResponse, WorkerArguments, CONSENT_BUDGET_MS, MAX_BUDGET_MS, MAX_REQUEST_BYTES,
+        MAX_RESPONSE_BYTES, MAX_SECTIONS, MAX_SECTION_BUDGET_MS, MAX_SECTION_RESPONSE_BYTES,
     },
     worker::ElevatedProcess,
     ElevationLimit, ElevationStatus,
@@ -19,6 +20,7 @@ use std::{
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        process::CommandExt,
     },
     path::{Component, Path, PathBuf, Prefix},
     ptr::{null, null_mut},
@@ -30,20 +32,22 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-        STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        GetLastError, LocalFree, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        INVALID_HANDLE_VALUE, STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Globalization::GetUserDefaultUILanguage,
     Security::{
-        AclSizeInformation,
+        AclSizeInformation, AdjustTokenPrivileges,
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
         },
-        GetAce, GetAclInformation, GetSecurityDescriptorControl, GetTokenInformation, IsValidSid,
-        TokenElevation, TokenUser, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
+        GetAce, GetAclInformation, GetSecurityDescriptorControl, GetTokenInformation,
+        ImpersonateLoggedOnUser, IsValidSid, LookupPrivilegeValueW, RevertToSelf, TokenElevation,
+        TokenUser, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
         DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
+        SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, GetDriveTypeW, GetFileInformationByHandle,
@@ -53,10 +57,17 @@ use windows_sys::Win32::{
         READ_CONTROL,
     },
     System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+        RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW},
         Threading::{
-            GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, TerminateProcess,
-            WaitForSingleObject,
+            GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+            TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
         },
         WindowsProgramming::DRIVE_FIXED,
     },
@@ -84,6 +95,15 @@ const FIXED_FILES: [&str; 5] = [
     ENERGY_FILE,
 ];
 
+fn section_file(index: usize, claim: bool) -> String {
+    format!("section-{index}.{}", if claim { "running" } else { "json" })
+}
+fn allowed_job_file(name: &str) -> bool {
+    FIXED_FILES.contains(&name)
+        || (0..MAX_SECTIONS)
+            .any(|i| name == section_file(i, false) || name == section_file(i, true))
+}
+
 /// All ancestors remain open without delete sharing while any worker/launcher can use this job.
 pub(crate) struct NativeJob {
     path: PathBuf,
@@ -93,6 +113,7 @@ pub(crate) struct NativeJob {
     request_digest: String,
     cleanup: bool,
     completion: ElevationCompletion,
+    requester: Option<RequesterProof>,
 }
 impl NativeJob {
     pub(super) fn owner_sid(&self) -> &str {
@@ -101,6 +122,7 @@ impl NativeJob {
 
     /// The fixed E3 export is private and pinned against replacement while its writer runs.
     pub(super) fn energy_output(&self) -> Result<(PathBuf, File), ElevationError> {
+        let _impersonation = self.impersonate_requester()?;
         let path = self.path.join(ENERGY_FILE);
         let descriptor = private_descriptor(&self.sid)?;
         let attributes = descriptor.attributes();
@@ -181,6 +203,7 @@ impl NativeJob {
             request_digest: String::new(),
             cleanup: true,
             completion: ElevationCompletion::pending(),
+            requester: None,
         };
         job.finish_creation(|job| {
             let mut file = job.create_file(REQUEST_FILE)?;
@@ -217,8 +240,9 @@ impl NativeJob {
 
     fn open_worker(args: &WorkerArguments) -> Result<(Self, ElevationRequest), ElevationError> {
         let pins = pin_chain(&args.job_dir)?;
-        let sid = current_sid()?;
-        validate_acl(pins.last().ok_or(ElevationError::InsecureJob)?, &sid)?;
+        let root = pins.last().ok_or(ElevationError::InsecureJob)?;
+        let sid = file_owner_sid(root)?;
+        validate_acl(root, &sid)?;
         let mut job = Self {
             path: args.job_dir.clone(),
             pins,
@@ -227,6 +251,7 @@ impl NativeJob {
             request_digest: args.request_digest.clone(),
             cleanup: false,
             completion: ElevationCompletion::pending(),
+            requester: None,
         };
         let mut file = job.open_file(REQUEST_FILE)?;
         let bytes = read_bounded(&mut file, MAX_REQUEST_BYTES)?;
@@ -234,19 +259,36 @@ impl NativeJob {
             return Err(ElevationError::DigestMismatch);
         }
         let request = ElevationRequest::from_bytes(&bytes)?;
+        if args.section.is_none() {
+            request.validate_launch_at(unix_ms())?;
+        }
         if request.nonce != args.nonce
             || job.path.file_name() != Some(OsStr::new(&format!("pcagent-{}", request.job_id)))
         {
             return Err(ElevationError::InvalidRequest);
         }
+        job.requester = Some(RequesterProof::verify(&request.requester, &job.sid)?);
         job.request_pin = Some(file);
         // CREATE_NEW prevents a second helper from accepting the same job.
-        drop(job.create_file(CLAIM_FILE)?);
+        if let Some(index) = args.section {
+            if !matches!(&request.task, ElevatedTask::DeepAnalysis { tasks } if index < tasks.len())
+            {
+                return Err(ElevationError::InvalidRequest);
+            }
+            let claim = job.open_file(CLAIM_FILE)?;
+            if claim.metadata()?.len() != 0 {
+                return Err(ElevationError::InsecureJob);
+            }
+            drop(job.create_file(&section_file(index, true))?);
+        } else {
+            drop(job.create_file(CLAIM_FILE)?);
+        }
         Ok((job, request))
     }
 
     fn create_file(&self, name: &str) -> Result<File, ElevationError> {
-        if !FIXED_FILES.contains(&name) {
+        let _impersonation = self.impersonate_requester()?;
+        if !allowed_job_file(name) {
             return Err(ElevationError::InvalidArguments);
         }
         let descriptor = private_descriptor(&self.sid)?;
@@ -271,7 +313,7 @@ impl NativeJob {
     }
 
     fn open_file(&self, name: &str) -> Result<File, ElevationError> {
-        if !FIXED_FILES.contains(&name) {
+        if !allowed_job_file(name) {
             return Err(ElevationError::InvalidArguments);
         }
         let path = wide_path(&self.path.join(name))?;
@@ -294,6 +336,11 @@ impl NativeJob {
     }
 
     fn cancelled(&self) -> Result<bool, ElevationError> {
+        if let Some(requester) = &self.requester {
+            if !requester.alive()? {
+                return Ok(true);
+            }
+        }
         match std::fs::symlink_metadata(self.path.join(CANCEL_FILE)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.into()),
@@ -305,6 +352,12 @@ impl NativeJob {
                 Ok(true)
             }
         }
+    }
+    fn impersonate_requester(&self) -> Result<Option<Impersonation<'_>>, ElevationError> {
+        self.requester
+            .as_ref()
+            .map(RequesterProof::impersonate)
+            .transpose()
     }
     fn signal_cancel(&self) {
         // It is an empty, fixed-name file in this job only; process termination is independent.
@@ -356,7 +409,9 @@ impl PrivateCleanup {
         if !self.files_removed {
             // No recursive deletion: only the finite names in the still-pinned job directory.
             let mut removed = true;
-            for name in FIXED_FILES {
+            for name in FIXED_FILES.iter().map(|name| (*name).to_owned()).chain(
+                (0..MAX_SECTIONS).flat_map(|i| [section_file(i, false), section_file(i, true)]),
+            ) {
                 if let Err(error) = std::fs::remove_file(self.path.join(name)) {
                     removed &= error.kind() == std::io::ErrorKind::NotFound;
                 }
@@ -438,12 +493,12 @@ pub(crate) fn run_approved(
     request: &ElevationRequest,
     cancel: &CancelToken,
 ) -> Result<ElevationResponse, ElevationError> {
-    request.validate_at(unix_ms())?;
+    request.validate_launch_at(unix_ms())?;
     if is_elevated()? {
         return Err(ElevationError::ApprovalRequired);
     }
     let remaining_ttl = Duration::from_millis(request.expires_at_unix_ms.saturating_sub(unix_ms()));
-    let budget = request.budget().min(remaining_ttl);
+    let budget = (request.budget() + Duration::from_millis(CONSENT_BUDGET_MS)).min(remaining_ttl);
     let job = Arc::new(SupervisedJob {
         native: job,
         request: request.clone(),
@@ -610,11 +665,19 @@ fn launch(job: &NativeJob, nonce: &str) -> Result<Process, ElevationError> {
 
 pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
     // Cover setup and any blocked filesystem call too; this timer starts at worker entry.
-    let _hard_deadline = HardDeadline::start()?;
+    let _hard_deadline = HardDeadline::start(if arguments.section.is_some() {
+        MAX_SECTION_BUDGET_MS + 5_000
+    } else {
+        MAX_BUDGET_MS + 5_000
+    })?;
     if !is_elevated()? {
         return Err(ElevationError::ApprovalRequired);
     }
-    let (job, request) = NativeJob::open_worker(&arguments)?;
+    let (job, mut request) = NativeJob::open_worker(&arguments)?;
+    if let Some(index) = arguments.section {
+        request = section_request(&request, index)?;
+    }
+    let is_batch = matches!(request.task, ElevatedTask::DeepAnalysis { .. });
     let job = Arc::new(job);
     let disarmed = Arc::new(AtomicBool::new(false));
     let guard = Watchdog(Arc::clone(&disarmed));
@@ -627,6 +690,10 @@ pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
             while !disarmed.load(Ordering::Acquire) {
                 if clock.elapsed() >= budget.min(Duration::from_millis(MAX_BUDGET_MS)) {
                     worker_exit(124);
+                }
+                if is_batch {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
                 }
                 match watchdog_job.cancelled() {
                     Ok(true) => worker_exit(125),
@@ -651,6 +718,44 @@ pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
             .ok_or(ElevationError::TimedOut)
     };
     match &request.task {
+        ElevatedTask::DeepAnalysis { tasks } => {
+            bind_batch_process_tree()?;
+            for index in 0..tasks.len() {
+                let section_request = section_request(&request, index)?;
+                let result = if job.cancelled()? {
+                    Err(ElevationError::Cancelled)
+                } else if remaining().unwrap_or_default().as_millis()
+                    < u128::from(section_request.budget_ms + 1_000)
+                {
+                    Err(ElevationError::TimedOut)
+                } else {
+                    run_section(&job, &arguments, &section_request, index)
+                };
+                let section = match result {
+                    Ok(value) => value,
+                    Err(error) => ElevationResponse::empty(
+                        &section_request,
+                        match error {
+                            ElevationError::Cancelled => ElevationStatus::Cancelled,
+                            ElevationError::TimedOut => ElevationStatus::TimedOut,
+                            ElevationError::Unsupported => ElevationStatus::Unsupported,
+                            _ => ElevationStatus::Error,
+                        },
+                        ElevationLimit::SourceUnavailable,
+                    ),
+                };
+                response.sections.push(section);
+            }
+            response.status = if response
+                .sections
+                .iter()
+                .all(|s| s.status == ElevationStatus::Completed)
+            {
+                ElevationStatus::Completed
+            } else {
+                ElevationStatus::Partial
+            };
+        }
         ElevatedTask::SystemCaches => {
             let windows = system_directory(true)?;
             let resolution = super::system_native::delivery_cache(&windows);
@@ -776,12 +881,145 @@ pub(crate) fn worker(arguments: WorkerArguments) -> Result<(), ElevationError> {
     if bytes.len() > MAX_RESPONSE_BYTES {
         return Err(ElevationError::InvalidResponse);
     }
-    let mut file = job.create_file(RESPONSE_FILE)?;
+    let output = arguments
+        .section
+        .map(|index| section_file(index, false))
+        .unwrap_or_else(|| RESPONSE_FILE.to_owned());
+    let mut file = job.create_file(&output)?;
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(guard);
     Ok(())
 }
+
+fn section_request(
+    request: &ElevationRequest,
+    index: usize,
+) -> Result<ElevationRequest, ElevationError> {
+    let ElevatedTask::DeepAnalysis { tasks } = &request.task else {
+        return Err(ElevationError::InvalidRequest);
+    };
+    let task = tasks.get(index).ok_or(ElevationError::InvalidRequest)?;
+    let mut section = request.clone();
+    section.task = task.clone();
+    section.budget_ms = MAX_SECTION_BUDGET_MS.min(request.budget_ms);
+    Ok(section)
+}
+
+/// The orchestrator and all descendants enter one non-inheritable kill-on-close job before spawn.
+/// Its handle deliberately lives until process exit; dropping it earlier would kill this process.
+fn bind_batch_process_tree() -> Result<(), ElevationError> {
+    // SAFETY: an unnamed, non-inheritable job has no external mutable namespace.
+    let handle = unsafe { CreateJobObjectW(null(), null()) };
+    if handle.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: CreateJobObjectW transferred ownership on success.
+    let job = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = Default::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: the job and initialized native limits structure are live for the call.
+    if unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            size_of_val(&limits) as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: only this one-shot elevated orchestrator is assigned, before any child is launched.
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), GetCurrentProcess()) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    std::mem::forget(job);
+    Ok(())
+}
+
+fn run_section(
+    job: &NativeJob,
+    args: &WorkerArguments,
+    request: &ElevationRequest,
+    index: usize,
+) -> Result<ElevationResponse, ElevationError> {
+    let executable = std::env::current_exe()?;
+    let _pins = pin_chain(
+        executable
+            .parent()
+            .ok_or(ElevationError::InvalidArguments)?,
+    )?;
+    let _executable_pin = open_executable(&executable)?;
+    let mut child = SectionChild(
+        std::process::Command::new(&executable)
+            .arg("--job-dir")
+            .arg(&args.job_dir)
+            .arg("--nonce")
+            .arg(&args.nonce)
+            .arg("--request-digest")
+            .arg(&args.request_digest)
+            .arg("--section")
+            .arg(index.to_string())
+            .env_clear()
+            .env("SystemRoot", system_directory(true)?)
+            .env("TEMP", &job.path)
+            .env("TMP", &job.path)
+            .current_dir(system_directory(false)?)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?,
+    );
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.0.try_wait()? {
+            match status.code() {
+                Some(0) => break,
+                Some(124) => return Err(ElevationError::TimedOut),
+                Some(125) => return Err(ElevationError::Cancelled),
+                _ => {
+                    return Err(ElevationError::HelperFailed(
+                        status.code().unwrap_or(1) as u32
+                    ))
+                }
+            }
+        }
+        let error = if job.cancelled()? {
+            Some(ElevationError::Cancelled)
+        } else if started.elapsed() >= request.budget() + Duration::from_secs(2) {
+            Some(ElevationError::TimedOut)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            child.0.kill()?;
+            child.0.wait()?;
+            return Err(error);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut file = job.open_file(&section_file(index, false))?;
+    ElevationResponse::from_bytes(
+        &read_bounded(&mut file, MAX_SECTION_RESPONSE_BYTES)?,
+        request,
+    )
+}
+
+struct SectionChild(std::process::Child);
+impl Drop for SectionChild {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        if self.0.kill().is_err() || self.0.wait().is_err() {
+            // Terminating the orchestrator closes its kill-on-close job rather than losing a child.
+            worker_exit(1);
+        }
+    }
+}
+
 fn worker_exit(code: i32) -> ! {
     let _ = super::trace_native::abort_owned_session();
     std::process::exit(code)
@@ -791,7 +1029,7 @@ struct HardDeadline {
     thread: std::thread::Thread,
 }
 impl HardDeadline {
-    fn start() -> Result<Self, ElevationError> {
+    fn start(budget_ms: u64) -> Result<Self, ElevationError> {
         let disarmed = Arc::new(AtomicBool::new(false));
         let worker_flag = Arc::clone(&disarmed);
         let join = std::thread::Builder::new()
@@ -803,7 +1041,7 @@ impl HardDeadline {
                         return;
                     }
                     let Some(remaining) =
-                        Duration::from_millis(MAX_BUDGET_MS).checked_sub(clock.elapsed())
+                        Duration::from_millis(budget_ms).checked_sub(clock.elapsed())
                     else {
                         worker_exit(124);
                     };
@@ -1053,6 +1291,9 @@ fn current_token() -> Result<OwnedHandle, ElevationError> {
 }
 fn current_sid() -> Result<String, ElevationError> {
     let token = current_token()?;
+    token_sid(&token)
+}
+fn token_sid(token: &OwnedHandle) -> Result<String, ElevationError> {
     let mut length = 0;
     // SAFETY: a zero-length query writes only the required buffer length.
     unsafe {
@@ -1083,6 +1324,232 @@ fn current_sid() -> Result<String, ElevationError> {
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
     sid_string(user.User.Sid)
 }
+pub(crate) fn requester_identity() -> Result<super::protocol::Requester, ElevationError> {
+    // SAFETY: the pseudo handle is valid for this process and is not closed.
+    process_identity(unsafe { GetCurrentProcess() }, std::process::id())
+}
+
+fn process_identity(
+    process: HANDLE,
+    pid: u32,
+) -> Result<super::protocol::Requester, ElevationError> {
+    let mut created: FILETIME = Default::default();
+    let mut exited: FILETIME = Default::default();
+    let mut kernel: FILETIME = Default::default();
+    let mut user: FILETIME = Default::default();
+    let mut session_id = 0;
+    // SAFETY: the process handle is live; each output has its declared native layout.
+    if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } == 0
+        // SAFETY: session_id is a writable DWORD; the process handle pins the PID.
+        || unsafe { ProcessIdToSessionId(pid, &mut session_id) } == 0
+    {
+        return Err(ElevationError::InsecureJob);
+    }
+    Ok(super::protocol::Requester {
+        pid,
+        created_at: (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+        session_id,
+    })
+}
+
+struct RequesterProof {
+    process: OwnedHandle,
+    token: OwnedHandle,
+}
+impl RequesterProof {
+    fn verify(identity: &super::protocol::Requester, owner: &str) -> Result<Self, ElevationError> {
+        let _privilege = if is_elevated()? && current_sid()? != owner {
+            Some(DebugPrivilege::enable()?)
+        } else {
+            None
+        };
+        // SAFETY: only query/synchronize access is requested for the fixed PID from the sealed job.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                identity.pid,
+            )
+        };
+        if handle.is_null() {
+            return Err(ElevationError::InsecureJob);
+        }
+        // SAFETY: OpenProcess transferred ownership of its successful handle.
+        let process = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let actual = process_identity(process.as_raw_handle(), identity.pid)?;
+        let helper = requester_identity()?;
+        if actual.created_at != identity.created_at
+            || actual.session_id != identity.session_id
+            || actual.session_id != helper.session_id
+        {
+            return Err(ElevationError::InsecureJob);
+        }
+        let mut token = null_mut();
+        // SAFETY: the pinned process is live; the output receives one owned primary token handle.
+        if unsafe {
+            OpenProcessToken(
+                process.as_raw_handle(),
+                TOKEN_QUERY | TOKEN_DUPLICATE,
+                &mut token,
+            )
+        } == 0
+        {
+            return Err(ElevationError::InsecureJob);
+        }
+        // SAFETY: OpenProcessToken transferred ownership on success.
+        let token = unsafe { OwnedHandle::from_raw_handle(token) };
+        let mut elevation: TOKEN_ELEVATION = Default::default();
+        let mut length = 0;
+        // SAFETY: the owned token is live and the output has the exact requested native size.
+        if unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenElevation,
+                (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+                size_of::<TOKEN_ELEVATION>() as u32,
+                &mut length,
+            )
+        } == 0
+            || length as usize != size_of::<TOKEN_ELEVATION>()
+            || elevation.TokenIsElevated != 0
+            || token_sid(&token)? != owner
+        {
+            return Err(ElevationError::InsecureJob);
+        }
+        let proof = Self { process, token };
+        if !proof.alive()? {
+            return Err(ElevationError::InsecureJob);
+        }
+        Ok(proof)
+    }
+    fn alive(&self) -> Result<bool, ElevationError> {
+        // SAFETY: the owned process handle includes SYNCHRONIZE; zero never blocks.
+        match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } {
+            WAIT_TIMEOUT => Ok(true),
+            WAIT_OBJECT_0 => Ok(false),
+            _ => Err(ElevationError::InsecureJob),
+        }
+    }
+    fn impersonate(&self) -> Result<Impersonation<'_>, ElevationError> {
+        // SAFETY: the verified primary token includes QUERY/DUPLICATE. The guard is thread-bound.
+        if unsafe { ImpersonateLoggedOnUser(self.token.as_raw_handle()) } == 0 {
+            return Err(ElevationError::InsecureJob);
+        }
+        Ok(Impersonation {
+            _proof: self,
+            _thread_bound: std::marker::PhantomData,
+        })
+    }
+}
+struct Impersonation<'a> {
+    _proof: &'a RequesterProof,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl Drop for Impersonation<'_> {
+    fn drop(&mut self) {
+        // SAFETY: this guard never moves between threads and only follows successful impersonation.
+        if unsafe { RevertToSelf() } == 0 {
+            std::process::abort();
+        }
+    }
+}
+struct DebugPrivilege {
+    token: OwnedHandle,
+    previous: TOKEN_PRIVILEGES,
+}
+impl DebugPrivilege {
+    fn enable() -> Result<Self, ElevationError> {
+        let mut token = null_mut();
+        // SAFETY: opens only this helper's own token to scope cross-account process authentication.
+        if unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token,
+            )
+        } == 0
+        {
+            return Err(ElevationError::InsecureJob);
+        }
+        // SAFETY: the successful call transferred this token handle.
+        let token = unsafe { OwnedHandle::from_raw_handle(token) };
+        let mut desired = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            ..Default::default()
+        };
+        let name = wide(OsStr::new("SeDebugPrivilege"));
+        // SAFETY: fixed privilege name and one writable LUID.
+        if unsafe { LookupPrivilegeValueW(null(), name.as_ptr(), &mut desired.Privileges[0].Luid) }
+            == 0
+        {
+            return Err(ElevationError::InsecureJob);
+        }
+        desired.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        let mut guard = Self {
+            token,
+            previous: TOKEN_PRIVILEGES::default(),
+        };
+        let mut returned = 0;
+        // SAFETY: exactly one requested privilege and a buffer large enough for its previous state.
+        let adjusted = unsafe {
+            AdjustTokenPrivileges(
+                guard.token.as_raw_handle(),
+                0,
+                &desired,
+                size_of::<TOKEN_PRIVILEGES>() as u32,
+                &mut guard.previous,
+                &mut returned,
+            )
+        };
+        // SAFETY: GetLastError immediately follows the call whose partial success it disambiguates.
+        if adjusted == 0 || unsafe { GetLastError() } != 0 {
+            return Err(ElevationError::InsecureJob);
+        }
+        Ok(guard)
+    }
+}
+impl Drop for DebugPrivilege {
+    fn drop(&mut self) {
+        // SAFETY: restores exactly the state returned for this helper's token before releasing it.
+        if unsafe {
+            AdjustTokenPrivileges(
+                self.token.as_raw_handle(),
+                0,
+                &self.previous,
+                0,
+                null_mut(),
+                null_mut(),
+            )
+        } == 0
+        {
+            std::process::abort();
+        }
+    }
+}
+
+fn file_owner_sid(file: &File) -> Result<String, ElevationError> {
+    let mut owner = null_mut();
+    let mut descriptor = null_mut();
+    // SAFETY: file is pinned; outputs belong to the returned LocalAlloc security descriptor.
+    let code = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if code != 0 || descriptor.is_null() {
+        return Err(ElevationError::InsecureJob);
+    }
+    let _allocation = LocalAllocation(descriptor);
+    sid_string(owner)
+}
+
 fn sid_string(sid: PSID) -> Result<String, ElevationError> {
     if sid.is_null() {
         return Err(ElevationError::InsecureJob);
@@ -1281,6 +1748,94 @@ mod tests {
             quote_arguments(Path::new(r"D:\fixture"), "nonce\" cmd.exe", &"0".repeat(64)).is_err()
         );
     }
+    #[test]
+    fn requester_proof_rejects_wrong_creation_session_owner_and_elevated_host() {
+        let identity = requester_identity().unwrap();
+        let owner = current_sid().unwrap();
+        let mut wrong = identity.clone();
+        wrong.created_at += 1;
+        assert!(RequesterProof::verify(&wrong, &owner).is_err());
+        wrong = identity.clone();
+        wrong.session_id = wrong.session_id.wrapping_add(1);
+        assert!(RequesterProof::verify(&wrong, &owner).is_err());
+        assert!(RequesterProof::verify(&identity, "S-1-5-18").is_err());
+        let result = RequesterProof::verify(&identity, &owner);
+        if is_elevated().unwrap() {
+            assert!(result.is_err());
+        } else {
+            assert!(result.unwrap().alive().unwrap());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a separate elevated fixture worker in the same Windows session"]
+    fn cross_account_host_fixture() {
+        assert!(!is_elevated().unwrap());
+        let root = PathBuf::from(std::env::var_os("PCAGENT_OTS_FIXTURE").unwrap());
+        let request =
+            ElevationRequest::new(ElevatedTask::SystemCaches, Duration::from_secs(60)).unwrap();
+        let job = NativeJob::create_in(&request, &root).unwrap();
+        let args = vec![
+            "--job-dir".to_string(),
+            job.path.to_str().unwrap().to_string(),
+            "--nonce".to_string(),
+            request.nonce.clone(),
+            "--request-digest".to_string(),
+            job.request_digest.clone(),
+        ];
+        std::fs::write(
+            root.join("arguments.json"),
+            serde_json::to_vec(&args).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(root.join("ready"), b"").unwrap();
+        let start = Instant::now();
+        while !root.join("complete").exists() {
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "No elevated fixture completion"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let response = job.response(&request).unwrap();
+        assert_eq!(response.status, ElevationStatus::Unsupported);
+        let path = job.path.clone();
+        let completion = job.completion();
+        drop(job);
+        assert!(completion.wait(Duration::from_secs(5)));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    #[ignore = "requires a live standard-account host fixture, not an actual UAC acceptance test"]
+    fn cross_account_worker_fixture() {
+        assert!(is_elevated().unwrap());
+        let root = PathBuf::from(std::env::var_os("PCAGENT_OTS_FIXTURE").unwrap());
+        let args: Vec<String> =
+            serde_json::from_slice(&std::fs::read(root.join("arguments.json")).unwrap()).unwrap();
+        let args = WorkerArguments::parse(args.into_iter().map(OsString::from)).unwrap();
+        let (job, request) = NativeJob::open_worker(&args).unwrap();
+        assert_ne!(current_sid().unwrap(), job.sid);
+        assert!(job.requester.as_ref().unwrap().alive().unwrap());
+        assert!(
+            NativeJob::open_worker(&args).is_err(),
+            "A consumed request must not replay"
+        );
+        let response = ElevationResponse::empty(
+            &request,
+            ElevationStatus::Unsupported,
+            ElevationLimit::SourceUnavailable,
+        );
+        let mut output = job.create_file(RESPONSE_FILE).unwrap();
+        output
+            .write_all(&serde_json::to_vec(&response).unwrap())
+            .unwrap();
+        output.sync_all().unwrap();
+        assert_eq!(file_owner_sid(&output).unwrap(), job.sid);
+        drop(output);
+        drop(job);
+        std::fs::write(root.join("complete"), b"").unwrap();
+    }
 
     #[test]
     fn private_fixture_job_rejects_replay_and_truncated_response_without_uac() {
@@ -1293,6 +1848,7 @@ mod tests {
             job_dir: job.path.clone(),
             nonce: request.nonce.clone(),
             request_digest: job.request_digest.clone(),
+            section: None,
         };
         let mut wrong_digest = args.clone();
         wrong_digest.request_digest = "0".repeat(64);
@@ -1397,6 +1953,7 @@ mod tests {
             job_dir: root.clone(),
             nonce: request.nonce.clone(),
             request_digest: "0".repeat(64),
+            section: None,
         };
         assert!(matches!(
             NativeJob::open_worker(&arguments),

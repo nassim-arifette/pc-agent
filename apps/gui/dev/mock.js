@@ -35,6 +35,7 @@ import { createElevationFixture } from "./mock/elevation.js";
 import { createStorageFixture } from "./mock/storage.js";
 import { createSelectionFixture } from "./mock/selection.js";
 import { createConversationFixture } from "./mock/conversations.js";
+import { createVoiceFixture } from "./mock/voice.js";
 
 const params = new URLSearchParams(window.location.search);
 
@@ -54,7 +55,8 @@ const selection = createSelectionFixture({
 const live = createLiveFixture({ params, publishSource: selection.publishSource, cloud: provider.cloud });
 const history = createHistoryFixture({ params, batteryMode: live.batteryMode, publishSource: selection.publishSource });
 const storage = createStorageFixture({ params, emit, publishSource: selection.publishSource, invalidateStorage: selection.invalidateStorage });
-const elevation = createElevationFixture(params);
+const elevation = createElevationFixture(params, selection.publishSource);
+const voice = createVoiceFixture({ params, emit });
 
 export function createMock() {
   const scan = storage.createCommands();
@@ -62,6 +64,7 @@ export function createMock() {
   const commands = {
     ...provider.commands, ...live.commands, ...history.commands, ...actions.commands, ...elevation.commands,
     ...scan.commands, ...turns, ...selection.createCommands(turns.start_investigation),
+    ...voice.commands,
   };
   return {
     mock: true,

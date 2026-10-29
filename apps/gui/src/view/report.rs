@@ -54,6 +54,7 @@ pub struct WebSourceView {
     pub url: String,
     pub published_date: Option<String>,
     pub searched_at_unix_ms: Option<u64>,
+    pub cached_at_unix_ms: Option<u64>,
     /// The exact query that found it.
     pub query: Option<String>,
 }
@@ -99,9 +100,42 @@ pub struct Report {
     /// order. A local rule: the model has no authority here, and nothing runs without the
     /// person's click and the Windows prompt.
     pub admin_hints: Vec<String>,
+    pub elevated_proposals: Vec<ElevatedProposalView>,
     /// Absent for a local analysis, which makes no provider request.
     pub usage: Option<Usage>,
     pub continuation: Option<ExtensionRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ElevatedProposalView {
+    pub plan_id: String,
+    pub tasks: Vec<String>,
+}
+
+fn elevated_proposals(r: &Investigation) -> Vec<ElevatedProposalView> {
+    let Some(answer) = &r.answer else {
+        return Vec::new();
+    };
+    r.observations
+        .iter()
+        .filter_map(|observation| {
+            if observation.tool != pcagent_agent::catalog::elevated::PROPOSE_ELEVATED_CHECK.name {
+                return None;
+            }
+            let plan = &observation.observation["plan"];
+            let id = plan["plan_id"].as_str()?;
+            if !answer.action_refs.iter().any(|reference| reference == id) {
+                return None;
+            }
+            let args = pcagent_agent::catalog::elevated::PROPOSE_ELEVATED_CHECK
+                .validate(&serde_json::json!({"tasks":plan["tasks"]}).to_string())
+                .ok()?;
+            Some(ElevatedProposalView {
+                plan_id: id.into(),
+                tasks: args.texts("tasks")?.to_vec(),
+            })
+        })
+        .collect()
 }
 
 pub fn error_code(e: &AgentError) -> String {
@@ -165,7 +199,12 @@ pub(super) fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> A
                         domain: text("domain").unwrap_or_default(),
                         url: text("url")?,
                         published_date: text("published_date"),
-                        searched_at_unix_ms: o.observation["searched_at_unix_ms"].as_u64(),
+                        searched_at_unix_ms: source["read_at_unix_ms"]
+                            .as_u64()
+                            .or_else(|| o.observation["searched_at_unix_ms"].as_u64()),
+                        cached_at_unix_ms: source["cached_at_unix_ms"]
+                            .as_u64()
+                            .or_else(|| o.observation["cached_at_unix_ms"].as_u64()),
                         query: o.observation["query"].as_str().map(str::to_owned),
                     }),
                 });
@@ -259,11 +298,13 @@ pub(super) fn local_block(
     ProcessLabels::new(&all, processes, readable).all(texts)
 }
 /// The deeper checks the chat offers under an answer; the Storage view lists the same ones.
-pub(super) const OFFERED_CHECKS: [&str; 4] = [
+pub(super) const OFFERED_CHECKS: [&str; 6] = [
     "system_caches",
     "shadow_storage",
     "disk_reliability",
     "battery_energy",
+    "mft_inventory",
+    "process_images",
 ];
 /// Cleanup categories the helper's `system_caches` task measures when the user cannot.
 pub(super) const SYSTEM_CACHE_CATEGORIES: [&str; 3] = [
@@ -407,6 +448,7 @@ pub fn report(r: &Investigation, question: &str, readable: Readable<'_>) -> Repo
         limitations: r.limitations.clone(),
         limitation_phrases: r.limitations.iter().map(|l| note_phrase(l)).collect(),
         admin_hints: admin_hints(r),
+        elevated_proposals: elevated_proposals(r),
         usage: (r.mode != "local_rules").then(|| usage(&r.stats)),
         continuation: r.continuation.clone(),
     }

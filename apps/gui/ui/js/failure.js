@@ -1,9 +1,9 @@
 // Failures in the interface language. A failed command rejects with an Error whose `code` comes
 // from a closed set (api.js, src/failure.rs); `failure.<code>` in i18n.js says it in English and
-// French. The host's English `message` is kept for a tooltip only, never shown as the main text,
+// French. The host's English `message` remains in the payload, never translated as free text,
 // and a code without a sentence reads as a generic one. A failed turn keeps its C3 codes
 // (`error.<code>`); a turn the host refused to start keeps the command's own code as its cause.
-import { t } from "./i18n.js";
+import { t, language } from "./i18n.js";
 
 /** The translation of `key`, or of `fallback` when the dictionaries have none. */
 function translated(key, fallback) {
@@ -36,8 +36,9 @@ export function turnFailureText(failure) {
   return translated(`error.${failure?.code}`, "failure.unknown");
 }
 
-/** The host's English detail, for a title attribute; null for the page's own sentences. */
+/** Raw details are English-only; French controls already expose the closed-code sentence. */
 export function failureDetail(error) {
+  if (language() === "fr") return null;
   const source = error?.code === "start" ? error.cause : error;
   if (!source || source.localized) return null;
   const detail = typeof source.message === "string" ? source.message.trim() : "";

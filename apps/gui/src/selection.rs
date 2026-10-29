@@ -95,7 +95,16 @@ pub struct SelectionRegistry {
 impl SelectionRegistry {
     fn expire(&mut self) {
         let now = Instant::now();
-        self.sources.retain(|source| source.expires_at > now);
+        let oldest_alert = unix_ms().saturating_sub(604_800_000);
+        // Watch alerts follow the 7-day history; elevated inspections their own 24 hours.
+        self.sources.retain(|source| {
+            source.expires_at > now
+                && source.source.available_at(unix_ms())
+                && !matches!(
+                    &*source.source,
+                    SelectionSource::WatchAlert(alert) if alert.started_at_unix_ms < oldest_alert
+                )
+        });
         let sources: BTreeSet<_> = self
             .sources
             .iter()
@@ -306,6 +315,15 @@ impl SelectionRegistry {
         self.expire();
     }
 
+    pub fn invalidate_watch(&mut self, watch_id: &str) {
+        self.history_revision = self.history_revision.saturating_add(1);
+        self.sources.retain(|source| {
+            !matches!(&*source.source,
+            SelectionSource::WatchAlert(alert) if alert.watch_id == watch_id)
+        });
+        self.expire();
+    }
+
     /// Revoke every capture of this scope before replacing its scan or authorization.
     pub fn invalidate_storage(&mut self, scope_id: &str) {
         self.sources.retain(|source| {
@@ -420,6 +438,93 @@ mod tests {
             },
         ));
         SelectionSource::Snapshot(snapshot)
+    }
+
+    fn watch_source(started_at: u64, watch: &str) -> SelectionSource {
+        SelectionSource::WatchAlert(serde_json::from_value(json!({
+            "id":"alert-fixture","watch_id":watch,
+            "rule":{"kind":"resource_above","resource":"cpu","threshold_basis_points":5000,"sustained_seconds":0},
+            "started_at_unix_ms":started_at,"last_checked_unix_ms":started_at,
+            "ended_at_unix_ms":null,"close_reason":null,
+            "observation":{"entity_ref":"system","metric":"cpu_busy_basis_points","value":9300,"unit":"basis_points",
+                "source":"fixture","status":"ok","origin":"synthetic_fixture","measured_at_unix_ms":started_at,
+                "window":{"started_at_unix_ms":started_at-1000,"finished_at_unix_ms":started_at,"duration_ms":1000},
+                "derivation":null,"inputs":[]},
+            "extreme_observation":{"entity_ref":"system","metric":"cpu_busy_basis_points","value":9300,"unit":"basis_points",
+                "source":"fixture","status":"ok","origin":"synthetic_fixture","measured_at_unix_ms":started_at,
+                "window":{"started_at_unix_ms":started_at-1000,"finished_at_unix_ms":started_at,"duration_ms":1000},
+                "derivation":null,"inputs":[]},
+            "lower_bound":false,"notification":"sent","seen":false
+        })).unwrap())
+    }
+
+    #[test]
+    fn watch_deletion_revokes_its_preview_and_inflight_read_but_preserves_other_sources() {
+        let (mut registry, live, _, _) = fixture();
+        let revision = registry.history_revision();
+        let id = registry
+            .publish_history(watch_source(unix_ms(), "watch-a"), revision)
+            .unwrap();
+        let reference = SelectionRef {
+            source_id: id,
+            target: SelectionTarget::WatchAlert {
+                alert_id: "alert-fixture".into(),
+            },
+        };
+        let preview = registry
+            .prepare(
+                reference.clone(),
+                SelectionIntent::Explain,
+                None,
+                None,
+                vec![],
+                Sharing::Anonymized,
+                false,
+                PrivacyContext::local(),
+                1,
+            )
+            .unwrap();
+        registry.invalidate_watch("watch-a");
+        assert!(registry
+            .sources
+            .iter()
+            .any(|entry| entry.id == live.source_id));
+        assert!(!registry
+            .tickets
+            .iter()
+            .any(|ticket| ticket.prepared.id == preview.preview_id));
+        assert!(registry
+            .publish_history(watch_source(unix_ms(), "watch-a"), revision)
+            .is_err());
+        assert!(registry
+            .prepare(
+                reference,
+                SelectionIntent::Explain,
+                None,
+                None,
+                vec![],
+                Sharing::Anonymized,
+                false,
+                PrivacyContext::local(),
+                1
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn cleared_or_retention_expired_alerts_cannot_be_selected() {
+        let mut registry = SelectionRegistry::default();
+        registry
+            .publish(watch_source(unix_ms() - 604_800_001, "watch-old"))
+            .unwrap();
+        registry.expire();
+        assert!(registry.sources.is_empty());
+        registry
+            .publish(watch_source(unix_ms(), "watch-new"))
+            .unwrap();
+        registry.begin_history_clear();
+        registry.finish_history_clear();
+        assert!(registry.sources.is_empty());
     }
 
     fn fixture() -> (
@@ -751,6 +856,7 @@ mod tests {
         use pcagent_agent::selection::{SelectionTarget, StorageSource};
         let storage = |scan: &str, value: u64| {
             SelectionSource::Storage(StorageSource {
+            facts: None,
             page: serde_json::from_value(json!({"schema_version":1,"scope_id":"scope-fixture","scan_id":scan,"kind":"files","sort_basis":"allocated_bytes","offset":0,"limit":1,"total":1,"next_offset":null,"scan_status":"ok","limitations":[],"items":[{"item_ref":format!("{scan}:1"),"alias":"file-1","alias_path":"<scope>/file-1","parent_ref":null,"kind":"files","path":null,"redacted_path":"<scope>/file-1","logical_bytes":value,"allocated_bytes":value,"allocation_unknown_files":0,"estimated_reclaim_bytes":null,"files":1,"link_count":1,"sparse":false,"compressed":false,"modified_unix_ms":null,"last_used":"unknown","status":"ok"}]})).unwrap(),
             window: Window { started_at_unix_ms: 1000, finished_at_unix_ms: 2000, duration_ms: 1000 }, origin: Origin::SyntheticFixture, context: pcagent_agent::StorageContext::default(),
         })

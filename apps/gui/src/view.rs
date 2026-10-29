@@ -16,6 +16,7 @@ mod storage;
 mod usage;
 
 pub use actions::{outcome, plan, ActionOutcome, PlanView};
+pub(crate) use activity::application_key;
 pub use activity::{activity, ActivityView};
 pub use battery::{battery_read, BatteryView, LiveBattery};
 pub use dashboard::{dashboard, ntfs_volumes, volumes, Dashboard, VolumeView};
@@ -25,6 +26,8 @@ pub use labels::{
 pub use measurement::Measure;
 pub use report::{error_code, report, ErrorView, Report, LOCAL_EVIDENCE_NOTE};
 pub use settings::{app_info, capabilities, cloud, AppInfo, Cloud, MODELS};
+#[cfg(windows)]
+pub use storage::{item as storage_item, Item as StorageItem};
 pub use storage::{page, progress, storage, Page};
 pub use usage::{price, usage, PriceView, Usage};
 

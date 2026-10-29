@@ -3,6 +3,11 @@ use std::ffi::OsString;
 
 /// The separate helper's only entry point. Arguments carry no command, target path or output path.
 pub fn worker_main(args: impl IntoIterator<Item = OsString>) -> Result<(), ElevationError> {
+    let args: Vec<_> = args.into_iter().take(9).collect();
+    #[cfg(windows)]
+    if args.as_slice() == [OsString::from("--trace-guardian")] {
+        return super::trace_guardian::worker();
+    }
     let arguments = WorkerArguments::parse(args)?;
     #[cfg(windows)]
     {

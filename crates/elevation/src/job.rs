@@ -11,7 +11,7 @@ pub struct PreparedElevation {
     approval_issued: bool,
     completion: ElevationCompletion,
     #[cfg(windows)]
-    job: std::sync::Arc<super::native::NativeJob>,
+    job: Option<std::sync::Arc<super::native::NativeJob>>,
 }
 
 /// A consumable permit produced by the local approval gesture. It is neither Clone nor serde.
@@ -21,7 +21,7 @@ pub struct ElevationApproval {
 }
 
 impl PreparedElevation {
-    /// Prepare a private, immutable request without prompting for elevation.
+    /// Prepare a review without creating an executable request or starting its expiry clock.
     pub fn prepare(task: ElevatedTask, budget: Duration) -> Result<Self, ElevationError> {
         let request = ElevationRequest::new(task, budget)?;
         // No UAC prompt, trace session or ACL changes until hard-exit cleanup is validated.
@@ -31,12 +31,11 @@ impl PreparedElevation {
         super::ensure_unelevated_host()?;
         #[cfg(windows)]
         {
-            let job = std::sync::Arc::new(super::native::NativeJob::create(&request)?);
             Ok(Self {
                 request,
                 approval_issued: false,
-                completion: job.completion(),
-                job,
+                completion: ElevationCompletion::pending(),
+                job: None,
             })
         }
         #[cfg(not(windows))]
@@ -56,9 +55,17 @@ impl PreparedElevation {
 
     /// Call only from the approved local UI/CLI gesture, after displaying this fixed task.
     pub fn approve_locally(&mut self) -> Result<ElevationApproval, ElevationError> {
-        self.request.validate_at(pcagent_shared::unix_ms())?;
         if self.approval_issued {
             return Err(ElevationError::ApprovalConsumed);
+        }
+        super::ensure_unelevated_host()?;
+        self.request = ElevationRequest::new(self.request.task(), self.request.budget())?;
+        #[cfg(windows)]
+        {
+            let job = std::sync::Arc::new(super::native::NativeJob::create(&self.request)?);
+            let completion = self.completion.clone();
+            job.completion().on_complete(move || completion.complete());
+            self.job = Some(job);
         }
         self.approval_issued = true;
         Ok(ElevationApproval {
@@ -91,11 +98,25 @@ impl PreparedElevation {
         validate_approval(&self.request, self.approval_issued, &approval, cancel)?;
         #[cfg(windows)]
         {
-            super::native::run_approved(self.job, &self.request, cancel)
+            let mut this = self;
+            super::native::run_approved(
+                this.job.take().ok_or(ElevationError::ApprovalRequired)?,
+                &this.request,
+                cancel,
+            )
         }
         #[cfg(not(windows))]
         {
             Err(ElevationError::Unsupported)
+        }
+    }
+}
+
+impl Drop for PreparedElevation {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if !self.approval_issued {
+            self.completion.complete();
         }
     }
 }
@@ -106,7 +127,7 @@ fn validate_approval(
     approval: &ElevationApproval,
     cancel: &CancelToken,
 ) -> Result<(), ElevationError> {
-    request.validate_at(pcagent_shared::unix_ms())?;
+    request.validate_launch_at(pcagent_shared::unix_ms())?;
     if !issued || approval.job_id != request.job_id || approval.nonce != request.nonce {
         return Err(ElevationError::ApprovalRequired);
     }

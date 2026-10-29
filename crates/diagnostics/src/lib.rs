@@ -83,8 +83,8 @@ impl Support {
 pub struct Fact {
     pub text: String,
     pub evidence_refs: Vec<String>,
-    /// The same statement as a closed key and the measured values, for the desktop window to
-    /// word in its own language. Never serialized: model payloads, traces and the CLI keep `text`.
+    /// The same statement as a closed key and measured values for local human renderers.
+    /// Never serialized: model payloads, traces and machine-readable output keep `text`.
     #[serde(skip)]
     pub phrase: Option<Phrase>,
 }
@@ -99,6 +99,9 @@ pub struct Finding {
     pub facts: Vec<Fact>,
     pub hypothesis: Option<String>,
     pub counter_evidence: Vec<String>,
+    /// Typed local presentation only; old deserialized findings keep their original prose.
+    #[serde(skip)]
+    pub counter_phrases: Vec<Phrase>,
     pub missing: Vec<String>,
     pub evidence_refs: Vec<String>,
     pub next_step: String,
@@ -175,10 +178,21 @@ const LIMIT_NVML: &str =
 const LIMIT_GPU_MEMORY: &str = "Memory in use includes the driver's reserve; the process holding it is not reported on Windows.";
 const NOT_MEASURED: &str = "Not measured in this snapshot: ";
 
-/// Every fixed sentence a finding shows (its summary, next step and limitations) with the closed
-/// key the desktop window words it by. Support reasons, hypotheses and counter-evidence are not
-/// displayed there.
-const SENTENCES: [(&str, &str); 29] = [
+/// Closed sentences emitted by the diagnostic rules, not arbitrary model or user prose.
+const SENTENCES: &[(&str, &str)] = &[
+    ("support.short_sample", SHORT_SAMPLE),
+    ("support.memory_pressure", "Observed together with low available memory in the same sample; one sample cannot attribute a slowdown."),
+    ("support.contributor_only", "No memory contention is observed in this sample; a large allocation is not a problem by itself."),
+    ("support.abstention", "Explicit abstention: causes remain unmeasured or unestablished."),
+    ("hypothesis.memory_pressure", "Memory contention may contribute to the reported symptom."),
+    ("hypothesis.page_reads", "Memory pressure may be forcing pages to be read back from disk."),
+    ("hypothesis.commit_pressure", "Allocation failures or page-file growth may occur if commit keeps rising."),
+    ("hypothesis.cpu_pressure", "CPU contention may contribute to the reported symptom."),
+    ("hypothesis.storage_latency", "Slow storage requests may contribute to the reported symptom."),
+    ("hypothesis.single_thread", "A single-threaded workload may be limited by one processor."),
+    ("hypothesis.gpu_cooling", "If it persists under the same workload, cooling (dust, blocked vents, a soft surface under a laptop) or the power supply may be limiting the GPU."),
+    ("counter.single_thread", "A moderate aggregate CPU value does not exclude a single saturated thread."),
+    ("missing.representative_window", "representative observation window"),
     ("summary.low_available_memory", SUMMARY_LOW_MEMORY),
     ("summary.hard_fault_pressure", SUMMARY_HARD_FAULTS),
     ("summary.high_commit_ratio", SUMMARY_HIGH_COMMIT),
@@ -219,6 +233,9 @@ const SENTENCES: [(&str, &str); 29] = [
 pub fn phrase(text: &str) -> Option<Phrase> {
     if let Some((key, _)) = SENTENCES.iter().find(|(_, sentence)| *sentence == text) {
         return Some(Phrase::new(key));
+    }
+    if let Some((metric, _)) = SYSTEM_METRICS.iter().find(|(_, label)| *label == text) {
+        return Some(Phrase::new("label.metric").with("metric", Quantity::Metric(*metric)));
     }
     let labels = text.strip_prefix(NOT_MEASURED)?.strip_suffix('.')?;
     let metrics = labels
@@ -280,6 +297,7 @@ struct Draft {
     facts: Vec<Fact>,
     hypothesis: Option<&'static str>,
     counter_evidence: Vec<String>,
+    counter_phrases: Vec<Phrase>,
     next_step: &'static str,
     limitations: Vec<String>,
 }
@@ -293,9 +311,14 @@ impl Draft {
             facts,
             hypothesis: None,
             counter_evidence: Vec::new(),
+            counter_phrases: Vec::new(),
             next_step: OBSERVE_LONGER,
             limitations: vec![THRESHOLDS.into()],
         }
+    }
+    fn counter(&mut self, text: String, phrase: Phrase) {
+        self.counter_evidence.push(text);
+        self.counter_phrases.push(phrase);
     }
     fn build(self, snapshot: &Snapshot, missing: &[String]) -> Finding {
         let mut evidence_refs: Vec<String> = Vec::new();
@@ -314,6 +337,7 @@ impl Draft {
             facts: self.facts,
             hypothesis: self.hypothesis.map(Into::into),
             counter_evidence: self.counter_evidence,
+            counter_phrases: self.counter_phrases,
             missing: missing.to_vec(),
             evidence_refs,
             next_step: self.next_step.into(),
@@ -382,18 +406,23 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
         );
         d.hypothesis = Some("Memory contention may contribute to the reported symptom.");
         if let Some((_, _, _, _, commit_bp)) = r.commit.filter(|c| c.4 < 8_000) {
-            d.counter_evidence.push(format!(
-                "System commit is {} of its limit, so commit pressure is not also observed.",
-                percent(commit_bp)
-            ));
+            d.counter(
+                format!(
+                    "System commit is {} of its limit, so commit pressure is not also observed.",
+                    percent(commit_bp)
+                ),
+                Phrase::new("counter.commit_share").with("share", Quantity::BasisPoints(commit_bp)),
+            );
         }
         match snapshot.system_value(Metric::HardFaultPagesPerSecondX100) {
-            Some((_, faults)) if faults < HIGH_HARD_FAULTS_X100 / 10 => {
-                d.counter_evidence.push(format!(
+            Some((_, faults)) if faults < HIGH_HARD_FAULTS_X100 / 10 => d.counter(
+                format!(
                     "Hard-fault page reads were {}, so heavy paging is not also observed.",
                     rate(faults)
-                ))
-            }
+                ),
+                Phrase::new("counter.page_reads")
+                    .with("rate", Quantity::PagesPerSecondX100(faults)),
+            ),
             _ => {}
         }
         d.next_step = NEXT_MEMORY;
@@ -432,10 +461,13 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             .system_value(Metric::DiskReadLatencyMicroseconds)
             .filter(|(_, v)| *v < HIGH_DISK_LATENCY_US / 5)
         {
-            d.counter_evidence.push(format!(
-                "Average disk read latency was {}, so disk reads were not observed to be slow.",
-                ms(read)
-            ));
+            d.counter(
+                format!(
+                    "Average disk read latency was {}, so disk reads were not observed to be slow.",
+                    ms(read)
+                ),
+                Phrase::new("counter.disk_latency").with("latency", Quantity::Microseconds(read)),
+            );
             d.facts.push(fact(
                 format!("Average disk read latency was {}.", ms(read)),
                 Phrase::new(latency_phrase("read", false))
@@ -528,10 +560,13 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
             .system_value(Metric::DiskIdleBasisPoints)
             .filter(|(_, v)| *v >= 9_000)
         {
-            d.counter_evidence.push(format!(
-                "Disks were idle {} of the window; averages over few requests are noisy.",
-                percent(idle)
-            ));
+            d.counter(
+                format!(
+                    "Disks were idle {} of the window; averages over few requests are noisy.",
+                    percent(idle)
+                ),
+                Phrase::new("counter.disk_idle").with("share", Quantity::BasisPoints(idle)),
+            );
             d.facts.push(fact(
                 format!("Disk idle time was {}.", percent(idle)),
                 Phrase::new("fact.disk_idle").with("share", Quantity::BasisPoints(idle)),
@@ -687,9 +722,10 @@ pub fn analyze(snapshot: &Snapshot) -> Vec<Finding> {
                     Phrase::new("fact.busiest_core").with("share", Quantity::BasisPoints(core)),
                     &[c],
                 )),
-                None => d.counter_evidence.push(
+                None => d.counter(
                     "A moderate aggregate CPU value does not exclude a single saturated thread."
                         .into(),
+                    Phrase::new("counter.single_thread"),
                 ),
             }
             for (m, kind) in [
@@ -1198,6 +1234,20 @@ mod tests {
                     }
                 }
                 assert!(phrase(&f.next_step).is_some(), "{}", f.next_step);
+                assert!(phrase(&f.support_reason).is_some(), "{}", f.support_reason);
+                for text in f.hypothesis.iter().chain(&f.missing) {
+                    assert!(phrase(text).is_some(), "{text}");
+                }
+                assert_eq!(f.counter_evidence.len(), f.counter_phrases.len());
+                for counter in &f.counter_phrases {
+                    assert!(
+                        pcagent_shared::presentation::Language::Fr
+                            .render(counter)
+                            .is_some(),
+                        "{}",
+                        counter.key
+                    );
+                }
                 for limit in &f.limitations {
                     assert!(phrase(limit).is_some(), "{limit}");
                 }
@@ -1221,6 +1271,34 @@ mod tests {
             assert!(SENTENCES[i + 1..]
                 .iter()
                 .all(|(k, t)| k != key && t != text));
+        }
+    }
+
+    #[test]
+    fn local_presentation_is_available_without_changing_machine_findings() {
+        use pcagent_shared::presentation::Language;
+        for snapshot in every_classification() {
+            for finding in analyze(&snapshot) {
+                let before = serde_json::to_value(&finding).unwrap();
+                assert!(before.get("counter_phrases").is_none());
+                for text in std::iter::once(&finding.summary)
+                    .chain(std::iter::once(&finding.support_reason))
+                    .chain(std::iter::once(&finding.next_step))
+                    .chain(&finding.hypothesis)
+                    .chain(&finding.missing)
+                    .chain(&finding.limitations)
+                {
+                    let phrase = phrase(text).unwrap();
+                    for lang in [Language::En, Language::Fr] {
+                        assert!(lang.render(&phrase).is_some(), "{text}");
+                    }
+                }
+                let legacy: Finding = serde_json::from_value(before.clone()).unwrap();
+                assert!(legacy.counter_phrases.is_empty());
+                assert!(legacy.facts.iter().all(|fact| fact.phrase.is_none()));
+                assert_eq!(serde_json::to_value(&finding).unwrap(), before);
+                assert_eq!(serde_json::to_value(&legacy).unwrap(), before);
+            }
         }
     }
 

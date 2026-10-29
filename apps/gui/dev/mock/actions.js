@@ -18,6 +18,18 @@ export function createActionFixture(params) {
   }
 
   const commands = {
+    browser_manager_prepare: async ({ applicationRef, processRef }) => {
+      await wait(300);
+      if (!["app-1", "app-7"].includes(applicationRef) || processRef !== `proc-${applicationRef.slice(4)}p0`) fail("action_refused", "Refresh local browser windows first.", "stale");
+      const turnId = `local-browser-${Date.now()}`;
+      const plan = {
+        plan_id: `plan-${turnId}`, kind: "open_browser_process_manager",
+        targets: [{ kind: "browser_manager", label: applicationRef === "app-7" ? "Mozilla Firefox" : "Google Chrome", pid: applicationRef === "app-7" ? 9000 : 4000 }],
+        recovery: "not_applicable", checks: ["identity_revalidated", "same_process_instance", "browser_manager_allowlisted"], decision: null,
+      };
+      turnPlans.set(turnId, [plan]);
+      return { turn_id: turnId, plan: { ...plan } };
+    },
     action_plans: ({ turnId }) => (turnPlans.get(turnId) || []).map((p) => ({ ...p })),
     startup_restore_prepare: async ({ sourcePlanId, itemIndex }) => {
       await wait(300);
@@ -43,8 +55,14 @@ export function createActionFixture(params) {
         fail("action_refused", "target t1 changed since it was resolved", "changed");
       }
       plan.decision = "completed";
-      const gained = plan.kind === "run_cleanup_adapter" ? 18.6 * GiB : null;
-      return { plan_id: planId, overall: "completed", items: [], verification: { volume: gained ? { gained_bytes: gained, status: "ok" } : null, comparisons: [] } };
+      const gained = plan.kind === "run_cleanup_adapter" ? Math.round(18.6 * GiB) : null;
+      const before = Math.round(4.1 * GiB);
+      return { plan_id: planId, overall: "completed", items: [], verification: {
+        volume: gained !== null ? {
+          gained_bytes: gained, free_before_bytes: before, free_after_bytes: before + gained,
+          reported_removed_bytes: gained, status: "ok",
+        } : null, comparisons: [],
+      } };
     }
   };
   return { commands, proposePlans };

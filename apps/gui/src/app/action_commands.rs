@@ -4,6 +4,43 @@ use crate::failure::Failure;
 use crate::{actions, view};
 use tauri::State;
 
+/// Resolve only a reference from the last local browser collection, then prepare (never run).
+#[tauri::command]
+pub(super) async fn browser_manager_prepare(
+    state: State<'_, AppState>,
+    application_ref: String,
+    process_ref: String,
+) -> Result<actions::StartupRestoration, Failure> {
+    let targets =
+        super::measurements::ask_measure(&state, |reply| super::state::Measure::BrowserTargets {
+            application_ref,
+            reply,
+        })
+        .await?;
+    let instance = targets
+        .into_iter()
+        .find(|target| target.instance.entity_ref == process_ref)
+        .map(|target| target.instance)
+        .ok_or_else(|| {
+            Failure::refused(
+                Some(crate::failure::Refusal::Stale),
+                "Refresh local browser windows first.",
+            )
+        })?;
+    let slot = state.actions.clone();
+    let names = state.program_names.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        actions::prepare_browser_manager(&slot, &instance, &|pid, created| names.name(pid, created))
+    })
+    .await
+    .map_err(|_| {
+        Failure::refused(
+            Some(crate::failure::Refusal::Stale),
+            "Browser plan preparation stopped.",
+        )
+    })?
+}
+
 /// The proposals of a finished turn, as the person reviews them before deciding.
 #[tauri::command]
 pub(super) fn action_plans(state: State<'_, AppState>, turn_id: String) -> Vec<view::PlanView> {

@@ -1,5 +1,6 @@
 import { wait, fail, GiB, fmt, m, missing, absent, jitter, volume } from "./common.js";
 import { createBatteryFixture } from "./battery.js";
+import { browserFixture, localBrowserFixture } from "./browser.js";
 
 export function createLiveFixture({ params, publishSource, cloud }) {
   const DESKTOP = params.get("pc") === "desktop";
@@ -102,6 +103,11 @@ export function createLiveFixture({ params, publishSource, cloud }) {
   }
 
   const commands = {
+    local_browser_windows: async ({ applicationRef, includeTabs }) => {
+      await wait(300);
+      if (!["app-1", "app-7"].includes(applicationRef)) return { status: "stale", windows: [] };
+      return localBrowserFixture(applicationRef, includeTabs, params.get("browser") === "partial");
+    },
     app_info: () => ({ version: "0.1.1", cloud: cloud(), models: [
       { id: "nvidia/nemotron-3-super-120b-a12b", note: "recommended" },
       { id: "nvidia/Nemotron-3-Ultra-550b-a55b", note: "most_capable" },
@@ -129,7 +135,8 @@ export function createLiveFixture({ params, publishSource, cloud }) {
         members: members.map(([pid, mcpu, mws], i) => ({ entity_ref: `proc-${ref.slice(4)}p${i}`, name, readable_name: READABLE[name] ?? null, pid, cpu: m(mcpu, ""), working_set: m(mws * GiB, ""), services: [] })),
       });
       const applications = [
-          app("app-1", "chrome.exe", 14, Math.round(jitter(940, 200)), 2.9, [[4000, 420, 0.92], [4012, 210, 0.61], [4044, 120, 0.44], [4071, 60, 0.31]]),
+          browserFixture("app-1", "chrome.exe", "chrome"),
+          browserFixture("app-7", "firefox.exe", "firefox"),
           app("app-2", "Code.exe", 9, Math.round(jitter(210, 80)), 1.2, [[5100, 120, 0.51], [5133, 40, 0.28]]),
           app("app-3", "Teams.exe", 6, Math.round(jitter(140, 60)), 0.84, [[6200, 90, 0.42]]),
           app("app-4", "svchost.exe", 31, Math.round(jitter(180, 60)), 0.62, [[1108, 80, 0.06]], [

@@ -94,3 +94,55 @@ fn stored_events() -> HistorySeries {
         })
         .unwrap()
 }
+
+#[test]
+fn one_chart_source_selects_every_event_without_a_256_target_cutoff() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .append_sample(&StoredSample::from_snapshot(&capture(), 2000, 1000))
+        .unwrap();
+    let mut chart = store.history_chart(1, 4000, 300).unwrap();
+    let event = chart.events[0].clone();
+    chart.events = (0..400)
+        .map(|index| {
+            let mut event = event.clone();
+            event.id = format!("event-history-{index}");
+            event
+        })
+        .collect();
+    let wire_size = serde_json::to_vec(&chart).unwrap().len();
+    let source = SelectionSource::Chart(chart);
+    assert!(source.is_history());
+    assert!(source.retained_bytes() > wire_size);
+    assert_eq!(source.targets().len(), 404);
+    let target = SelectionTarget::Event {
+        event_id: "event-history-399".into(),
+    };
+    assert_eq!(source.measured_at(&target), Some(2000));
+    let selection = frozen(&source, &target);
+    let message = selection.preview_message(&[], "Explain this recorded event.", &privacy());
+    assert_eq!(
+        message["initial_observation"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!message.to_string().contains("event-history-"));
+    assert!(!message.to_string().contains("Alice"));
+    assert!(checked(
+        "During the recorded event, CPU usage was 93% [O0].",
+        message
+    ));
+    let cpu = SelectionTarget::Resource {
+        resource: Resource::Cpu,
+    };
+    let message = frozen(&source, &cpu).preview_message(&[], "Explain recorded CPU.", &privacy());
+    assert!(checked(
+        "During the recording, CPU usage was 93% [O0].",
+        message
+    ));
+    assert!(!source.targets().contains(&SelectionTarget::Event {
+        event_id: "event-forged".into()
+    }));
+}

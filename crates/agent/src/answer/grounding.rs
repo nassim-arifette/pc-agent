@@ -639,6 +639,23 @@ fn for_entity(value: &Value, query: &Query<'_>) -> Value {
     if query.subjects.len() > 1 || query.topic == Topic::Ambiguous {
         return json!({});
     }
+    if let Some(alerts) = scoped.get("alerts").and_then(Value::as_array) {
+        let records: Vec<_> = alerts
+            .iter()
+            .flat_map(|alert| {
+                [
+                    alert["initial_observation"].clone(),
+                    alert["extreme_observation"].clone(),
+                ]
+            })
+            .collect();
+        // Rule thresholds, pagination counts and dates are not resource measurements.
+        scoped
+            .as_object_mut()
+            .expect("alerts object")
+            .remove("alerts");
+        scoped["observations"] = json!(records);
+    }
     let has_records = scoped["observations"].is_array();
     let has_metrics = scoped["measurements"]["values"].is_object();
     let has_history = scoped["points"].is_array();
@@ -747,6 +764,7 @@ fn subjects(received: &[Value], passage: &str) -> BTreeSet<String> {
                 "cleanup-",
                 "dimm-",
                 "battery-",
+                "watch-target-",
             ]
             .iter()
             .any(|prefix| s.starts_with(prefix))

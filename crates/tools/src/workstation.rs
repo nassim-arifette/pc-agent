@@ -127,6 +127,11 @@ impl<'a> Workstation<'a> {
             .as_ref()
             .map_or(0.0, |external| external.credits)
     }
+    pub fn set_web_cache(&mut self, cache: pcagent_store::web_cache::WebCache) {
+        if let Some(external) = self.external.take() {
+            self.external = Some(external.with_cache(cache));
+        }
+    }
     /// Lets the model propose plans with `prepare_action_plan`. Nothing is approved or executed
     /// here; the caller reviews [`Workstation::take_actions`] locally.
     pub fn enable_action_proposals(&mut self, desk: ActionDesk) {
@@ -167,7 +172,7 @@ impl<'a> Workstation<'a> {
     ) {
         self.elevated = evidence
             .into_iter()
-            .take(crate::elevated_tools::MAX_APPROVED_INSPECTIONS)
+            .filter(|result| result.available())
             .collect();
     }
     pub fn set_storage_context(&mut self, context: pcagent_agent::StorageContext) {
@@ -343,7 +348,7 @@ impl Workstation<'_> {
                         synthetic_cache: None,
                     }
                 }
-                ActionKind::RequestNormalClose => {
+                ActionKind::RequestNormalClose | ActionKind::OpenBrowserProcessManager => {
                     let reference = args.text("process_ref").ok_or("process_ref is required")?;
                     Proposal {
                         kind,

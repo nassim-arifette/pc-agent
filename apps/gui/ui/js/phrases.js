@@ -1,14 +1,35 @@
 // The core's sentences in the interface language. The Rust side keeps its English text as the text
-// of record (model payloads, the CLI, the answer checks) and sends this window, beside it, the same
+// of record (model payloads, JSON output, the answer checks) and sends this window, beside it, the same
 // statement as a closed key with typed values (`Phrase` in crates/shared, built in view.rs and
 // crates/diagnostics), closed codes for missing values, GPU slowdowns and elevated coverage, and a
 // flag for names it could not read. They are worded here and each value is formatted by its unit;
 // anything this window cannot word (a report saved before, an unknown key or value) keeps the
 // stored English text.
-import { language } from "./i18n.js";
+import { language, t } from "./i18n.js";
 import { basisPoints, bytes, number } from "./format.js";
+import { cliEn, cliFr } from "./i18n/cli.js";
 
 const en = {
+  ...cliEn,
+  "label.metric": "{metric}",
+  "support.short_sample": "A single short sample cannot establish sustained contention, a leak or the cause of a slowdown.",
+  "support.memory_pressure": "Observed together with low available memory in the same sample; one sample cannot attribute a slowdown.",
+  "support.contributor_only": "No memory contention is observed in this sample; a large allocation is not a problem by itself.",
+  "support.abstention": "Explicit abstention: causes remain unmeasured or unestablished.",
+  "hypothesis.memory_pressure": "Memory contention may contribute to the reported symptom.",
+  "hypothesis.page_reads": "Memory pressure may be forcing pages to be read back from disk.",
+  "hypothesis.commit_pressure": "Allocation failures or page-file growth may occur if commit keeps rising.",
+  "hypothesis.cpu_pressure": "CPU contention may contribute to the reported symptom.",
+  "hypothesis.storage_latency": "Slow storage requests may contribute to the reported symptom.",
+  "hypothesis.single_thread": "A single-threaded workload may be limited by one processor.",
+  "hypothesis.gpu_cooling": "If it persists under the same workload, cooling (dust, blocked vents, a soft surface under a laptop) or the power supply may be limiting the GPU.",
+  "counter.single_thread": "A moderate aggregate CPU value does not exclude a single saturated thread.",
+  "counter.commit_share": "System commit is {share} of its limit, so commit pressure is not also observed.",
+  "counter.page_reads": "Hard-fault page reads were {rate}, so heavy paging is not also observed.",
+  "counter.disk_latency": "Average disk read latency was {latency}, so disk reads were not observed to be slow.",
+  "counter.disk_idle": "Disks were idle {share} of the window; averages over few requests are noisy.",
+  "missing.representative_window": "representative observation window",
+  "action.volume_comparison": "Free space: {before} → {after}.",
   // Findings (crates/diagnostics): summaries, next steps and limitations.
   "summary.low_available_memory": "Available physical memory is low in this sample. Memory contention is plausible but unproven.",
   "summary.hard_fault_pressure": "Many pages were read from disk to resolve hard faults while available memory was low. Paging pressure is plausible but unproven.",
@@ -313,6 +334,26 @@ const en = {
 };
 
 const fr = {
+  ...cliFr,
+  "label.metric": "{metric}",
+  "support.short_sample": "Une seule mesure courte ne permet pas d'établir une saturation durable, une fuite de mémoire ou la cause d'un ralentissement.",
+  "support.memory_pressure": "La même mesure indique aussi une faible mémoire disponible ; une seule mesure ne permet pas d'attribuer un ralentissement.",
+  "support.contributor_only": "Aucune saturation de la mémoire n'est observée dans cette mesure ; une allocation importante n'est pas un problème en soi.",
+  "support.abstention": "Abstention explicite : les causes restent non mesurées ou non établies.",
+  "hypothesis.memory_pressure": "Une saturation de la mémoire pourrait contribuer au symptôme signalé.",
+  "hypothesis.page_reads": "La pression sur la mémoire pourrait imposer de relire des pages depuis le disque.",
+  "hypothesis.commit_pressure": "Des allocations pourraient échouer ou le fichier d'échange pourrait grandir si la mémoire engagée continue d'augmenter.",
+  "hypothesis.cpu_pressure": "Une saturation du processeur pourrait contribuer au symptôme signalé.",
+  "hypothesis.storage_latency": "Des requêtes de stockage lentes pourraient contribuer au symptôme signalé.",
+  "hypothesis.single_thread": "Une charge sur un seul fil d'exécution pourrait être limitée par un processeur.",
+  "hypothesis.gpu_cooling": "Si cela persiste avec la même charge, le refroidissement (poussière, aérations bouchées, surface souple sous un portable) ou l'alimentation pourrait limiter la carte graphique.",
+  "counter.single_thread": "Une activité globale modérée du processeur n'exclut pas un seul fil d'exécution saturé.",
+  "counter.commit_share": "La mémoire engagée représente {share} de sa limite ; aucune pression sur cette limite n'est donc observée.",
+  "counter.page_reads": "Les relectures de pages étaient de {rate} ; aucune pagination intense n'est donc observée.",
+  "counter.disk_latency": "Le temps moyen de lecture du disque était de {latency} ; les lectures n'ont donc pas été observées comme lentes.",
+  "counter.disk_idle": "Les disques étaient inactifs pendant {share} de la période ; une moyenne sur peu de requêtes est peu représentative.",
+  "missing.representative_window": "période d'observation représentative",
+  "action.volume_comparison": "Espace libre : {before} → {after}.",
   "summary.low_available_memory": "La mémoire physique disponible est faible dans cette mesure. Une saturation de la mémoire est plausible, mais pas prouvée.",
   "summary.hard_fault_pressure": "De nombreuses pages ont été relues depuis le disque (défauts de page matériels) alors que la mémoire disponible était faible. Une pression de pagination est plausible, mais pas prouvée.",
   "summary.high_commit_ratio": "La mémoire engagée du système est proche de sa limite actuelle. Cela ne mesure ni l'occupation de la RAM physique ni l'activité du fichier d'échange.",
@@ -719,6 +760,16 @@ export function phraseText(phrase, fallback = null) {
 }
 
 // ---------- Findings and sources ----------
+
+/** Both measurements stay visible, including real zeros and unknown sides. */
+export function volumeComparison(volume) {
+  if (!volume) return "";
+  const show = (value) => Number.isFinite(value) && value >= 0 ? bytes(value) : t("value.unknown");
+  return say("action.volume_comparison", {
+    before: show(volume.free_before_bytes),
+    after: show(volume.free_after_bytes),
+  });
+}
 
 /** A finding's summary in the interface language. */
 export function findingSummary(finding) {

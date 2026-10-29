@@ -6,6 +6,29 @@ diagnostic logic of its own.
 
 ## Layout
 
+### Browser details in Live PC
+
+A browser application's row includes process count, working set and the largest closed
+process categories. Its inspector adds an EN/FR table sorted by working set, process count
+or type, plus classification coverage and the shared-working-set warning. No column claims
+to measure exact RAM per tab/site. Application selection survives fresh captures using a
+local stable process reference; model selections still use the current snapshot's references.
+
+**Read window titles** and **Read tab titles** are explicit local requests. Captions and
+accessible tab names appear only in this view, not in selection chips, saved conversations,
+SQLite, evaluation output or provider requests. Leaving Live PC discards them. Unknown,
+exited and inaccessible windows keep honest status messages. Use **See what is sent** on
+Explain/Investigate to inspect the exact measured breakdown without these titles.
+
+Each supported browser window offers **Open browser process manager**. The dialog lists the
+fixed destination and identity checks, offers decline, and requires a separate confirmation
+before execution. It never closes processes or grants approval to a model. Existing
+in-flight plans block preparation rather than silently replacing the pending decision.
+
+The design mock includes Chrome and Firefox groups, every closed process type, and synthetic
+`LOCAL-ONLY` titles in a separate fixture. Those fixtures validate rendering and IPC contracts,
+not native command delivery or browser accessibility support.
+
 One window after the hybrid direction chosen on 2026-10-01 (chat first, context on demand), with
 the rail of the phase 2 desktop mockups:
 
@@ -115,6 +138,30 @@ A running turn reattaches in the Chat after a reload, with its Stop control; an 
 remains readable as an ordinary saved turn there.
 
 ## Storage selection
+
+Storage starts with a squarified map of direct child folders. Map, Tree and List share the same
+scan index and inspector. Folders can be opened by double-clicking a map tile, by the explicit
+Open folder button (keyboard accessible), or by a breadcrumb. Map tiles support Tab, arrows,
+Home/End and Enter/Space selection. The list below the map includes zero-size and unknown items
+that cannot receive an area. **Other** explains the difference between the parent and displayed
+pages; it never creates an AI selection. Partial coverage is explicit.
+
+Tree uses nested lists with native disclosure buttons and `aria-expanded`, loading folder and
+file pages only as expanded. List reads the current folder rather than mixing descendants.
+All pages remain reachable through Load more; no visual top-N cap hides indexed children.
+Selection loads cancellable, scan-time facts and an exact host-issued C3 reference before
+enabling Explain/Investigate. Its inspector adds 182-day untouched bytes/count, undated files,
+largest file and extension-only type totals. Unknown allocation is displayed as unknown.
+
+The shared action toolbar participates in normal layout and wraps on narrow windows, rather
+than reserving a fixed-height overlay; this applies to Live PC too. Number, size and date
+formatting follows the selected interface language. Scan completion time and the permanent
+read-only notice distinguish metadata measurement from current use or deletion.
+
+Recent scans are summaries for this session only; selecting an old root explicitly rescans it.
+Watch proposes volume-free-below through `ui/js/watches-controller.js`'s `requestWatch(rule)`.
+The threshold is 10 GiB, bounded by capacity and at least 1 GiB. An absent form, non-fixed
+volume or unknown/too-small capacity has a visible disabled reason, never a fake success.
 
 Each page of scan results the host returns is published as a selection source
 (`retain_storage_page`): the page carries its `selection_source_id` and the target of an item is
