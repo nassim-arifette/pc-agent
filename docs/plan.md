@@ -1754,7 +1754,8 @@ phrase « Aucun service ni tâche planifiée » du chantier 8 ; celle-ci reste v
   `%APPDATA%\pcagent\reports`, 30 derniers jours conservés, taille bornée, écriture atomique.
   Le JSON suit les observations C4 ; le Markdown ne contient ni nom d'utilisateur ni ligne de
   commande ni chemin de profil en clair (mêmes projections que C5 pour tout texte exporté).
-- **Tâche planifiée.** Une seule tâche, `\PCAgent\DailyReport`, créée par le Planificateur de
+- **Tâche planifiée.** Une seule tâche par compte, `PCAgent DailyReport (<compte>)`, à la racine
+  de la bibliothèque (un compte standard ne peut pas y créer de dossier), créée par le Planificateur de
   tâches (COM, crate `windows`, ou `schtasks.exe` à arguments fixes) : déclencheur quotidien
   (heure par défaut 09:00, réglable), « exécuter dès que possible si manquée », seulement session
   ouverte, niveau d'exécution le plus bas, limite 5 minutes, pas de réveil de la machine, une
@@ -1763,7 +1764,8 @@ phrase « Aucun service ni tâche planifiée » du chantier 8 ; celle-ci reste v
 - **Consentement.** Désactivé par défaut. Réglages > Rapport quotidien : un interrupteur, l'heure,
   et l'affichage exact de ce qui sera lancé. Activer, modifier l'heure et supprimer sont des
   actions locales par clic, inscrites dans le journal des actions avec leur restauration
-  (suppression de la tâche). L'état affiché est relu depuis le Planificateur, jamais mémorisé.
+  (suppression de la tâche). L'état affiché, y compris la commande lancée, est relu depuis le
+  Planificateur, jamais mémorisé ; une tâche qui lance une autre copie est signalée et réparable.
   Désinstaller ou désactiver supprime la tâche. Le modèle ne peut ni créer ni modifier cette
   tâche ; au plus il peut proposer d'ouvrir la page des réglages.
 - **Restitution.** Notification locale discrète à la fin (« Rapport du jour : N points à voir »),
@@ -2072,7 +2074,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | Textes français, accessibilité et finitions #71 | C | contrat approuvé par le porteur ; implémentation et preuves Windows standard, Narrateur/NVDA, axe et parcours FR/EN clair/sombre/contraste élevé en cours ; aucune validation non exécutée n'est considérée acquise | PR plan puis PR code séparées |
-| 17 — Rapport quotidien planifié (29 octobre) | B, A, C | contrat proposé dans cette PR de plan, avant tout code ; implémentation et preuves Windows à suivre dans une PR séparée | PR plan puis `wp17-daily-report` |
+| 17 — Rapport quotidien planifié (29 octobre) | B, A, C | contrat proposé dans cette PR de plan ; implémentation dans [#118](https://github.com/nassim-arifette/pc-agent/pull/118) (CLI, fenêtre sans interface, réglages, carte d'accueil, journal) validée sous Linux et par compilation Windows ; preuves Windows natives sous compte standard à fournir | [#117](https://github.com/nassim-arifette/pc-agent/pull/117), [#118](https://github.com/nassim-arifette/pc-agent/pull/118) |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Réorganisation C — cœur / outils / Nebius | A, B | client Nebius, catalogue déclaratif, projections pures et implémentations `pcagent-tools` séparés ; apps raccordées ; validation locale : 828 tests Rust réussis, 3 ignorés, sur 22 exécutables sous compte standard (intégrité moyenne, hors groupe administrateurs), fmt, Clippy, doctests et quatre builds release ; 46 constantes de catalogue comparées à leur définition avant refactor sans changement de valeur ; aucun parcours GUI natif ni test Linux rejoué ; découpage des gros fichiers détaillé ci-dessous | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
 | Réorganisation C — gros fichiers du cœur | A | réponse et sélections figées séparées en modules par responsabilité, API conservées et sources ajoutées à l'identité de calibration ; 41 tests déplacés et 68 corps de fonctions comparés sans changement de comportement (l'adaptateur de sélection utilise ses accesseurs existants) ; 828 tests Rust réussis sous compte standard, 3 ignorés, Clippy et quatre builds release validés ; 51 tests d'orchestration ensuite regroupés par comportement sans modifier leurs corps, 184 tests du cœur et Clippy repassés ; aucun changement visuel | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
