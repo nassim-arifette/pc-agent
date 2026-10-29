@@ -4,9 +4,11 @@
 
 **Native activation is deliberately unavailable.** `collect` returns
 `Unsupported / CleanupUnvalidated` before `StartTrace` or any permission change.
-Portable aggregation, closed DTOs, the fixed TDH decoder and private-session cleanup
-seams are implemented. Synthetic tests and successful compilation do not prove that a
-real kernel logger can be safely cleaned up after the elevated helper is killed.
+Portable aggregation, closed DTOs, the fixed TDH decoder and an isolated privileged
+guardian are implemented. Controlled native guardian acceptance now passes, including
+standard-user QUERY/STOP and guardian-owned permission removal (evidence below).
+Production activation and native event accuracy are still pending: the parent recovery
+path needs a successful-creation receipt before it may stop a session.
 
 Microsoft documents that an ETW session can outlive its controller. The unelevated
 desktop normally cannot stop it. Per-session `EventAccessControl` can grant control,
@@ -19,15 +21,89 @@ Before activation, a controlled Windows acceptance must prove all of the followi
 
 1. The session belongs to this approved job and creation really succeeded. An
    `AlreadyExists` result grants no authority over the existing session.
-2. The parent can query and stop only this private session and remove any temporary
-   GUID-specific permissions, without changing groups, providers or global privileges.
+2. The parent can query and stop only this private session. The privileged guardian
+   removes its temporary GUID-specific permissions; the standard account cannot call
+   `EventAccessRemove`. No groups, providers or global privileges are changed.
 3. A fixed, privileged and bounded guardian is armed **before** StartTrace, so that
    forced termination of both controller and GUI cannot orphan the logger or rights.
 4. Cleanup succeeds during normal completion, local cancellation, blocked consumer,
    watchdog `process::exit`, parent `TerminateProcess` and controller startup failure.
 
-No environment setting or caller flag can bypass the current private preflight. No
-ETW session, ACL or group was modified on the development PC by this implementation.
+No environment setting or caller flag bypasses production preflight. The opt-in,
+ignored acceptance tests create private sessions and GUID-specific permissions on a
+disposable Windows VM, verify cleanup and remove their temporary standard account.
+
+## Guardian and native acceptance
+
+The helper intercepts exactly `--trace-guardian` before its normal argument parser.
+The guardian validates its elevation, pipe type, kernel-reported controller PID,
+retained process handle, image identity and controller elevation/liveness. It must
+start outside any Job Object; `CREATE_BREAKAWAY_FROM_JOB` is required. Jobs that deny
+breakaway fail before a grant or trace. No `NativeJob`, OTS authentication or batch
+protocol change is made here.
+
+The inherited pipe carries one length-prefixed, size-bounded, closed request. The
+guardian refuses pre-existing sessions and GUID security values. It arms rollback,
+grants `WMIGUID_QUERY | TRACELOG_CREATE_REALTIME | TRACELOG_GUID_ENABLE` **only on the
+private session GUID**, then owns `StartTrace`. The grant must precede `StartTrace`:
+the native standard-user probe returned access denied when it was installed after
+session creation. Provider GUID permissions are never changed.
+
+EOF, controller termination or the approved duration plus three seconds triggers
+private STOP and `EventAccessRemove`. The guardian verifies the registry value is
+absent before acknowledging completion; the client also requires a successful child
+exit before returning loss counters. No numeric result is released on cleanup error.
+The guardian is deliberately not inside the controller's kill-on-close job.
+
+Run from an elevated **desktop** PowerShell (not a CI/scheduled-task job forbidding
+breakaway), with Rust's target directory outside the repository:
+
+```powershell
+$env:CARGO_TARGET_DIR = 'C:\pcagent-target'
+powershell -NoProfile -File scripts/etw-acceptance.ps1 -EvidencePath guardian-admin.log
+# Use the freshly built pcagent_elevation test executable reported by Cargo above.
+powershell -NoProfile -File scripts/etw-standard-acceptance.ps1 `
+  -TestBinary C:\pcagent-target\debug\deps\pcagent_elevation-<hash>.exe `
+  -EvidencePath guardian-standard.log
+```
+
+Observed on Windows Server build 20348, 2026-10-27. Test executable SHA-256:
+`631ff47a85fe373b27d4b48dc6ffde0d4c27e947b763b447e885ff2f21b989bf`.
+The administrator script builds with `--locked` and runs exactly
+`--ignored --exact trace_guardian::tests::native_acceptance --nocapture`:
+
+```text
+guardian_acceptance scenario="normal" cleanup=true sentinel_preserved=true elapsed_ms=42
+guardian_acceptance scenario="cancel" cleanup=true sentinel_preserved=true elapsed_ms=41
+guardian_acceptance scenario="blocked_consumer" cleanup=true sentinel_preserved=true elapsed_ms=33047
+guardian_acceptance scenario="watchdog" cleanup=true sentinel_preserved=true elapsed_ms=42
+guardian_acceptance scenario="process_exit" cleanup=true sentinel_preserved=true elapsed_ms=42
+guardian_acceptance scenario="terminate" cleanup=true sentinel_preserved=true elapsed_ms=42
+guardian_acceptance scenario="kill_job" cleanup=true sentinel_preserved=true elapsed_ms=42
+guardian_acceptance scenario="denied_breakaway" cleanup=true sentinel_preserved=true elapsed_ms=21
+guardian_acceptance scenario="startup_failure" cleanup=true sentinel_preserved=true elapsed_ms=21
+guardian_acceptance already_exists=183 no_adoption=true
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 33.35s
+```
+
+The separate standard-account coordinator retains process handles, checks both exit
+codes, compares the entire WMI Security registry before/after, and removes its account,
+profile and isolated runtime directory:
+
+```text
+Owner exit code: 0; standard peer exit code: 0
+guardian_standard privileged_cleanup=true own_acl_removed=true sentinel_preserved=true
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 3.87s
+guardian_standard elevated=0 integrity=8192 own_query=0 own_stop=0 own_remove=5 sentinel_query=5 sentinel_stop=5
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.02s
+guardian_standard etw_security_registry_unchanged=true
+```
+
+These are cleanup/authorization tests, not collector accuracy, native GUI/UAC,
+E06, hardware GPU, NVML or real-game performance evidence. All must be rerun on the
+final integrated revision. A mere name/GUID match is not proof of successful creation:
+the parent recovery preflight remains inactive to avoid adopting a matching existing
+session after a failed start.
 
 ## Fixed collection design
 
