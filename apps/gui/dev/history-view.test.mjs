@@ -38,6 +38,7 @@ const pending = [];
 const calls = [];
 const timers = new Map();
 let timer = 0;
+let recordings = [];
 globalThis.window = {
   location: { hash: "#/history", search: "" }, matchMedia: () => ({ matches: false, addEventListener() {} }),
   sessionStorage: { getItem: () => null, setItem() {} },
@@ -45,7 +46,8 @@ globalThis.window = {
   __TAURI__: { core: { invoke: async (command, args) => {
     calls.push({ command, args });
     if (command === "history_chart") return new Promise((resolve, reject) => pending.push({ args, resolve, reject }));
-    if (command === "history_overview") return { periods: [], recordings: [], more_recordings: false };
+    if (command === "history_overview") return { periods: [], recordings, more_recordings: false };
+    if (command === "recording_detail") return null;
     if (command === "history_status" || command === "history_collection") return null;
     if (command === "startup_get") return false;
     throw Error(`Unexpected IPC ${command}`);
@@ -97,6 +99,21 @@ test("initial loading is explicit; a period change issues exactly one grouped re
   assert.doesNotMatch(page.textContent, /10%/);
   stop();
   assert.equal(timers.size, 0);
+});
+
+test("an older completed recording stays selected even when the sampler has no active recording", async () => {
+  recordings = [{ id: "recording-old", started_at_unix_ms: 1000, ended_at_unix_ms: 61000, duration_seconds: 60, status: "completed", samples: 60 }];
+  const { page, stop, choose } = start();
+  await flush();
+  choose("Recordings");
+  page.children[2].querySelector("button").listeners.click();
+  await flush();
+  assert.equal(calls.filter((c) => c.command === "recording_detail").length, 1);
+  assert.equal(page.children[3].hidden, false);
+  assert.match(page.children[3].textContent, /no longer available/);
+  assert.ok(page.children[2].querySelector("button").classList.contains("selected"));
+  stop();
+  recordings = [];
 });
 
 test("a late failure cannot clear a newer chart; unmount invalidates in-flight requests", async () => {

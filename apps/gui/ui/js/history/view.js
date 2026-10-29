@@ -13,7 +13,7 @@ import { button, segmented, toast, toggle, dialog, dialogOpen } from "../ui.js";
 import { bytes, clock, date, duration, number, percent } from "../format.js";
 import { hoursMinutes, watts } from "../live/battery.js";
 import { failureDetail, failureText } from "../failure.js";
-import { PERIODS, dayStart, periodWindow, decodeChart, axisLabels, shouldReload, missingDuration, watchRule } from "./data.js";
+import { PERIODS, dayStart, periodWindow, decodeChart, axisLabels, shouldReload, missingDuration, watchRule, timelineGroups } from "./data.js";
 
 // Each row is a 0..1 share of a resource; memory and disk are derived from two stored metrics.
 const ROWS = [
@@ -279,11 +279,13 @@ function chart(points, from, to, events, cls, width = 1000, scale = 1) {
   );
 }
 
-function axis(from, to) {
+function axis(from, to, width = 1000) {
+  const labels = axisLabels(from, to, language() === "fr" ? "fr-FR" : "en-US")
+    .filter((_, index) => width >= 400 || index % 2 === 0);
   return h(
     "div",
-    { class: "history-axis" },
-    axisLabels(from, to, language() === "fr" ? "fr-FR" : "en-US").map((label) => h("span", null, label)),
+    { class: "history-axis", style: { "grid-template-columns": `repeat(${labels.length}, minmax(0, 1fr))` } },
+    labels.map((label) => h("span", null, label)),
   );
 }
 
@@ -295,6 +297,7 @@ export function mount(page, shell = {}) {
   let loading = false;
   let loaded = null;
   let chartWidth = 0;
+  let detailWidth = 0;
   let status = null;
   let area = "period";
   let overview = null;
@@ -379,7 +382,7 @@ export function mount(page, shell = {}) {
       h("div", null, h("h1", { class: "page-title" }, t("history.title.page")), h("p", { class: "page-sub" }, t("history.sub"))),
       h(
         "div",
-        { class: "row" },
+        { class: "row wrap" },
         segmented(
           [
             { value: "period", label: t("history.activity") },
@@ -427,7 +430,6 @@ export function mount(page, shell = {}) {
   const drawRecording = () => {
     const r = status?.recording ?? lastRecording;
     if (!r) {
-      if (selected?.kind === "recording") selected = null;
       fill(recordHost);
       return;
     }
@@ -439,7 +441,6 @@ export function mount(page, shell = {}) {
     const to = r.ended_at_unix_ms ? clock(r.ended_at_unix_ms, { seconds: true }) : null;
     const title = running ? t("history.recording", { left: duration(left) }) : t(`history.recording.${r.status}`, { from, to: to ?? "" });
     if (running) {
-      if (selected?.kind === "recording") selected = null;
       fill(
         recordHost,
         h(
@@ -565,7 +566,7 @@ export function mount(page, shell = {}) {
       ),
       segmented(PERIODS.map((p) => ({ value: p.id, label: t(p.label) })), period, (value) => choose("period", value), t("history.period")),
       chartRows(loaded),
-      axis(from, to),
+      axis(from, to, chartWidth),
       h("p", { class: "note", style: { "margin-top": "12px" } }, t("history.range.note")),
       h("p", { class: "note" }, t("history.updated", { time: clock(to, { seconds: true }) })),
       loaded.selection_unavailable ? h("p", { class: "callout warn" }, t("history.selectionUnavailable")) : null,
@@ -578,7 +579,7 @@ export function mount(page, shell = {}) {
     );
   };
 
-  const chartRows = (capture) => ROWS.map((row) => {
+  const chartRows = (capture, width = chartWidth) => ROWS.map((row) => {
     const points = rowPoints(row, row.metrics.map((m) => capture.series[m]));
     const known = points.filter((p) => p.value != null);
     const latest = known.at(-1)?.value ?? null;
@@ -587,22 +588,17 @@ export function mount(page, shell = {}) {
     return h("div", { class: "hist-row" },
       h("div", { class: "hist-row-label" }, h("span", null, t(row.label)), h("strong", null, latest == null ? "—" : row.latency ? `${number(latest, 1)} ms` : percent(latest)),
         row.latency ? h("small", { class: "hint" }, t("history.scale", { value: number(scale, 1) })) : null),
-      known.length ? chart(points, capture.from, capture.to, rowEvents, row.color, chartWidth || 600, scale) : h("div", { class: "history-empty-row" }, t("history.noData")));
+      known.length ? chart(points, capture.from, capture.to, rowEvents, row.color, width || 600, scale) : h("div", { class: "history-empty-row" }, t("history.noData")));
   });
 
   const timeline = (events) => {
     if (!loaded || !events.length) return null;
-    const bins = Math.max(1, Math.floor((chartWidth || 600) / 38));
-    const groups = new Map();
-    events.forEach((e, index) => {
-      const at = Math.min(bins - 1, Math.max(0, Math.floor((e.started_at_unix_ms - loaded.from) / Math.max(1, loaded.to - loaded.from) * bins)));
-      if (!groups.has(at)) groups.set(at, []);
-      groups.get(at).push({ e, index });
-    });
-    return h("div", { class: "history-timeline", role: "group", "aria-label": t("history.timeline") }, [...groups].map(([bin, items]) =>
-      h("button", { type: "button", class: "history-timeline-mark", style: { left: `${(bin + 0.5) / bins * 100}%` },
-        title: items.map(({ e, index }) => `${index + 1}. ${eventLabel(e)} · ${clock(e.started_at_unix_ms)}`).join("\n"),
-        onclick: () => { eventLimit = Math.max(eventLimit, items.at(-1).index + 1); select({ kind: "event", id: items[0].e.id }); },
+    const width = Math.max(72, eventsHost.getBoundingClientRect().width - 76);
+    const groups = timelineGroups(events, loaded.from, loaded.to, width);
+    return h("div", { class: "history-timeline", role: "group", "aria-label": t("history.timeline") }, groups.map(({ left, items }) =>
+      h("button", { type: "button", class: "history-timeline-mark", style: { left: `${left}%` },
+        title: items.map(({ event, index }) => `${index + 1}. ${eventLabel(event)} · ${clock(event.started_at_unix_ms)}`).join("\n"),
+        onclick: () => { eventLimit = Math.max(eventLimit, items.at(-1).index + 1); select({ kind: "event", id: items[0].event.id }); },
       }, `${items[0].index + 1}${items.length > 1 ? ` +${items.length - 1}` : ""}`)));
   };
 
@@ -721,6 +717,7 @@ export function mount(page, shell = {}) {
       return;
     }
     const r = detail.recording;
+    detailWidth = Math.max(80, Math.round(detailHost.getBoundingClientRect().width - 174));
     const peaks = [
       ["metric.cpu", detail.cpu_peaks, "process_cpu_basis_points", (v) => percent(v / 10000)],
       ["history.gpu", detail.resource_peaks, "process_gpu_basis_points", (v) => percent(v / 10000)],
@@ -731,7 +728,7 @@ export function mount(page, shell = {}) {
       h("div", { class: "card-head" }, h("h2", { class: "card-title" }, t("history.detail.title")), h("span", { class: "hint" }, date(r.started_at_unix_ms, true))),
       h("div", { class: "actbar-anchor history-detail-actions" }, h("strong", null, `${clock(r.started_at_unix_ms, { seconds: true })} → ${clock(r.ended_at_unix_ms, { seconds: true })}`), actionBar(recordingItem(r, detail))),
       detail.minute_summaries ? h("p", { class: "callout warn" }, t("history.minuteSummaries")) : null,
-      chartRows(detail.chart), axis(r.started_at_unix_ms, r.ended_at_unix_ms),
+      chartRows(detail.chart, detailWidth), axis(r.started_at_unix_ms, r.ended_at_unix_ms, detailWidth),
       h("p", { class: "note" }, gapsHint(missingDuration(detail.chart.gaps, r.started_at_unix_ms, r.ended_at_unix_ms) / Math.max(1, r.ended_at_unix_ms - r.started_at_unix_ms))),
       h("h3", null, t("history.peaks")), h("p", { class: "note" }, t("history.peaks.note")),
       peaks.map(([label, result, metric, format]) => {
@@ -966,9 +963,15 @@ export function mount(page, shell = {}) {
   });
   const resize = new ResizeObserver(() => {
     const width = Math.max(80, Math.round(chartsHost.getBoundingClientRect().width - 174));
-    if (width !== chartWidth) drawCharts();
+    if (width !== chartWidth) {
+      drawCharts();
+      if (shownEvents) renderEvents(shownEvents);
+    }
+    const nextDetailWidth = Math.max(80, Math.round(detailHost.getBoundingClientRect().width - 174));
+    if (!detailHost.hidden && nextDetailWidth !== detailWidth) renderDetail();
   });
   resize.observe(chartsHost);
+  resize.observe(detailHost);
   return () => {
     disposed = true;
     loadRequest += 1;

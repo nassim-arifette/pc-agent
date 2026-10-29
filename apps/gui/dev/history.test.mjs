@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { axisLabels, decodeChart, periodWindow, shouldReload, watchRule, missingDuration } from "../ui/js/history/data.js";
+import { axisLabels, decodeChart, periodWindow, shouldReload, watchRule, missingDuration, timelineGroups } from "../ui/js/history/data.js";
 import { createHistoryFixture } from "./mock/history.js";
 import { virtualClock } from "./mock-cases.mjs";
 
@@ -52,6 +52,15 @@ test("watch proposals are closed C7 resource DTOs; latency and recordings stay u
 
 test("coverage clips and unions gaps rather than double counting them", () => {
   assert.equal(missingDuration([{ from_unix_ms: -5, to_unix_ms: 4 }, { from_unix_ms: 2, to_unix_ms: 7 }, { from_unix_ms: 9, to_unix_ms: 15 }], 0, 10), 8);
+});
+
+test("dense timeline groups reserve space for event numbers and counts when the inspector narrows the view", () => {
+  const events = Array.from({ length: 363 }, (_, index) => ({ started_at_unix_ms: index * 1000 }));
+  const groups = timelineGroups(events, 0, 363000, 350).sort((a, b) => a.left - b.left);
+  assert.equal(groups.length, 4);
+  assert.equal(groups.reduce((count, group) => count + group.items.length, 0), 363);
+  for (let i = 1; i < groups.length; i++) assert.ok((groups[i].left - groups[i - 1].left) * 350 / 100 >= 81);
+  assert.equal(timelineGroups(events, 0, 363000, 72).length, 1);
 });
 
 function fixture(t, query = "history=fast") {

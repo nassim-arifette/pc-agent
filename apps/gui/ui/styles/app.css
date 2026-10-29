@@ -3170,14 +3170,20 @@ details.more > div {
   color: var(--text-3);
 }
 .history-axis {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  gap: 4px;
   margin-left: 134px;
   padding-top: 6px;
   font-size: 11.5px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
+.history-axis span {
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.history-axis span:first-child { text-align: left; }
+.history-axis span:last-child { text-align: right; }
 .event-list {
   display: flex;
   flex-direction: column;

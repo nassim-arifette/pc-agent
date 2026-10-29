@@ -62,3 +62,16 @@ export function missingDuration(gaps, from, to) {
   }
   return duration;
 }
+
+export function timelineGroups(events, from, to, width) {
+  // Reserve room for both the largest event number and its "+N" count.
+  const spacing = Math.max(72, (String(events.length).length * 2 + 3) * 9);
+  const bins = Math.max(1, Math.floor(width / spacing));
+  const groups = new Map();
+  events.forEach((event, index) => {
+    const bin = Math.min(bins - 1, Math.max(0, Math.floor((event.started_at_unix_ms - from) / Math.max(1, to - from) * bins)));
+    if (!groups.has(bin)) groups.set(bin, []);
+    groups.get(bin).push({ event, index });
+  });
+  return [...groups].map(([bin, items]) => ({ left: (bin + 0.5) / bins * 100, items }));
+}
