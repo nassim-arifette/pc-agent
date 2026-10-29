@@ -1,6 +1,7 @@
 // Synthetic daily report (chantier 17): the Windows task and the latest report file.
 // ?report=none (no report written yet), ?report=quiet (nothing to review),
-// ?report=unsupported (not Windows: no task, a report can still be written on request).
+// ?report=unsupported (not Windows: no task, a report can still be written on request),
+// ?report=stale (the installed task starts an older copy of the app: Settings offers a repair).
 import { fail } from "./common.js";
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -8,8 +9,10 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 export function createDailyReportFixture(params) {
   const mode = params.get("report");
   const supported = mode !== "unsupported";
-  let installed = false;
-  let time = null;
+  const COMMAND = "\"C:\\Program Files\\PC Agent\\pcagent-gui.exe\" --scheduled-report";
+  let installed = mode === "stale";
+  let time = installed ? "08:00" : null;
+  let taskCommand = installed ? "\"D:\\Old\\PC Agent\\pcagent-gui.exe\" --scheduled-report" : null;
   const report = (points, scheduled) => ({
     date: new Date(Date.now()).toISOString().slice(0, 10),
     generated_at_unix_ms: Date.now() - (scheduled ? 3 * 3_600_000 : 0),
@@ -28,8 +31,10 @@ export function createDailyReportFixture(params) {
     supported,
     installed,
     time: installed ? time : null,
-    task_name: "PCAgent\\DailyReport",
-    command: "\"C:\\Program Files\\PC Agent\\pcagent-gui.exe\" --scheduled-report",
+    task_command: installed ? taskCommand : null,
+    task_name: "PCAgent DailyReport (PC-Demo)",
+    command: COMMAND,
+    stale: installed && taskCommand !== COMMAND,
     default_time: "09:00",
   });
   return {
@@ -42,6 +47,7 @@ export function createDailyReportFixture(params) {
           if (typeof requested !== "string" || !TIME.test(requested)) fail("schedule_failed", "Use HH:MM, for example 09:00.");
           installed = true;
           time = requested;
+          taskCommand = COMMAND;
         } else {
           installed = false;
           time = null;

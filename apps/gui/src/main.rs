@@ -37,7 +37,7 @@ mod elevation;
 #[cfg(windows)]
 fn main() {
     // Started by the daily scheduled task: write the report without opening a window.
-    if daily_report::requested(&std::env::args().collect::<Vec<_>>()) {
+    if daily_report::requested(&std::env::args_os().collect::<Vec<_>>()) {
         std::process::exit(daily_report::run_headless());
     }
     app::run();
@@ -45,7 +45,7 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    if daily_report::requested(&std::env::args().collect::<Vec<_>>()) {
+    if daily_report::requested(&std::env::args_os().collect::<Vec<_>>()) {
         std::process::exit(daily_report::run_headless());
     }
     eprintln!("PC Agent's window runs on Windows. Use the pcagent CLI on this system.");

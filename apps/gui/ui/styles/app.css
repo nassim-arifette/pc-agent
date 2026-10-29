@@ -4456,3 +4456,21 @@ details.more > div {
   gap: 10px;
   margin-top: 14px;
 }
+.report-stale {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm);
+}
+.report-stale > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+}
+.report-stale .report-command {
+  align-self: stretch;
+}

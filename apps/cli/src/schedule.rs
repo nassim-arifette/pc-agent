@@ -34,7 +34,7 @@ fn print(state: &task::ScheduleState) {
 
 pub(super) fn run(action: ScheduleAction) -> Result<u8> {
     pcagent_inspect::elevation::ensure_unelevated_host()?;
-    let scheduler = WindowsScheduler;
+    let scheduler = WindowsScheduler::for_current_user();
     let journal = || Journal::open(local_data_dir().join("journal"));
     let state = match action {
         ScheduleAction::Status => task::state(&scheduler)?,
@@ -47,7 +47,7 @@ pub(super) fn run(action: ScheduleAction) -> Result<u8> {
                 &program,
                 arguments,
                 time,
-                &pcagent_report::date_stamp(pcagent_shared::unix_ms()),
+                &task::start_date(pcagent_shared::unix_ms()),
                 task::current_user().as_deref(),
             )?
         }

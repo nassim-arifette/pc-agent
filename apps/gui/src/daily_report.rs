@@ -8,8 +8,9 @@ use pcagent_shared::presentation::Language;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// Only the exact fixed invocation the task uses starts a windowless run.
-pub fn requested(args: &[String]) -> bool {
+/// Only the exact fixed invocation the task uses starts a windowless run. Arguments are read as
+/// OS strings: a launch with arguments that are not Unicode must not panic here.
+pub fn requested(args: &[std::ffi::OsString]) -> bool {
     args.len() == 2 && args[1] == task::GUI_ARGUMENTS
 }
 
@@ -34,7 +35,7 @@ pub fn language(database: Option<&Path>) -> Language {
     database
         .filter(|path| path.is_file())
         .and_then(|path| pcagent_store::Store::open(path).ok())
-        .and_then(|store| store.watch_language().ok())
+        .and_then(|store| store.watch_language_saved().ok().flatten())
         .and_then(|code| code.parse().ok())
         .unwrap_or(if pcagent_inspect::elevation::windows_ui_is_french() {
             Language::Fr
@@ -135,19 +136,27 @@ pub fn view(report: &Report) -> ReportView {
     }
 }
 
-/// The settings row: the task as Windows reports it and exactly what it would start.
+/// The settings row: the task as Windows reports it, what turning it on would start, and
+/// whether an installed task starts something else (an older copy, or the CLI).
 #[derive(Debug, Serialize)]
 pub struct ScheduleView {
     #[serde(flatten)]
     pub state: ScheduleState,
     pub command: String,
+    pub stale: bool,
     pub default_time: String,
 }
 
 pub fn schedule_view(state: ScheduleState, program: &Path) -> ScheduleView {
+    let command = task::command_line(&program.to_string_lossy(), task::GUI_ARGUMENTS);
     ScheduleView {
+        stale: state.installed
+            && state
+                .task_command
+                .as_deref()
+                .is_some_and(|actual| !actual.eq_ignore_ascii_case(&command)),
         state,
-        command: format!("\"{}\" {}", program.display(), task::GUI_ARGUMENTS),
+        command,
         default_time: task::format_time(task::DEFAULT_TIME),
     }
 }
@@ -179,7 +188,7 @@ mod tests {
         let args = |rest: &[&str]| {
             std::iter::once("pcagent-gui.exe")
                 .chain(rest.iter().copied())
-                .map(String::from)
+                .map(std::ffi::OsString::from)
                 .collect::<Vec<_>>()
         };
         assert!(requested(&args(&["--scheduled-report"])));
@@ -215,20 +224,42 @@ mod tests {
 
     #[test]
     fn the_settings_view_shows_the_exact_fixed_command() {
-        let state = ScheduleState {
+        let state = |command: &str| ScheduleState {
             supported: true,
             installed: true,
             time: Some("09:00".into()),
-            task_name: task::TASK_NAME,
+            task_command: Some(command.into()),
+            task_name: task::TASK_NAME.into(),
         };
-        let view = schedule_view(state, Path::new(r"C:\Apps\pcagent-gui.exe"));
+        let program = Path::new(r"C:\Apps\pcagent-gui.exe");
+        let view = schedule_view(
+            state(r#""c:\apps\PCAGENT-GUI.exe" --scheduled-report"#),
+            program,
+        );
         assert_eq!(
             view.command,
             r#""C:\Apps\pcagent-gui.exe" --scheduled-report"#
         );
+        assert!(!view.stale);
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["installed"], true);
         assert_eq!(json["time"], "09:00");
         assert_eq!(json["default_time"], "09:00");
+        assert_eq!(json["stale"], false);
+        // A task left by an older copy, or created by the CLI, is shown for repair.
+        assert!(
+            schedule_view(
+                state(r#""D:\Old\pcagent-gui.exe" --scheduled-report"#),
+                program
+            )
+            .stale
+        );
+        assert!(
+            schedule_view(
+                state(r#""C:\Apps\pcagent.exe" report --scheduled"#),
+                program
+            )
+            .stale
+        );
     }
 }

@@ -8,8 +8,10 @@ use serde::Serialize;
 use std::io;
 use std::path::Path;
 
-/// Task Scheduler path of the single task this module may create or delete.
-pub const TASK_NAME: &str = "PCAgent\\DailyReport";
+/// Base name of the single task this module may create or delete. It lives at the root of the
+/// Task Scheduler library, where a standard account may register tasks (creating a folder needs
+/// an administrator); the account name is appended so two accounts never share one task.
+pub const TASK_NAME: &str = "PCAgent DailyReport";
 /// Fixed arguments; nothing from the model or from free text reaches the task.
 pub const GUI_ARGUMENTS: &str = "--scheduled-report";
 pub const CLI_ARGUMENTS: &str = "report --scheduled";
@@ -23,14 +25,24 @@ pub struct ScheduleState {
     pub installed: bool,
     /// `HH:MM` when the definition could be read back; `None` when only presence is known.
     pub time: Option<String>,
-    pub task_name: &'static str,
+    /// What the installed task starts, as read back from Windows (see [`command_line`]).
+    pub task_command: Option<String>,
+    pub task_name: String,
+}
+
+/// What an installed task's definition says, as far as it could be read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskInfo {
+    pub time: Option<(u8, u8)>,
+    pub command: Option<String>,
 }
 
 /// The narrow surface of the Task Scheduler this module uses; faked in tests.
 pub trait TaskScheduler {
     fn supported(&self) -> bool;
-    /// `None` when absent; `Some(None)` when present but its time could not be read.
-    fn query(&self) -> io::Result<Option<Option<(u8, u8)>>>;
+    fn name(&self) -> &str;
+    /// `None` when absent.
+    fn query(&self) -> io::Result<Option<TaskInfo>>;
     fn create(&self, definition: &str) -> io::Result<()>;
     fn delete(&self) -> io::Result<()>;
 }
@@ -104,12 +116,71 @@ pub fn task_xml(
     )
 }
 
+/// The task name for `user` (`DOMAIN\\user`): characters Task Scheduler reserves become `-`.
+pub fn task_name(user: Option<&str>) -> String {
+    match user {
+        Some(user) if !user.is_empty() => {
+            let user: String = user
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            format!("{TASK_NAME} ({user})")
+        }
+        _ => TASK_NAME.to_owned(),
+    }
+}
+
+/// The first day of the trigger: yesterday in UTC, which is today or yesterday in every time
+/// zone, so the first run is the next occurrence of the chosen local time, never a day later.
+pub fn start_date(now_unix_ms: u64) -> String {
+    pcagent_shared::format_utc_minute(now_unix_ms.saturating_sub(86_400_000))[..10].to_owned()
+}
+
+/// How the settings page shows a command, both the expected one and the one read back.
+pub fn command_line(program: &str, arguments: &str) -> String {
+    format!("\"{program}\" {arguments}")
+}
+
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+fn element<'a>(definition: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = definition.find(&open)? + open.len();
+    Some(&definition[start..start + definition[start..].find('<')?])
+}
+
 /// Reads `HH:MM` back from an exported definition (`StartBoundary`), whatever its date.
 pub fn time_from_definition(definition: &str) -> Option<(u8, u8)> {
-    let start = definition.find("<StartBoundary>")? + "<StartBoundary>".len();
-    let value = &definition[start..start + definition[start..].find('<')?];
-    let time = value.split_once('T')?.1.get(..5)?;
+    let time = element(definition, "StartBoundary")?
+        .split_once('T')?
+        .1
+        .get(..5)?;
     parse_time(time).ok()
+}
+
+/// What an exported definition reads, as far as it can be read.
+pub fn info_from_definition(definition: &str) -> TaskInfo {
+    TaskInfo {
+        time: time_from_definition(definition),
+        command: element(definition, "Command").map(|program| {
+            command_line(
+                unescape(program.trim()).trim_matches('"'),
+                &unescape(element(definition, "Arguments").unwrap_or("").trim()),
+            )
+        }),
+    }
 }
 
 pub fn state(scheduler: &dyn TaskScheduler) -> io::Result<ScheduleState> {
@@ -118,15 +189,17 @@ pub fn state(scheduler: &dyn TaskScheduler) -> io::Result<ScheduleState> {
             supported: false,
             installed: false,
             time: None,
-            task_name: TASK_NAME,
+            task_command: None,
+            task_name: scheduler.name().to_owned(),
         });
     }
     let found = scheduler.query()?;
     Ok(ScheduleState {
         supported: true,
         installed: found.is_some(),
-        time: found.flatten().map(format_time),
-        task_name: TASK_NAME,
+        time: found.as_ref().and_then(|info| info.time).map(format_time),
+        task_command: found.and_then(|info| info.command),
+        task_name: scheduler.name().to_owned(),
     })
 }
 
@@ -186,13 +259,15 @@ fn journaled(
             detail: error.to_string(),
         },
     };
-    record(
+    // The change already happened: a failed final record must not report it as failed. The
+    // journal then shows it as interrupted, which `recover` reports for inspection.
+    let _ = record(
         journal,
         &plan_id,
         JournalPhase::Finished,
         None,
         Some(outcome),
-    )?;
+    );
     result?;
     state(scheduler)
 }
@@ -231,9 +306,20 @@ pub fn current_user() -> Option<String> {
     )
 }
 
-/// `schtasks.exe` with fixed arguments and no console window.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WindowsScheduler;
+/// `schtasks.exe` with fixed arguments and no console window, for one task name.
+#[derive(Debug, Clone)]
+pub struct WindowsScheduler {
+    name: String,
+}
+
+impl WindowsScheduler {
+    /// The task of the account running this process.
+    pub fn for_current_user() -> Self {
+        Self {
+            name: task_name(current_user().as_deref()),
+        }
+    }
+}
 
 #[cfg(windows)]
 impl WindowsScheduler {
@@ -281,19 +367,24 @@ impl TaskScheduler for WindowsScheduler {
         cfg!(windows)
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     #[cfg(windows)]
-    fn query(&self) -> io::Result<Option<Option<(u8, u8)>>> {
+    fn query(&self) -> io::Result<Option<TaskInfo>> {
         let output = Self::run(&[
             "/Query".as_ref(),
             "/TN".as_ref(),
-            TASK_NAME.as_ref(),
+            self.name.as_ref(),
             "/XML".as_ref(),
         ])?;
         if !output.status.success() {
-            // schtasks reports an absent task with exit code 1; nothing else is distinguishable.
+            // schtasks reports an absent task with exit code 1 and localized text; a task it
+            // cannot read is shown as absent too, and creating it again replaces it (/F).
             return Ok(None);
         }
-        Ok(Some(time_from_definition(&decode_output(&output.stdout))))
+        Ok(Some(info_from_definition(&decode_output(&output.stdout))))
     }
 
     #[cfg(windows)]
@@ -307,7 +398,7 @@ impl TaskScheduler for WindowsScheduler {
             "/Create".as_ref(),
             "/F".as_ref(),
             "/TN".as_ref(),
-            TASK_NAME.as_ref(),
+            self.name.as_ref(),
             "/XML".as_ref(),
             path.as_os_str(),
         ]);
@@ -326,7 +417,7 @@ impl TaskScheduler for WindowsScheduler {
             "/Delete".as_ref(),
             "/F".as_ref(),
             "/TN".as_ref(),
-            TASK_NAME.as_ref(),
+            self.name.as_ref(),
         ])?;
         if output.status.success() {
             Ok(())
@@ -336,7 +427,7 @@ impl TaskScheduler for WindowsScheduler {
     }
 
     #[cfg(not(windows))]
-    fn query(&self) -> io::Result<Option<Option<(u8, u8)>>> {
+    fn query(&self) -> io::Result<Option<TaskInfo>> {
         Ok(None)
     }
 
@@ -367,8 +458,11 @@ mod tests {
         fn supported(&self) -> bool {
             true
         }
-        fn query(&self) -> io::Result<Option<Option<(u8, u8)>>> {
-            Ok(self.task.borrow().as_deref().map(time_from_definition))
+        fn name(&self) -> &str {
+            "PCAgent DailyReport (test)"
+        }
+        fn query(&self) -> io::Result<Option<TaskInfo>> {
+            Ok(self.task.borrow().as_deref().map(info_from_definition))
         }
         fn create(&self, definition: &str) -> io::Result<()> {
             if self.refuse {
@@ -426,6 +520,44 @@ mod tests {
     }
 
     #[test]
+    fn each_account_gets_its_own_root_level_task() {
+        assert_eq!(task_name(None), "PCAgent DailyReport");
+        assert_eq!(
+            task_name(Some(r"PC-1\Zoé")),
+            "PCAgent DailyReport (PC-1-Zoé)"
+        );
+        assert_eq!(
+            task_name(Some(r"a\b/c:d*e")),
+            "PCAgent DailyReport (a-b-c-d-e)"
+        );
+        assert!(!task_name(Some(r"DOMAIN\user")).contains('\\'));
+    }
+
+    #[test]
+    fn the_first_day_is_never_after_today_in_any_time_zone() {
+        assert_eq!(start_date(1_793_232_000_000), "2026-10-28"); // 2026-10-29 00:00 UTC
+        assert_eq!(start_date(1_793_318_399_000), "2026-10-28"); // 2026-10-29 23:59:59 UTC
+    }
+
+    #[test]
+    fn the_installed_command_is_read_back_unescaped() {
+        let xml = task_xml(
+            Path::new(r"C:\A&B\pcagent.exe"),
+            CLI_ARGUMENTS,
+            (6, 0),
+            "2026-01-01",
+            None,
+        );
+        let info = info_from_definition(&xml);
+        assert_eq!(info.time, Some((6, 0)));
+        assert_eq!(
+            info.command.as_deref(),
+            Some(r#""C:\A&B\pcagent.exe" report --scheduled"#)
+        );
+        assert_eq!(info_from_definition("<Task/>"), TaskInfo::default());
+    }
+
+    #[test]
     fn exported_definitions_decode_from_utf16_and_utf8() {
         let xml = task_xml(
             Path::new("p.exe"),
@@ -459,6 +591,10 @@ mod tests {
         .unwrap();
         assert!(on.installed);
         assert_eq!(on.time.as_deref(), Some("08:15"));
+        assert_eq!(
+            on.task_command.as_deref(),
+            Some(r#""p.exe" --scheduled-report"#)
+        );
         let off = disable(&journal, &fake).unwrap();
         assert!(!off.installed);
         // Removing an absent task succeeds and is still journaled.
@@ -527,7 +663,7 @@ mod tests {
     #[test]
     fn unsupported_systems_refuse_without_journaling() {
         let (journal, dir) = journal();
-        let scheduler = WindowsScheduler;
+        let scheduler = WindowsScheduler::for_current_user();
         if !scheduler.supported() {
             assert!(!state(&scheduler).unwrap().supported);
             assert!(disable(&journal, &scheduler).is_err());

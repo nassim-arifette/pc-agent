@@ -9,6 +9,10 @@ import { button, toast, toggle } from "../ui.js";
 import { failureText } from "../failure.js";
 import { reportSummary } from "./summary.js";
 
+// A change still running when Settings redraws (a new card replaces this one) is awaited by the
+// next card before it reads the state, so it never shows the state from before the click.
+let inflight = null;
+
 export function dailyReportCard() {
   let view = null;
   let latest;
@@ -34,12 +38,14 @@ export function dailyReportCard() {
     busy = true;
     render();
     try {
-      view = await call("report_schedule_set", { enabled, time: time.value || view.default_time });
+      inflight = call("report_schedule_set", { enabled, time: time.value || view.default_time });
+      view = await inflight;
       toast(enabled ? t("report.schedule.enabled", { time: view.time ?? time.value }) : t("report.schedule.disabled"));
     } catch (error) {
       toast(failureText(error), "bad");
       view = await call("report_schedule_get").catch(() => view);
     } finally {
+      inflight = null;
       busy = false;
       if (!disposed) render();
     }
@@ -83,7 +89,16 @@ export function dailyReportCard() {
       );
       fill(
         detail,
-        h("span", { class: "hint" }, t("report.schedule.command")),
+        view.stale
+          ? h(
+            "div",
+            { class: "report-stale", role: "alert" },
+            h("span", null, icon("alert"), t("report.schedule.stale")),
+            h("code", { class: "mono report-command" }, view.task_command),
+            button(t("report.schedule.repair"), { size: "sm", disabled: busy, onClick: () => change(true) }),
+          )
+          : null,
+        h("span", { class: "hint" }, t(view.stale ? "report.schedule.commandRepaired" : "report.schedule.command")),
         h("code", { class: "mono report-command" }, view.command),
         h("span", { class: "hint" }, t("report.schedule.guarantees")),
       );
@@ -113,7 +128,9 @@ export function dailyReportCard() {
     latestHost,
   );
 
-  Promise.all([call("report_schedule_get"), call("report_latest").catch(() => null)])
+  Promise.resolve(inflight)
+    .catch(() => {})
+    .then(() => Promise.all([call("report_schedule_get"), call("report_latest").catch(() => null)]))
     .then(([schedule, report]) => {
       if (disposed) return;
       view = schedule;

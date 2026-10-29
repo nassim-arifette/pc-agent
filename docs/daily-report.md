@@ -23,12 +23,17 @@ profile path.
 
 ## The task
 
-`\PCAgent\DailyReport`, from a fixed XML definition (`pcagent_actions::scheduled_report`): daily
+`PCAgent DailyReport (<account>)` at the root of the Task Scheduler library (a standard
+account cannot create a folder there; the account name keeps two accounts apart), from a fixed
+XML definition (`pcagent_actions::scheduled_report`): daily
 at the chosen local time, run once when missed, only in the user's interactive session,
 `LeastPrivilege`, 5-minute limit, one instance, no wake, no network condition. `schtasks.exe`
 is called from `System32` with fixed arguments and no console window. Turning it on, moving it
 and removing it are journaled (`PreState::ScheduledReport`) in the local action journal, whose
-restoration is removal. The settings row reads the state back from Windows every time.
+restoration is removal. The settings row reads the state back from Windows every time,
+including the command the task starts; a task that starts another copy (an older install, or the
+CLI) is shown with a Repair button. The first day is yesterday in UTC, so the first run is the
+next occurrence of the chosen local time. Report file names use the UTC day.
 
 ## Surfaces
 
@@ -38,7 +43,7 @@ restoration is removal. The settings row reads the state back from Windows every
   in the composer; nothing is sent), and an invitation when no task exists.
 - A toast at the end of a scheduled run, only when something needs review.
 - Tauri commands: `report_schedule_get`, `report_schedule_set`, `report_latest`,
-  `report_run_now`, `report_reveal`. Mock: `?report=none|quiet|unsupported`.
+  `report_run_now`, `report_reveal`. Mock: `?report=none|quiet|unsupported|stale`.
 
 ## Validation
 

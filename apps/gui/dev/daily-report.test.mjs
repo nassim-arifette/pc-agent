@@ -128,3 +128,34 @@ test("home stays out of the way when there is nothing to show", async () => {
   await flush();
   assert.match(invite.el.textContent, /Set up the daily report/);
 });
+
+test("a task that starts another copy of the app is shown with its command and repaired", async () => {
+  use("?report=stale");
+  const card = dailyReportCard();
+  await flush();
+  assert.match(card.el.textContent, /starts another copy/);
+  assert.match(card.el.textContent, /D:\\Old\\PC Agent/);
+  byText(card.el, "Repair").listeners.click();
+  await flush();
+  assert.deepEqual(calls.at(-1), { command: "report_schedule_set", args: { enabled: true, time: "08:00" } });
+  assert.doesNotMatch(card.el.textContent, /starts another copy/);
+});
+
+test("a card drawn while a change is still running reads the state after it", async () => {
+  use("");
+  let release;
+  const set = commands.report_schedule_set;
+  commands.report_schedule_set = (args) => new Promise((resolve) => { release = () => resolve(set(args)); });
+  const first = dailyReportCard();
+  await flush();
+  first.el.querySelectorAll(".switch")[0].listeners.click();
+  await flush();
+  first.dispose();
+  const second = dailyReportCard();
+  await flush();
+  assert.equal(calls.filter((c) => c.command === "report_schedule_get").length, 1);
+  release();
+  await flush();
+  await flush();
+  assert.match(second.el.textContent, /On, every day at 09:00\./);
+});

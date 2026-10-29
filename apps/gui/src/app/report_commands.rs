@@ -12,7 +12,8 @@ fn program() -> Result<std::path::PathBuf, Failure> {
 #[tauri::command]
 pub(super) async fn report_schedule_get() -> Result<ScheduleView, Failure> {
     tauri::async_runtime::spawn_blocking(|| {
-        let state = task::state(&WindowsScheduler).map_err(failure::schedule)?;
+        let state =
+            task::state(&WindowsScheduler::for_current_user()).map_err(failure::schedule)?;
         Ok(daily_report::schedule_view(state, &program()?))
     })
     .await
@@ -33,17 +34,18 @@ pub(super) async fn report_schedule_set(
     tauri::async_runtime::spawn_blocking(move || {
         let program = program()?;
         let journal = Journal::open(crate::actions::journal_dir()).map_err(failure::schedule)?;
+        let scheduler = WindowsScheduler::for_current_user();
         let state = match parsed {
             Some(time) => task::enable(
                 &journal,
-                &WindowsScheduler,
+                &scheduler,
                 &program,
                 task::GUI_ARGUMENTS,
                 time,
-                &pcagent_report::date_stamp(pcagent_shared::unix_ms()),
+                &task::start_date(pcagent_shared::unix_ms()),
                 task::current_user().as_deref(),
             ),
-            None => task::disable(&journal, &WindowsScheduler),
+            None => task::disable(&journal, &scheduler),
         }
         .map_err(failure::schedule)?;
         Ok(daily_report::schedule_view(state, &program))

@@ -46,5 +46,5 @@ export const scenarios = [
   "?privacy=anonymized&web=key", "?elevation=fail", "?elevation=slow", "?recording=short",
   "?sources=short", "?conversation=empty&turn=orphan", "?history=unavailable&live=fail",
   "?scan=denied", "?scan=fail", "?action=refuse", "?preview=expired", "?routing=stale",
-  "?report=none", "?report=quiet", "?report=unsupported",
+  "?report=none", "?report=quiet", "?report=unsupported", "?report=stale",
 ];

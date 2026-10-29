@@ -480,7 +480,8 @@ covered by `node --experimental-default-type=module --test apps/gui/dev/usage.te
 Settings has a Daily report card (switch, time, the exact command Windows will start, "Write a
 report now") and the home page shows the latest report under the composer, answer first. See
 [daily-report.md](daily-report.md). Mock: `?report=none` (no report yet: an invitation),
-`?report=quiet` (nothing to review) and `?report=unsupported` (no Windows task). Covered by
+`?report=quiet` (nothing to review) and `?report=unsupported` (no Windows task) and `?report=stale` (the task starts an older copy:
+Repair). Covered by
 `node --test apps/gui/dev/daily-report.test.mjs`.
 
 ## Architecture
