@@ -284,3 +284,25 @@ Short dated pointers; the details stay where they were recorded.
   runs had failed when it was disabled ([plan, phase 0](plan.md#phase-0--remise-en-route-1718-oct)).
 - **27 September 2026.** First live Nemotron runs on the development PC, under an earlier answer
   contract ([archived model comparison](archive/model-comparison.md)).
+
+## Windows acceptance still owed after the 29 October branch integration
+
+Nothing below can run on Linux; none of it is claimed as validated.
+
+1. **ETW guardian (etw-e06):** the last native run failed with `LaunchFailed(5)`. Re-run the
+   guardian acceptance as a standard account, then prove the four cleanup cases (normal stop,
+   crash of the parent, crash of the guardian, forced kill) leave no temporary permission behind.
+2. **Watches:** create a CPU watch, trigger it, confirm one toast per alert, quit the app and
+   confirm the open alert closes as interrupted without a toast.
+3. **Local voice:** dictate in EN and FR with the model present and absent (Windows offline
+   fallback); confirm the draft is reviewed before sending and audio is not kept.
+4. **Deeper checks:** one real UAC prompt from a standard account, results kept 24 h, then
+   selected as evidence in the same thread.
+5. **Eval accounting:** one real Nebius replay with `--drain-usage --allow-cloud`; compare the
+   reported usage with the Token Factory dashboard.
+6. **GUI captures:** EN/FR, light/dark/high contrast for History, Storage, Watches, Voice and the
+   deeper-checks card.
+
+History: the backend of `feature/history-complete` is not merged separately; the integrated
+`wp6-watches` history backend differs from it only by the watch hooks and a shared system
+observation helper (reviewed 29 October).
