@@ -1,22 +1,40 @@
 import { wait, fail, GiB, MiB } from "./common.js";
 
 export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publishSource }) {
-  const historyStart = Date.now() - 7 * 24 * 3600 * 1000;
+  const fixtureTime = Date.now();
+  const historyStart = fixtureTime - 7 * 24 * 3600 * 1000;
 
   const historyEvents = [
     { id: "ev-1", kind: "cpu_busy", hoursAgo: 30, minutes: 3, peak: 8700, metric: "cpu_busy_basis_points", unit: "basis_points_of_total_cpu", contributor: "proc-11aa22bb", name: "firefox.exe" },
     { id: "ev-2", kind: "disk_latency", hoursAgo: 52, minutes: 12, peak: 64000, metric: "disk_latency_microseconds", unit: "microseconds", contributor: "proc-33cc44dd", name: "TiWorker.exe" },
     { id: "ev-3", kind: "memory_pressure", hoursAgo: 3, minutes: 6, peak: 9700, metric: "physical_used_basis_points", unit: "basis_points", contributor: "proc-11aa22bb", name: "firefox.exe" },
   ];
+  // A busy real day can contain hundreds of episodes, not three hand-picked examples.
+  for (let i = 0; i < 360; i++) {
+    const cpu = i % 3 === 0;
+    const memory = i % 3 === 1;
+    historyEvents.push({
+      id: `event-busy-${i}`, kind: cpu ? "cpu_busy" : memory ? "memory_pressure" : "disk_busy",
+      hoursAgo: (i + 1) / 36, minutes: 0.2, peak: 9500 + i % 400,
+      metric: cpu ? "cpu_busy_basis_points" : memory ? "physical_used_basis_points" : "disk_busy_basis_points",
+      unit: "basis_points", contributor: cpu || memory ? `proc-${i % 8}` : null, name: i % 7 ? `program-${i % 8}.exe` : null,
+    });
+  }
 
   let historyCleared = false;
 
   let recording = null;
+  let records = Array.from({ length: 27 }, (_, i) => {
+    const end = Date.now() - (i + 1) * 7200000;
+    return { id: `recording-fixture-${i}`, started_at_unix_ms: end - 60000, ended_at_unix_ms: end,
+      duration_seconds: 60, samples: 60, status: "completed", markers: [] };
+  });
+  let budget = 256 * MiB;
 
   let startupEnabled = false;
 
   function historyValue(metric, at) {
-    const hours = (Date.now() - at) / 3600000;
+    const hours = (fixtureTime - at) / 3600000;
     const wave = Math.sin(at / 900000) * 0.5 + Math.sin(at / 170000) * 0.3;
     const near = (e) => Math.abs(hours - e.hoursAgo) < e.minutes / 60;
     const ev = (kind) => historyEvents.find((e) => e.kind === kind && near(e));
@@ -36,23 +54,24 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
     }
   }
 
-  function historySeries(metric, from, to) {
-    // At most 120 points, like the agent's projection; one night without measurements.
-    const count = 120;
-    const step = Math.max(5000, Math.floor((to - from) / count));
-    const gapFrom = Date.now() - 20 * 3600 * 1000;
+  function historySeries(metric, from, to, count = 300) {
+    // The host transports display buckets, not the smaller model projection.
+    const step = Math.max(5000, Math.ceil((to - from) / count));
+    const gapFrom = fixtureTime - 20 * 3600 * 1000;
     const gapTo = gapFrom + 7 * 3600 * 1000;
     const points = [];
-    for (let at = from; at <= to; at += step) {
+    for (let at = from; at < to; at += step) {
       const inGap = (at >= gapFrom && at < gapTo) || at < historyStart || historyCleared;
-      points.push({ unix_ms: at, value: inGap ? null : historyValue(metric, at), min: null, max: null, status: inGap ? "unsupported" : "ok", measured_samples: inGap ? 0 : 1, expected_samples: 1, resolution_ms: step, observed_duration_ms: inGap ? 0 : step, origin: "synthetic_fixture" });
+      const value = historyValue(metric, at);
+      const spread = metric === "physical_total_bytes" ? 0 : metric === "physical_available_bytes" ? 0.15 * GiB : 500;
+      points.push({ unix_ms: at, value: inGap ? null : value, min: inGap ? null : Math.round(Math.max(0, value - spread)), max: inGap ? null : Math.round(value + spread), status: inGap ? "unsupported" : "ok", measured_samples: inGap ? 0 : 1, expected_samples: 1, resolution_ms: step, observed_duration_ms: inGap ? 0 : step, origin: "synthetic_fixture" });
     }
     const gaps = historyCleared ? [{ from_unix_ms: from, to_unix_ms: to, reason: "not_sampled" }] : gapTo > from && gapFrom < to ? [{ from_unix_ms: Math.max(from, gapFrom), to_unix_ms: Math.min(to, gapTo), reason: "not_sampled" }] : [];
     const events = historyCleared
       ? []
       : historyEvents
           .map((e) => {
-            const end = Date.now() - e.hoursAgo * 3600000;
+            const end = fixtureTime - e.hoursAgo * 3600000;
             return { id: e.id, kind: e.kind, entity_ref: "system", started_at_unix_ms: end - e.minutes * 60000, ended_at_unix_ms: end, peak: e.peak, metric: e.metric, unit: e.unit, active: false, contributor_ref: e.contributor, contributor_value: null, contributor_metric: null, contributor_unit: null, origin: "synthetic_fixture" };
           })
           .filter((e) => e.ended_at_unix_ms >= from && e.started_at_unix_ms <= to);
@@ -67,10 +86,34 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
       if (elapsed >= recording.duration_seconds * 1000) {
         recording.ended_at_unix_ms = recording.started_at_unix_ms + recording.duration_seconds * 1000;
         recording.status = "completed";
+        records = [recording, ...records.filter((r) => r.id !== recording.id)];
       }
     }
     const active = recording && recording.ended_at_unix_ms == null ? recording : null;
     return { running: true, samples: historyCleared ? 12 : 7800, last_sample_unix_ms: Date.now() - 2000, recording: active, error: null, thread_cpu_basis_points: 160, total_cpu_basis_points: 20, logical_processors: 8, resource_window_ms: 60000, host_working_set_bytes: 96 * MiB, cpu_target_basis_points: 50, memory_target_bytes: 50 * MiB };
+  }
+
+  function groupedChart(from, to, buckets) {
+    const metrics = ["cpu_busy_basis_points", "physical_available_bytes", "physical_total_bytes", "disk_idle_basis_points", "gpu_busiest_engine_basis_points", "disk_read_latency_microseconds", "disk_write_latency_microseconds"];
+    const histories = metrics.map((metric) => historySeries(metric, from, to, buckets));
+    const first = histories[0];
+    return { from_unix_ms: from, to_unix_ms: to, buckets,
+      series: histories.map((one) => ({ metric: one.metric, unit: one.unit, status: one.status,
+        points: one.points.map((p) => [p.unix_ms, p.value, p.min, p.max, p.measured_samples, p.expected_samples, p.resolution_ms, p.status, p.origin, p.observed_duration_ms, false]) })),
+      events: first.events, process_names: first.process_names, gaps: first.gaps, limitations: [] };
+  }
+
+  function checkAvailable() {
+    if (params.get("history") === "unavailable") fail("history_unavailable", "Local history is unavailable.");
+  }
+
+  function collection() {
+    const protectedBytes = historyCleared ? 0 : 24 * MiB;
+    return { budget_bytes: budget, allocated_bytes: historyCleared ? 65536 : Math.max(protectedBytes, Math.min(budget, 132 * MiB)),
+      sqlite_bytes: 150 * MiB, wal_bytes: 2 * MiB, reusable_bytes: 18 * MiB,
+      samples: historyCleared ? 0 : 98213, protected_samples: historyCleared ? 0 : 1620, protected_payload_bytes: protectedBytes,
+      oldest_unix_ms: historyCleared ? null : historyStart, latest_unix_ms: historyCleared ? null : Date.now() - 2000,
+      budget_removed_samples: budget < 132 * MiB ? 3500 : 0, last_budget_eviction_unix_ms: budget < 132 * MiB ? Date.now() : null, over_budget: protectedBytes > budget };
   }
 
   function batteryRecording(rec) {
@@ -116,6 +159,53 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
 
   const commands = {
     history_status: () => samplerStatus(),
+    history_chart: async ({ fromUnixMs, toUnixMs, buckets }) => {
+      // Deliberately reorder rapid period requests. ?history=fast is for deterministic unit tests.
+      await wait(params.get("history") === "fast" ? 0 : toUnixMs - fromUnixMs > 86400000 ? 1600 : toUnixMs - fromUnixMs > 3600000 ? 900 : 300);
+      checkAvailable();
+      const chart = groupedChart(fromUnixMs, toUnixMs, buckets);
+      const targets = ["cpu", "memory", "disk", "gpu"].map((resource) => ({ kind: "resource", resource }));
+      targets.push(...chart.events.map((e) => ({ kind: "event", event_id: e.id })));
+      return { ...chart, source_id: publishSource(targets, toUnixMs), selection_unavailable: null };
+    },
+    history_overview: async ({ dayStartUnixMs }) => {
+      await wait(params.get("history") === "fast" ? 0 : 180);
+      checkAvailable();
+      samplerStatus();
+      const now = Date.now();
+      const rows = recording?.ended_at_unix_ms == null && recording ? [recording, ...records] : records;
+      return { periods: [["hour", now - 3600000], ["day", dayStartUnixMs], ["week", now - 604800000]].map(([id, from]) =>
+        ({ id, from_unix_ms: from, to_unix_ms: now, event_count: historySeries("cpu_busy_basis_points", from, now).events.length })),
+        latest_event_ended_at_unix_ms: historyCleared ? null : fixtureTime - 100000, latest_sample_unix_ms: now - 2000,
+        recordings: rows.slice(0, 20), more_recordings: rows.length > 20 };
+    },
+    history_recordings: async ({ offset }) => {
+      checkAvailable();
+      const rows = recording?.ended_at_unix_ms == null && recording ? [recording, ...records] : records;
+      return { recordings: rows.slice(offset, offset + 20), more: rows.length > offset + 20 };
+    },
+    recording_detail: async ({ recordingId }) => {
+      await wait(params.get("history") === "fast" ? 0 : 450);
+      checkAvailable();
+      const r = records.find((r) => r.id === recordingId);
+      if (!r) return null;
+      const chart = groupedChart(r.started_at_unix_ms, r.ended_at_unix_ms, 120);
+      const peaks = (metrics) => ({ status: "ok", from_unix_ms: r.started_at_unix_ms, to_unix_ms: r.ended_at_unix_ms,
+        process_names: { "proc-fixture": "browser.exe" }, limitations: [],
+        observations: metrics.map((metric) => ({ metric, entity_ref: "proc-fixture", value: metric.includes("bytes") ? 3400000 : 8700,
+          status: "ok", origin: "synthetic_fixture", measured_at_unix_ms: r.ended_at_unix_ms - 12000 })) });
+      return { recording: r, chart, cpu_peaks: peaks(["process_cpu_basis_points"]),
+        resource_peaks: peaks(["process_gpu_basis_points", "process_io_read_bytes_per_second", "process_io_write_bytes_per_second"]),
+        battery: batteryRecording(r), minute_summaries: Date.now() - r.started_at_unix_ms > 86400000,
+        source_id: publishSource([{ kind: "recording", recording_id: r.id }], r.ended_at_unix_ms), selection_unavailable: null };
+    },
+    history_collection: () => { checkAvailable(); return collection(); },
+    history_collection_set_budget: ({ bytes }) => {
+      checkAvailable();
+      if (!Number.isSafeInteger(bytes) || bytes < MiB) throw new Error("Invalid budget");
+      budget = bytes;
+      return collection();
+    },
     metric_history: async ({ metric, fromUnixMs, toUnixMs }) => {
       await wait(150);
       if (params.get("history") === "unavailable") fail("history_unavailable", "Local history is unavailable.");
@@ -131,7 +221,7 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
       if (recording && recording.ended_at_unix_ms == null) throw new Error("A recording is already running.");
       // ?recording=short makes the test recordings last 3 seconds.
       const seconds = params.get("recording") === "short" ? 3 : durationSeconds;
-      recording = { id: `rec-${Date.now()}`, started_at_unix_ms: Date.now(), ended_at_unix_ms: null, duration_seconds: seconds, status: "recording", samples: 0, markers: [{ at_unix_ms: Date.now(), kind: "start" }] };
+      recording = { id: `recording-${Date.now()}`, started_at_unix_ms: Date.now(), ended_at_unix_ms: null, duration_seconds: seconds, status: "recording", samples: 0, markers: [{ at_unix_ms: Date.now(), kind: "start" }] };
       return { ...recording };
     },
     battery_recording: async ({ recordingId }) => {
@@ -143,6 +233,7 @@ export function createHistoryFixture({ params, batteryMode: BATTERY_MODE, publis
       if (!recording || recording.id !== recordingId || recording.ended_at_unix_ms != null) throw new Error("This recording is over.");
       recording.ended_at_unix_ms = Date.now();
       recording.status = "cancelled";
+      records = [recording, ...records.filter((r) => r.id !== recording.id)];
     },
     history_clear: () => {
       historyCleared = true;

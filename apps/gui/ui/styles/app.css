@@ -3123,7 +3123,78 @@ details.more > div {
 }
 .history-chart .history-mark {
   fill: var(--warn);
-  opacity: 0.12;
+  fill-opacity: 0.24;
+  stroke: var(--warn);
+  stroke-opacity: 0.8;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.history-timeline {
+  position: relative;
+  height: 48px;
+  margin: 8px 18px 14px;
+  border-bottom: 2px solid var(--stroke-strong);
+}
+.history-timeline-mark {
+  position: absolute;
+  bottom: 4px;
+  transform: translateX(-50%);
+  padding: 4px 5px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.history-timeline-mark:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.event-number {
+  display: grid;
+  place-items: center;
+  min-height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.history-detail-actions {
+  margin-bottom: 18px;
+}
+.history-detail-actions .actbar {
+  position: static;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.history-peaks {
+  overflow-x: auto;
+  margin: 16px 0;
+}
+.history-peaks table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.history-peaks th,
+.history-peaks td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--stroke);
+  overflow-wrap: anywhere;
+}
+.history-peaks td:nth-child(2) {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.history-gaps {
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--text-2);
 }
 .history-chart .history-range {
   fill: currentColor;
@@ -3147,14 +3218,20 @@ details.more > div {
   color: var(--text-3);
 }
 .history-axis {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  gap: 4px;
   margin-left: 134px;
   padding-top: 6px;
   font-size: 11.5px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
+.history-axis span {
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.history-axis span:first-child { text-align: left; }
+.history-axis span:last-child { text-align: right; }
 .event-list {
   display: flex;
   flex-direction: column;
