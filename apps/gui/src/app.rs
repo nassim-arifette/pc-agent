@@ -7,11 +7,13 @@ mod history_commands;
 mod image_commands;
 mod measurements;
 mod preview_commands;
+mod report_commands;
 mod selection_commands;
 mod settings_commands;
 mod state;
 mod storage_commands;
 mod turn_commands;
+mod voice_commands;
 mod watch_commands;
 mod worker;
 
@@ -189,6 +191,11 @@ pub fn run() {
             watch_commands::watch_activation_take,
             settings_commands::startup_get,
             settings_commands::startup_set,
+            report_commands::report_schedule_get,
+            report_commands::report_schedule_set,
+            report_commands::report_latest,
+            report_commands::report_run_now,
+            report_commands::report_reveal,
             settings_commands::privacy_get,
             settings_commands::privacy_set,
             turn_commands::send_message,
@@ -206,6 +213,17 @@ pub fn run() {
         ])
         .setup(move |app| {
             let _ = handle.set(app.handle().clone());
+            let voice_app = app.handle().clone();
+            let model_app = app.handle().clone();
+            app.manage(pcagent_voice::VoiceService::new(
+                app.path().app_local_data_dir()?.join("voice"),
+                move |state| {
+                    let _ = voice_app.emit("voice:state", state);
+                },
+                move |model| {
+                    let _ = model_app.emit("voice:model", model);
+                },
+            ));
             use tauri::{
                 menu::{Menu, MenuItem},
                 tray::{TrayIconBuilder, TrayIconEvent},

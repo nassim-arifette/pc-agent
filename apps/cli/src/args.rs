@@ -275,14 +275,18 @@ pub(super) struct Report {
     /// Write here instead of the private application directory.
     #[arg(long)]
     pub(super) out_dir: Option<PathBuf>,
+    /// Read this history file instead of the app's own; it is never created.
+    #[arg(long)]
+    pub(super) database: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 pub(super) enum ScheduleAction {
     /// Show whether the daily task is installed.
     Status,
-    /// Install the daily task for this user only (no administrator, no network).
+    /// Install or move the daily task for this user only (no administrator, no network).
     Enable {
+        /// Local time, HH:MM.
         #[arg(long, default_value = "09:00")]
         time: String,
     },

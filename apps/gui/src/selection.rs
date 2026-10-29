@@ -96,9 +96,15 @@ impl SelectionRegistry {
     fn expire(&mut self) {
         let now = Instant::now();
         let oldest_alert = unix_ms().saturating_sub(604_800_000);
-        self.sources.retain(|source| source.expires_at > now && !matches!(
-            &*source.source, SelectionSource::WatchAlert(alert) if alert.started_at_unix_ms < oldest_alert
-        ));
+        // Watch alerts follow the 7-day history; elevated inspections their own 24 hours.
+        self.sources.retain(|source| {
+            source.expires_at > now
+                && source.source.available_at(unix_ms())
+                && !matches!(
+                    &*source.source,
+                    SelectionSource::WatchAlert(alert) if alert.started_at_unix_ms < oldest_alert
+                )
+        });
         let sources: BTreeSet<_> = self
             .sources
             .iter()

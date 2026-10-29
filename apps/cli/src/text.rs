@@ -22,7 +22,7 @@ pub fn set_language(language: Language) {
     let _ = LANGUAGE.set(language);
 }
 
-fn language() -> Language {
+pub fn language() -> Language {
     LANGUAGE.get().copied().unwrap_or_default()
 }
 

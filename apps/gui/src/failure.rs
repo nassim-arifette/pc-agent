@@ -60,6 +60,10 @@ closed_set! {
         /// Automatic model routing lacks a valid reviewed calibration.
         RoutingUnavailable,
         StartupFailed,
+        /// Windows refused to create, read or remove the daily report task.
+        ScheduleFailed,
+        /// The daily report could not be written or read.
+        ReportFailed,
         FolderMissing,
         NotAFolder,
         FolderLink,
@@ -175,6 +179,14 @@ pub fn history(error: impl fmt::Display) -> Failure {
 /// Reading or changing *Start with Windows* failed.
 pub fn startup(error: impl fmt::Display) -> Failure {
     Failure::new(Code::StartupFailed, error.to_string())
+}
+
+pub fn schedule(error: impl fmt::Display) -> Failure {
+    Failure::new(Code::ScheduleFailed, error.to_string())
+}
+
+pub fn report(error: impl fmt::Display) -> Failure {
+    Failure::new(Code::ReportFailed, error.to_string())
 }
 
 /// The checks every question passes before a turn: not blank, within the byte limit.

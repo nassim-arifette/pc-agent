@@ -198,7 +198,10 @@ impl SelectionSource {
                 .saturating_add(value.context.retained_bytes()),
             Self::Battery(value) => bytes(value),
             Self::WatchAlert(value) => bytes(value),
-            Self::ElevatedInspection { inspection, .. } => bytes(inspection),
+            Self::ElevatedInspection { id, inspection } => id
+                .len()
+                .saturating_add(bytes(inspection))
+                .saturating_add(bytes(&inspection.names)),
         }
     }
 
@@ -232,6 +235,7 @@ impl SelectionSource {
                 | Self::Chart(_)
                 | Self::Recording(_)
                 | Self::WatchAlert(_)
+                | Self::ElevatedInspection { .. }
         )
     }
 
@@ -246,6 +250,10 @@ impl SelectionSource {
 
     pub fn measured_at(&self, target: &SelectionTarget) -> Option<u64> {
         let at = match (self, target) {
+            (
+                Self::ElevatedInspection { inspection, .. },
+                SelectionTarget::ElevatedInspection { .. },
+            ) => Some(inspection.measured_at_unix_ms),
             (Self::WatchAlert(alert), SelectionTarget::WatchAlert { .. }) => [
                 alert.observation.measured_at_unix_ms,
                 alert.extreme_observation.measured_at_unix_ms,
