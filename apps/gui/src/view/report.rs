@@ -54,6 +54,7 @@ pub struct WebSourceView {
     pub url: String,
     pub published_date: Option<String>,
     pub searched_at_unix_ms: Option<u64>,
+    pub cached_at_unix_ms: Option<u64>,
     /// The exact query that found it.
     pub query: Option<String>,
 }
@@ -165,7 +166,12 @@ pub(super) fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> A
                         domain: text("domain").unwrap_or_default(),
                         url: text("url")?,
                         published_date: text("published_date"),
-                        searched_at_unix_ms: o.observation["searched_at_unix_ms"].as_u64(),
+                        searched_at_unix_ms: source["read_at_unix_ms"]
+                            .as_u64()
+                            .or_else(|| o.observation["searched_at_unix_ms"].as_u64()),
+                        cached_at_unix_ms: source["cached_at_unix_ms"]
+                            .as_u64()
+                            .or_else(|| o.observation["cached_at_unix_ms"].as_u64()),
                         query: o.observation["query"].as_str().map(str::to_owned),
                     }),
                 });

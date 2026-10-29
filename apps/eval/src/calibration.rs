@@ -76,6 +76,7 @@ struct Annotations {
 #[serde(rename_all = "snake_case")]
 enum ReplayMode {
     NebiusReplay,
+    NebiusAccountingDiagnostic,
 }
 /// Import only the result envelope this harness actually emits. Raw reports remain local.
 #[derive(Debug, Deserialize)]
@@ -100,6 +101,40 @@ struct ReplayResult {
     unused_captures: usize,
     duration_ms: u64,
     replay_complete: bool,
+    #[serde(default)]
+    accounting: Option<DiagnosticAccounting>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticAccounting {
+    #[serde(rename = "usage_policy")]
+    _usage_policy: pcagent_nebius::accounting::UsagePolicy,
+    #[serde(rename = "requests")]
+    _requests: Vec<DiagnosticRequest>,
+    #[serde(rename = "full_stream_cost")]
+    _full_stream_cost: Option<RecordedCost>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticRequest {
+    #[serde(rename = "request")]
+    _request: usize,
+    #[serde(rename = "model_id")]
+    _model_id: String,
+    #[serde(rename = "answer_completed_ms")]
+    _answer_completed_ms: Option<u64>,
+    #[serde(rename = "stream_total_ms")]
+    _stream_total_ms: u64,
+    #[serde(rename = "stream_complete")]
+    _stream_complete: bool,
+    #[serde(rename = "usage")]
+    _usage: Option<pcagent_nebius::accounting::DrainedUsage>,
+    #[serde(rename = "full_stream_cost")]
+    _full_stream_cost: Option<RecordedCost>,
+    #[serde(rename = "accounting_error")]
+    _accounting_error: Option<pcagent_agent::AgentError>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +167,8 @@ struct ModelUsage {
     model_id: Option<String>,
     usage: Usage,
     cost: Option<RecordedCost>,
+    #[serde(default, rename = "duration_ms")]
+    _duration_ms: Option<u64>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,6 +191,18 @@ struct Stats {
     #[serde(default)]
     routing: Option<Value>,
     extensions: usize,
+    #[serde(default)]
+    repair_requests: Option<Vec<pcagent_agent::Repair>>,
+    #[serde(default)]
+    known_prompt_tokens: Option<u64>,
+    #[serde(default)]
+    known_completion_tokens: Option<u64>,
+    #[serde(default)]
+    unknown_requests: Option<usize>,
+    #[serde(default)]
+    cost_lower_bound: Option<RecordedCost>,
+    #[serde(default)]
+    web_usage: Option<pcagent_agent::web_usage::WebUsage>,
 }
 struct Measurements {
     requests: usize,
@@ -294,6 +343,17 @@ fn measurements(result: &ReplayResult, model: &str, primary: bool) -> Result<Mea
     }
     let stats: Stats = serde_json::from_value(run.report["stats"].clone())
         .map_err(|_| "calibration_requires_complete_request_stats")?;
+    if stats.unknown_requests.is_some_and(|count| count != 0) || stats.cost_lower_bound.is_some() {
+        return Err("calibration_usage_unknown".into());
+    }
+    if stats.web_usage.as_ref().is_some_and(|web| {
+        !web.known_credits.is_finite()
+            || web.known_credits < 0.0
+            || web.cache_hits > web.lookups
+            || web.unknown_requests > web.lookups.saturating_sub(web.cache_hits)
+    }) {
+        return Err("calibration_invalid_web_usage".into());
+    }
     if stats.inference_calls == 0
         || stats.inference_calls > MAX_ROUNDS
         || (primary && stats.inference_calls >= MAX_ROUNDS)
@@ -302,6 +362,11 @@ fn measurements(result: &ReplayResult, model: &str, primary: bool) -> Result<Mea
         || stats.inspection_calls == 0
         || stats.inspection_calls > stats.tool_calls
         || stats.extensions != 0
+        || stats.repair_requests.as_ref().is_some_and(|repairs| {
+            repairs
+                .iter()
+                .any(|repair| repair.request == 0 || repair.request > stats.inference_calls)
+        })
         || stats
             .routing
             .as_ref()
@@ -332,6 +397,12 @@ fn measurements(result: &ReplayResult, model: &str, primary: bool) -> Result<Mea
         || stats.completion_tokens != Some(completion)
         || stats.total_tokens != prompt.checked_add(completion)
         || stats.reasoning_tokens != reasoning
+        || stats
+            .known_prompt_tokens
+            .is_some_and(|known| known != prompt)
+        || stats
+            .known_completion_tokens
+            .is_some_and(|known| known != completion)
     {
         return Err("calibration_usage_totals_mismatch".into());
     }
@@ -422,6 +493,10 @@ fn validate_replay(
     pair: &AnnotatedPair,
     runtime: &CalibrationRuntime,
 ) -> Result<()> {
+    if matches!(result.mode, ReplayMode::NebiusAccountingDiagnostic) || result.accounting.is_some()
+    {
+        return Err("calibration_disallows_full_stream_accounting".into());
+    }
     if &result.runtime != runtime
         || result.run.runtime.as_ref() != Some(runtime)
         || result.harness_version != REPLAY_HARNESS_VERSION
@@ -443,9 +518,6 @@ fn validate_replay(
         || !result.replay_misses.is_empty()
     {
         return Err("calibration_requires_identical_complete_live_replays".into());
-    }
-    match result.mode {
-        ReplayMode::NebiusReplay => {}
     }
     let mut replay = ReplayTools::new(scenario, pair.sharing)?;
     if !same_hash(
@@ -802,21 +874,43 @@ mod tests {
         };
         let cost = estimate_cost(200, 20, &price).unwrap();
         let request_cost = estimate_cost(100, 10, &price).unwrap();
-        let usage = json!({"prompt_tokens":100,"completion_tokens":10,"reasoning_tokens":0});
+        let usage = pcagent_agent::RequestUsage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(10),
+            reasoning_tokens: Some(0),
+        };
         let mut calls = scenario.calls.clone();
         calls[0].recorded_at_unix_ms = Some(205);
         let model_requests: Vec<_> = (1..=2)
-            .map(|request| {
-                json!({
-                    "request":request,"model_id":model,"usage":usage,"cost":request_cost
-                })
+            .map(|request| pcagent_agent::ModelRequestUsage {
+                request,
+                model_id: Some(model.into()),
+                usage: usage.clone(),
+                cost: Some(request_cost.clone()),
+                duration_ms: 4,
             })
             .collect();
-        let stats = json!({
-            "inference_calls":2,"tool_calls":1,"inspection_calls":1,"total_tokens":220,
-            "prompt_tokens":200,"completion_tokens":20,"reasoning_tokens":0,
-            "requests":[usage.clone(),usage.clone()],"cost":cost,"extensions":0,
-            "model_requests":model_requests,"total_cost_usd":"0.00024", "routing":null
+        let mut stats = pcagent_agent::local_report(&scenario.initial).stats;
+        stats.inference_calls = 2;
+        stats.tool_calls = 1;
+        stats.inspection_calls = 1;
+        stats.total_tokens = Some(220);
+        stats.prompt_tokens = Some(200);
+        stats.completion_tokens = Some(20);
+        stats.reasoning_tokens = Some(0);
+        stats.requests = vec![usage.clone(), usage];
+        stats.cost = Some(cost);
+        stats.model_requests = model_requests;
+        stats.total_cost_usd = Some("0.00024".into());
+        stats.known_prompt_tokens = 200;
+        stats.known_completion_tokens = 20;
+        stats.repair_requests.push(pcagent_agent::Repair {
+            request: 1,
+            issues: vec![pcagent_agent::Issue {
+                kind: pcagent_agent::IssueKind::MissingCitation,
+                excerpt: "Synthetic fixture repair".into(),
+            }],
+            output_limit: false,
         });
         let answer = json!({"text":"Synthetic fixture answer", "confidence":confidence,
             "category":"cpu", "unverified":[],"repairs":0});
@@ -953,6 +1047,122 @@ mod tests {
         }
         assert!(fixture.compile().is_err());
     }
+    #[test]
+    fn full_stream_accounting_is_typed_and_never_imported_as_product_cost() {
+        let diagnostic = json!({
+            "usage_policy":"full_stream_drain",
+            "requests":[{
+                "request":1,"model_id":"nvidia/nemotron-super-unit-fixture",
+                "answer_completed_ms":8,"stream_total_ms":90,"stream_complete":true,
+                "usage":{"prompt_tokens":100,"completion_tokens":200,"total_tokens":300,
+                    "reasoning_tokens":50},
+                "full_stream_cost":null,"accounting_error":null
+            }],
+            "full_stream_cost":null
+        });
+        assert!(serde_json::from_value::<DiagnosticAccounting>(diagnostic.clone()).is_ok());
+        for field in [
+            "answer_completed_ms",
+            "stream_total_ms",
+            "usage",
+            "accounting_error",
+            "full_stream_cost",
+        ] {
+            let mut malformed = diagnostic.clone();
+            malformed["requests"][0][field] = json!({"unexpected":"not typed metadata"});
+            assert!(serde_json::from_value::<DiagnosticAccounting>(malformed).is_err());
+        }
+        let mut unknown = diagnostic.clone();
+        unknown["requests"][0]["invented"] = true.into();
+        assert!(serde_json::from_value::<DiagnosticAccounting>(unknown).is_err());
+
+        // The reports already have complete, verified product-looking costs in this fixture:
+        // neither a known cost nor explicit human labels override the usage-policy rejection.
+        for variant in 0..3 {
+            let mut fixture = Fixture::new();
+            fixture.replace_result(
+                true,
+                |result| {
+                    if variant != 1 {
+                        result["mode"] = json!("nebius_accounting_diagnostic");
+                    }
+                    if variant != 0 {
+                        result["accounting"] = diagnostic.clone();
+                        result["accounting"]["full_stream_cost"] =
+                            result["run"]["report"]["stats"]["cost"].clone();
+                        result["accounting"]["requests"][0]["full_stream_cost"] =
+                            result["run"]["report"]["stats"]["model_requests"][0]["cost"].clone();
+                    }
+                },
+                true,
+            );
+            assert_eq!(
+                fixture.compile().unwrap_err().to_string(),
+                "calibration_disallows_full_stream_accounting"
+            );
+        }
+    }
+
+    #[test]
+    fn full_production_stats_and_older_optional_field_absence_are_accepted() {
+        let mut fixture = Fixture::new();
+        assert!(fixture.compile().is_ok());
+        for primary in [true, false] {
+            fixture.replace_result(
+                primary,
+                |result| {
+                    let stats = result["run"]["report"]["stats"].as_object_mut().unwrap();
+                    for field in [
+                        "repair_requests",
+                        "known_prompt_tokens",
+                        "known_completion_tokens",
+                        "unknown_requests",
+                        "cost_lower_bound",
+                        "web_usage",
+                    ] {
+                        assert!(stats.remove(field).is_some(), "production field {field}");
+                    }
+                    for request in stats["model_requests"].as_array_mut().unwrap() {
+                        assert!(request
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("duration_ms")
+                            .is_some());
+                    }
+                },
+                true,
+            );
+        }
+        assert!(fixture.compile().is_ok());
+    }
+
+    #[test]
+    fn auxiliary_stats_stay_typed_and_cannot_hide_unknown_usage() {
+        for mutation in 0..10 {
+            let mut fixture = Fixture::new();
+            fixture.replace_result(
+                true,
+                |result| {
+                    let stats = &mut result["run"]["report"]["stats"];
+                    match mutation {
+                        0 => stats["unknown_requests"] = 1.into(),
+                        1 => stats["known_prompt_tokens"] = 201.into(),
+                        2 => stats["known_completion_tokens"] = 21.into(),
+                        3 => stats["cost_lower_bound"] = stats["cost"].clone(),
+                        4 => stats["model_requests"][0]["duration_ms"] = "unknown".into(),
+                        5 => stats["repair_requests"][0]["request"] = 0.into(),
+                        6 => stats["repair_requests"][0]["issues"][0]["kind"] = "invented".into(),
+                        7 => stats["web_usage"]["known_credits"] = (-1).into(),
+                        8 => stats["web_usage"]["extra"] = true.into(),
+                        _ => stats["undeclared_stats"] = true.into(),
+                    }
+                },
+                true,
+            );
+            assert!(fixture.compile().is_err(), "mutation {mutation}");
+        }
+    }
+
     #[test]
     fn unknown_costs_wrong_products_mixed_models_and_invented_usage_are_refused() {
         for mutation in 0..8 {

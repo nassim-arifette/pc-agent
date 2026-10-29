@@ -42,6 +42,9 @@ pub struct ModelUsageView {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Usage {
+    pub web: pcagent_agent::web_usage::WebUsage,
+    pub web_estimated_usd: Option<String>,
+    pub combined_estimated_cost: Option<AmountView>,
     pub requests: usize,
     pub tool_calls: usize,
     pub extensions: usize,
@@ -183,6 +186,14 @@ pub fn usage(s: &Stats) -> Usage {
         .filter_map(|r| r.cost.as_ref())
         .collect();
     Usage {
+        web: s.web_usage.clone(),
+        web_estimated_usd: s.web_usage.estimated_usd(),
+        combined_estimated_cost: s
+            .web_usage
+            .with_model_usd(s.total_cost_usd.as_deref())
+            .as_deref()
+            .and_then(pico)
+            .map(amount),
         requests: s.inference_calls,
         tool_calls: s.tool_calls,
         extensions: s.extensions,

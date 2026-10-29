@@ -103,6 +103,55 @@ Grader `--note` values never enter model messages.
 
 ## Replay and inspect what is shared
 
+### Optional full-stream accounting diagnostic
+
+`replay --allow-cloud --drain-usage` is an explicit evaluation-only diagnostic. The GUI, product
+CLI, capture command and ordinary replay keep their fast behavior; no setting or environment
+variable enables draining. It cannot be combined with `--calibration`.
+
+```powershell
+& $eval replay D:\pcagent-tmp\captures\slow-pc.json --allow-cloud --anonymize `
+  --model nvidia/nemotron-3-super-120b-a12b --drain-usage `
+  --out D:\pcagent-tmp\super-accounting.json
+```
+
+The exact first complete lone `submit_answer` remains frozen. Its reader is retained without reading
+further until the **whole investigation has returned**, including any repairs. Draining inside a
+model call would incorrectly consume the agent's post-call time budget and could reject a valid
+answer. After the investigation is frozen, retained streams are read only for usage, with their
+original absolute request deadlines, Stop flag and cumulative size limit. Later answers,
+tool calls and argument callbacks are never replayed. A malformed, disconnected, oversized or
+timed-out tail cannot change an already accepted response: only its accounting becomes unknown
+with an explicit error. Readers are dropped on every exit and never run in background threads.
+Their count is bounded by the existing maximum request budget, including consented extensions.
+Failures before the accepted response retain their existing behavior.
+
+Output mode is `nebius_accounting_diagnostic`, with a typed `accounting` object:
+
+- `usage_policy`: `full_stream_drain`.
+- `requests`: request number, model ID, nullable `answer_completed_ms` (only when the fast
+  answer boundary was reached), `stream_total_ms`, `stream_complete`, validated `usage`,
+  catalog-priced `full_stream_cost`, and `accounting_error`.
+- `full_stream_cost`: aggregate estimate only when every request has known full-stream usage
+  and consistent catalog prices; otherwise `null`, never a manufactured zero.
+
+Usage is accepted only with complete nonnegative token counters, consistent totals and reasoning
+tokens no greater than output tokens, followed by the stream terminator. Missing, malformed,
+conflicting or incomplete usage is unknown. The full-stream estimate can include unnecessary
+tokens generated *after* the answer. It is **not** the exact cost of the cancelled fast product.
+The original report's usage/cost remains what the fast reader actually saw at the answer boundary;
+the diagnostic does not replace it with drained usage. Original `run.duration_ms` and per-model
+request durations are frozen before draining. Top-level `duration_ms` and `stream_total_ms` include
+the after-turn drain (and deferred waiting) and are not fast-product latency.
+
+Automatic calibration explicitly rejects diagnostic mode or accounting metadata, even when all
+costs and human labels are present. The packet can inform human quality judgments and accounting
+overhead analysis, but cannot establish the fast-product cost advantage. A comparator-policy
+decision and genuine human annotations remain necessary. Stop the paid campaign once those
+missing decisions prevent an eligibility conclusion; do not multiply calls to manufacture one.
+
+### Ordinary replay
+
 ```powershell
 # No collectors or provider request; credentials are not required.
 & $eval replay D:\pcagent-tmp\captures\slow-pc.json

@@ -16,6 +16,7 @@ mod draft;
 pub use draft::draft_text;
 mod cost;
 pub mod replay;
+pub mod web_usage;
 pub use conversation::{
     conversation_message, conversation_message_with_privacy, PastTurn, MAX_PAST_CHARS,
 };
@@ -81,7 +82,7 @@ pub const MAX_OUTPUT_TOKENS: u32 = 8192;
 /// Answers or tool calls sent back to the model for correction, per investigation.
 pub const MAX_REPAIRS: usize = 3;
 
-#[derive(Debug, Clone, Serialize, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Error, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentError {
     #[error("NEBIUS_API_KEY is missing or empty")]
@@ -414,7 +415,8 @@ pub struct ModelRequestUsage {
 /// One correction request sent to the model: the review issues of the rejected reply (with the
 /// passages concerned, which stay on this PC like the answer itself), or a reply cut at the
 /// output limit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Repair {
     /// The inference request whose reply was rejected (1-based, as in `model_requests`).
     pub request: usize,
@@ -423,6 +425,7 @@ pub struct Repair {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
+    pub web_usage: web_usage::WebUsage,
     pub inference_calls: usize,
     pub tool_calls: usize,
     pub inspection_calls: usize,
@@ -455,6 +458,7 @@ pub struct Stats {
 impl Stats {
     fn none() -> Self {
         Self {
+            web_usage: web_usage::WebUsage::default(),
             inference_calls: 0,
             tool_calls: 0,
             inspection_calls: 0,
@@ -1659,6 +1663,9 @@ fn converse_inner(
             }
             let tool_started = Instant::now();
             let mut output = toolbox.run(&spec, &args);
+            if matches!(spec.class, ToolClass::External) {
+                result.stats.web_usage.record(&output.cloud["web_usage"]);
+            }
             result.stats.tool_calls += 1;
             if matches!(spec.class, ToolClass::Inspection)
                 && output.inspection_complete

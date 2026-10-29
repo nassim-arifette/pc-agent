@@ -58,6 +58,7 @@ export function webSourceCard(citation, n, focused, target) {
     web.domain ? h("span", { class: "web-domain" }, web.domain) : null,
     h("span", null, web.published_date ? t("web.published", { date: publishedDate(web.published_date) }) : t("web.date.unknown")),
     web.searched_at_unix_ms ? h("span", null, t("web.readAt", { time: clock(web.searched_at_unix_ms) })) : null,
+    web.cached_at_unix_ms ? h("span", null, t("web.cachedAt", { time: new Date(web.cached_at_unix_ms).toLocaleString() })) : null,
   ].filter(Boolean);
   const canOpen = Boolean(target?.conversationId && target?.turnId);
   return h(
