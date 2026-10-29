@@ -132,6 +132,15 @@ fn notification_text(alert: &WatchAlert, language: &str) -> (String, String) {
     (format!("PC Agent — {measure}"), body.into())
 }
 
+/// C7: while at least one rule is enabled, closing the window hides it in the notification area
+/// so the sampler keeps watching; "Quit PC Agent" still stops everything.
+pub(super) fn any_enabled(state: &AppState) -> bool {
+    lock(&state.history)
+        .as_ref()
+        .and_then(|store| store.watches().ok())
+        .is_some_and(|rules| rules.iter().any(|rule| rule.enabled))
+}
+
 fn read<T>(
     history: &History,
     f: impl FnOnce(&Store) -> Result<T, StoreError>,

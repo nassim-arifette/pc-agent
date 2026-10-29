@@ -394,8 +394,10 @@ Details and the second-PC checklist: [docs/validation.md](docs/validation.md).
 - **Administrator checks** run one at a time, each after its own consent prompt. The quick drive
   analysis lists the largest folders and files it could attribute; its accuracy is not yet
   validated on a controlled volume. The performance trace is not available.
-- **Not yet available:** watching a resource against a threshold (the *Monitor* button is shown
-  disabled), a cache for web lookups, and Tavily credits in the displayed cost.
+- **Watches** (resource, drive, NVIDIA GPU or program thresholds) are checked only while PC Agent
+  runs, in its window or its notification-area icon; Windows notifications, their clicks and the
+  daily scheduled report have passed tests on synthetic data but are not yet validated on a real
+  PC.
 - **Interface:** some texts produced by the core, such as findings and coverage notes, stay in
   English in the French interface; screen readers and high-contrast mode are not validated.
 - **Distribution:** no installer, no automatic update, no code signing; the keys file is plain text

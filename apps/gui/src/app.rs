@@ -268,7 +268,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 window.state::<pcagent_voice::VoiceService>().cancel();
-                if pcagent_inspect::autostart::get().unwrap_or(false) {
+                if pcagent_inspect::autostart::get().unwrap_or(false)
+                    || watch_commands::any_enabled(&window.state::<AppState>())
+                {
                     api.prevent_close();
                     let _ = window.hide();
                 } else {

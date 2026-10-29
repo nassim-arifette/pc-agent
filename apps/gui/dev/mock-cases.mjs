@@ -47,4 +47,5 @@ export const scenarios = [
   "?sources=short", "?conversation=empty&turn=orphan", "?history=unavailable&live=fail",
   "?scan=denied", "?scan=fail", "?action=refuse", "?preview=expired", "?routing=stale",
   "?report=none", "?report=quiet", "?report=unsupported", "?report=stale",
+  "?watches=none", "?watches=paused&notifications=disabled",
 ];

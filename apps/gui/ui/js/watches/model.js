@@ -50,3 +50,37 @@ export function formRule(kind, { target, threshold, duration }) {
     default: return null;
   }
 }
+
+const GIB = 1024 ** 3;
+
+/**
+ * The rule Live PC proposes for a selected item, or the closed reason it cannot be watched. The
+ * values are starting points the form shows; nothing persists before its confirmation.
+ */
+export function liveWatch(item) {
+  if (!item) return { reason: "watch.reason.none" };
+  if (item.kind === "resource") {
+    const card = item.card;
+    if (card.resource === "memory" || card.resource === "cpu") {
+      return { rule: { kind: "resource_above", resource: card.resource, threshold_basis_points: 9000, sustained_seconds: 60 } };
+    }
+    if (card.resource === "disk") {
+      const volume = card.volume;
+      if (!volume || volume.kind !== "fixed" || !/^[a-z]:\\$/i.test(volume.root) || !(volume.total_bytes >= GIB)) return { reason: "watch.reason.volume" };
+      const tenth = Math.floor(volume.total_bytes / 10 / GIB) * GIB;
+      return { rule: { kind: "volume_free_below", root: volume.root.toUpperCase(), threshold_bytes: Math.max(GIB, Math.min(10 * GIB, tenth)) } };
+    }
+    if (card.resource === "gpu") {
+      const gpu = card.gpu;
+      if (!Number.isSafeInteger(gpu?.nvml_index) || gpu.temperature?.value == null) return { reason: "watch.reason.gpu" };
+      return { rule: { kind: "gpu_temperature_above", nvml_index: gpu.nvml_index, threshold_celsius: 85, sustained_seconds: 60 } };
+    }
+    return { reason: "watch.reason.battery" };
+  }
+  const name = item.kind === "process" ? item.member?.name : item.app?.name;
+  const named = (item.kind === "process" ? item.member?.named : item.app?.named) !== false;
+  if (!named || typeof name !== "string" || !name.trim() || /[\\/:\p{Cc}]/u.test(name)) return { reason: "watch.reason.unnamed" };
+  const current = (item.kind === "process" ? item.member?.working_set?.value : item.app?.working_set?.value) ?? 0;
+  const threshold = Math.min(2 ** 40, Math.max(64 * MIB, Math.ceil((current * 1.5) / (64 * MIB)) * 64 * MIB));
+  return { rule: { kind: "app_memory_above", executable: name.trim(), threshold_bytes: threshold, sustained_seconds: 60 } };
+}

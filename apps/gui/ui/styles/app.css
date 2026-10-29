@@ -4474,3 +4474,122 @@ details.more > div {
 .report-stale .report-command {
   align-self: stretch;
 }
+
+/* ---------- Watches (C7): rules, alerts and weekly summary ---------- */
+.rail-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bad);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--ground);
+}
+.watch-column {
+  max-width: 860px;
+}
+.watch-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.watch-status:empty {
+  display: none;
+}
+.watch-status p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.watch-phase {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 2px;
+}
+.watch-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.watch-empty {
+  padding: 8px 0;
+}
+.watch-empty p {
+  margin: 0 0 4px;
+}
+.watch-alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.watch-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+}
+.watch-alert.unseen {
+  border-color: var(--warn);
+}
+.watch-alert-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--surface-2, var(--surface));
+}
+.watch-alert.unseen .watch-alert-icon {
+  color: var(--warn);
+}
+.watch-alert-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.watch-summary-list {
+  margin: 0 0 8px;
+  padding-left: 1.2em;
+}
+@container (max-width: 640px) {
+  .watch-alert {
+    flex-wrap: wrap;
+  }
+}
+.watch-form,
+.watch-form .settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.watch-form {
+  width: min(520px, 80vw);
+}
+.watch-form .field > span {
+  font-size: 13px;
+  font-weight: 600;
+}
+.watch-form p {
+  margin: 0;
+}

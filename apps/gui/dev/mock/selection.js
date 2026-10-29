@@ -17,7 +17,7 @@ export function createSelectionFixture({ params, cloud, getPrivacy, nextPreviewS
   }
 
   function sameTarget(a, b) {
-    return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id && a.scope_id === b.scope_id && a.item_ref === b.item_ref && a.inspection_id === b.inspection_id;
+    return a.kind === b.kind && a.resource === b.resource && a.entity_ref === b.entity_ref && a.event_id === b.event_id && a.recording_id === b.recording_id && a.scope_id === b.scope_id && a.item_ref === b.item_ref && a.inspection_id === b.inspection_id && a.alert_id === b.alert_id;
   }
 
   function invalidateStorage() {

@@ -52,10 +52,12 @@ import * as chat from "./chat/view.js";
 import * as history from "./history/view.js";
 import * as live from "./live/view.js";
 import * as storage from "./storage/view.js";
+import * as watches from "./watches/view.js";
+import { onUnseenChange, startWatchRuntime, unseenAlerts } from "./watches/runtime.js";
 import * as settings from "./settings/view.js";
 import * as setup from "./settings/setup.js";
 
-const VIEWS = { chat, history, live, storage, settings, setup };
+const VIEWS = { chat, history, live, storage, watches, settings, setup };
 const narrow = window.matchMedia("(max-width: 900px)");
 
 let app = null;
@@ -302,6 +304,7 @@ const RAIL = [
   { route: "history", icon: "history", label: "nav.history" },
   { route: "live", icon: "activity", label: "nav.live" },
   { route: "storage", icon: "drive", label: "nav.storage" },
+  { route: "watches", icon: "bell", label: "nav.watches" },
 ];
 
 function railButton({ route: name, icon: iconName, label }, extra = null) {
@@ -328,7 +331,10 @@ function renderRail() {
   fill(
     railHost,
     h("span", { class: "rail-mark" }, mark(28)),
-    RAIL.map((item) => railButton(item)),
+    RAIL.map((item) => {
+      const unseen = item.route === "watches" ? unseenAlerts() : 0;
+      return railButton(item, unseen > 0 ? h("span", { class: "rail-badge", "aria-label": t("watches.unseen", { count: unseen }) }, unseen > 99 ? "99+" : String(unseen)) : null);
+    }),
     h("span", { class: "spacer" }),
     railButton({ route: "settings", icon: "sliders", label: "nav.settings" }, tone ? h("span", { class: ["rail-dot", "dot", tone] }) : null),
   );
@@ -502,6 +508,8 @@ async function boot() {
   await connect();
   shareLanguage();
   renderShell();
+  onUnseenChange(() => renderRail());
+  startWatchRuntime().catch(() => {});
   wireEvents();
   subscribe((topic) => {
     if (topic === "info" || topic === "privacy") renderFoot();

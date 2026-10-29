@@ -1,6 +1,6 @@
-// Hash routes: #/chat, #/history, #/live, #/storage, #/settings. The old #/home and #/investigate
+// Hash routes: #/chat, #/history, #/live, #/storage, #/watches, #/settings. The old #/home and #/investigate
 // open the chat. #/setup is a resumable guide, not a primary navigation destination.
-export const ROUTES = ["chat", "history", "live", "storage", "settings"];
+export const ROUTES = ["chat", "history", "live", "storage", "watches", "settings"];
 const ALIASES = { home: "chat", investigate: "chat" };
 
 export function currentRoute() {
