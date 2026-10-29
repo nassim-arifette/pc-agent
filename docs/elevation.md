@@ -239,3 +239,11 @@ launching a process.
 Rustfmt 1.90 and whitespace checks were run in the isolated worktree. Cargo validation is
 centralized in the integration branch. Real UAC acceptance, cross-machine installation and MFT
 test-volume accuracy have not been exercised by this lot; no runtime acceptance is claimed.
+
+## Deeper checks proposed from chat (integration status)
+
+- The chat can propose closed administrator checks (`propose_elevated_check`); results are stored
+  as dated inspections for 24 hours (store schema 9, `elevated_inspections`) and can be selected as
+  evidence in the same thread. The local review card shows what was measured before anything is shared.
+- Integrated and covered by synthetic tests on Linux. Not validated: real UAC prompt, standard
+  account with another administrator, Nebius round trip and EN/FR screenshots (Windows only).
