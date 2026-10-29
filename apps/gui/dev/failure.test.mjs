@@ -86,12 +86,15 @@ test("a failed turn reads its C3 code, or why its start was refused", () => {
   assert.equal(turnFailureText(startFailure(commandError("Cannot start the investigation: os error 8"))), tables.fr["error.start"]);
   assert.equal(turnFailureText(startFailure(commandError({ code: "preview_expired", message: "The preview expired. Open it again for a fresh measurement." }))), tables.fr["failure.preview_expired"]);
   assert.equal(turnFailureText(startFailure(pageFailure("select.conversationGone"))), t("select.conversationGone"));
-  // The English detail stays reachable as a tooltip, never for the page's own sentences.
-  assert.equal(failureDetail(startFailure(commandError({ code: "turn_running", message: "An investigation is already running." }))), "An investigation is already running.");
-  assert.equal(failureDetail({ code: "cancelled", message: "Stopped by the user" }), "Stopped by the user");
+  // Do not leak raw English through accessible title attributes in French mode.
+  assert.equal(failureDetail(startFailure(commandError({ code: "turn_running", message: "An investigation is already running." }))), null);
+  assert.equal(failureDetail({ code: "cancelled", message: "Stopped by the user" }), null);
   assert.equal(failureDetail(startFailure(pageFailure("share.changed"))), null);
   assert.equal(failureDetail(commandError({ code: "unknown", message: "  " })), null);
   assert.equal(failureDetail(null), null);
+  setLanguage("en");
+  assert.equal(failureDetail({ code: "cancelled", message: "Stopped by the user" }), "Stopped by the user");
+  setLanguage("fr");
 });
 
 test("every failure sentence exists in English and French, with the same placeholders", () => {
@@ -135,13 +138,14 @@ async function mock(search) {
   };
 }
 
-/** A French sentence of the dictionary for this code, with the host's English kept as the detail. */
+/** Closed-code French presentation leaves the original error payload unchanged. */
 function assertFrench(error, code, detail) {
   assert.equal(error.code, code);
   const sentence = tables.fr[`failure.${code}`];
   assert.equal(failureText(error), code === "action_refused" ? sentence.replace("{reason}", refusalText(error)) : sentence);
   assert.notEqual(failureText(error), error.message);
-  assert.match(failureDetail(error), detail);
+  assert.equal(failureDetail(error), null);
+  assert.match(error.message, detail);
 }
 
 test("the mock's error switches reject like the host and read in French", async () => {

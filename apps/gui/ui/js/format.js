@@ -12,14 +12,15 @@ export function bytes(value) {
   if (value == null) return "";
   const french = language() === "fr";
   const units = french ? ["Kio", "Mio", "Gio", "Tio", "Pio"] : ["KiB", "MiB", "GiB", "TiB", "PiB"];
-  if (value < 1024) return `${number(value)} ${french ? "o" : "B"}`;
+  const space = french ? "\u00a0" : " ";
+  if (value < 1024) return `${number(value)}${space}${french ? "o" : "B"}`;
   let v = value / 1024;
   let unit = 0;
   while (v >= 1024 && unit < units.length - 1) {
     v /= 1024;
     unit += 1;
   }
-  return `${number(v, unit >= 2 ? 2 : 1)} ${units[unit]}`;
+  return `${number(v, unit >= 2 ? 2 : 1)}${space}${units[unit]}`;
 }
 
 /** 0..1 → "37%" */
@@ -94,5 +95,5 @@ export function clock(unixMs, { seconds = false } = {}) {
 
 /** "Label: value" in English, "Label : value" in French. */
 export function labelled(label, value) {
-  return `${label}${language() === "fr" ? " : " : ": "}${value}`;
+  return `${label}${language() === "fr" ? "\u00a0: " : ": "}${value}`;
 }

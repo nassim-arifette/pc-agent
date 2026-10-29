@@ -1,8 +1,21 @@
 // Display decisions from measured data, independent of the DOM and the bridge.
 import { t } from "../i18n.js";
 import { lowBattery } from "./battery.js";
+import { percent } from "../format.js";
 
 const GiB = 1024 ** 3;
+
+/** The home line always keeps all three measurements; missing readings never become zero. */
+export function homeStatus(dash) {
+  const ratio = (value) => Number.isFinite(value) ? percent(value) : t("value.unknown");
+  const system = (dash?.volumes || []).find((v) => /^C:[\\/]?$/i.test(v.root));
+  const cpu = dash?.cpu?.busy;
+  return [
+    t("home.memory", { value: ratio(dash?.memory?.used_ratio) }),
+    t("home.cpu", { value: ratio(cpu?.status === "ok" && Number.isFinite(cpu.value) ? cpu.value / 10000 : null) }),
+    t("home.drive", { value: ratio(Number.isFinite(system?.free_ratio) ? 1 - system.free_ratio : null) }),
+  ].join(" · ");
+}
 
 /** A drive is "almost full" under 5 % or 5 GiB free: a hint for the status line, not a finding. */
 export function almostFull(volume) {

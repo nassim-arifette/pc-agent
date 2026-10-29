@@ -10,7 +10,7 @@
 // TOUR_BASE and TOUR_DEBUG_PORT override the page URL and Chrome's debugging port, for a server
 // on another port (e.g. when several worktrees are reviewed at once).
 import { launch } from "./cdp.mjs";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const out = process.argv[2] || "tour";
@@ -20,7 +20,33 @@ mkdirSync(out, { recursive: true });
 const base = process.env.TOUR_BASE || "http://127.0.0.1:5173/ui/index.html";
 const port = Number(process.env.TOUR_DEBUG_PORT) || undefined;
 const { proc, page } = await launch({ ...(chrome ? { chrome } : {}), ...(port ? { port } : {}) });
-const shot = (name) => page.shot(join(out, `${name}.png`));
+const snapshots = [];
+const shot = async (name) => {
+  if (process.env.TOUR_AUDIT) {
+    const texts = await page.eval(`(() => {
+      const texts = [];
+      const visible = el => el.getClientRects().length && !el.closest('[hidden], [inert]') && getComputedStyle(el).visibility !== 'hidden';
+      const owner = el => el.closest('[data-i18n-source]')?.dataset.i18nSource || 'interface';
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const el = walker.currentNode.parentElement;
+        if (!el || !visible(el) || el.closest('script, style, pre, code')) continue;
+        const text = walker.currentNode.textContent.trim();
+        if (text) texts.push({ text, source: 'text', context: el.className?.toString() || el.tagName, owner: owner(el) });
+      }
+      for (const el of document.querySelectorAll('[aria-label], [title], [placeholder], option:checked')) {
+        if (!visible(el)) continue;
+        for (const attr of ['aria-label', 'title', 'placeholder']) {
+          const text = el.getAttribute(attr);
+          if (text) texts.push({ text, source: attr, context: el.className?.toString() || el.tagName, owner: owner(el) });
+        }
+      }
+      return texts;
+    })()`);
+    snapshots.push({ name, language, texts });
+  }
+  await page.shot(join(out, `${name}.png`));
+};
 const prefs = JSON.stringify({ language, mode: "cloud" });
 // The pill's words for a critically low battery (health.battery in ui/js/i18n.js).
 const lowBatteryPill = language === "fr" ? "Batterie très faible" : "Battery critically low";
@@ -32,9 +58,8 @@ const quietPage = new URL("styles/tokens.css", base).href;
 const summaryAnswer = "document.querySelector('.panel.open .selection-summary .summary-answer:not(.draft)') && document.querySelector('.panel.open .selection-summary .verified-line, .panel.open .selection-summary .unverified')";
 try {
   await page.viewport(1280, 800);
-  for (const dark of [false, true]) {
-    const theme = dark ? "dark" : "light";
-    await page.scheme(dark);
+  for (const theme of ["light", "dark", "high-contrast"]) {
+    await page.scheme(theme === "dark", theme === "high-contrast", theme === "high-contrast");
     await page.goto(quietPage);
     await page.eval(`localStorage.setItem('pcagent.prefs.v1', ${JSON.stringify(prefs)}); sessionStorage.clear()`);
     await page.goto(`${base}?cloud=ready&privacy=complete#/chat`);
@@ -219,9 +244,24 @@ try {
     await page.eval("document.querySelector('.storage-admin').scrollIntoView({ block: 'start' })");
     await page.sleep(300);
     await shot(`26-storage-admin-${theme}`);
+    // These commands are served only by dev/mock.js; no OS action or UAC is performed.
+    await page.goto(`${base}?cloud=ready&privacy=complete&tour=actions#/chat`);
+    await page.waitFor("document.querySelector('.welcome .suggestion')");
+    await page.type(".ask textarea", language === "fr" ? "Que puis-je supprimer pour faire de la place ?" : "What can I clean to free space?");
+    await page.click(".send");
+    await page.waitFor("document.querySelector('.action-card .btn')", 30000);
+    await page.eval("document.querySelector('.action-cards').scrollIntoView({block: 'center'})");
+    await shot(`27-action-proposed-${theme}`);
+    await page.click(".action-card .btn", 0);
+    await page.waitFor("document.querySelector('.dialog .plan-targets')");
+    await shot(`28-action-review-${theme}`);
+    await page.click(".dialog .btn-primary");
+    await page.waitFor("document.querySelector('.action-card.is-completed')", 10000);
+    await shot(`29-action-result-${theme}`);
   }
   await page.eval("localStorage.removeItem('pcagent.prefs.v1')");
 } finally {
+  if (process.env.TOUR_AUDIT) writeFileSync(join(out, "rendered-text.json"), JSON.stringify(snapshots, null, 2));
   const problems = page.logs.filter((l) => /exception|error/i.test(l) && !l.includes("favicon"));
   console.log(problems.length ? problems.join("\n") : "No page errors.");
   proc.kill();

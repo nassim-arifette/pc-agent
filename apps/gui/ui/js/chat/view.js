@@ -2,16 +2,17 @@
 // answers. Citations, the PC status and storage links open the context panel instead of
 // crowding the answer.
 import { h, fill, announce } from "../dom.js";
+import { streamAnnouncer } from "../stream-announcer.js";
 import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
-import { citationFacts, findingFacts, findingNextStep, findingSummary, targetText } from "../phrases.js";
+import { citationFacts, findingFacts, findingNextStep, findingSummary, targetText, volumeComparison } from "../phrases.js";
 import { markdown, labelCitations } from "../markdown.js";
 import { mark } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "./composer.js";
 import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
 import { savedImage } from "./images.js";
 import { showSource } from "../panel.js";
-import { health } from "../live/model.js";
+import { health, homeStatus } from "../live/model.js";
 import { numbering, citationTitle, toolLabel } from "./citations.js";
 import { adminChecksCard } from "../elevation/checks.js";
 import { capable } from "../capabilities.js";
@@ -265,7 +266,7 @@ function errorCallout(report) {
 function writtenAnswer(report, index) {
   const a = report.answer;
   const numbers = numbering(a);
-  return h("div", { class: "answer-text" }, markdown(a.text, (reference) => showSource(index, reference), (reference) => numbers.get(reference) ?? reference, webDescriber(a)));
+  return h("div", { class: "answer-text", "data-i18n-source": "model" }, markdown(a.text, (reference) => showSource(index, reference), (reference) => numbers.get(reference) ?? reference, webDescriber(a)));
 }
 
 /** A local analysis: the rules' best finding, kept short. */
@@ -329,9 +330,14 @@ function outcomeText(plan) {
   if (plan.decision === "running") return t("action.running");
   if (plan.decision === "declined") return t("action.declined");
   if (plan.decision === "refused") return `${t("action.refused")} ${refusalText(plan.error)}`;
-  const gained = plan.outcome?.verification?.volume?.gained_bytes;
+  const volume = plan.outcome?.verification?.volume;
+  const gained = volume?.gained_bytes;
   const base = t(`action.outcome.${plan.decision}`);
-  return gained ? `${base} ${t("action.gained", { size: bytes(gained) })}` : base;
+  return [
+    base,
+    Number.isFinite(gained) && gained >= 0 ? t("action.gained", { size: bytes(gained) }) : "",
+    volumeComparison(volume),
+  ].filter(Boolean).join(" ");
 }
 
 async function review(turn, plan) {
@@ -592,10 +598,12 @@ export function mount(page) {
   };
 
   let suggestionsHost = null;
+  let homeStatusHost = null;
   let suggestionsDrive = undefined;
 
   /** Suggested questions; when a drive is almost full, asking about it comes second. */
   const renderSuggestions = () => {
+    if (homeStatusHost) homeStatusHost.textContent = homeStatus(state.live.dash);
     const drive = health(state.live.dash).drive || null;
     if (!suggestionsHost || drive === suggestionsDrive) return;
     suggestionsDrive = drive;
@@ -623,10 +631,11 @@ export function mount(page) {
     liveKey = "";
     box = composer({ autofocus: true, big: true });
     suggestionsHost = h("div", { class: "suggestions" });
+    homeStatusHost = h("p", { class: "home-status" });
     suggestionsDrive = undefined;
     fill(
       column,
-      h("div", { class: "welcome" }, mark(36), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost),
+      h("div", { class: "welcome" }, mark(36), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
     );
     renderSuggestions();
     fill(bottom, footnote);
@@ -683,6 +692,10 @@ export function mount(page) {
   };
 
   let draftHost = null;
+  const speech = streamAnnouncer((text) => {
+    const region = document.getElementById("stream-announcer");
+    if (region) region.textContent = text;
+  });
 
   /**
    * The answer while the model writes it: plain text with numbered chips, replaced by the checked
@@ -697,6 +710,7 @@ export function mount(page) {
       fill(draftHost);
       return;
     }
+    speech.update(inv.id, inv.draft);
     const note = inv.checking ? (inv.switchedTo ? t("chat.draft.switched", { model: modelName(inv.switchedTo) }) : t("chat.draft.checking")) : t("chat.draft");
     fill(
       draftHost,
@@ -708,6 +722,7 @@ export function mount(page) {
   const renderLive = () => {
     const inv = liveInv();
     if (!inv) {
+      speech.finish();
       window.clearInterval(elapsedTimer);
       liveKey = "";
       draftHost = null;
@@ -810,6 +825,7 @@ export function mount(page) {
   return () => {
     window.clearInterval(elapsedTimer);
     box?.dispose();
+    speech.dispose();
     window.removeEventListener("pcagent:mode", renderFootnote);
     disposeAdminCards();
     unsubscribe();
