@@ -1,7 +1,7 @@
 //! Dispatch parsed commands after validating the shared routing configuration.
 use crate::args::{Args, Command};
 use crate::{actions, elevation, history, inspection, investigation, provider, storage};
-use crate::{model_routing, Result};
+use crate::{model_routing, report, schedule, Result};
 
 pub(super) fn run(args: Args) -> Result<u8> {
     let routing = model_routing::load(
@@ -11,6 +11,8 @@ pub(super) fn run(args: Args) -> Result<u8> {
         args.routing_calibration.as_deref(),
     )?;
     match args.command {
+        Command::Report(options) => report::run(options),
+        Command::Schedule { action } => schedule::run(action),
         Command::RestoreStartup(options) => actions::restore_startup(options, args.json),
         Command::ElevatedInspect(options) => elevation::inspect(options),
         Command::Models(options) => provider::models(options, args.json),

@@ -9,6 +9,8 @@ mod investigation;
 mod local;
 mod model_routing;
 mod provider;
+mod report;
+mod schedule;
 mod storage;
 mod storage_view;
 #[cfg(test)]

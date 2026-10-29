@@ -41,6 +41,13 @@ pub(super) struct Args {
 }
 #[derive(Subcommand)]
 pub(super) enum Command {
+    /// Write today's local report (one measurement, local rules; nothing is sent anywhere).
+    Report(Report),
+    /// Manage the optional daily scheduled report, which runs even when the app is closed.
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
     /// Review restoring one startup entry previously disabled by a completed local action.
     RestoreStartup(RestoreStartup),
     /// Prepare one fixed read-only elevated inspection; execution requires local approval.
@@ -258,4 +265,27 @@ fn parse_trace_duration(text: &str) -> std::result::Result<u8, String> {
         "60" => Ok(60),
         _ => Err("ETW duration must be 30 or 60 seconds.".into()),
     }
+}
+
+#[derive(clap::Args)]
+pub(super) struct Report {
+    /// Marks a run started by the scheduled task.
+    #[arg(long)]
+    pub(super) scheduled: bool,
+    /// Write here instead of the private application directory.
+    #[arg(long)]
+    pub(super) out_dir: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+pub(super) enum ScheduleAction {
+    /// Show whether the daily task is installed.
+    Status,
+    /// Install the daily task for this user only (no administrator, no network).
+    Enable {
+        #[arg(long, default_value = "09:00")]
+        time: String,
+    },
+    /// Remove the daily task.
+    Disable,
 }
