@@ -9,6 +9,79 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Serialize)]
+pub struct ReviewOptions {
+    pub tasks: Vec<ElevatedTask>,
+    pub unavailable: Vec<&'static str>,
+    pub process_targets_omitted: usize,
+}
+
+/// Resolve targets on this PC. The proposal supplies family names, never paths or process IDs.
+pub fn review_options(
+    volumes: &[crate::view::VolumeView],
+    snapshot: &pcagent_shared::Snapshot,
+    battery: bool,
+) -> ReviewOptions {
+    use pcagent_inspect::elevation::{system, DriveLetter};
+    let mut tasks = vec![
+        ElevatedTask::SystemCaches,
+        ElevatedTask::ShadowStorage,
+        ElevatedTask::DiskReliability,
+    ];
+    let mut unavailable = Vec::new();
+    if battery {
+        tasks.push(ElevatedTask::BatteryEnergy);
+    } else {
+        unavailable.push("battery_energy");
+    }
+    let mut letters = std::collections::BTreeSet::new();
+    for volume in volumes {
+        if volume.kind != pcagent_shared::VolumeKind::Fixed
+            || !volume
+                .filesystem
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("NTFS"))
+        {
+            continue;
+        }
+        if let Some(letter) = volume.root.strip_suffix(":\\") {
+            if let Ok(drive) = DriveLetter::parse(letter) {
+                if letters.insert(drive.letter()) {
+                    tasks.push(ElevatedTask::MftInventory { volume: drive });
+                }
+            }
+        }
+    }
+    if letters.is_empty() {
+        unavailable.push("mft_inventory");
+    }
+    let mut pids = std::collections::BTreeSet::new();
+    let eligible: Vec<_> = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.pid > 0 && p.creation_time_filetime > 0 && pids.insert(p.pid))
+        .map(|p| system::ProcessImageTarget {
+            pid: p.pid,
+            creation_time_filetime: p.creation_time_filetime,
+        })
+        .collect();
+    let process_targets_omitted = eligible.len().saturating_sub(system::MAX_PROCESS_IMAGES);
+    let targets: Vec<_> = eligible
+        .into_iter()
+        .take(system::MAX_PROCESS_IMAGES)
+        .collect();
+    if targets.is_empty() {
+        unavailable.push("process_images");
+    } else {
+        tasks.push(ElevatedTask::ProcessImages { targets });
+    }
+    ReviewOptions {
+        tasks,
+        unavailable,
+        process_targets_omitted,
+    }
+}
+
 /// C4 stays at the existing JSON level; the optional metadata tree is local UI data only.
 #[derive(Serialize)]
 pub struct InspectionResult {
@@ -646,6 +719,58 @@ mod tests {
         collections::BTreeMap,
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn review_resolves_all_fixed_ntfs_drives_and_only_known_process_identities() {
+        use pcagent_inspect::elevation::DriveLetter;
+        use pcagent_shared::{ProcessInstance, Snapshot, VolumeKind};
+        let volume = |root: &str, filesystem: &str, kind| crate::view::VolumeView {
+            root: root.into(),
+            kind,
+            filesystem: Some(filesystem.into()),
+            total_bytes: 100,
+            free_bytes: 50,
+            free_ratio: 0.5,
+        };
+        let volumes = [
+            volume("C:\\", "NTFS", VolumeKind::Fixed),
+            volume("D:\\", "ntfs", VolumeKind::Fixed),
+            volume("C:\\", "NTFS", VolumeKind::Fixed),
+            volume("E:\\", "NTFS", VolumeKind::Removable),
+            volume("F:\\", "ReFS", VolumeKind::Fixed),
+            volume("C:\\private\\", "NTFS", VolumeKind::Fixed),
+        ];
+        let mut snapshot = Snapshot::empty("test");
+        let process = |pid, created| ProcessInstance {
+            pid,
+            creation_time_filetime: created,
+            entity_ref: "proc-local".into(),
+            boot_id: None,
+            executable_name: None,
+        };
+        snapshot.processes = vec![
+            process(7, 100),
+            process(7, 100),
+            process(8, 0),
+            process(0, 100),
+        ];
+        let options = review_options(&volumes, &snapshot, false);
+        assert_eq!(options.tasks.len(), 6);
+        for letter in ["C", "D"] {
+            assert!(options.tasks.contains(&ElevatedTask::MftInventory {
+                volume: DriveLetter::parse(letter).unwrap()
+            }));
+        }
+        assert_eq!(options.unavailable, ["battery_energy"]);
+        let Some(ElevatedTask::ProcessImages { targets }) = options.tasks.last() else {
+            panic!()
+        };
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].pid, 7);
+        let empty = review_options(&[], &Snapshot::empty("test"), true);
+        assert_eq!(empty.unavailable, ["mft_inventory", "process_images"]);
+        assert!(empty.tasks.contains(&ElevatedTask::BatteryEnergy));
+    }
 
     #[derive(Default)]
     struct Counters {

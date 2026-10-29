@@ -143,6 +143,7 @@ pub fn run() {
             settings_commands::cloud_models,
             settings_commands::open_nebius_console,
             elevation_commands::elevation_prepare,
+            elevation_commands::elevation_options,
             elevation_commands::elevation_status,
             elevation_commands::elevation_run,
             elevation_commands::elevation_cancel,

@@ -16,6 +16,7 @@ import { runSelection } from "../selection/actions.js";
 import { actionBar, selectionKeys } from "../actionbar.js";
 import { currentRoute } from "../router.js";
 import { failureDetail, failureText } from "../failure.js";
+import { adminChecksCard } from "../elevation/checks.js";
 
 // Kept across visits so coming back to the view shows the same selection.
 let selected = null;
@@ -387,6 +388,7 @@ function applications(item) {
 }
 
 let host = null;
+let adminCard = null;
 
 function select(next) {
   selected = next;
@@ -408,7 +410,7 @@ function render() {
   );
   const head = h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("livepage.title")), h("p", { class: "page-sub" }, t("livepage.sub"))), status);
   if (!dash) {
-    fill(host, head, live.error ? h("p", { class: "note", title: failureDetail(live.error) }, failureText(live.error, "failure.live_unavailable")) : h("div", { class: "skeleton", style: { height: "220px" } }));
+    fill(host, head, live.error ? h("p", { class: "note", title: failureDetail(live.error) }, failureText(live.error, "failure.live_unavailable")) : h("div", { class: "skeleton", style: { height: "220px" } }), adminCard?.el);
     return;
   }
   const cards = resources(dash, live.history);
@@ -430,12 +432,14 @@ function render() {
       ),
       state.panel.open && state.panel.tab === "selection" ? null : inspector(item),
     ),
+    adminCard?.el,
   );
   if (focusedKey) host.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus({ preventScroll: true });
 }
 
 export function mount(page) {
   host = page;
+  adminCard = adminChecksCard();
   const stopWatching = watchActivity(() => currentRoute() === "live");
   // E explains and Enter investigates the selected item; Escape clears the selection.
   const stopKeys = selectionKeys({
@@ -451,6 +455,8 @@ export function mount(page) {
     if (topic === "live" || topic === "panel") render();
   });
   return () => {
+    adminCard?.dispose();
+    adminCard = null;
     host = null;
     stopWatching();
     unsubscribe();

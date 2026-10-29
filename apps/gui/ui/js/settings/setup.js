@@ -9,8 +9,10 @@ import { leaveOnboarding } from "./onboarding.js";
 import { aiCard, privacyCard, clearCloudDraft } from "./view.js";
 import { button, segmented, toast } from "../ui.js";
 import { keepFocus } from "../actionbar.js";
+import { adminChecksCard } from "../elevation/checks.js";
 
 export function mount(page) {
+  const adminCard = adminChecksCard();
   let leaving = false;
   const leave = async (choice) => {
     if (leaving) return;
@@ -49,6 +51,7 @@ export function mount(page) {
         h("p", { class: "hint" }, t("onboarding.connect.steps")),
         aiCard()),
       privacyCard(),
+      adminCard.el,
       h("section", { class: "card card-pad" },
         h("h2", { class: "card-title" }, t("onboarding.continue.title")),
         h("p", { class: "hint" }, t("onboarding.continue.note")),
@@ -65,5 +68,5 @@ export function mount(page) {
   const off = subscribe((topic) => {
     if (["info", "connection-test"].includes(topic)) render();
   });
-  return () => { off(); clearCloudDraft(page); };
+  return () => { off(); adminCard.dispose(); clearCloudDraft(page); };
 }

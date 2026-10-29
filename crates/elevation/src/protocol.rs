@@ -102,9 +102,14 @@ impl ElevatedTask {
                 return Err(ElevationError::InvalidRequest);
             }
             for (index, task) in tasks.iter().enumerate() {
-                if matches!(
+                if !matches!(
                     task,
-                    Self::DeepAnalysis { .. } | Self::PerformanceTrace { .. }
+                    Self::SystemCaches
+                        | Self::MftInventory { .. }
+                        | Self::ShadowStorage
+                        | Self::DiskReliability
+                        | Self::ProcessImages { .. }
+                        | Self::BatteryEnergy
                 ) || tasks[..index]
                     .iter()
                     .any(|previous| match (previous, task) {

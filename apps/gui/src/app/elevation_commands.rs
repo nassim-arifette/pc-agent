@@ -7,6 +7,24 @@ use serde::Serialize;
 use std::time::Duration;
 use tauri::State;
 
+#[tauri::command]
+pub(super) async fn elevation_options(
+    state: State<'_, AppState>,
+) -> Result<elevation::ReviewOptions, Failure> {
+    if !lock(&state.probes).elevated_helper {
+        return Err("The administrator helper is not available on this PC.".into());
+    }
+    let dashboard =
+        super::measurements::ask_measure(&state, super::state::Measure::Dashboard).await?;
+    let snapshot = super::measurements::ask_measure(&state, super::state::Measure::Preview).await?;
+    let battery = lock(&state.probes).battery != Some(false);
+    Ok(elevation::review_options(
+        &dashboard.volumes,
+        &snapshot,
+        battery,
+    ))
+}
+
 /// Prepare a fixed task for local review without opening the Windows consent dialog.
 #[tauri::command]
 pub(super) async fn elevation_prepare(

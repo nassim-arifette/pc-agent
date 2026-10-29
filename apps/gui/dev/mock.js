@@ -54,7 +54,7 @@ const selection = createSelectionFixture({
 const live = createLiveFixture({ params, publishSource: selection.publishSource, cloud: provider.cloud });
 const history = createHistoryFixture({ params, batteryMode: live.batteryMode, publishSource: selection.publishSource });
 const storage = createStorageFixture({ params, emit, publishSource: selection.publishSource, invalidateStorage: selection.invalidateStorage });
-const elevation = createElevationFixture(params);
+const elevation = createElevationFixture(params, selection.publishSource);
 
 export function createMock() {
   const scan = storage.createCommands();
