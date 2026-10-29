@@ -105,7 +105,8 @@ pub fn volumes(inventory: &[pcagent_shared::VolumeInfo]) -> Vec<VolumeSummary> {
 pub struct Report {
     pub schema_version: u32,
     pub generated_at_unix_ms: u64,
-    /// UTC calendar day of the run, `YYYY-MM-DD`; also the file name.
+    /// Local calendar day of the run, `YYYY-MM-DD` (UTC where the time zone is unknown); also
+    /// the file name.
     pub date: String,
     pub scheduled: bool,
     pub points_to_review: usize,
@@ -125,6 +126,16 @@ pub struct Report {
 /// `YYYY-MM-DD` (UTC) from a Unix time in milliseconds.
 pub fn date_stamp(unix_ms: u64) -> String {
     format_utc_minute(unix_ms)[..10].to_owned()
+}
+
+/// The calendar day at `unix_ms` shifted by a UTC offset in minutes; UTC without one.
+pub fn local_date(unix_ms: u64, offset_minutes: Option<i32>) -> String {
+    let shifted = match offset_minutes {
+        Some(minutes) if minutes >= 0 => unix_ms.saturating_add(minutes as u64 * 60_000),
+        Some(minutes) => unix_ms.saturating_sub(minutes.unsigned_abs() as u64 * 60_000),
+        None => unix_ms,
+    };
+    date_stamp(shifted)
 }
 
 pub fn needs_attention(finding: &Finding) -> bool {
@@ -257,8 +268,12 @@ pub fn collect(database: Option<&Path>, now: u64, scheduled: bool) -> Report {
             .unwrap_or_default();
         (findings, drives)
     });
+    let date = local_date(now, pcagent_telemetry::local_utc_offset_minutes(now));
     let Ok((findings, drives)) = measured else {
-        return failed(now, scheduled, "measurement_failed");
+        return Report {
+            date,
+            ..failed(now, scheduled, "measurement_failed")
+        };
     };
     let history = match database.filter(|path| path.is_file()) {
         None => (
@@ -283,7 +298,10 @@ pub fn collect(database: Option<&Path>, now: u64, scheduled: bool) -> Report {
             ),
         },
     };
-    with_volumes(assemble(findings, history, now, scheduled), drives)
+    Report {
+        date,
+        ..with_volumes(assemble(findings, history, now, scheduled), drives)
+    }
 }
 
 struct Words {

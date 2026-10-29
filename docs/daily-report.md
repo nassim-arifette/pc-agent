@@ -21,7 +21,7 @@ Contract: `docs/plan.md`, chantier 17 (plan PR #117).
 
 `%APPDATA%\pcagent\reports\rapport-YYYY-MM-DD.json` (schema 1) and `.md`, in the language the
 window last reported (`watch_language_set`), else the language of Windows. A rerun on the same
-UTC day replaces that day; the 30 newest days are kept. Writes are atomic. The Markdown renders
+local day replaces that day; the 30 newest days are kept. Writes are atomic. The Markdown renders
 findings from closed phrases and alerts from closed rule targets: no user name, command line or
 profile path.
 
@@ -37,7 +37,9 @@ and removing it are journaled (`PreState::ScheduledReport`) in the local action 
 restoration is removal. The settings row reads the state back from Windows every time,
 including the command the task starts; a task that starts another copy (an older install, or the
 CLI) is shown with a Repair button. The first day is yesterday in UTC, so the first run is the
-next occurrence of the chosen local time. Report file names use the UTC day.
+next occurrence of the chosen local time. Report file names use the local day (Windows' time
+zone, daylight saving included), so a report written just after local midnight never replaces
+the previous day's.
 
 ## Surfaces
 
@@ -49,8 +51,7 @@ next occurrence of the chosen local time. Report file names use the UTC day.
   Settings > Daily report > Notify me turns it off (`reports\settings.json`, local only).
 - Removal: turning the switch off, `pcagent schedule disable`, or
   `pcagent-gui.exe --remove-scheduled-report` (fixed argument, journaled, refused when elevated).
-  PC Agent ships without an installer today; an installer's uninstall step should run the last
-  command for each account that used it.
+  The per-user installer's uninstall step runs the last command ([installer.md](installer.md)).
 - Tauri commands: `report_schedule_get`, `report_schedule_set`, `report_latest`,
   `report_run_now`, `report_reveal`, `report_notify_set`. Mock:
   `?report=none|quiet|unsupported|stale|failed`.

@@ -298,3 +298,14 @@ fn notification_setting_defaults_on_and_survives_a_damaged_file() {
     assert_eq!(latest(&dir).unwrap().unwrap().date, "2026-10-29");
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn the_file_day_is_the_local_day_around_midnight() {
+    // 2026-10-29 23:30 UTC is already the 30th in Paris (UTC+1) and still the 29th in Montreal.
+    let late = OCT_29 + 23 * 3_600_000 + 30 * 60_000;
+    assert_eq!(local_date(late, Some(60)), "2026-10-30");
+    assert_eq!(local_date(late, Some(-240)), "2026-10-29");
+    assert_eq!(local_date(late, None), "2026-10-29");
+    // 00:30 local in Paris summer time (UTC+2) is the previous UTC day.
+    assert_eq!(local_date(OCT_29 - 90 * 60_000, Some(120)), "2026-10-29");
+}

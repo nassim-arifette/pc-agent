@@ -11,7 +11,8 @@ the model suggests changing runs only after you click.
 
 *All screenshots show the interface running on the design mock's synthetic data, not a real PC.*
 
-This repository is a hackathon submission: an unsigned Windows build without an installer, under
+This repository is a hackathon submission: an unsigned Windows build (the release has no installer;
+a per-user one can be built from source, untested), under
 the MIT license. Bring your own Nebius API key, or use the local mode without AI. Jump to
 [Install](#install), [For judges](#for-judges),
 [How Nemotron is used](#how-nemotron-and-nebius-token-factory-are-used), [Privacy](#privacy) or
@@ -140,7 +141,8 @@ page excerpt.
    `v0.1.1`; each release names the commit it was built from and lists SHA-256 checksums), and
    keep them in the same folder: the app only launches the helper that sits next to it. `pcagent.exe` is
    the optional command line and `pcagent-eval.exe` the evaluation tool
-   ([docs/eval.md](docs/eval.md)). There is no installer.
+   ([docs/eval.md](docs/eval.md)). The release has no installer; a per-user installer can be built
+   from source ([docs/installer.md](docs/installer.md)) but has not been tested yet.
 2. The executables are not code-signed, so on first launch Microsoft Defender SmartScreen shows
    *Windows protected your PC*: click **More info**, then **Run anyway**. You can instead open
    each file's Properties and tick **Unblock** before the first launch. For the same reason,
@@ -404,7 +406,8 @@ Details and the second-PC checklist: [docs/validation.md](docs/validation.md).
   PC.
 - **Interface:** some texts produced by the core, such as findings and coverage notes, stay in
   English in the French interface; screen readers and high-contrast mode are not validated.
-- **Distribution:** no installer, no automatic update, no code signing; the keys file is plain text
+- **Distribution:** a per-user installer can be built ([docs/installer.md](docs/installer.md)) but
+  has not been tested yet; no automatic update, no code signing; the keys file is plain text
   protected by your Windows profile.
 
 ## Documentation
