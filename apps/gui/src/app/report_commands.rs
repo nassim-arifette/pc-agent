@@ -4,7 +4,6 @@ use crate::daily_report::{self, ReportView, ScheduleView};
 use crate::failure::{self, Code, Failure};
 use pcagent_actions::scheduled_report::{self as task, WindowsScheduler};
 use pcagent_actions::Journal;
-use std::path::Path;
 
 fn program() -> Result<std::path::PathBuf, Failure> {
     std::env::current_exe().map_err(failure::schedule)
@@ -85,10 +84,8 @@ pub(super) async fn report_run_now() -> Result<ReportView, Failure> {
 pub(super) fn report_reveal() -> Result<(), Failure> {
     let dir = daily_report::reports_dir()
         .ok_or_else(|| Failure::new(Code::ReportFailed, "The APPDATA folder is unknown."))?;
-    let report = pcagent_report::latest(&dir)
+    let (path, _) = pcagent_report::latest_file(&dir)
         .map_err(failure::report)?
         .ok_or_else(|| Failure::new(Code::ReportFailed, "No report has been written yet."))?;
-    let path = dir.join(format!("rapport-{}.md", report.date));
-    pcagent_actions::show_in_explorer(Path::new(&path))
-        .map_err(|e| Failure::new(Code::OpenFailed, e.detail))
+    pcagent_actions::show_in_explorer(&path).map_err(|e| Failure::new(Code::OpenFailed, e.detail))
 }

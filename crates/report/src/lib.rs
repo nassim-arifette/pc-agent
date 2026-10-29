@@ -421,12 +421,19 @@ pub fn write(dir: &Path, report: &Report, language: Language) -> io::Result<Path
         &dir.join(format!("{stem}.md")),
         markdown(report, language).as_bytes(),
     )?;
-    rotate(dir)?;
+    // Removing old days is housekeeping: today's report is already written either way.
+    let _ = rotate(dir);
     Ok(json)
 }
 
 /// The newest readable report, bounded in size; a damaged newest file is skipped.
 pub fn latest(dir: &Path) -> io::Result<Option<Report>> {
+    Ok(latest_file(dir)?.map(|(_, report)| report))
+}
+
+/// The newest readable report with the path of its Markdown copy. The path comes from the
+/// validated file name, never from the report's own content.
+pub fn latest_file(dir: &Path) -> io::Result<Option<(PathBuf, Report)>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -453,7 +460,8 @@ pub fn latest(dir: &Path) -> io::Result<Option<Report>> {
         }
         if let Ok(report) = serde_json::from_str::<Report>(&text) {
             if report.schema_version == SCHEMA_VERSION {
-                return Ok(Some(report));
+                let stem = day_of(name).unwrap_or_default();
+                return Ok(Some((dir.join(format!("{stem}.md")), report)));
             }
         }
     }

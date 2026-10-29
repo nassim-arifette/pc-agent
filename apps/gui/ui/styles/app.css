@@ -4372,3 +4372,87 @@ details.more > div {
   flex-direction: column;
   gap: 4px;
 }
+
+/* ---------- Daily report (chantier 17): home card and settings row ---------- */
+.report-home {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.report-home-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.report-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  flex: none;
+}
+.report-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.report-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.report-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.report-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.report-item svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--warn);
+}
+.report-actions,
+.report-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.report-time {
+  width: auto;
+  min-width: 7.5em;
+}
+.report-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.report-detail:empty {
+  display: none;
+}
+.report-command {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+}
+.report-latest {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}

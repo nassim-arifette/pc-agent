@@ -14,6 +14,7 @@ import { modelName } from "../chat/models.js";
 import { REASONING, refreshRouting } from "../chat/picker.js";
 import { webSettingsCard } from "../chat/web.js";
 import { voiceSettingsCard } from "./voice.js";
+import { dailyReportCard } from "../report/schedule.js";
 import { createCloudCheck, cloudError, cloudModelSelection } from "./onboarding.js";
 import { navigate } from "../router.js";
 import { keepFocus } from "../actionbar.js";
@@ -424,16 +425,19 @@ function aboutCard() {
 export function mount(page) {
   let web = null;
   let voice = null;
+  let report = null;
   const render = () => {
     voice?.dispose();
+    report?.dispose();
     voice = voiceSettingsCard();
+    report = dailyReportCard();
     web = webSettingsCard();
     keepFocus(page, () => fill(
       page,
       h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("settings.title")), h("p", { class: "page-sub" }, t("settings.sub")))),
       h("div", { class: "stack settings-column" },
         h("section", { class: "card card-pad" }, h("h2", { class: "card-title" }, t("onboarding.title")), h("p", { class: "hint" }, t("onboarding.resume.note")), button(t("onboarding.resume"), { onClick: () => navigate("setup") })),
-        aiCard(), privacyCard(), voice.el, web.el, dataCard(), appearanceCard(render), aboutCard()),
+        aiCard(), privacyCard(), voice.el, web.el, dataCard(), report.el, appearanceCard(render), aboutCard()),
     ));
   };
   render();
@@ -447,6 +451,7 @@ export function mount(page) {
   });
   return () => {
     voice?.dispose();
+    report?.dispose();
     unsubscribe();
     clearCloudDraft(page);
   };

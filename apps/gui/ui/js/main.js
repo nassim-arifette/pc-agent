@@ -16,8 +16,8 @@
 // A view that never calls setViewBar keeps the full width, as before.
 import { h, fill } from "./dom.js";
 import { icon } from "./icons.js";
-import { t } from "./i18n.js";
-import { connect } from "./api.js";
+import { t, language } from "./i18n.js";
+import { call, connect } from "./api.js";
 import { loadPrefs, getPrefs, setPref } from "./prefs.js";
 import { shouldOfferOnboarding } from "./settings/onboarding.js";
 import {
@@ -446,8 +446,15 @@ function route(force = false) {
   if (historyHost) fill(historyHost, historyView());
 }
 
+/** Windows notifications and the daily report are written without this page: they use the
+ * language the page last reported. */
+function shareLanguage() {
+  call("watch_language_set", { language: language() }).catch(() => {});
+}
+
 /** Redraws everything, e.g. after the language changes. */
 function redraw() {
+  shareLanguage();
   mountToken += 1;
   unmount?.();
   unmount = null;
@@ -493,6 +500,7 @@ async function boot() {
   const initialHash = window.location.hash;
   loadPrefs();
   await connect();
+  shareLanguage();
   renderShell();
   wireEvents();
   subscribe((topic) => {

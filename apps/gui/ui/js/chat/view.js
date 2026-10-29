@@ -15,6 +15,7 @@ import { showSource } from "../panel.js";
 import { health, homeStatus } from "../live/model.js";
 import { numbering, citationTitle, toolLabel } from "./citations.js";
 import { adminChecksCard } from "../elevation/checks.js";
+import { homeReportCard } from "../report/home.js";
 import { capable } from "../capabilities.js";
 import { button, copyText, dialog, toast } from "../ui.js";
 import { call } from "../api.js";
@@ -633,11 +634,13 @@ export function mount(page) {
     suggestionsHost = h("div", { class: "suggestions" });
     homeStatusHost = h("p", { class: "home-status" });
     const adminCard = adminChecksCard();
-    adminCards.push(adminCard);
+    const reportCard = homeReportCard({ ask: (text) => box.setText(text) });
+    adminCards.push(adminCard, reportCard);
     suggestionsDrive = undefined;
     fill(
       column,
       h("div", { class: "welcome" }, mark(36), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
+      reportCard.el,
       adminCard.el,
     );
     renderSuggestions();

@@ -475,6 +475,14 @@ saved before them keep their single cost. In the mock, `?routing=calibrated` off
 `?routing=stale` shows an Auto choice rejected at start-up. The logic and these mock scenarios are
 covered by `node --experimental-default-type=module --test apps/gui/dev/usage.test.mjs`.
 
+### Daily report
+
+Settings has a Daily report card (switch, time, the exact command Windows will start, "Write a
+report now") and the home page shows the latest report under the composer, answer first. See
+[daily-report.md](daily-report.md). Mock: `?report=none` (no report yet: an invitation),
+`?report=quiet` (nothing to review) and `?report=unsupported` (no Windows task). Covered by
+`node --test apps/gui/dev/daily-report.test.mjs`.
+
 ## Architecture
 
 ```text

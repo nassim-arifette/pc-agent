@@ -300,7 +300,10 @@ Nothing below can run on Linux; none of it is claimed as validated.
    selected as evidence in the same thread.
 5. **Eval accounting:** one real Nebius replay with `--drain-usage --allow-cloud`; compare the
    reported usage with the Token Factory dashboard.
-6. **GUI captures:** EN/FR, light/dark/high contrast for History, Storage, Watches, Voice and the
+6. **Daily report (chantier 17):** as a standard account, turn it on in Settings, check the task
+   in Task Scheduler (least privilege, 5 min), let it run at the chosen time and once after the PC
+   was off, check the toast and the home card, move it, then turn it off and see the task removed.
+7. **GUI captures:** EN/FR, light/dark/high contrast for History, Storage, Watches, Voice and the
    deeper-checks card.
 
 History: the backend of `feature/history-complete` is not merged separately; the integrated

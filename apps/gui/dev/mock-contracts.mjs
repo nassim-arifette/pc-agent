@@ -73,6 +73,17 @@ export async function exerciseMock(bridge, clock, search) {
   await ok("history_clear");
   await ok("startup_get");
   assert.equal(await ok("startup_set", { enabled: true }), true);
+  const schedule = await ok("report_schedule_get");
+  if (schedule.supported) {
+    await reject("report_schedule_set", { enabled: true, time: "9:00" }, "schedule_failed");
+    assert.equal((await ok("report_schedule_set", { enabled: true, time: "07:45" })).time, "07:45");
+    assert.equal((await ok("report_schedule_set", { enabled: false, time: "" })).installed, false);
+  } else {
+    await reject("report_schedule_set", { enabled: true, time: "07:45" }, "schedule_failed");
+  }
+  await ok("report_latest");
+  assert.equal(typeof (await ok("report_run_now")).points_to_review, "number");
+  await ok("report_reveal");
   await ok("privacy_get");
   await reject("privacy_set", { settings: { extra: true } });
   await ok("privacy_set", { settings: { mode: "complete", confirmed: true, web_search: true } });

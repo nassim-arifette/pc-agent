@@ -193,5 +193,16 @@ fn a_damaged_newest_report_falls_back_to_the_previous_one() {
     write(&dir, &report, Language::En).unwrap();
     fs::write(dir.join("rapport-2026-10-29.json"), "{ not json").unwrap();
     assert_eq!(latest(&dir).unwrap().unwrap().date, "2026-10-28");
+    // The Markdown path follows the file name even when the content claims another date.
+    let mut forged = report.clone();
+    forged.date = "../../elsewhere".into();
+    fs::write(
+        dir.join("rapport-2026-10-30.json"),
+        serde_json::to_vec(&forged).unwrap(),
+    )
+    .unwrap();
+    let (path, read) = latest_file(&dir).unwrap().unwrap();
+    assert_eq!(read.date, "../../elsewhere");
+    assert_eq!(path, dir.join("rapport-2026-10-30.md"));
     fs::remove_dir_all(dir).unwrap();
 }
