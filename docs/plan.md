@@ -1732,6 +1732,55 @@ ni « bientôt ». Les chemins Windows ne bougent pas ; les modules macOS vivent
   `-D warnings`, tests, build release des quatre binaires) ; GUI native lancée sur le Mac de la
   session avec captures EN/FR, clair/sombre ; `docs/macos.md` et section plateformes du README.
 
+### Chantier 17 — Rapport quotidien planifié (piste B, A et C ; proposé le 29 octobre)
+
+Besoin du porteur : une vérification qui tourne **même si PC Agent est fermé**, une fois par
+jour, qui regarde ce qui ne va pas et laisse un rapport. Ce chantier lève, pour ce seul cas, la
+phrase « Aucun service ni tâche planifiée » du chantier 8 ; celle-ci reste vraie pour le helper
+élevé (`pcagent-elevated`).
+
+- **Ce qui tourne.** Une sous-commande sans interface, `pcagent report --scheduled`, lancée par le
+  Planificateur de tâches. Elle prend son propre relevé ponctuel (mémoire, CPU, disque, GPU,
+  processus, démarrage, espace des volumes), applique les règles locales de `diagnostics`, relit
+  l'historique de 7 jours et les alertes de surveillance déjà enregistrées s'il en existe, puis
+  écrit le rapport. Sans l'app ouverte, aucun échantillonneur ne tourne : le rapport le dit
+  (« historique incomplet : l'app était fermée ») et n'invente aucune tendance. Chaque chiffre
+  garde sa date et sa nature (exacte ou borne basse), comme en C4.
+- **Aucun réseau, aucun LLM, aucun administrateur.** La tâche s'exécute sous le compte courant, en
+  privilèges limités, jamais élevée. Elle n'envoie rien : le contrat C5 n'est donc pas
+  concerné. Le rapport est local ; l'ouvrir dans la conversation (« Expliquer ce rapport ») passe
+  par le flux normal et son aperçu exact C5. La clé API n'est ni lue ni nécessaire.
+- **Stockage.** Fichiers `rapport-AAAA-MM-JJ.json` (schéma versionné) et `.md` lisible dans
+  `%APPDATA%\pcagent\reports`, 30 derniers jours conservés, taille bornée, écriture atomique.
+  Le JSON suit les observations C4 ; le Markdown ne contient ni nom d'utilisateur ni ligne de
+  commande ni chemin de profil en clair (mêmes projections que C5 pour tout texte exporté).
+- **Tâche planifiée.** Une seule tâche, `\PCAgent\DailyReport`, créée par le Planificateur de
+  tâches (COM, crate `windows`, ou `schtasks.exe` à arguments fixes) : déclencheur quotidien
+  (heure par défaut 09:00, réglable), « exécuter dès que possible si manquée », seulement session
+  ouverte, niveau d'exécution le plus bas, limite 5 minutes, pas de réveil de la machine, une
+  seule instance. L'action est le `pcagent.exe` installé avec des arguments fixes ; aucun argument
+  ne vient du modèle ni d'une saisie libre.
+- **Consentement.** Désactivé par défaut. Réglages > Rapport quotidien : un interrupteur, l'heure,
+  et l'affichage exact de ce qui sera lancé. Activer, modifier l'heure et supprimer sont des
+  actions locales par clic, inscrites dans le journal des actions avec leur restauration
+  (suppression de la tâche). L'état affiché est relu depuis le Planificateur, jamais mémorisé.
+  Désinstaller ou désactiver supprime la tâche. Le modèle ne peut ni créer ni modifier cette
+  tâche ; au plus il peut proposer d'ouvrir la page des réglages.
+- **Restitution.** Notification locale discrète à la fin (« Rapport du jour : N points à voir »),
+  désactivable. Au prochain lancement, l'app affiche le dernier rapport sur l'accueil : la
+  réponse d'abord, les preuves à un clic. Une exécution manquée ou en échec laisse un rapport
+  d'état (« non exécuté », raison) plutôt que le silence.
+- **Plateformes.** Windows d'abord. Sur Linux et macOS, la sous-commande `report` tourne avec les
+  bouchons ; la planification native (systemd/launchd) relève du chantier 16 et n'est pas
+  promise ici.
+- **Hors périmètre.** Surveillance continue app fermée, alertes en direct sans l'app, service
+  Windows, élévation planifiée, envoi du rapport par e-mail ou vers un tiers.
+- **Acceptation.** Tests sur données synthétiques (règles, bornes, rotation, absence d'historique,
+  absence de données personnelles) ; sous Windows, compte standard : création, exécution à
+  l'heure, exécution manquée rattrapée, suppression, état relu ; captures FR/EN claires et
+  sombres de la page de réglages et de la carte d'accueil. Rien n'est déclaré validé avant ces
+  preuves.
+
 ## 5. Calendrier
 
 | Semaine | Travail |
@@ -2023,6 +2072,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
 | Textes français, accessibilité et finitions #71 | C | contrat approuvé par le porteur ; implémentation et preuves Windows standard, Narrateur/NVDA, axe et parcours FR/EN clair/sombre/contraste élevé en cours ; aucune validation non exécutée n'est considérée acquise | PR plan puis PR code séparées |
+| 17 — Rapport quotidien planifié (29 octobre) | B, A, C | contrat proposé dans cette PR de plan, avant tout code ; implémentation et preuves Windows à suivre dans une PR séparée | PR plan puis `wp17-daily-report` |
 | 0 — Plan, archives, licence | — | fait | #18 |
 | Réorganisation C — cœur / outils / Nebius | A, B | client Nebius, catalogue déclaratif, projections pures et implémentations `pcagent-tools` séparés ; apps raccordées ; validation locale : 828 tests Rust réussis, 3 ignorés, sur 22 exécutables sous compte standard (intégrité moyenne, hors groupe administrateurs), fmt, Clippy, doctests et quatre builds release ; 46 constantes de catalogue comparées à leur définition avant refactor sans changement de valeur ; aucun parcours GUI natif ni test Linux rejoué ; découpage des gros fichiers détaillé ci-dessous | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
 | Réorganisation C — gros fichiers du cœur | A | réponse et sélections figées séparées en modules par responsabilité, API conservées et sources ajoutées à l'identité de calibration ; 41 tests déplacés et 68 corps de fonctions comparés sans changement de comportement (l'adaptateur de sélection utilise ses accesseurs existants) ; 828 tests Rust réussis sous compte standard, 3 ignorés, Clippy et quatre builds release validés ; 51 tests d'orchestration ensuite regroupés par comportement sans modifier leurs corps, 184 tests du cœur et Clippy repassés ; aucun changement visuel | [#97](https://github.com/nassim-arifette/pc-agent/pull/97) fusionné (26 oct., `4ecfc22`) |
