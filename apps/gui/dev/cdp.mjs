@@ -18,6 +18,8 @@ export async function launch({ chrome = "C:\\Program Files\\Google\\Chrome\\Appl
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-extensions",
+    // Linux containers running as root (CI, cloud sessions) need this; never set it elsewhere.
+    ...(process.env.CHROME_NO_SANDBOX === "1" ? ["--no-sandbox"] : []),
     "about:blank",
   ], { stdio: "ignore" });
   let targets = null;

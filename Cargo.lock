@@ -2774,6 +2774,7 @@ dependencies = [
  "pcagent-inspect",
  "pcagent-nebius",
  "pcagent-policy",
+ "pcagent-report",
  "pcagent-shared",
  "pcagent-storage",
  "pcagent-store",
@@ -2877,6 +2878,7 @@ dependencies = [
  "pcagent-inspect",
  "pcagent-nebius",
  "pcagent-policy",
+ "pcagent-report",
  "pcagent-shared",
  "pcagent-storage",
  "pcagent-store",
@@ -2932,6 +2934,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+]
+
+[[package]]
+name = "pcagent-report"
+version = "0.1.1"
+dependencies = [
+ "pcagent-diagnostics",
+ "pcagent-shared",
+ "pcagent-store",
+ "pcagent-telemetry",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

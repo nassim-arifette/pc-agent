@@ -42,8 +42,14 @@ pub(super) fn review_actions(
         let mut err = io::stderr().lock();
         writeln!(
             err,
-            "\nProposed action: {} (plan {plan_id})",
-            text::words(&p.plan.action_kind())
+            "\n{}",
+            text::fill(
+                "cli.action.proposed",
+                &[
+                    ("action", text::words(&p.plan.action_kind())),
+                    ("plan", plan_id.to_string())
+                ]
+            )
         )?;
         for item in p.plan.items() {
             let target = match &item.target {
@@ -53,49 +59,63 @@ pub(super) fn review_actions(
                     "{} ({}, {})",
                     text::path(&c.root),
                     text::plural(c.files, "file", "files"),
-                    c.bytes.map_or_else(|| "size unknown".into(), format_bytes)
+                    c.bytes.map_or_else(
+                        || text::label("cli.action.size_unknown").into(),
+                        format_bytes
+                    )
                 ),
-                ResolvedTarget::Process(t) => format!("process {}", t.identity.pid),
-                ResolvedTarget::BrowserManager(t) => format!(
-                    "{:?} for process {} (open only; no process is closed)",
-                    t.destination, t.process.identity.pid
+                ResolvedTarget::Process(t) => {
+                    text::fill("cli.action.process", &[("pid", t.identity.pid.to_string())])
+                }
+                ResolvedTarget::BrowserManager(t) => text::fill(
+                    "cli.action.browser_manager",
+                    &[
+                        ("destination", format!("{:?}", t.destination)),
+                        ("pid", t.process.identity.pid.to_string()),
+                    ],
                 ),
-                ResolvedTarget::UserStartup(t) => format!("user startup entry {}", t.value_name()),
+                ResolvedTarget::UserStartup(t) => text::fill(
+                    "cli.action.startup",
+                    &[("name", t.value_name().to_string())],
+                ),
                 ResolvedTarget::RecycleCleanup(c) => format!(
                     "{} ({}, {})",
                     text::path(&c.root().path),
                     text::plural(c.files().len() as u64, "file", "files"),
-                    c.bytes()
-                        .map_or_else(|| "size unknown".into(), format_bytes)
+                    c.bytes().map_or_else(
+                        || text::label("cli.action.size_unknown").into(),
+                        format_bytes
+                    )
                 ),
             };
-            writeln!(err, "  Target: {target}")?;
+            writeln!(
+                err,
+                "  {}",
+                text::fill("cli.action.target", &[("target", target)])
+            )?;
         }
         let checks: Vec<String> = p.plan.preconditions().iter().map(text::words).collect();
         writeln!(
             err,
-            "  Recovery: {}\n  Checked again just before running: {}",
-            text::recovery(p.plan.recovery()),
-            checks.join(", ")
+            "  {}\n  {}",
+            text::fill(
+                "cli.action.recovery",
+                &[("recovery", text::recovery(p.plan.recovery()).to_string())]
+            ),
+            text::fill("cli.action.checks", &[("checks", checks.join(", "))])
         )?;
         if !interactive || json_out {
-            writeln!(
-                err,
-                "  Not executed: approval requires an interactive terminal without --json."
-            )?;
+            writeln!(err, "  {}", text::label("cli.action.not_executed"))?;
             results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "not_reviewed"}));
             continue;
         }
-        write!(
-            err,
-            "  Type 'yes' to run this action now, anything else to skip: "
-        )?;
+        write!(err, "  {}", text::label("cli.action.prompt"))?;
         err.flush()?;
         drop(err);
         let mut answer = String::new();
         io::stdin().lock().read_line(&mut answer)?;
-        if answer.trim() != "yes" {
-            eprintln!("  Skipped.");
+        if !text::is_yes(&answer) {
+            eprintln!("  {}", text::label("cli.action.skipped"));
             results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "declined"}));
             continue;
         }
@@ -123,9 +143,15 @@ pub(super) fn review_actions(
         );
         match outcome {
             Ok(mut result) => {
-                eprintln!("  Result: {}", text::words(&result.overall));
+                eprintln!(
+                    "  {}",
+                    text::fill(
+                        "cli.action.result",
+                        &[("result", text::words(&result.overall))]
+                    )
+                );
                 if measure_system && !cancellation.flag().load(Ordering::SeqCst) {
-                    eprintln!("  Measuring after the action...");
+                    eprintln!("  {}", text::label("cli.action.measuring"));
                     std::thread::sleep(SETTLE_AFTER_ACTION);
                 }
                 let after = if measure_system {
@@ -147,7 +173,10 @@ pub(super) fn review_actions(
                 results.push(json!({"plan_id": plan_id, "plan": p.plan, "decision": "approved", "result": result, "verification": verification}));
             }
             Err(e) => {
-                eprintln!("  Refused: {e}");
+                eprintln!(
+                    "  {}",
+                    text::fill("cli.action.refused", &[("error", e.to_string())])
+                );
                 results.push(
                     json!({"plan_id": plan_id, "plan": p.plan, "decision": "approved", "error": e.to_string()}),
                 );

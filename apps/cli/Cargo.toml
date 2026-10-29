@@ -21,3 +21,4 @@ pcagent-storage.workspace = true
 pcagent-policy.workspace = true
 pcagent-actions.workspace = true
 pcagent-store.workspace = true
+pcagent-report.workspace = true

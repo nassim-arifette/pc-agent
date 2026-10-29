@@ -35,69 +35,88 @@ pub(super) fn print_doctor(
     cloud: Option<&std::result::Result<Option<Pricing>, AgentError>>,
     limits: &[&str],
 ) -> Result<()> {
+    use crate::text::label as l;
     let origin = |name: &str| match creds.source(name) {
-        Some(Source::Environment) => " (environment variable)",
-        Some(Source::File) => " (credentials file)",
-        None => "",
+        Some(Source::Environment) => format!(" ({})", l("cli.doctor.from_env")),
+        Some(Source::File) => format!(" ({})", l("cli.doctor.from_file")),
+        None => String::new(),
     };
     let key = match creds.get("NEBIUS_API_KEY") {
-        Some(_) => format!("set{}", origin("NEBIUS_API_KEY")),
-        None => "not set".to_owned(),
+        Some(_) => format!("{}{}", l("cli.doctor.set"), origin("NEBIUS_API_KEY")),
+        None => l("cli.doctor.not_set").to_owned(),
     };
     let model = match creds.get("NEBIUS_MODEL_ID") {
         Some(m) => format!("{}{}", text::clean(&m), origin("NEBIUS_MODEL_ID")),
-        None => "not set".to_owned(),
+        None => l("cli.doctor.not_set").to_owned(),
     };
     let file = match (&creds.problem, creds.file_found()) {
-        (Some(problem), _) => format!("unusable: {problem}"),
+        (Some(problem), _) => format!("{}: {problem}", l("cli.doctor.unusable")),
         (None, true) => credentials_file_text(creds),
-        (None, false) => format!("{} (not found)", credentials_file_text(creds)),
+        (None, false) => format!(
+            "{} ({})",
+            credentials_file_text(creds),
+            l("cli.doctor.not_found")
+        ),
     };
     let rows = [
-        ("This PC", String::new()),
+        (l("cli.doctor.pc").to_owned(), String::new()),
         (
-            "  Native collector",
-            if cfg!(windows) {
-                "available".to_owned()
+            format!("  {}", l("cli.doctor.collector")),
+            l(if cfg!(windows) {
+                "cli.doctor.available"
             } else {
-                "not available on this platform (Windows only)".to_owned()
-            },
+                "cli.doctor.windows_only"
+            })
+            .to_owned(),
         ),
         (
-            "  Build",
+            format!("  {}", l("cli.doctor.build")),
             format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
         ),
-        ("  Windows version check", "not implemented yet".to_owned()),
-        ("Cloud (Nebius)", String::new()),
-        ("  Credentials file", file),
-        ("  NEBIUS_API_KEY", key),
-        ("  NEBIUS_MODEL_ID", model),
         (
-            "  Catalog check",
+            format!("  {}", l("cli.doctor.version_check")),
+            l("cli.doctor.not_implemented").to_owned(),
+        ),
+        (l("cli.doctor.cloud").to_owned(), String::new()),
+        (format!("  {}", l("cli.doctor.credentials")), file),
+        ("  NEBIUS_API_KEY".to_owned(), key),
+        ("  NEBIUS_MODEL_ID".to_owned(), model),
+        (
+            format!("  {}", l("cli.doctor.catalog")),
             match cloud {
-                None => "not requested (add --check-cloud)".to_owned(),
+                None => l("cli.doctor.catalog.not_requested").to_owned(),
                 Some(Ok(Some(pricing))) => format!(
-                    "the model is in your account catalog; {}",
+                    "{}; {}",
+                    l("cli.doctor.catalog.found"),
                     text::price_text(pricing)
                 ),
-                Some(Ok(None)) => {
-                    "the model is in your account catalog; no verifiable price published".to_owned()
-                }
-                Some(Err(e)) => format!("failed: {e}"),
+                Some(Ok(None)) => format!(
+                    "{}; {}",
+                    l("cli.doctor.catalog.found"),
+                    l("cli.doctor.catalog.no_price")
+                ),
+                Some(Err(e)) => format!("{}: {e}", l("cli.doctor.failed")),
             },
         ),
-        ("Safety", String::new()),
+        (l("cli.doctor.safety").to_owned(), String::new()),
         (
-            "  Default mode",
-            "read-only by default; cloud and actions require explicit consent".to_owned(),
+            format!("  {}", l("cli.doctor.mode")),
+            l("cli.doctor.mode.value").to_owned(),
         ),
         (
-            "  Actions",
-            "opt-in with --propose-actions; each one needs a typed 'yes'".to_owned(),
+            format!("  {}", l("cli.doctor.actions")),
+            l("cli.doctor.actions.value").to_owned(),
         ),
-        ("  History", "not stored".to_owned()),
+        (
+            format!("  {}", l("cli.doctor.history")),
+            l("cli.doctor.history.value").to_owned(),
+        ),
     ];
-    let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut out = io::stdout().lock();
     for (label, value) in rows {
         if value.is_empty() {
@@ -106,9 +125,12 @@ pub(super) fn print_doctor(
             writeln!(out, "{label:<width$}  {value}")?;
         }
     }
-    writeln!(out, "Notes")?;
-    for l in limits {
-        writeln!(out, "  - {l}")?;
+    writeln!(out, "{}", crate::text::label("cli.notes"))?;
+    for (index, limit) in limits.iter().enumerate() {
+        // The JSON keeps the English sentence; the human report shows the chosen language.
+        let key = format!("cli.doctor.limit.{index}");
+        let shown = crate::text::label(&key);
+        writeln!(out, "  - {}", if shown == key { limit } else { shown })?;
     }
     Ok(())
 }

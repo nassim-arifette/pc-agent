@@ -88,8 +88,9 @@ you pick) to see its largest folders and files. The scan reads names, sizes and 
 follows no links and deletes nothing. Select a result to summarize it or find the cause, or ask
 the AI to find space to free in that folder.
 
-Optional administrator readings run in the separate `pcagent-elevated` helper, one at a time,
-after you review what it will read, click *Allow and start* and accept Windows' consent prompt:
+Optional administrator readings run in the separate `pcagent-elevated` helper, as one batch:
+you review the checks it will run and can untick any, click *Allow and start*, then accept a single
+Windows consent prompt (another administrator may enter their credentials):
 
 - **Quick drive analysis** reads the file table (MFT) of a fixed NTFS drive to list its largest
   folders and files: names and sizes, never contents.
@@ -97,9 +98,10 @@ after you review what it will read, click *Allow and start* and accept Windows' 
   Optimization), the space restore points and shadow copies use, disk health counters
   (temperature, wear, hours powered on, errors), and Windows' own estimates of battery use by app.
 
-When an answer lacked the reading of a deeper check, the chat offers that check under it. Once
-you have run a check, the model can read its result for five minutes; it can never start one
-itself.
+When an answer lacked the reading of a deeper check, the model can propose the checks it needs
+as a card under its answer; you review, untick and approve them yourself, and the model can never
+start one. Results are kept on this PC for 24 hours from their measurement and can be selected as
+evidence in the same conversation.
 
 ![A folder scan's largest folders, with the first one selected and its action bar](docs/images/storage-scan.png)
 
@@ -391,11 +393,15 @@ Details and the second-PC checklist: [docs/validation.md](docs/validation.md).
 - **Coverage.** Disk latency and activity are measured for all disks together, and disk events
   are not attributed to a program. Without an NVIDIA GPU, graphics cards report their load only.
   Every unreadable source is reported as such.
-- **Administrator checks** run one at a time, each after its own consent prompt. The quick drive
-  analysis lists the largest folders and files it could attribute; its accuracy is not yet
-  validated on a controlled volume. The performance trace is not available.
-- **Not yet available:** watching a resource against a threshold (the *Monitor* button is shown
-  disabled), a cache for web lookups, and Tavily credits in the displayed cost.
+- **Administrator checks** run as one reviewed batch under a single Windows consent prompt; the
+  results are kept for 24 hours and can be cited in the same conversation. The real prompt,
+  including approval with another administrator's credentials, is not yet validated on a real
+  PC. The quick drive analysis lists the largest folders and files it could attribute; its
+  accuracy is not yet validated on a controlled volume. The performance trace is not available.
+- **Watches** (resource, drive, NVIDIA GPU or program thresholds) are checked only while PC Agent
+  runs, in its window or its notification-area icon; Windows notifications, their clicks and the
+  daily scheduled report have passed tests on synthetic data but are not yet validated on a real
+  PC.
 - **Interface:** some texts produced by the core, such as findings and coverage notes, stay in
   English in the French interface; screen readers and high-contrast mode are not validated.
 - **Distribution:** no installer, no automatic update, no code signing; the keys file is plain text

@@ -18,6 +18,8 @@ import { currentRoute } from "../router.js";
 import { failureDetail, failureText } from "../failure.js";
 import { browserSummary, browserBreakdown, browserLocalInspection, clearLocalBrowsers } from "./browser.js";
 import { adminChecksCard } from "../elevation/checks.js";
+import { requestWatch } from "../watches-controller.js";
+import { liveWatch } from "../watches/model.js";
 
 // Kept across visits so coming back to the view shows the same selection.
 let selected = null;
@@ -245,6 +247,7 @@ function act(item, intent) {
 
 /** The action bar of the resolved item, drawn under the card or application row it belongs to. */
 function itemBar(item, key) {
+  const watch = liveWatch(item);
   return actionBar({
     key,
     label: item.label,
@@ -252,6 +255,8 @@ function itemBar(item, key) {
     unavailable: t("inspect.unavailable"),
     explain: () => act(item, "explain"),
     investigate: () => act(item, "investigate"),
+    monitor: watch.rule ? () => requestWatch(watch.rule) : null,
+    monitorUnavailable: watch.reason ? t(watch.reason) : null,
   });
 }
 

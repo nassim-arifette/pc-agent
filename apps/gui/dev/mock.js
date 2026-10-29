@@ -17,6 +17,9 @@
 // stretches the steps; "space" or "clean" propose cleanups and "startup" a start-up entry to turn
 // off; "health" or "santé" lacks administrator readings, so the deeper checks card follows the
 // answer. Both event families are emitted, like the Rust side: turn:* and inv:*.
+// ?watches=none|paused, ?notifications=disabled and ?activation=alert cover watches (C7); see
+// mock/watches.js.
+// ?report=none|quiet|unsupported covers the daily report (chantier 17); see mock/daily-report.js.
 // ?routing=calibrated|escalated|escalation_failed|stale covers model routing (chantier 14): Auto
 // offered, every AI answer handed from Super to Ultra (or Ultra's request failing), and a saved
 // Auto choice rejected at start-up; see mock/provider.js.
@@ -36,6 +39,8 @@ import { createStorageFixture } from "./mock/storage.js";
 import { createSelectionFixture } from "./mock/selection.js";
 import { createConversationFixture } from "./mock/conversations.js";
 import { createVoiceFixture } from "./mock/voice.js";
+import { createDailyReportFixture } from "./mock/daily-report.js";
+import { createWatchFixture } from "./mock/watches.js";
 
 const params = new URLSearchParams(window.location.search);
 
@@ -57,6 +62,8 @@ const history = createHistoryFixture({ params, batteryMode: live.batteryMode, pu
 const storage = createStorageFixture({ params, emit, publishSource: selection.publishSource, invalidateStorage: selection.invalidateStorage });
 const elevation = createElevationFixture(params, selection.publishSource);
 const voice = createVoiceFixture({ params, emit });
+const dailyReport = createDailyReportFixture(params);
+const watches = createWatchFixture(params, selection.publishSource);
 
 export function createMock() {
   const scan = storage.createCommands();
@@ -64,7 +71,7 @@ export function createMock() {
   const commands = {
     ...provider.commands, ...live.commands, ...history.commands, ...actions.commands, ...elevation.commands,
     ...scan.commands, ...turns, ...selection.createCommands(turns.start_investigation),
-    ...voice.commands,
+    ...voice.commands, ...dailyReport.commands, ...watches.commands,
   };
   return {
     mock: true,

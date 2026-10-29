@@ -290,7 +290,7 @@ export function mount(page) {
           "div",
           { class: "insp-titles" },
           h("div", { class: "storage-insp-kind" }, h("span", { class: "caption" }, t(`storage.insp.kind.${kind}`)), badge(t(`storage.insp.coverage.${coverage}`), tone, coverageIcon)),
-          h("h2", { class: "insp-title" }, item.name),
+          h("h2", { class: "insp-title", "data-i18n-source": "local_name" }, item.name),
         ),
         h("button", { type: "button", class: "icon-btn", title: t("inspect.clear"), "aria-label": t("inspect.clear"), "data-key": "insp:clear", onclick: clearToRow }, icon("x")),
       ),

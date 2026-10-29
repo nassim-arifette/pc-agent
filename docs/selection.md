@@ -36,7 +36,8 @@ A selection is a closed object, never a caller-supplied observation, name, PID, 
 ```
 
 The other target variants are `process {entity_ref}`, `event {event_id}`,
-`recording {recording_id}` and `storage {scope_id, item_ref}`. Resource names are the finite
+`recording {recording_id}`, `storage {scope_id, item_ref}`, `watch_alert {alert_id}` and
+`elevated_inspection {inspection_id}`. Resource names are the finite
 `memory`, `cpu`, `disk`, `gpu`, `thermal_power` and `battery` set. References are resolved
 exclusively against host-owned, already measured snapshots, the latest live battery read, process
 activity, persisted history and the current completed authorized storage index. A battery
@@ -55,7 +56,11 @@ still be present when a preview is prepared and when that preview is consumed. N
 receive new references and never rewrite a frozen capture while the user reads consent. A process
 collector/session restart, deleting history, clearing recordings or replacing/revoking an
 authorized storage scan invalidates the corresponding sources and consent tickets. Sources and
-tickets have a five-minute monotonic lifetime; wall-clock rollback cannot extend consent. The
+tickets have a five-minute monotonic lifetime; wall-clock rollback cannot extend consent. A saved
+administrator inspection is also refused once 24 hours have passed since its measurement, and a
+watch alert once it leaves the seven-day history; `elevation_select` and `watch_alert_detail`
+publish them again while they are still available, and deleting a watch revokes its alerts'
+sources and tickets. The
 registry retains at most 96 sources (the dashboard, process activity and battery publish about 24
 a minute), 16 MiB of serialized source data, 2 MiB per source and 16
 pending tickets. Eviction can expire a capture sooner than five minutes. Cloud projections are

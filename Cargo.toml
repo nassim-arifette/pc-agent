@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "apps/gui", "apps/eval", "apps/elevated", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/nebius", "crates/tools", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect", "crates/mft", "crates/elevation", "crates/voice"]
+members = ["apps/cli", "apps/gui", "apps/eval", "apps/elevated", "crates/shared", "crates/telemetry", "crates/diagnostics", "crates/agent", "crates/nebius", "crates/tools", "crates/storage", "crates/policy", "crates/actions", "crates/store", "crates/inspect", "crates/mft", "crates/elevation", "crates/voice", "crates/report"]
 resolver = "2"
 
 [workspace.package]
@@ -42,6 +42,7 @@ pcagent-inspect = { path = "crates/inspect" }
 pcagent-mft = { path = "crates/mft" }
 pcagent-elevation = { path = "crates/elevation" }
 pcagent-voice = { path = "crates/voice" }
+pcagent-report = { path = "crates/report" }
 
 [profile.release]
 lto = "thin"

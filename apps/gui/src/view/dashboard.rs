@@ -37,6 +37,8 @@ pub struct Disk {
 #[derive(Debug, Clone, Serialize)]
 pub struct Gpu {
     pub name: String,
+    /// The NVML index a temperature watch names (`gpu-nvidia-N`); `None` for another source.
+    pub nvml_index: Option<u32>,
     pub temperature: Measure,
     pub memory_used: Measure,
     pub memory_total: Measure,
@@ -169,6 +171,10 @@ pub fn dashboard(s: &Snapshot) -> Dashboard {
                 m(Metric::GpuSlowdownReasons),
             );
             Gpu {
+                nvml_index: g
+                    .entity_ref
+                    .strip_prefix("gpu-nvidia-")
+                    .and_then(|index| index.parse().ok()),
                 name: g.name.clone().unwrap_or_else(|| {
                     format!(
                         "NVIDIA GPU {}",

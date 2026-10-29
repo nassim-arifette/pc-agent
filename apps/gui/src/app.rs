@@ -7,6 +7,7 @@ mod history_commands;
 mod image_commands;
 mod measurements;
 mod preview_commands;
+mod report_commands;
 mod selection_commands;
 mod settings_commands;
 mod state;
@@ -190,6 +191,12 @@ pub fn run() {
             watch_commands::watch_activation_take,
             settings_commands::startup_get,
             settings_commands::startup_set,
+            report_commands::report_schedule_get,
+            report_commands::report_schedule_set,
+            report_commands::report_notify_set,
+            report_commands::report_latest,
+            report_commands::report_run_now,
+            report_commands::report_reveal,
             settings_commands::privacy_get,
             settings_commands::privacy_set,
             turn_commands::send_message,
@@ -262,7 +269,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 window.state::<pcagent_voice::VoiceService>().cancel();
-                if pcagent_inspect::autostart::get().unwrap_or(false) {
+                if pcagent_inspect::autostart::get().unwrap_or(false)
+                    || watch_commands::any_enabled(&window.state::<AppState>())
+                {
                     api.prevent_close();
                     let _ = window.hide();
                 } else {

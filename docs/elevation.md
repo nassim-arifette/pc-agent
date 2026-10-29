@@ -1,18 +1,57 @@
 # On-demand elevated inspection
 
-`pcagent-elevated` is a separate, read-only helper for one locally approved task. The GUI,
-CLI and model stay unelevated. The helper has no model client, HTTP client, command interpreter
-or arbitrary query entry point. Its executable forbids unsafe code; the Windows calls live in
-the native modules of `pcagent-elevation` (`crates/elevation`). The executable depends directly
-on that crate, not the standard inspection collectors. Existing host APIs remain re-exported
-from `pcagent_inspect::elevation`; the C4 projection and coverage notes remain in `pcagent-inspect`.
+`pcagent-elevated` is a separate, read-only helper for locally approved administrator checks.
+The GUI, CLI and model stay unelevated. The helper has no model client, HTTP client, command
+interpreter or arbitrary query entry point. Its executable forbids unsafe code; the Windows calls
+live in the native modules of `pcagent-elevation` (`crates/elevation`). Existing host APIs remain
+re-exported from `pcagent_inspect::elevation`; the C4 projection and coverage notes remain in
+`pcagent-inspect`.
+
+## Current state (protocol version 3, 29 October)
+
+- **One consent for a batch.** The deeper checks are one closed `deep_analysis` task holding up to
+  31 distinct sections (`MAX_SECTIONS`), each from the closed set below; a duplicate section
+  (or the same MFT volume twice) is refused. The person reviews the sections, can deselect any,
+  approves locally, and Windows shows **one** UAC prompt for the whole batch. Each section has its
+  own budget (at most 120 s) and returns its own result; one failing section does not discard
+  the others.
+- **Closed sections:** `system_caches`, `shadow_storage`, `disk_reliability`, `battery_energy`,
+  `mft_inventory {volume}` (one per fixed NTFS volume, resolved locally), `process_images
+  {targets}` (process identities resolved locally from the latest snapshot).
+  `performance_trace` (ETW) is never part of this batch: it has its own guardian and stays
+  disabled until its cleanup acceptance passes (see [etw.md](etw.md)).
+- **Timing.** The executable request is sealed at the local approval click, not while the
+  review is read; the review itself has no expiry. Windows consent may take up to five minutes
+  (`CONSENT_BUDGET_MS`) before the request expires.
+- **Another administrator's credentials.** A standard account may approve with another
+  administrator's credentials: the helper authenticates the requesting process (live token,
+  creation time against PID reuse, same Windows session) rather than deducing the user from the
+  administrator account. Requests from other sessions, altered, expired or replayed requests are
+  refused.
+- **Persistence.** Each completed section is saved in `pcagent.sqlite` (schema 9,
+  `elevated_inspections`) for 24 hours from its measurement time, never from the save, and read
+  back with its real age (`get_approved_elevated_inspection`). Results are selectable evidence
+  in the same conversation (`elevation_select`).
+- **From the chat.** The model may call `propose_elevated_check(tasks)`, a closed proposal that
+  only creates a review card with cited `action_refs`; it never approves, prompts or runs
+  anything. The same card is offered from Chat, Live PC, Storage and onboarding.
+- **Not validated natively:** a real UAC prompt from a standard account with another
+  administrator's credentials, timings, cancellation paths, the Nebius round trip and EN/FR
+  screenshots. Synthetic and mock tests cover the protocol, slot and interface.
+
+The sections below describe the single-task foundation the batch is built on; where they
+mention protocol version 1, two tasks or a missing frontend, the summary above takes precedence.
 
 ## Tasks and coverage
 
-| Closed task | Current behavior |
+| Closed section | Current behavior |
 | --- | --- |
 | `system_caches` | Bounded metadata inventory of `Windows.old` on the Windows volume, `SoftwareDistribution\Download`, and the documented default Delivery Optimization cache directory |
-| `mft_inventory`, with an uppercase drive letter | `unsupported`, with `mft_accuracy_unvalidated`; no volume handle is opened and no size is returned |
+| `shadow_storage` | Restore points and shadow copy storage per volume, read-only |
+| `disk_reliability` | Disk health and reliability counters of physical disks, read-only |
+| `battery_energy` | Battery energy use by application from Windows' energy history, local only |
+| `mft_inventory {volume}` | Bounded native MFT inventory of one fixed NTFS volume with a local tree; accuracy on controlled volumes not yet validated |
+| `process_images {targets}` | Executable images of locally resolved protected processes a standard account cannot read; paths stay local |
 
 The Windows directory is obtained from `GetWindowsDirectoryW`, never a caller-supplied path or
 environment variable. Cache enumeration reuses the storage crate's handle-based `ClassicBackend`.
@@ -88,9 +127,12 @@ returned review fields retain their Rust snake_case names.
 
 | Command | Arguments | Result |
 | --- | --- | --- |
+| `elevation_options` | none | The sections this PC can offer, with locally resolved volumes and processes |
+| `elevation_prepare` | `task` (a section or `{kind: "deep_analysis", tasks: [...]}`), `budgetMs` | `{request_id, task, budget_ms, state: "awaiting_local_approval"}` |
 | `elevation_status` | none | Current review/progress, or `null` when the slot is free |
-| `elevation_prepare` | `task: {kind: "system_caches"}`, `budgetMs: 1..120000` | `{request_id, task, budget_ms, state: "awaiting_local_approval"}` |
-| `elevation_run` | `requestId` from that review | An `Inspection` with C4 observations and coverage, after local approval and Windows consent |
+| `elevation_run` | `requestId` from that review | Per-section results with C4 observations and coverage, after local approval and one Windows consent; each section is saved for 24 hours |
+| `elevation_results` | none | Saved inspections still within 24 hours of their measurement |
+| `elevation_select` | `inspectionId` | Publishes a saved inspection as selectable evidence |
 | `elevation_cancel` | `requestId` | Declines a prepared task, or signals cancellation of the matching running task |
 
 `elevation_status` recovers the same request ID, task and budget after a webview reload, with state
@@ -130,9 +172,10 @@ for observed exit before publishing completion. `WaitForSingleObject` can confir
 an exit-code query fails. Persistent failure to confirm exit keeps the window open and the slot
 occupied; elapsed time and the helper watchdog never substitute for that confirmation.
 
-These Rust commands are present; no administrator-analysis button or frontend progress flow
-was added in this backend lot. A future frontend retains its review ID or recovers it with
-`elevation_status`. Native preparation creates small private files; preparation and execution
+The deeper-checks card (`ui/js/elevation/checks.js`) drives these commands: review with
+checkboxes, local approval, progress, per-section results, the saved results of the last
+24 hours, and Explain / Investigate on a result. It recovers its review ID with
+`elevation_status` after a reload. Native preparation creates small private files; preparation and execution
 run on Tauri's blocking worker.
 The GUI and CLI call `ensure_unelevated_host` before starting normal work and reject an
 administrative host session.
@@ -146,9 +189,9 @@ unresolved or helper exit cannot be confirmed.
 
 ## Restricted file protocol
 
-Protocol version 1 accepts only the two tasks above. Unknown fields are rejected at every JSON
-level, including the nested measurement window and coverage. A request is at most 8 KiB; a response
-is at most 64 KiB. Reads are bounded before JSON parsing. Versions, enum values, budget, UUID-shaped
+Protocol version 3 accepts the closed sections above, alone or in one `deep_analysis` batch. Unknown fields are rejected at every JSON
+level, including the nested measurement window and coverage. A request is at most 8 KiB; a response is at most
+512 KiB per section. Reads are bounded before JSON parsing. Versions, enum values, budget, UUID-shaped
 references, request age, task, nonce, measurement window and response structure are checked.
 
 The worker CLI contains exactly these six arguments:
@@ -171,12 +214,14 @@ All writes use `CREATE_NEW`, so neither a response nor another file can be overw
 
 The CLI SHA-256 digest binds the exact request bytes prepared for the approved task. The response
 must match the request's version, task, job ID and random nonce. Creating the `running` marker
-claims a job once; replay is refused. The request expires 120 s after preparation. `Debug`
+claims a job once; replay is refused. The helper must start within five minutes of the request's
+creation (`CONSENT_BUDGET_MS`), and the request expires after its collection budget plus that
+consent time. `Debug`
 representations redact its nonce and job ID.
 
-Current native validation requires the same account before and after elevation. Supplying
-credentials for another administrator fails the owner check; that workflow remains unsupported.
-No job-directory or ACL weakening is used as a fallback.
+Approval with another administrator's credentials is supported by authenticating the
+requesting process (see the summary above), not by widening the job directory's DACL. No
+job-directory or ACL weakening is used as a fallback.
 
 ## Launch, cancellation and lifetime
 
@@ -239,11 +284,3 @@ launching a process.
 Rustfmt 1.90 and whitespace checks were run in the isolated worktree. Cargo validation is
 centralized in the integration branch. Real UAC acceptance, cross-machine installation and MFT
 test-volume accuracy have not been exercised by this lot; no runtime acceptance is claimed.
-
-## Deeper checks proposed from chat (integration status)
-
-- The chat can propose closed administrator checks (`propose_elevated_check`); results are stored
-  as dated inspections for 24 hours (store schema 9, `elevated_inspections`) and can be selected as
-  evidence in the same thread. The local review card shows what was measured before anything is shared.
-- Integrated and covered by synthetic tests on Linux. Not validated: real UAC prompt, standard
-  account with another administrator, Nebius round trip and EN/FR screenshots (Windows only).

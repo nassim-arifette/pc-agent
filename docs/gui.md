@@ -475,6 +475,23 @@ saved before them keep their single cost. In the mock, `?routing=calibrated` off
 `?routing=stale` shows an Auto choice rejected at start-up. The logic and these mock scenarios are
 covered by `node --experimental-default-type=module --test apps/gui/dev/usage.test.mjs`.
 
+### Watches
+
+`#/watches` lists the rules with their live state, the alerts of the last seven days and a local
+weekly summary; Live PC, History and Storage open the prefilled Monitor form. See
+[watches.md](watches.md). Mock: `?watches=none|paused`, `?notifications=disabled`,
+`?activation=alert` (a notification click at start). Covered by
+`node --test apps/gui/dev/watches-view.test.mjs`.
+
+### Daily report
+
+Settings has a Daily report card (switch, time, the exact command Windows will start, "Write a
+report now") and the home page shows the latest report under the composer, answer first. See
+[daily-report.md](daily-report.md). Mock: `?report=none` (no report yet: an invitation),
+`?report=quiet` (nothing to review) and `?report=unsupported` (no Windows task) and `?report=stale` (the task starts an older copy:
+Repair). Covered by
+`node --test apps/gui/dev/daily-report.test.mjs`.
+
 ## Architecture
 
 ```text

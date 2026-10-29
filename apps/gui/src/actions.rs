@@ -94,11 +94,8 @@ pub fn prepare_browser_manager(
 
 /// Where the action journal lives, as for the CLI.
 pub fn journal_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("pcagent")
-        .join("journal")
+    // Shared with the windowless daily-report removal, which runs without this module.
+    crate::daily_report::journal_dir()
 }
 
 /// The desk offered to the model. Interrupted earlier actions are reported by the journal on

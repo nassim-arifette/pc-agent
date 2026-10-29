@@ -15,6 +15,7 @@ mod native;
 pub mod notifications;
 mod os;
 mod plan;
+pub mod scheduled_report;
 mod startup;
 #[cfg(test)]
 mod tests;

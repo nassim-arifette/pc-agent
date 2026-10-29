@@ -35,6 +35,11 @@ pub enum PreState {
     RecycleCleanup {
         target: crate::RecycleCleanupTarget,
     },
+    /// The daily report task before the change; restoring means removing it.
+    ScheduledReport {
+        installed: bool,
+        time: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

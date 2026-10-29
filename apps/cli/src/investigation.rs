@@ -62,12 +62,19 @@ pub(super) fn review_extension(
         return Ok(false);
     }
     text::report(output, report, false)?;
-    write!(output, "Continue with up to {} additional model requests, {} tools and {} seconds? This can consume more provider tokens. Type 'yes' to continue [no]: ",
-        request.additional_rounds, request.additional_tool_calls, request.additional_seconds)?;
+    write!(
+        output,
+        "{}",
+        text::extension_prompt(
+            request.additional_rounds,
+            request.additional_tool_calls,
+            request.additional_seconds
+        )
+    )?;
     output.flush()?;
     let mut answer = String::new();
     input.read_line(&mut answer)?;
-    Ok(answer.trim().eq_ignore_ascii_case("yes"))
+    Ok(text::is_yes(&answer))
 }
 pub(super) fn diagnosis_json(
     report: &pcagent_agent::Investigation,
@@ -132,12 +139,10 @@ pub(super) fn diagnose(
         authorize_folder(&storage, root)?;
     }
     if question.trim().is_empty() {
-        return Err("The question is empty; ask something like \"Why is my PC slow?\"".into());
+        return Err(text::question_empty().into());
     }
     if question.len() > MAX_QUESTION_BYTES {
-        return Err(
-            format!("The question is longer than {MAX_QUESTION_BYTES} bytes; shorten it.").into(),
-        );
+        return Err(text::question_too_long(MAX_QUESTION_BYTES).into());
     }
     if allow_cloud && !cfg!(windows) {
         return Err("Cloud diagnostics require the native Windows collector; no synthetic or other-platform telemetry is substituted.".into());
@@ -181,7 +186,8 @@ pub(super) fn diagnose(
         // The flag is the explicit permission. Show this run's exact finite allowlist
         // before the first request, including in batch mode (stderr preserves JSON).
         eprintln!(
-            "File names authorized for this run (before any cloud request):\n{}",
+            "{}\n{}",
+            text::label("cli.names.authorized"),
             serde_json::to_string_pretty(&prepared.context.sharing_preview())?
         );
     }
@@ -257,7 +263,7 @@ pub(super) fn diagnose(
     if !json {
         text::report(&mut io::stdout().lock(), &report, verbose)?;
         if !prepared.local_items.is_empty() {
-            println!("Authorized folder observations (prepared locally):");
+            println!("{}", text::label("cli.storage.observations"));
             text::storage_context(&mut io::stdout().lock(), &prepared.local_items)?;
         }
         text::content_comparisons(&mut io::stdout().lock(), prepared.context.comparisons())?;
@@ -323,7 +329,7 @@ pub(super) fn chat(
     let storage = Arc::new(StorageService::new());
     let mut collector = Collector::new();
     let mut past: Vec<PastTurn> = Vec::new();
-    println!("Ask about this PC; an empty line or `exit` ends the conversation.");
+    println!("{}", text::label("cli.chat.intro"));
     loop {
         print!("\n> ");
         io::stdout().flush()?;
@@ -336,7 +342,7 @@ pub(super) fn chat(
             break;
         }
         if question.len() > MAX_QUESTION_BYTES {
-            eprintln!("The question is longer than {MAX_QUESTION_BYTES} bytes; shorten it.");
+            eprintln!("{}", text::question_too_long(MAX_QUESTION_BYTES));
             continue;
         }
         let initial = collector.snapshot(true, 10);

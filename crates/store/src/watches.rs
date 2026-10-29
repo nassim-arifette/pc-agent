@@ -606,6 +606,10 @@ impl Store {
             })? as u64)
     }
     pub fn watch_language(&self) -> Result<String, StoreError> {
+        Ok(self.watch_language_saved()?.unwrap_or_else(|| "en".into()))
+    }
+    /// The language the window last reported, `None` before it ever did.
+    pub fn watch_language_saved(&self) -> Result<Option<String>, StoreError> {
         Ok(self
             .conn
             .query_row(
@@ -613,8 +617,7 @@ impl Store {
                 [],
                 |r| r.get(0),
             )
-            .optional()?
-            .unwrap_or_else(|| "en".into()))
+            .optional()?)
     }
     pub fn watch_language_set(&self, language: &str) -> Result<(), StoreError> {
         if !matches!(language, "en" | "fr") {
