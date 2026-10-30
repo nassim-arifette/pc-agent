@@ -102,6 +102,18 @@ function head(text) {
  * from it. Nothing is claimed about what the model "thought".
  */
 function stepLabel(step, steps = [], index = -1) {
+  if (step.type === "specialist") {
+    if (step.state === "running") return t("specialist.running");
+    const event = step.event;
+    if (event?.kind === "handoff") {
+      const reason = ({ handoff: "ready", summarize: "ready", ask: "ask", answer_review: "final",
+        unavailable: "unavailable", invalid_decision: "invalid", identity_mismatch: "identity", timeout: "timeout" })[event.reason] || "scope";
+      return t("specialist.handoff", { reason: t(`specialist.reason.${reason}`) });
+    }
+    const decision = event?.decision?.decision;
+    if (decision === "collect") return t("specialist.collect", { tool: toolLabel(event.decision.next_call?.tool) });
+    return t(decision === "ask" ? "specialist.ask" : "specialist.summarize");
+  }
   if (step.type === "snapshot") return t("step.snapshot");
   // A saved turn's switch says when it happened: its tool steps carry no request numbers.
   if (step.type === "switch" && step.after != null) return t(step.after === 1 ? "step.switch.after.one" : "step.switch.after", { model: modelName(step.to), count: step.after });

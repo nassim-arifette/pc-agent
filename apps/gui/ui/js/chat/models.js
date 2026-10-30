@@ -1,5 +1,6 @@
 // Friendly names for the Nemotron models the settings screen offers.
 const NAMES = {
+  "local/nemotron-nano-4b-specialist-v0.1.0": "Nano 4B specialist (local)",
   "nvidia/Nemotron-3.5-Super-VL": "Nemotron 3.5 Super VL",
   "nvidia/nemotron-3-super-120b-a12b": "Nemotron 3 Super",
   "nvidia/Nemotron-3-Ultra-550b-a55b": "Nemotron 3 Ultra",

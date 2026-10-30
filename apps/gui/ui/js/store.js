@@ -713,6 +713,20 @@ export async function morePage(kind) {
 }
 
 export function wireEvents() {
+  on("specialist:step", ({ turn_id: turnId, event }) => {
+    const inv = current(turnId);
+    if (!inv || !event) return;
+    const pending = [...inv.steps].reverse().find((s) => s.type === "specialist" && s.state === "running");
+    if (pending) pending.state = "done";
+    if (event.kind === "started") {
+      inv.steps.push({ key: `specialist-${inv.steps.length}`, type: "specialist", state: "running" });
+    } else {
+      const step = { key: `specialist-${inv.steps.length}`, type: "specialist", state: "done", event };
+      if (pending) Object.assign(pending, step);
+      else inv.steps.push(step);
+    }
+    notify("inv");
+  });
   on("turn:step", onStep);
   on("turn:delta", onDelta);
   on("turn:extension", onExtension);

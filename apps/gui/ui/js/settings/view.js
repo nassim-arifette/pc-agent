@@ -19,6 +19,7 @@ import { createCloudCheck, cloudError, cloudModelSelection } from "./onboarding.
 import { navigate } from "../router.js";
 import { keepFocus } from "../actionbar.js";
 import { failureText } from "../failure.js";
+import { specialistSettingsCard } from "./specialist.js";
 
 /** The AI form as typed and not saved yet; null fields follow the saved settings. */
 const typed = { key: "", choice: null, custom: null };
@@ -423,10 +424,13 @@ function aboutCard() {
 }
 
 export function mount(page) {
+  let specialist = null;
   let web = null;
   let voice = null;
   let report = null;
   const render = () => {
+    specialist?.dispose();
+    specialist = specialistSettingsCard();
     voice?.dispose();
     report?.dispose();
     voice = voiceSettingsCard();
@@ -437,7 +441,7 @@ export function mount(page) {
       h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, t("settings.title")), h("p", { class: "page-sub" }, t("settings.sub")))),
       h("div", { class: "stack settings-column" },
         h("section", { class: "card card-pad" }, h("h2", { class: "card-title" }, t("onboarding.title")), h("p", { class: "hint" }, t("onboarding.resume.note")), button(t("onboarding.resume"), { onClick: () => navigate("setup") })),
-        aiCard(), privacyCard(), voice.el, web.el, dataCard(), report.el, appearanceCard(render), aboutCard()),
+        aiCard(), specialist.el, privacyCard(), voice.el, web.el, dataCard(), report.el, appearanceCard(render), aboutCard()),
     ));
   };
   render();
@@ -450,6 +454,7 @@ export function mount(page) {
     else if (topic === "privacy") web?.redraw();
   });
   return () => {
+    specialist?.dispose();
     voice?.dispose();
     report?.dispose();
     unsubscribe();

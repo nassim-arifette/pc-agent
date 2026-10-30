@@ -4,7 +4,8 @@ An **experimental, synthetic-only** adaptation of
 [`nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1`](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1).
 The small model proposes a next read-only measurement, asks for timing, summarizes evidence
 for the general analyst, or hands off when coverage is insufficient. It is not a replacement
-for the existing large Nemotron analyst and is not integrated into the Tauri app.
+for the existing large Nemotron analyst. The optional desktop integration and the fully local
+base/adapter comparison are documented in [the local jury guide](LOCAL.md).
 
 ## Scope and safety
 
