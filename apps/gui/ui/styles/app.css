@@ -764,7 +764,17 @@ a {
   fill: var(--accent);
 }
 .mark-eye {
-  fill: var(--on-accent);
+  fill: #ffffff;
+}
+/* NVIDIA green irises and an amber beak, as on Nox herself, in every theme. */
+.mark-iris {
+  fill: #76b900;
+}
+.mark-pupil {
+  fill: #14182e;
+}
+.mark-beak {
+  fill: #f5a524;
 }
 .mark {
   flex: none;
