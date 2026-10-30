@@ -25,6 +25,7 @@ suggests changing runs only after you click.
 > **Nebius × NVIDIA Global AI Hackathon, *Best Apps and Agents* track.**
 > [Quick start](#quick-start) · [For judges](#for-judges) ·
 > [Nemotron on Token Factory](#how-pc-agent-uses-nvidia-nemotron-on-nebius-token-factory) ·
+> [Fine-tuned Nemotron Nano](#a-nemotron-nano-we-fine-tuned-on-nebius-ai-cloud) ·
 > [Tavily](#how-pc-agent-uses-tavily) · [Privacy](#privacy-and-safety) ·
 > [Feedback](#feedback-on-token-factory-and-nemotron)
 
@@ -228,6 +229,7 @@ flowchart LR
   | **Nemotron 3 Ultra** | deeper investigations; the engine can hand a hard question from Super to Ultra once |
   | **Nemotron 3 Nano** | cheapest option; slower in our tests |
   | **Nemotron 3.5 Super VL** | questions with an attached screenshot |
+  | **Nemotron Nano 4B, fine-tuned by us** | experimental next-measure specialist, trained on Nebius AI Cloud ([below](#a-nemotron-nano-we-fine-tuned-on-nebius-ai-cloud)); not in the app yet |
 
   The picker lists only the models your account's catalog offers. The automatic Super → Ultra
   hand-over stays off until a reviewed evaluation calibrates it.
@@ -254,11 +256,61 @@ flowchart LR
 - **Replayable runs.** The evaluation harness (`pcagent-eval`) records real tool outputs and
   replays them against Super and Ultra, so model comparisons cost model tokens only.
 
-Other Nebius services: none (no AI Cloud, Serverless Endpoints or Jobs). The tools must read the
-user's own PC, so the app runs on the desktop and calls Token Factory directly.
+Other Nebius services: **AI Cloud Compute**, to fine-tune a small Nemotron (next section). The
+app itself calls only Token Factory: the tools must read the user's own PC, so it runs on the
+desktop and calls Token Factory directly.
 
 Implementation details: [architecture](docs/architecture.md#the-agent-loop),
 [answer verification](docs/answer-verification.md), [evaluation harness](docs/eval.md).
+
+## A Nemotron Nano we fine-tuned on Nebius AI Cloud
+
+Big models are the analyst; a small one could do the routine first step: "which read-only
+measurement should I take next?". We trained that specialist from
+[`nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1`](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1).
+
+```mermaid
+flowchart LR
+    G["Synthetic episodes:<br/>CPU, memory, disk,<br/>normal, not enough data"] --> Q["QLoRA on one L40S<br/>Nebius AI Cloud"]
+    Q --> R["Adapter reloaded<br/>from disk"]
+    R --> E["Paired evaluation<br/>vs. the base model"]
+    E --> P["Release: adapter,<br/>data, raw results"]
+```
+
+- **What it learns.** For each state, the model picks one of these:
+  - the next measurement, from a closed, read-only subset of PC Agent's real inspection calls
+    with exact allowed arguments;
+  - a request for timing;
+  - a summary of the evidence for the analyst;
+  - a hand-off when coverage is too thin.
+
+  It has no execution, admin or clean-up authority.
+- **How it was trained.**
+  - **Data:** 420 synthetic training decisions. Scenario parents are split *before* variants,
+    so test scenarios never leak into training.
+  - **Recipe:** QLoRA with rank 16, two epochs, and completion-only labels.
+  - **Run:** one `gpu-l40s-a` instance on Nebius AI Cloud, with a $20 spending target. The
+    instance was then stopped and deleted, and the project inventory checked empty.
+- **Results** on 60 frozen test decisions from fresh scenarios:
+
+  | | Base Nano 4B | Fine-tuned |
+  | --- | --- | --- |
+  | Strict decisions | 0/60 | **52/60** |
+  | Whole episodes (teacher-forced) | 0/15 | **8/15** |
+  | Sequential exact-call replays | 0/15 | **6/15** |
+  | Median latency | 2.50 s | 3.45 s |
+
+- **Honest limits:**
+  - the data is synthetic and not reviewed by experts, so these are contract-following scores,
+    not real-PC diagnostic accuracy;
+  - the specialist is slower than the base model;
+  - it is **not wired into the app yet**: the Windows analyst still runs on Token Factory.
+- **Get it:** the scripts and full method are in
+  [`experiments/diagnostic-specialist`](experiments/diagnostic-specialist/README.md). The
+  adapter, data, raw generations and checksums are in the
+  [experimental release](https://github.com/nassim-arifette/pc-agent/releases/tag/nano4b-specialist-v0.1.0).
+  Only the adapter is distributed; the base model's NVIDIA Open Model License and Llama 3.1
+  terms apply.
 
 ## How PC Agent uses Tavily
 
@@ -419,7 +471,8 @@ has one pose per feature ([the set](docs/brand/nox/README.md)).
     [administrator helper](docs/elevation.md), [voice](docs/voice.md);
   - [history storage](docs/history-performance.md), [accessibility](docs/accessibility.md).
 - [Desktop app](docs/gui.md), [validation](docs/validation.md), [evaluation](docs/eval.md),
-  [installer](docs/installer.md).
+  [installer](docs/installer.md),
+  [fine-tuned Nano specialist](experiments/diagnostic-specialist/README.md).
 - [The plan](docs/plan.md), in French: vision, contracts and work plan.
 
 ## License
