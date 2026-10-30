@@ -3,6 +3,8 @@
 `pc-agent-demo.mp4` is the 2:55 English demo for the hackathon jury. `youtube-thumbnail.png` is
 its 1280×720 thumbnail.
 
+Watch it on YouTube: https://youtu.be/AghyEk9-4oY
+
 The product shots are recordings of the real interface running on the design mock's synthetic
 data (`apps/gui/dev/mock`), not a real PC. The memory price, the specialist's steps and every
 measurement are demo data. The "PC cleaner", Task Manager and AI agent terminal screens at the

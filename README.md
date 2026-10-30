@@ -19,12 +19,16 @@ Factory**, then investigates your machine with about two dozen read-only tools a
 answer. Every figure in that answer is checked against the measurement it cites. Anything it
 suggests changing runs only after you click.
 
+<p align="center"><a href="https://youtu.be/AghyEk9-4oY"><img src="docs/video/youtube-thumbnail.png" width="640" alt="PC Agent demo video on YouTube"></a></p>
+<p align="center"><a href="https://youtu.be/AghyEk9-4oY"><b>Watch the 3-minute demo on YouTube</b></a></p>
+
 ![A verified answer about a slow PC, with the measurement it cites open in the Sources panel](docs/images/chat-answer-sources.png)
 
 <sub>Screenshots show the interface on the design mock's synthetic data, not a real PC.</sub>
 
 > **Nebius × NVIDIA Global AI Hackathon, *Best Apps and Agents* track.**
-> [Quick start](#quick-start) · [For judges](#for-judges) ·
+> [Demo video](https://youtu.be/AghyEk9-4oY) · [Quick start](#quick-start) ·
+> [For judges](#for-judges) ·
 > [Nemotron on Token Factory](#how-pc-agent-uses-nvidia-nemotron-on-nebius-token-factory) ·
 > [Fine-tuned Nemotron Nano](#a-nemotron-nano-we-fine-tuned-on-nebius-ai-cloud) ·
 > [Tavily](#how-pc-agent-uses-tavily) · [Privacy](#privacy-and-safety) ·
@@ -176,6 +180,8 @@ and the local rules all keep working, and nothing leaves the PC.
 Windows 11). GPU temperature, memory and slowdown details need an NVIDIA GPU and driver.
 
 ## For judges
+
+Short on time? Watch the [3-minute demo video](https://youtu.be/AghyEk9-4oY) first.
 
 Bring your own Nebius key: answers are billed to that account, and each one shows its cost. You
 can also try everything except the written answers in local mode. A five-minute path:
