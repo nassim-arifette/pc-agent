@@ -2042,6 +2042,26 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 
 ## 8. Suivi
 
+**Integration du specialiste local (30 octobre, en cours) :** a la demande du porteur,
+le jury doit pouvoir executer le Nano 4B avec l'adaptateur publie, sans VM Nebius.
+Serveur Python sur loopback uniquement, base et revision epinglees, CPU ou CUDA, comparaison
+base/adaptateur rejouable hors cloud. Option distincte du selecteur Token Factory, desactivee
+par defaut. Le specialiste choisit uniquement son sous-catalogue de lectures : le controleur
+valide puis execute les vrais outils existants. Les observations gardent leurs citations.
+Les decisions et le relais sont visibles ; une sortie invalide, un outil indisponible ou
+un contexte trop grand passent explicitement a l'analyste existant. Aucun diagnostic
+specialiste n'est presente comme une preuve. L'analyste final reste sur Nebius avec les
+choix de partage C5 existants ; le mode local sans cloud ne doit jamais appeler Nebius.
+Les contrats de reponse, de partage et d'outils existants ne changent pas.
+Validation Windows generale en cours (30 octobre) : parcours natif sous compte standard,
+specialiste CPU reel puis analyste Nebius ; attribution des etapes locales corrigee apres
+le premier essai. La reponse de cet essai garde deux passages non verifies : aucune
+validation complete du diagnostic ni des fonctions encore non parcourues n'est revendiquee.
+Nox (30 octobre) : integration simple demandee par le porteur sur l'accueil et les conversations,
+avec les poses existantes embarquees en local. Aucun changement du modele ou des garanties de
+verification. A sa demande, controles essentiels et smoke test seulement ; campagne generale incomplete.
+
+
 **Expérience Nano 4B (30 octobre, terminée) :** banc Python indépendant dans
 `experiments/diagnostic-specialist`, sans modification de l'analyste Tauri. Adaptation QLoRA
 de `nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1`, sous-catalogue en lecture seule, corpus synthétique

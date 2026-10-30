@@ -28,6 +28,7 @@ pub mod projections;
 mod report;
 pub mod routing;
 pub mod selection;
+pub mod specialist;
 mod storage_context;
 pub use storage_context::{
     ContentContext, LocalStorageItem, SharedName, StorageContext, MAX_SHARED_NAMES,

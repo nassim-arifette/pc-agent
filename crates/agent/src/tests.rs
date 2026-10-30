@@ -11,6 +11,7 @@ mod follow_ups;
 mod limits;
 mod protocol;
 mod sharing;
+mod specialist;
 
 struct Script {
     replies: VecDeque<Result<Reply, AgentError>>,

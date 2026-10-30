@@ -3,6 +3,7 @@
 pub mod accounting;
 mod config;
 mod models;
+pub mod specialist;
 #[cfg(test)]
 use crate::models::catalog_pricing;
 use crate::models::{published_vision_support, Catalog, CATALOG_URL, PUBLIC_CATALOG_URL};

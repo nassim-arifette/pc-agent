@@ -14,6 +14,19 @@ use std::time::Duration;
 use tauri::State;
 
 #[tauri::command]
+pub(super) async fn specialist_get(check: bool) -> Result<crate::specialist::View, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::specialist::view(check))
+        .await
+        .map_err(|_| "Specialist status is unavailable.".into())
+}
+
+#[tauri::command]
+pub(super) fn specialist_set(enabled: bool) -> Result<crate::specialist::View, String> {
+    crate::specialist::set_enabled(enabled).map_err(str::to_owned)?;
+    Ok(crate::specialist::view(false))
+}
+
+#[tauri::command]
 pub(super) fn startup_get() -> Result<bool, Failure> {
     pcagent_inspect::autostart::get().map_err(failure::startup)
 }

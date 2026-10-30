@@ -118,6 +118,8 @@ pub fn run() {
             program_names,
         })
         .invoke_handler(tauri::generate_handler![
+            settings_commands::specialist_get,
+            settings_commands::specialist_set,
             settings_commands::app_info,
             turn_commands::current_turn,
             measurements::dashboard,

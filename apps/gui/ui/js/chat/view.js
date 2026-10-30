@@ -7,7 +7,7 @@ import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
 import { citationFacts, findingFacts, findingNextStep, findingSummary, targetText, volumeComparison } from "../phrases.js";
 import { markdown, labelCitations } from "../markdown.js";
-import { mark } from "../brand.js";
+import { nox } from "../nox.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "./composer.js";
 import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
 import { savedImage } from "./images.js";
@@ -22,6 +22,7 @@ import { call } from "../api.js";
 import { bytes, date, duration, labelled, number, usd } from "../format.js";
 import { modelName, startModelId } from "./models.js";
 import { costFigure, costText, modelChange, modelsLabel, recordedSwitch, routingNote, shareName, turnModels, usedModelIds } from "./usage.js";
+import { specialistRequestLabel } from "./specialist.js";
 import { navigate } from "../router.js";
 import { sourcesLabel, webDescriber, webOrigin, webStepQuery } from "./web.js";
 import { failureDetail, refusalText, turnFailureText } from "../failure.js";
@@ -92,8 +93,8 @@ function meta(report, inv) {
   return parts.join(" · ");
 }
 
-function head(text) {
-  return h("div", { class: "assistant-head" }, mark(20), h("span", null, text));
+function head(text, pose = "investigate") {
+  return h("div", { class: "assistant-head" }, nox(pose), h("span", null, text));
 }
 
 /**
@@ -102,11 +103,25 @@ function head(text) {
  * from it. Nothing is claimed about what the model "thought".
  */
 function stepLabel(step, steps = [], index = -1) {
+  if (step.type === "specialist") {
+    if (step.state === "running") return t("specialist.running");
+    const event = step.event;
+    if (event?.kind === "handoff") {
+      const reason = ({ handoff: "ready", summarize: "ready", ask: "ask", answer_review: "final",
+        unavailable: "unavailable", invalid_decision: "invalid", identity_mismatch: "identity", timeout: "timeout" })[event.reason] || "scope";
+      return t("specialist.handoff", { reason: t(`specialist.reason.${reason}`) });
+    }
+    const decision = event?.decision?.decision;
+    if (decision === "collect") return t("specialist.collect", { tool: toolLabel(event.decision.next_call?.tool) });
+    return t(decision === "ask" ? "specialist.ask" : "specialist.summarize");
+  }
   if (step.type === "snapshot") return t("step.snapshot");
   // A saved turn's switch says when it happened: its tool steps carry no request numbers.
   if (step.type === "switch" && step.after != null) return t(step.after === 1 ? "step.switch.after.one" : "step.switch.after", { model: modelName(step.to), count: step.after });
   if (step.type === "switch") return t("step.switch", { model: modelName(step.to) });
   if (step.type === "model") {
+    const localLabel = specialistRequestLabel(step);
+    if (localLabel) return t(localLabel);
     if (step.state === "failed") {
       const key = `step.model.failed.${step.outcome}`;
       const label = t(key);
@@ -529,7 +544,7 @@ function turnView(turn, index, { last, inv, cloud, cards = [] }) {
     { class: "turn" },
     requestView(turn.question, turn.selection ?? inv?.selection),
     savedImage(turn.image, state.conversation?.id, turn.id),
-    h("div", { class: "assistant" }, head(meta(report, inv)), routingNote(report), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), deeperChecks(turn, last, cards), followUps, footer),
+    h("div", { class: "assistant" }, head(meta(report, inv), ["local_rules", "local_evidence"].includes(report?.mode) ? "local" : "investigate"), routingNote(report), summary, report ? errorCallout(report) : null, partial, body, actionCards(turn, last), deeperChecks(turn, last, cards), followUps, footer),
   );
 }
 
@@ -639,7 +654,7 @@ export function mount(page) {
     suggestionsDrive = undefined;
     fill(
       column,
-      h("div", { class: "welcome" }, mark(36), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
+      h("div", { class: "welcome" }, h("div", { class: "nox-welcome" }, nox("hello", 120), h("span", null, "Nox")), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
       reportCard.el,
       adminCard.el,
     );
@@ -785,7 +800,7 @@ export function mount(page) {
           "section",
           { class: ["turn", enter ? "enter" : ""] },
           requestView(inv.question, inv.selection),
-          h("div", { class: "assistant" }, head(running ? `${inv.cloud ? liveModels(inv) : t("chat.local")} · ${t("chat.running")}` : meta(null, inv)), ...content),
+          h("div", { class: "assistant" }, head(running ? `${inv.cloud ? liveModels(inv) : t("chat.local")} · ${t("chat.running")}` : meta(null, inv), running ? "thinking" : "investigate"), ...content),
         ),
       );
       renderDraft();

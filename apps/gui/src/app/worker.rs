@@ -123,6 +123,17 @@ pub(super) fn investigation(
                 return Err((view::error_code(&e), message));
             }
         };
+        let specialist = (crate::specialist::enabled()
+            && !explain
+            && ask.image.is_none()
+            && ask.selected.is_none())
+        .then_some(pcagent_nebius::specialist::Local);
+        let model = pcagent_agent::specialist::Specialist::new(model, specialist, |event| {
+            let _ = app.emit(
+                "specialist:step",
+                serde_json::json!({"turn_id":ask.turn_id,"event":event}),
+            );
+        });
         let mut model = ObservedModel::new(model, stop.clone(), emit);
         let privacy = ask.privacy.ok_or_else(|| {
             (

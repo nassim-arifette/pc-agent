@@ -681,8 +681,25 @@ a {
   flex-direction: column;
   align-items: center;
   gap: 22px;
-  padding: max(40px, 14vh) 0 32px;
+  padding: clamp(24px, 6vh, 64px) 0 32px;
   text-align: center;
+}
+.nox {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+.nox-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.nox-welcome .nox {
+  width: clamp(80px, 13vh, 120px);
+  height: auto;
 }
 .welcome .ask {
   width: 100%;

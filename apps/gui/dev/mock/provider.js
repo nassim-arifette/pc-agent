@@ -2,6 +2,7 @@ import { wait, fail } from "./common.js";
 import { SUPER_ID, ULTRA_ID } from "./models.js";
 
 export function createProviderFixture(params) {
+  let specialistEnabled = false;
   let cloudMode = params.get("cloud") || "ready";
 
   let cloudKeyConfigured = cloudMode !== "none";
@@ -66,6 +67,8 @@ export function createProviderFixture(params) {
   }
 
   const commands = {
+    specialist_get: () => ({ enabled: specialistEnabled, endpoint: "127.0.0.1:8737 (synthetic UI fixture; no inference)", identity: null, error: "unavailable" }),
+    specialist_set: ({ enabled }) => { specialistEnabled = Boolean(enabled); return commands.specialist_get(); },
     model_routing_get: () => routingView(),
     model_routing_set: ({ settings }) => {
       if (settings.mode === "automatic" && !calibrated) fail("routing_unavailable", "Automatic routing requires a reviewed local Nemotron calibration.");
