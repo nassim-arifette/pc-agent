@@ -2042,6 +2042,12 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 
 ## 8. Suivi
 
+**Release Windows v0.1.2 (30 octobre, en preparation) :** version alignee dans les manifests
+Rust, Tauri et le mock ; publication demandee par le porteur depuis main avec Nox, le
+specialiste local optionnel et les fonctions fusionnees depuis v0.1.1. Livrables prevus :
+installateur NSIS par utilisateur, archive portable x64 et empreintes SHA-256. La regression
+generale et le cycle complet installation/mise a jour/desinstallation restent non valides.
+
 **Integration du specialiste local (30 octobre, en cours) :** a la demande du porteur,
 le jury doit pouvoir executer le Nano 4B avec l'adaptateur publie, sans VM Nebius.
 Serveur Python sur loopback uniquement, base et revision epinglees, CPU ou CUDA, comparaison

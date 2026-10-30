@@ -108,7 +108,7 @@ export function createLiveFixture({ params, publishSource, cloud }) {
       if (!["app-1", "app-7"].includes(applicationRef)) return { status: "stale", windows: [] };
       return localBrowserFixture(applicationRef, includeTabs, params.get("browser") === "partial");
     },
-    app_info: () => ({ version: "0.1.1", cloud: cloud(), models: [
+    app_info: () => ({ version: "0.1.2", cloud: cloud(), models: [
       { id: "nvidia/nemotron-3-super-120b-a12b", note: "recommended" },
       { id: "nvidia/Nemotron-3-Ultra-550b-a55b", note: "most_capable" },
       { id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", note: "cheaper_slower" },
