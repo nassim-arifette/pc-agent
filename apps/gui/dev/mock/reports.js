@@ -65,7 +65,40 @@ function webCitations() {
   ];
 }
 
+export const PRICE_QUERY = "DDR5 SO-DIMM 5600 MT/s 16 GB price";
+export const RAM_QUESTION = /more ram|plus de ram|upgrade|mémoire en plus|memory upgrade/i;
+
+// A synthetic upgrade answer: the module the PC takes, measured, then a dated web price.
+function upgradeAnswer() {
+  const french = language() === "fr";
+  const now = Date.now();
+  const text = french
+    ? "Oui, un ajout de mémoire aiderait : votre PC n'avait plus que 1,54 Gio de libre sur 15,73 Gio [O1]. Il utilise de la DDR5 SO-DIMM à 5600 MT/s, deux barrettes de 8 Gio, et accepte jusqu'à 64 Gio [O4].\n\nLe plus simple : remplacer les deux barrettes par 2 × 16 Gio du même type. Une barrette de 16 Gio DDR5-5600 SO-DIMM se trouve aujourd'hui entre 39,90 € et 54,90 € [W3]. C'est un prix relevé sur le web aujourd'hui, pas une mesure : vérifiez-le avant d'acheter.\n\nAvant de dépenser quoi que ce soit, fermer les onglets de **Google Chrome** inutiles libère déjà 2,31 Gio [O1]."
+    : "Yes, more memory would help: only 1.54 GiB of 15.73 GiB was free [O1]. Your PC takes DDR5 SO-DIMM at 5600 MT/s, has two 8 GiB modules, and supports up to 64 GiB [O4].\n\nThe simple upgrade: replace both with 2 × 16 GiB of the same type. A 16 GiB DDR5-5600 SO-DIMM module costs between €39.90 and €54.90 today [W3]. That price comes from the web today, not a measurement: check it before you buy.\n\nBefore spending anything, closing the **Google Chrome** tabs you don't need already frees 2.31 GiB [O1].";
+  return {
+    text,
+    confidence: "medium",
+    category: "memory",
+    citations: [
+      { reference: "O1", kind: "observation", title: "get_system_snapshot",
+        facts: ["Available physical memory: 1.54 GiB of 15.73 GiB (9.8%).", "Google Chrome used 2.31 GiB of RAM (working set)."],
+        fact_phrases: [availableFact, processFact] },
+      { reference: "O4", kind: "observation", title: "get_hardware_inventory",
+        facts: ["Memory: DDR5 SO-DIMM, 5600 MT/s, 2 modules of 8 GiB, 2 of 2 slots used, up to 64 GiB supported (firmware)."],
+        earlier: false, measured_at_unix_ms: now - 5000 },
+      { reference: "W3", kind: "web", title: "16 GB DDR5-5600 SO-DIMM laptop memory: price comparison",
+        facts: ["16 GB DDR5-5600 SO-DIMM modules listed from €39.90 to €54.90 across 9 shops."],
+        earlier: false, measured_at_unix_ms: null,
+        web: { domain: "prices.example", url: "https://prices.example/synthetic/ddr5-5600-sodimm-16gb", published_date: null, searched_at_unix_ms: now - 4000, query: PRICE_QUERY } },
+    ],
+    follow_ups: french ? ["Comment installer la mémoire ?", "Quelles applications utilisent le plus de mémoire ?"] : ["How do I install the memory?", "Which apps use the most memory?"],
+    unverified: [],
+    repairs: 0,
+  };
+}
+
 function mockAnswer(question, web = false) {
+  if (web && RAM_QUESTION.test(question)) return upgradeAnswer();
   const french = language() === "fr";
   const lead = french
     ? "\n\nUne piste en plus : votre pilote graphique est en version 32.0.15.6094 [O3], et les notes de NVIDIA pour la version 566.36 corrigent une consommation de mémoire trop élevée dans les navigateurs avec l'accélération matérielle [W1] ; NVIDIA la décrit aussi comme un problème connu [W2]. C'est un indice venu du web, pas une mesure : mettez à jour le pilote seulement si le ralentissement continue après avoir fermé des onglets."

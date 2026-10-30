@@ -2,6 +2,7 @@ import { wait, fail } from "./common.js";
 import { SUPER_ID, ULTRA_ID } from "./models.js";
 
 export function createProviderFixture(params) {
+  const specialistReady = params.get("specialist") === "ready";
   let specialistEnabled = false;
   let cloudMode = params.get("cloud") || "ready";
 
@@ -67,7 +68,12 @@ export function createProviderFixture(params) {
   }
 
   const commands = {
-    specialist_get: () => ({ enabled: specialistEnabled, endpoint: "127.0.0.1:8737 (synthetic UI fixture; no inference)", identity: null, error: "unavailable" }),
+    // ?specialist=ready: the published identity the real check reports; still no inference here.
+    specialist_get: () => specialistReady
+      ? { enabled: specialistEnabled, endpoint: "127.0.0.1:8737 (synthetic UI fixture; no inference)", error: null,
+          identity: { protocol: 1, model: "nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1", revision: "d552708a9d575fa8d4a690b988fd870d65279f98",
+            adapter_sha256: "b85a03348ebeb27a327bcf53c5b3da3bde931a34337650d0eccb9d5887dbd459", device: "cuda", precision: "nf4", synthetic_training_only: true } }
+      : { enabled: specialistEnabled, endpoint: "127.0.0.1:8737 (synthetic UI fixture; no inference)", identity: null, error: "unavailable" },
     specialist_set: ({ enabled }) => { specialistEnabled = Boolean(enabled); return commands.specialist_get(); },
     model_routing_get: () => routingView(),
     model_routing_set: ({ settings }) => {
@@ -115,5 +121,5 @@ export function createProviderFixture(params) {
       return cloud();
     }
   };
-  return { commands, cloud, escalation, calibrationReviewedAt, hasSearchKey: () => Boolean(searchKey), routingMode: () => routingSettings.mode };
+  return { commands, cloud, escalation, calibrationReviewedAt, hasSearchKey: () => Boolean(searchKey), specialistActive: () => specialistReady && specialistEnabled, routingMode: () => routingSettings.mode };
 }

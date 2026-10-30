@@ -1,5 +1,5 @@
 import { wait } from "./common.js";
-import { report, DRIVER_QUERY } from "./reports.js";
+import { report, DRIVER_QUERY, PRICE_QUERY, RAM_QUESTION } from "./reports.js";
 import { SUPER_ID, ULTRA_ID } from "./models.js";
 import { createUsageFixture } from "./usage.js";
 
@@ -38,6 +38,25 @@ export function createInvestigationRunner({ emit, getRunning, done, webActive, p
       step({ kind: "tool_finished", ...event });
     };
     if (getRunning().stop) return done(id, report(question, true, "cancelled"));
+    // ?specialist=ready with the setting on: the local Nano 4B chooses the first measurement,
+    // the controller runs it, then the specialist hands the evidence to the Nebius analyst.
+    if (provider.specialistActive()) {
+      const local = (event) => emit("specialist:step", { turn_id: getRunning().turnId, event });
+      request += 1;
+      step({ kind: "model_started", request });
+      local({ kind: "started" });
+      await wait(1500);
+      local({ kind: "decided", decision: { decision: "collect", next_call: { tool: "get_processes", arguments: {} } }, duration_ms: 1480, device: "cuda" });
+      step({ kind: "model_finished", request, duration_ms: 1480, prompt_tokens: 1310, completion_tokens: 42, outcome: "ok" });
+      await tool("get_processes", 420);
+      request += 1;
+      step({ kind: "model_started", request });
+      local({ kind: "started" });
+      await wait(1100);
+      local({ kind: "decided", decision: { decision: "summarize" }, duration_ms: 1090, device: "cuda" });
+      step({ kind: "model_finished", request, duration_ms: 1090, prompt_tokens: 1780, completion_tokens: 51, outcome: "ok" });
+      local({ kind: "handoff", reason: "summarize" });
+    }
     await model(1400, 4627, 83);
     if (/fail|échec/i.test(question)) {
       await model(1600, 9880, 8192, "output_limit");
@@ -47,7 +66,10 @@ export function createInvestigationRunner({ emit, getRunning, done, webActive, p
     await tool("get_processes", 420);
     await tool("get_metric_history", 180);
     const web = webActive();
-    if (web) {
+    if (web && RAM_QUESTION.test(question)) {
+      await tool("get_hardware_inventory", 300);
+      await tool("lookup_upgrade_price", 1200, "ok", PRICE_QUERY);
+    } else if (web) {
       await tool("get_drivers", 260);
       await tool("lookup_driver_notes", 1100, "ok", DRIVER_QUERY);
     }
