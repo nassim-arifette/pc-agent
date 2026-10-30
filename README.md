@@ -229,7 +229,7 @@ flowchart LR
   | **Nemotron 3 Ultra** | deeper investigations; the engine can hand a hard question from Super to Ultra once |
   | **Nemotron 3 Nano** | cheapest option; slower in our tests |
   | **Nemotron 3.5 Super VL** | questions with an attached screenshot |
-  | **Nemotron Nano 4B, fine-tuned by us** | experimental next-measure specialist, trained on Nebius AI Cloud ([below](#a-nemotron-nano-we-fine-tuned-on-nebius-ai-cloud)); not in the app yet |
+  | **Nemotron Nano 4B, fine-tuned by us** | experimental next-measure specialist, trained on Nebius AI Cloud ([below](#a-nemotron-nano-we-fine-tuned-on-nebius-ai-cloud)); optional, runs on your PC before the analyst |
 
   The picker lists only the models your account's catalog offers. The automatic Super → Ultra
   hand-over stays off until a reviewed evaluation calibrates it.
@@ -304,7 +304,10 @@ flowchart LR
   - the data is synthetic and not reviewed by experts, so these are contract-following scores,
     not real-PC diagnostic accuracy;
   - the specialist is slower than the base model;
-  - it is **not wired into the app yet**: the Windows analyst still runs on Token Factory.
+  - in the app it is **optional and off by default**: when you turn it on in Settings, it runs
+    on your PC (loopback only), picks the first read-only measurement, then hands off to the
+    Nemotron analyst on Token Factory, which still writes and verifies the answer. Setup:
+    [LOCAL.md](experiments/diagnostic-specialist/LOCAL.md).
 - **Get it:** the scripts and full method are in
   [`experiments/diagnostic-specialist`](experiments/diagnostic-specialist/README.md). The
   adapter, data, raw generations and checksums are in the
