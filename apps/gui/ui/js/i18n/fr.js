@@ -1309,6 +1309,8 @@ export const fr = {
   "report.ask.question": "Mon rapport quotidien a trouvé des points à voir. Que se passe-t-il et que dois-je faire ?",
   "failure.schedule_failed": "Windows n’a pas permis à PC Agent de créer, lire ou supprimer la tâche du rapport quotidien.",
   "failure.report_failed": "Le rapport quotidien n’a pas pu être écrit ou lu.",
+  "sidebar.resize": "Redimensionner la liste des conversations",
+  "sidebar.results": "{count} conversation(s) trouvée(s)",
 };
 
 // English finding headings are supplied by the core.

@@ -1312,4 +1312,6 @@ export const en = {
   "report.ask.question": "My daily report found points to review. What is going on and what should I do?",
   "failure.schedule_failed": "Windows did not let PC Agent create, read or remove the daily report task.",
   "failure.report_failed": "The daily report could not be written or read.",
+  "sidebar.resize": "Resize the conversation list",
+  "sidebar.results": "{count} conversation(s) found",
 };

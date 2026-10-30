@@ -4,7 +4,9 @@
 #![forbid(unsafe_code)]
 mod battery;
 mod elevated;
+mod search;
 pub use elevated::{ElevatedInspection, ELEVATED_RETENTION_MS, MAX_ELEVATED_RECORD_BYTES};
+pub use search::{ConversationMatch, MAX_SEARCH_RESULTS};
 mod images;
 pub mod web_cache;
 pub use images::{ImageInfo, ImageRecord, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};

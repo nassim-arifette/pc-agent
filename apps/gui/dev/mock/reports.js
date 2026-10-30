@@ -15,7 +15,7 @@ const faultFact = p("fact.hard_faults", { rate: q("pages_per_second_x100", 1240)
 const processFact = p("observation.metric_value", {
   metric: q("metric", "process_working_set_bytes"),
   value: q("bytes", Math.round(2.31 * GiB)),
-  entity: q("process", { name: "chrome.exe", pid: 4000 }),
+  entity: q("process", { name: "Google Chrome", pid: 4000 }),
 });
 
 function finding(classification, label, support, summary, extra = {}) {
@@ -71,15 +71,15 @@ function mockAnswer(question, web = false) {
     ? "\n\nUne piste en plus : votre pilote graphique est en version 32.0.15.6094 [O3], et les notes de NVIDIA pour la version 566.36 corrigent une consommation de mémoire trop élevée dans les navigateurs avec l'accélération matérielle [W1] ; NVIDIA la décrit aussi comme un problème connu [W2]. C'est un indice venu du web, pas une mesure : mettez à jour le pilote seulement si le ralentissement continue après avoir fermé des onglets."
     : "\n\nOne more lead: your graphics driver is 32.0.15.6094 [O3], and NVIDIA's notes for version 566.36 fix higher than expected memory use in browsers with hardware acceleration [W1]; NVIDIA also lists it as a known issue [W2]. This is a hint from the web, not a measurement: update the driver only if the slowdown continues after closing tabs.";
   const text = (french
-    ? "Votre PC rame surtout parce que la mémoire vive est presque pleine : il ne restait que 1,54 Gio de libre sur 15,73 Gio [O1], et Windows relisait 12,4 pages par seconde depuis le disque pour compenser [F2]. J'en suis moyennement sûr : c'est une mesure d'une seconde.\n\nCe que vous pouvez faire :\n1. Fermez les onglets de **chrome.exe (PID 4000)** dont vous n'avez pas besoin : il occupe 2,31 Gio [O1].\n2. Gardez PC Agent ouvert pendant le prochain ralentissement et reposez la question, pour confirmer.\n\nLe processeur n'était pas saturé (18,5 % [O1]) et le disque répondait en moins de 3 ms [O1] : ils ne semblent pas en cause."
-    : "Your PC is slow mainly because memory is almost full: only 1.54 GiB of 15.73 GiB was available [O1], and Windows read 12.4 pages per second back from disk to compensate [F2]. I'm moderately sure: this is a one-second measurement.\n\nWhat you can do:\n1. Close the **chrome.exe (PID 4000)** tabs you don't need: it holds 2.31 GiB [O1].\n2. Keep PC Agent open during the next slowdown and ask again to confirm.\n\nThe processor was not saturated (18.5% [O1]) and the disk answered in under 3 ms [O1], so they don't look involved.") + (web ? lead : "");
+    ? "Votre PC rame surtout parce que la mémoire vive est presque pleine : il ne restait que 1,54 Gio de libre sur 15,73 Gio [O1], et Windows relisait 12,4 pages par seconde depuis le disque pour compenser [F2]. J'en suis moyennement sûr : c'est une mesure d'une seconde.\n\nCe que vous pouvez faire :\n1. Fermez les onglets de **Google Chrome** dont vous n'avez pas besoin : il occupe 2,31 Gio [O1].\n2. Gardez PC Agent ouvert pendant le prochain ralentissement et reposez la question, pour confirmer.\n\nLe processeur n'était pas saturé (18,5 % [O1]) et le disque répondait en moins de 3 ms [O1] : ils ne semblent pas en cause."
+    : "Your PC is slow mainly because memory is almost full: only 1.54 GiB of 15.73 GiB was available [O1], and Windows read 12.4 pages per second back from disk to compensate [F2]. I'm moderately sure: this is a one-second measurement.\n\nWhat you can do:\n1. Close the **Google Chrome** tabs you don't need: it holds 2.31 GiB [O1].\n2. Keep PC Agent open during the next slowdown and ask again to confirm.\n\nThe processor was not saturated (18.5% [O1]) and the disk answered in under 3 ms [O1], so they don't look involved.") + (web ? lead : "");
   return {
     text,
     confidence: "medium",
     category: "memory",
     citations: [
       { reference: "O1", kind: "observation", title: "get_system_snapshot",
-        facts: ["Available physical memory: 1.54 GiB of 15.73 GiB (9.8%).", "chrome.exe (PID 4000) used 2.31 GiB of RAM (working set).", "CPU busy: 18.5%.", "Disk read response time: 1.3 ms."],
+        facts: ["Available physical memory: 1.54 GiB of 15.73 GiB (9.8%).", "Google Chrome used 2.31 GiB of RAM (working set).", "CPU busy: 18.5%.", "Disk read response time: 1.3 ms."],
         fact_phrases: [availableFact, processFact, cpuFact, p("fact.disk_read_latency", { latency: q("microseconds", 1300) })] },
       { reference: "F2", kind: "finding", classification: "hard_fault_pressure", title: "Heavy hard-fault paging",
         facts: ["12.4 pages per second were read from disk to resolve hard faults."], fact_phrases: [faultFact] },
@@ -102,11 +102,11 @@ export function report(question, cloudRun, error = null, { web = false, toolEven
         next_step_phrase: p("next.observe_longer"),
         limitation_phrases: [p("support.abstention")],
       })
-    : finding("low_available_memory", "Low available memory", "plausible", "Available physical memory was 9.8% of 15.73 GiB during the one-second sample, and chrome.exe (PID 4000) was the largest contributor.", {
+    : finding("low_available_memory", "Low available memory", "plausible", "Available physical memory was 9.8% of 15.73 GiB during the one-second sample, and Google Chrome was the largest contributor.", {
         facts: [
           "Available physical memory: 1.54 GiB of 15.73 GiB (9.8%).",
           "System commit: 18.20 GiB of its 24.00 GiB limit (75.8%).",
-          "chrome.exe (PID 4000) used 2.31 GiB of RAM (working set).",
+          "Google Chrome used 2.31 GiB of RAM (working set).",
           "Hard-fault page reads: 12.4 pages/s.",
         ],
         fact_phrases: [
@@ -142,7 +142,7 @@ export function report(question, cloudRun, error = null, { web = false, toolEven
     alternatives: error
       ? []
       : [
-          finding("largest_memory_contributor", "Largest memory contributor", "supported", "chrome.exe (PID 4000) held 2.31 GiB of RAM, the most of any readable program."),
+          finding("largest_memory_contributor", "Largest memory contributor", "supported", "Google Chrome held 2.31 GiB of RAM, the most of any readable program."),
           finding("hard_fault_pressure", "Heavy hard-fault paging", "plausible", "12.4 pages per second were read from disk to resolve hard faults."),
         ],
     answer: cloudRun && !error ? mockAnswer(question, web) : null,
