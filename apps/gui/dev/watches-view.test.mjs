@@ -46,7 +46,7 @@ globalThis.window = {
   } }, event: { listen: async (name, cb) => { handlers.set(name, (payload) => cb({ payload })); return () => handlers.delete(name); } } },
 };
 globalThis.CustomEvent = class { constructor(type) { this.type = type; } };
-const { createWatchFixture } = await import("./mock/watches.js");
+const { createWatchFixture } = await import("./test-support/watches.js");
 const { connect } = await import("../ui/js/api.js");
 const { mount } = await import("../ui/js/watches/view.js");
 const { liveWatch } = await import("../ui/js/watches/model.js");
@@ -139,7 +139,7 @@ test("the runtime keeps the unseen count and opens Watches from a notification c
   handlers.get("watch:changed")(5);
   assert.equal(seen, 5);
   window.location.hash = "#/live";
-  handlers.get("watch:open")("watch-alert-mock-1");
+  handlers.get("watch:open")("watch-alert-test-1");
   assert.equal(window.location.hash, "#/watches");
   handlers.get("watch:alert")({ alert: {}, unseen_alerts: 6 });
   assert.equal(runtime.unseenAlerts(), 6);

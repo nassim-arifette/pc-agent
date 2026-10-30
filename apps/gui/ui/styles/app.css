@@ -4683,3 +4683,15 @@ details.more > div {
   color: inherit;
   font-weight: 600;
 }
+
+/* A plain browser cannot access the native measurement host. */
+.app.host-unavailable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+.host-unavailable .empty-state {
+  max-width: 36rem;
+  text-align: center;
+}

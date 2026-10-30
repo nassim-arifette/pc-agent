@@ -33,11 +33,6 @@ actually been measured. Nothing below claims a screen-reader or native Windows a
 
 ## Measured
 
-- 29 October, with the mock in headless Chromium (Linux): the rendered audit covered 222 states.
-  The first run reported 27 English leaks in the French rendering, all folder names of the
-  Storage map, tree and inspector that were not marked as local names. After marking them, the
-  same run reports **0 English interface leaks** in 222 states, with 96 texts intentionally
-  preserved (local names, model and web text).
 - Node tests: dictionary parity and placeholders, the audit's classification, the CLI closed
   sentences.
 

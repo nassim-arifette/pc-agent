@@ -623,7 +623,18 @@ function extensionDialog() {
 async function boot() {
   const initialHash = window.location.hash;
   loadPrefs();
-  await connect();
+  try {
+    await connect();
+  } catch (error) {
+    if (error.code !== "host_unavailable") throw error;
+    const host = document.getElementById("app");
+    host.classList.add("host-unavailable");
+    fill(host, h("main", { class: "empty-state", role: "main" },
+      h("h1", null, "PC Agent"),
+      h("p", null, t("app.desktopRequired")),
+    ));
+    return;
+  }
   shareLanguage();
   renderShell();
   onUnseenChange(() => renderRail());

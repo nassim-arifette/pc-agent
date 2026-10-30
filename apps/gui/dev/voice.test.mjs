@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createVoiceDraft } from "../ui/js/chat/voice-draft.js";
-import { createVoiceFixture } from "./mock/voice.js";
+import { createVoiceFixture } from "./test-support/voice.js";
 import { en } from "../ui/js/i18n/en.js";
 import { fr } from "../ui/js/i18n/fr.js";
 
@@ -111,7 +111,7 @@ test("model consent, progress, cancellation, deletion and active-operation exclu
   assert.equal((await h.invoke("voice_model_state")).installed, false);
 });
 
-test("voice errors are actionable in both languages and no mock audio is captured", async () => {
+test("voice errors are actionable in both languages and no audio is captured by the tests", async () => {
   for (const code of ["no_device", "permission_denied", "device_unavailable", "engine_unavailable"]) {
     const h = harness(`voice=${code}`);
     await h.draft.start("");

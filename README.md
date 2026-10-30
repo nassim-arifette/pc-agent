@@ -24,8 +24,6 @@ suggests changing runs only after you click.
 
 ![A verified answer about a slow PC, with the measurement it cites open in the Sources panel](docs/images/chat-answer-sources.png)
 
-<sub>Screenshots show the interface on the design mock's synthetic data, not a real PC.</sub>
-
 > **Nebius × NVIDIA Global AI Hackathon, *Best Apps and Agents* track.**
 > [Demo video](https://youtu.be/AghyEk9-4oY) · [Quick start](#quick-start) ·
 > [For judges](#for-judges) ·
@@ -430,7 +428,7 @@ cargo build --release --locked -p pcagent-gui -p pcagent-elevated -p pcagent
 ```
 
 - **Interface:** plain HTML, CSS and JavaScript modules embedded in the executable, with no Node
-  build. It can be reviewed in a browser against synthetic data ([desktop app notes](docs/gui.md)).
+  build. The interface connects to the native desktop host ([desktop app notes](docs/gui.md)).
 - **Installer:** a per-user installer can be built as described in
   [docs/installer.md](docs/installer.md); it has not been tested yet.
 - **Linux:** the workspace also compiles on Linux for its tests, but the app runs only on Windows.

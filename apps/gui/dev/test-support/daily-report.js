@@ -1,3 +1,5 @@
+// Node-only test support; never loaded by the application.
+import "node:assert/strict";
 // Synthetic daily report (chantier 17): the Windows task and the latest report file.
 // ?report=none (no report written yet), ?report=quiet (nothing to review),
 // ?report=unsupported (not Windows: no task, a report can still be written on request),

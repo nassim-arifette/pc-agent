@@ -1,8 +1,7 @@
 # Phase 1 backend contracts
 
 This implementation covers the conversation engine, privacy boundary, read-only inspection tools,
-process activity, and persistent performance history. Frontend JavaScript, styles, markup and
-mock data are deliberately unchanged. The conversation and settings screens still need the
+process activity, and persistent performance history. Frontend JavaScript, styles and markup are deliberately unchanged. The conversation and settings screens still need the
 integration described below before all backend capabilities are visible to a person.
 
 ## Model boundary and verification

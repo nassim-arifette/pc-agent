@@ -2,8 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { axisLabels, decodeChart, periodWindow, shouldReload, watchRule, missingDuration, timelineGroups } from "../ui/js/history/data.js";
-import { createHistoryFixture } from "./mock/history.js";
-import { virtualClock } from "./mock-cases.mjs";
 
 test("compact chart decodes nulls, bands, coverage, durations and disconnects without duplicating metadata", () => {
   const chart = { from_unix_ms: 1, to_unix_ms: 3000, gaps: [], events: [{ id: "event-1", contributor_ref: "proc-1", started_at_unix_ms: 2 }],
@@ -61,66 +59,6 @@ test("dense timeline groups reserve space for event numbers and counts when the 
   assert.equal(groups.reduce((count, group) => count + group.items.length, 0), 363);
   for (let i = 1; i < groups.length; i++) assert.ok((groups[i].left - groups[i - 1].left) * 350 / 100 >= 81);
   assert.equal(timelineGroups(events, 0, 363000, 72).length, 1);
-});
-
-function fixture(t, query = "history=fast") {
-  const clock = virtualClock();
-  t.mock.method(Date, "now", clock.now);
-  globalThis.window = { setTimeout: clock.setTimeout };
-  const publications = [];
-  const { commands } = createHistoryFixture({ params: new URLSearchParams(query), batteryMode: "none",
-    publishSource: (targets) => { publications.push(targets); return `selection-source-${publications.length}`; } });
-  const call = async (name, args) => {
-    const result = await clock.settle(Promise.resolve().then(() => commands[name](args)));
-    if (result.error) throw result.error;
-    return result.value;
-  };
-  return { call, clock, publications };
-}
-
-test("realistic mock returns all events, seven bucketed curves, and one source per load", async (t) => {
-  const { call, clock, publications } = fixture(t);
-  const chart = await call("history_chart", { fromUnixMs: clock.now() - 86400000, toUnixMs: clock.now(), buckets: 300 });
-  assert.equal(chart.series.length, 7);
-  assert.ok(chart.series.every((s) => s.points.length <= 300 && s.points.every((p) => p.length === 11)));
-  assert.ok(chart.events.length > 256);
-  assert.equal(publications.length, 1);
-  assert.equal(publications[0].length, chart.events.length + 4);
-  assert.equal(JSON.stringify(chart).match(/"events":/g).length, 1);
-  assert.ok(chart.gaps.length);
-  assert.ok(chart.series.some((s) => s.points.some((p) => p[1] === null)));
-});
-
-test("overview and paginated recordings expose all records; details retain local peaks", async (t) => {
-  const { call, clock } = fixture(t);
-  const overview = await call("history_overview", { dayStartUnixMs: clock.now() - 12 * 3600000 });
-  assert.ok(overview.periods.find((p) => p.id === "day").event_count > 256);
-  assert.equal(overview.recordings.length, 20);
-  assert.equal(overview.more_recordings, true);
-  const page = await call("history_recordings", { offset: 20 });
-  assert.equal(page.recordings.length, 7);
-  assert.equal(page.more, false);
-  const detail = await call("recording_detail", { recordingId: page.recordings[0].id });
-  assert.equal(detail.resource_peaks.observations.length, 3);
-  assert.equal(detail.minute_summaries, true);
-  assert.ok(detail.source_id);
-  assert.equal(await call("recording_detail", { recordingId: "recording-missing" }), null);
-});
-
-test("budget reports protected overflow without deleting recordings; explicit clear removes them", async (t) => {
-  const { call } = fixture(t);
-  const small = await call("history_collection_set_budget", { bytes: 1048576 });
-  assert.equal(small.over_budget, true);
-  assert.ok(small.protected_samples > 0);
-  assert.equal((await call("history_recordings", { offset: 0 })).recordings.length, 20);
-  await call("history_clear");
-  assert.equal((await call("history_collection")).oldest_unix_ms, null);
-  assert.equal((await call("history_recordings", { offset: 0 })).recordings.length, 0);
-});
-
-test("mock explicitly rejects unavailable History rather than silently fabricating empty charts", async (t) => {
-  const { call, clock } = fixture(t, "history=unavailable");
-  await assert.rejects(call("history_chart", { fromUnixMs: clock.now() - 1000, toUnixMs: clock.now(), buckets: 300 }), (e) => e.code === "history_unavailable");
 });
 
 test("dark-theme event markers use semantic warning colour and a visible outline", () => {

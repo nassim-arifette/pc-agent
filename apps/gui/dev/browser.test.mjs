@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { browserFixture, localBrowserFixture } from "./mock/browser.js";
+import { browserFixture, localBrowserFixture } from "./test-support/browser.js";
 import { BROWSER_TYPES, browserSummary, sortedBrowserTypes } from "../ui/js/live/browser.js";
 import { en } from "../ui/js/i18n/en.js";
 import { fr } from "../ui/js/i18n/fr.js";

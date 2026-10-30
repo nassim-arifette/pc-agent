@@ -54,8 +54,8 @@ cargo build --release --locked -p pcagent -p pcagent-gui
 - La toolchain est Rust 1.90.0 (`rust-toolchain.toml`). La CI tourne sur Windows et Ubuntu.
 - Sur le PC de dev, C: est presque plein : définir `$env:CARGO_TARGET_DIR = "D:\pcagent-target"`
   avant de compiler.
-- La QA visuelle de l'interface se fait sans compiler, avec les données simulées et les captures
-  décrites dans [docs/gui.md](docs/gui.md).
+- La QA visuelle de l'interface se fait dans l'application native, selon
+  [docs/gui.md](docs/gui.md).
 
 ## Conventions
 

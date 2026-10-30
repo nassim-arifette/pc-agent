@@ -1,3 +1,5 @@
+// Node-only test support; never loaded by the application.
+import "node:assert/strict";
 import { GiB, fmt, m } from "./common.js";
 
 // Synthetic browser measurements; totals and every member agree with the type breakdown.

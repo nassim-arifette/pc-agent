@@ -1,6 +1,4 @@
-// Bridge to the Rust side. Inside the app, Tauri provides window.__TAURI__; opened in a plain
-// browser for design work, a local mock with synthetic data answers instead (never shipped: it
-// lives outside the ui folder that the app embeds).
+// Bridge to the native Rust host. Measurements and commands require the desktop application.
 let impl = null;
 
 export async function connect() {
@@ -18,13 +16,11 @@ export async function connect() {
         });
         return () => off();
       },
-      mock: false,
     };
     return impl;
   }
-  const { createMock } = await import("../../dev/mock.js");
-  impl = createMock();
-  return impl;
+  impl = null;
+  throw commandError({ code: "host_unavailable", message: "Open the PC Agent desktop application." });
 }
 
 /**
@@ -59,8 +55,4 @@ export function on(name, callback) {
 /** Drag-and-drop of files or folders onto the window (paths are resolved by Rust). */
 export function onDrop(callback) {
   return impl.onDrop(callback);
-}
-
-export function isMock() {
-  return Boolean(impl?.mock);
 }

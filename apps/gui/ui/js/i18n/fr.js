@@ -1,6 +1,7 @@
 // French interface dictionary and finding headings; measurement phrases live in phrases.js.
 import { watchesFr } from "./watches.js";
 export const fr = {
+  "app.desktopRequired": "Ouvrez l’application PC Agent pour consulter les mesures de ce PC.",
   "specialist.title": "Spécialiste Nano 4B local",
   "specialist.reason.ready": "preuves prêtes",
   "specialist.reason.ask": "précision nécessaire",

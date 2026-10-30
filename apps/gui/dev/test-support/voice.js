@@ -1,4 +1,6 @@
-/** Synthetic text only: the design mock never accesses the browser microphone or a network. */
+// Node-only test support; never loaded by the application.
+import "node:assert/strict";
+/** Synthetic text only: this test fixture never accesses the browser microphone or a network. */
 export function createVoiceFixture({ params = new URLSearchParams(), emit, schedule = setTimeout, unschedule = clearTimeout }) {
   let settings = { engine: "auto", language: "auto", device_id: null };
   let state = { phase: "idle", sequence: 0, session_id: null, text: "", partial: "", level: 0 };
@@ -31,7 +33,7 @@ export function createVoiceFixture({ params = new URLSearchParams(), emit, sched
     voice_state: () => ({ ...state }),
     voice_settings_get: () => ({ ...settings }),
     voice_settings_set: ({ settings: next }) => { guard(); settings = { ...next }; },
-    voice_devices: () => params.get("voice") === "no_device" ? [] : [{ id: "synthetic-mic", name: "Synthetic microphone (mock)", is_default: true }],
+    voice_devices: () => params.get("voice") === "no_device" ? [] : [{ id: "synthetic-mic", name: "Test microphone", is_default: true }],
     voice_model_state: () => ({ ...model }),
     voice_start: ({ consent }) => {
       if (!consent) fail("consent_required");

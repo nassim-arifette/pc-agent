@@ -1,3 +1,5 @@
+// Node-only test support; never loaded by the application.
+import "node:assert/strict";
 // Synthetic C7 watches: rules, their live state as the evaluator reports it, alerts of the last
 // seven days and the local weekly summary. ?watches=none starts without rules or alerts;
 // ?watches=paused shows another window evaluating; ?notifications=disabled, Windows having
@@ -11,12 +13,12 @@ const target = (rule) => `${rule.kind}:${rule.root ?? rule.resource ?? rule.nvml
 export function createWatchFixture(params, publishSource) {
   const now = () => Date.now();
   const none = params.get("watches") === "none";
-  // The same C: as Live PC's mock, so screenshots agree (0.3 GiB free unless ?disk=ok).
+  // Controlled free-space values for the watch rendering tests.
   const cFree = (params.get("disk") === "ok" ? 61 : 0.3) * GiB;
   const paused = params.get("watches") === "paused";
   const notifications = params.get("notifications") === "disabled" ? "disabled" : "enabled";
   let sequence = 0;
-  let pending = params.get("activation") === "alert" ? "watch-alert-mock-1" : null;
+  let pending = params.get("activation") === "alert" ? "watch-alert-test-1" : null;
   const rule = (r, enabled = true) => ({ id: `watch-mock-${++sequence}`, version: 1, rule: r, enabled, created_at_unix_ms: now() - 3 * 86_400_000, updated_at_unix_ms: now() - 3 * 86_400_000, last_notified_unix_ms: null });
   const rules = none ? [] : [
     rule({ kind: "resource_above", resource: "cpu", threshold_basis_points: 9000, sustained_seconds: 60 }),
@@ -33,10 +35,10 @@ export function createWatchFixture(params, publishSource) {
     lower_bound: false, notification: "sent", seen: true, ...extra,
   });
   let alerts = none ? [] : [
-    alert("watch-alert-mock-1", rules[1], 2 * 3_600_000, null, cFree, "bytes", { seen: false }),
-    alert("watch-alert-mock-2", rules[0], 26 * 3_600_000, 25.9 * 3_600_000, 9730, "basis_points"),
-    alert("watch-alert-mock-3", rules[0], 50 * 3_600_000, 49.95 * 3_600_000, 9410, "basis_points", { notification: "rule_cooldown" }),
-    alert("watch-alert-mock-4", rules[0], 4 * 86_400_000, null, 9120, "basis_points", { ended_at_unix_ms: now() - 4 * 86_400_000 + 600_000, close_reason: "interrupted" }),
+    alert("watch-alert-test-1", rules[1], 2 * 3_600_000, null, cFree, "bytes", { seen: false }),
+    alert("watch-alert-test-2", rules[0], 26 * 3_600_000, 25.9 * 3_600_000, 9730, "basis_points"),
+    alert("watch-alert-test-3", rules[0], 50 * 3_600_000, 49.95 * 3_600_000, 9410, "basis_points", { notification: "rule_cooldown" }),
+    alert("watch-alert-test-4", rules[0], 4 * 86_400_000, null, 9120, "basis_points", { ended_at_unix_ms: now() - 4 * 86_400_000 + 600_000, close_reason: "interrupted" }),
   ];
   const find = (id) => {
     if (typeof id !== "string" || !ID.test(id)) fail("unknown", "Invalid watch or alert identifier.");

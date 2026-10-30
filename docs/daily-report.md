@@ -53,13 +53,12 @@ the previous day's.
   `pcagent-gui.exe --remove-scheduled-report` (fixed argument, journaled, refused when elevated).
   The per-user installer's uninstall step runs the last command ([installer.md](installer.md)).
 - Tauri commands: `report_schedule_get`, `report_schedule_set`, `report_latest`,
-  `report_run_now`, `report_reveal`, `report_notify_set`. Mock:
-  `?report=none|quiet|unsupported|stale|failed`.
+  `report_run_now`, `report_reveal`, `report_notify_set`.
 
 ## Validation
 
 Linux: unit tests (task XML, time parsing, journal, rotation, bilingual Markdown, missing
-history), Node tests of both cards over the mock, `cargo check`/Clippy for
+history), Node tests of both cards with isolated fixtures, `cargo check`/Clippy for
 `x86_64-pc-windows-gnu`, and captures of both cards in EN light and FR dark.
 
 Not validated yet (Windows, standard account): creating the task, the run at the chosen time,

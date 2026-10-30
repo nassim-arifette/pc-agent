@@ -20,7 +20,7 @@ const templates = Object.entries(english)
     pattern: new RegExp(`^${normalize(text).split(/\{\w+\}/).map(escape).join(".+?")}$`, "i"),
   }));
 
-// Core prose which can escape dictionaries via legacy fallbacks or incomplete mock fixtures.
+// Core prose which can escape dictionaries via legacy fallbacks or incomplete test fixtures.
 export const KNOWN_ENGLISH = [
   /\bavailable physical memory\b/i,
   /\bsystem commit\b/i,

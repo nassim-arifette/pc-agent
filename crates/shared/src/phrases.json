@@ -1,5 +1,6 @@
 {
   "en": {
+    "app.desktopRequired": "Open the PC Agent desktop application to view this PC's measurements.",
     "specialist.title": "Local Nano 4B specialist",
     "specialist.reason.ready": "evidence ready",
     "specialist.reason.ask": "clarification needed",
@@ -2035,6 +2036,7 @@
     "coverage.reason.energy.native_accuracy_unvalidated": "The accuracy of this reading is not validated on real PCs yet."
   },
   "fr": {
+    "app.desktopRequired": "Ouvrez l’application PC Agent pour consulter les mesures de ce PC.",
     "specialist.title": "Spécialiste Nano 4B local",
     "specialist.reason.ready": "preuves prêtes",
     "specialist.reason.ask": "précision nécessaire",

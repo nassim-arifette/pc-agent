@@ -41,7 +41,7 @@ globalThis.window = {
     return run(args);
   } }, event: { listen: async () => () => {} } },
 };
-const { createDailyReportFixture } = await import("./mock/daily-report.js");
+const { createDailyReportFixture } = await import("./test-support/daily-report.js");
 const { connect } = await import("../ui/js/api.js");
 const { dailyReportCard } = await import("../ui/js/report/schedule.js");
 const { homeReportCard } = await import("../ui/js/report/home.js");

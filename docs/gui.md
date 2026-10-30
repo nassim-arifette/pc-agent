@@ -25,12 +25,8 @@ fixed destination and identity checks, offers decline, and requires a separate c
 before execution. It never closes processes or grants approval to a model. Existing
 in-flight plans block preparation rather than silently replacing the pending decision.
 
-The design mock includes Chrome and Firefox groups, every closed process type, and synthetic
-`LOCAL-ONLY` titles in a separate fixture. Those fixtures validate rendering and IPC contracts,
-not native command delivery or browser accessibility support.
-
 One window after the hybrid direction chosen on 2026-10-01 (chat first, context on demand), with
-the rail of the phase 2 desktop mockups:
+the rail of the desktop layout:
 
 - **Rail**: *Chat*, *History*, *Live PC*, *Storage* and, at the bottom, *Settings* with a dot for
   the AI status.
@@ -345,15 +341,13 @@ Run the no-dependency logic/IPC-fixture suite from the repository root:
 node --experimental-default-type=module --test apps/gui/dev/onboarding.test.mjs apps/gui/dev/storage.test.mjs
 ```
 
-These are synthetic tests, not browser or live-service validation. For manual browser QA, use a
-fresh browser profile/storage with `?cloud=none`, or explicitly open `#/setup`. The mock supports
-`?connection=key|network|timeout|model|limit|empty` alongside `cloud`; it never contacts Nebius or
-opens its website. Use only dummy keys in the mock. Check keyboard focus, both languages/themes,
-skip/reload/resume, saved profiles, empty/error catalogs and clearing the password on leaving.
+These are isolated unit tests. In the native application, check keyboard focus, both
+languages and themes, skip/reload/resume, saved profiles, empty/error catalogs and clearing
+the password on leaving. Use a fresh local profile for first-launch acceptance.
 
 Native WebView2 adds its own password-reveal control after typing, even if the app provides no
 reveal button. The Nebius field suppresses it with `::-ms-reveal`. Before entering a real key in
-native QA, verify this with an unsaved dummy value; a Chrome mock alone cannot prove it.
+native QA, verify this with an unsaved dummy value.
 Also verify that the official-console click actually opens the page, not just that IPC succeeds:
 the existing `explorer.exe URL` transport can fail in an isolated secondary-logon desktop even
 when opening HTTPS normally works. Confirm this in a fully interactive standard-user session.
@@ -387,11 +381,6 @@ composes it from measurements.
   page is not a measurement of this PC. *Open in browser* calls `open_web_source` with the
   conversation, turn and reference; Rust reads the address from the stored turn and opens only an
   https page. The page never renders the address, links it or opens it.
-- In the mock, `?web=on` saves a synthetic key and turns web search on, so an AI investigation also
-  calls `get_drivers` and `lookup_driver_notes` and the answer cites two web pages (one without a
-  date); `?web=key` saves a key with web search off. `open_web_source` is recorded in
-  `window.__pcagentMock.openedWebSources`, never navigated to. The tour captures the settings card,
-  the composer with *Web* on, the query under its step and an open web source (`13` to `16`).
 
 ## Turns and events
 
@@ -406,7 +395,7 @@ question, Stop and an extension request still waiting for an answer come back; e
 not shown again. Without it the turn ran unseen, could wait forever for an answer and blocked
 every new question. A saved conversation whose only question never got an answer (the window
 closed mid-run) shows the question, *This question has no answer* and *Ask again*, never a blank
-page. Mock switches: `?turn=orphan` and `?conversation=empty`.
+page.
 
 ## Errors
 
@@ -420,10 +409,7 @@ sentence. The English detail is at most a tooltip, never the main text, so the F
 no English sentence and no Rust name such as `UacDeclined`. Failed turns keep their C3 codes
 (`turn:failed {code, message}`, worded by `error.<code>`); a turn refused before it starts says why
 with the command's code, else `error.start`. `scan:failed` carries the same `code` as `start_scan`.
-Mock switches: `?elevation=fail` (the administrator prompt is declined), `?scan=denied` (the
-folder cannot be read), `?scan=fail` (the scan stops midway), `?action=refuse` (*Run now* finds the
-target changed), `?preview=expired` (nothing is sent), `?history=unavailable` and `?live=fail`.
-`dev/failure.test.mjs` checks the shapes, every sentence in both languages and these switches.
+
 ## Model routing: Super, then Ultra
 
 Chantier 14 and the routing complement of C3 (4 October). The routing mechanism and its
@@ -469,27 +455,21 @@ The report's `usage` (`view::Usage`) keeps every earlier field and adds `models`
 requests, tokens, exact cost only when all its requests are priced, and dated price),
 `total_cost` (the display form of `total_cost_usd`, absent exactly when it is) and
 `priced_cost_lower_bound` (what the priced requests cost at least, only without a total). Turns
-saved before them keep their single cost. In the mock, `?routing=calibrated` offers Auto,
-`?routing=escalated` turns Auto on and hands every AI answer from Super to Ultra,
-`?routing=escalation_failed` makes Ultra's request time out (Super's answer stays, no total) and
-`?routing=stale` shows an Auto choice rejected at start-up. The logic and these mock scenarios are
-covered by `node --experimental-default-type=module --test apps/gui/dev/usage.test.mjs`.
+saved before them keep their single cost.
+Presentation helpers are covered by `node --test apps/gui/dev/usage.test.mjs`.
 
 ### Watches
 
 `#/watches` lists the rules with their live state, the alerts of the last seven days and a local
 weekly summary; Live PC, History and Storage open the prefilled Monitor form. See
-[watches.md](watches.md). Mock: `?watches=none|paused`, `?notifications=disabled`,
-`?activation=alert` (a notification click at start). Covered by
+[watches.md](watches.md). Covered by
 `node --test apps/gui/dev/watches-view.test.mjs`.
 
 ### Daily report
 
 Settings has a Daily report card (switch, time, the exact command Windows will start, "Write a
 report now") and the home page shows the latest report under the composer, answer first. See
-[daily-report.md](daily-report.md). Mock: `?report=none` (no report yet: an invitation),
-`?report=quiet` (nothing to review) and `?report=unsupported` (no Windows task) and `?report=stale` (the task starts an older copy:
-Repair). Covered by
+[daily-report.md](daily-report.md). Covered by
 `node --test apps/gui/dev/daily-report.test.mjs`.
 
 ## Architecture
@@ -553,23 +533,9 @@ renders them. This lets Node test the decisions without mounting the interface.
 under `i18n/` have no browser dependencies; tests import them directly to check key and parameter
 parity. Measurement sentences remain in `phrases.js`.
 
-The development bridge follows the same feature boundaries under `dev/mock/`:
-
-| Module | Responsibility |
-| --- | --- |
-| `live.js`, `battery.js` | synthetic resource readings, battery fixtures and capability probes |
-| `history.js` | history, recordings and startup preferences |
-| `provider.js`, `models.js`, `usage.js` | provider settings, model routing and synthetic prices |
-| `conversations.js`, `investigate.js`, `reports.js` | turn lifecycle, simulated events and answer fixtures |
-| `selection.js`, `sharing.js` | expiring capture references, one-use tickets and sharing projections |
-| `storage.js` | scan lifecycle, pages and selection publication |
-| `actions.js` | synthetic plans, decisions and startup restoration |
-| `elevation.js`, `inspections.js` | helper lifecycle and read-only inspection fixtures |
-
-`dev/mock.js` composes these factories and exposes the unchanged `invoke`/`listen` bridge. Each
-feature owns its mutable state; cross-feature calls use explicit functions rather than a shared
-mutable context object. Factories are initialized once per module load, preserving the mock's
-existing lifetime and fresh imports used by tests. Nothing under `dev/` is embedded in the app.
+The page connects only to the native Tauri host. Test helpers under `dev/test-support/`
+are Node-only modules imported by unit tests; they are never part of the UI module graph.
+Nothing under `dev/` is embedded in the app.
 
 ### Views and the view bar
 
@@ -628,17 +594,9 @@ node --experimental-vm-modules apps/gui/dev/check-modules.mjs
 The suite checks the presentation and state helpers and runs the module checker in a separate
 process with `--experimental-vm-modules`. It parses **every** UI module and links static imports,
 catching missing files, missing named exports and duplicate declarations. It does not evaluate
-application code, create a DOM or invoke Tauri. This complements, not replaces, the browser
-tour and native app validation.
+application code, create a DOM or invoke Tauri. Native app validation remains required for rendered flows and Windows integration.
 
-The mock contracts also exercise every IPC command across URL scenarios with a virtual clock
-and deterministic readings. They check sharing tickets, stale selections, scan failures, history,
-plan decisions and helper cancellation without waiting for real timers. Image decoding and the
-real Windows/Nebius path still need their own validations.
-
-## Design review without the app
-
-### Image attachments
+## Image attachments
 
 The chat composer accepts one explicitly selected or pasted static PNG/JPEG per question.
 Rust validates the bytes (8 MiB input, 24 million pixels, 16,384 pixels per axis), applies
@@ -660,51 +618,23 @@ text history, committed with the turn and deleted with it (including retention a
 History loads images only when requested; follow-up questions never automatically include them.
 An image is untrusted context, not measured evidence: numerical claims still require tools.
 
-`dev/images.js` is a browser-only fixture for reviewing this UI; it is not the production decoder
-or a substitute for native Windows/Nebius acceptance. `dev/image-draft.test.mjs` covers byte-only
+`dev/image-draft.test.mjs` covers byte-only
 IPC preparation, size/type rejection, clipboard filtering, single-image replacement, removal
 and stale asynchronous results. Rust tests cover decoding/orientation, animation/dimensions,
 preview equality and consumption, routing restrictions, tool-context retention and SQLite
 rollback/deletion/retention.
 
-`dev/mock.js` answers every command with synthetic data, so the interface can be reviewed in a
-browser:
+## Visual review
 
-```powershell
-cd apps\gui
-python -m http.server 5173 --bind 127.0.0.1
-# open http://127.0.0.1:5173/ui/index.html (?cloud=none|problem, ?gpu=none, ?disk=ok,
-# ?privacy=complete|anonymized|local for a confirmed choice, ?elevation=fail|slow,
-# ?recording=short, ?battery=none|ac|charging|low|relative|two|unavailable for the live battery
-# (none is a desktop PC, also without a battery in recordings), ?sources=short for selection
-# sources that expire after 5 s, ?pc=desktop for a desktop without an NVIDIA GPU or a battery whose
-# D: drive is exFAT, ?ntfs=none for no fixed NTFS drive, ?helper=missing for no pcagent-elevated)
-# sources that expire after 5 s, ?routing=calibrated|escalated|escalation_failed|stale for model
-# routing, see "Model routing" above)
-```
-
-Questions containing `extend`, `fail` or `slow` exercise the extension prompt, an unusable model
-answer and a long run; `space` or `clean` proposes cleanup actions and `startup` a start-up entry
-to turn off and restore; `health` (or `santé`) ends with the deeper checks card under the answer.
-`dev/tour.mjs` drives a headless Chrome over the DevTools protocol and saves
-screenshots of the main states (welcome, what leaves, running, answer, sources, live PC, storage, the
-deeper checks with a review and a result, settings, the Live PC view with the action bar under an
-application (`10a`) and under memory, Explain and its answer, an answer Ultra took over and its
-costs in Sources (`16a`, `16b`), the action bar under a History
-event (`17`) and a Storage folder (`18`), the battery card with its inspector discharging (`19`)
-and plugged in (`20`), and the pill of a critically low battery (`21`)) in light and dark themes
-(`node dev/tour.mjs <folder> [chrome.exe] [en|fr]` while the server runs; `TOUR_BASE` and
-`TOUR_DEBUG_PORT` point it at a server on another port). The mock publishes selection sources for
-live captures, history events, recordings and each page of scan results (revoked by a new scan).
-It lives outside `ui/`, so the app never embeds it.
+Run the desktop application with its native host. Opening `ui/index.html` in a plain
+browser displays an instruction to open PC Agent, without loading readings or conversations.
+Check the affected views in English and French, light and dark, at 1280 x 800 and 860 x 640.
+Record the actual host, measurements and any unavailable capabilities with each result.
 
 ## Validation status
 
 - Unit tests: view models (no invented zeros, local names only in the local window, key never
   exposed), step reporting and Stop.
-- Visual review on 2026-09-28 with the mock in light, dark, English, French and narrow windows, and
-  on the real app on the development PC: live cards, a local investigation, a folder scan and one AI
-  investigation with Nemotron 3 Super ($0.0040).
 - Conversation corrections on 2026-09-28: 13 browser checks at 1280 and 720 pixels cover preview
   refresh races, failed previews, cancellation, two answers, citation targets and reopening history.
   No JavaScript errors were reported. Review found and fixed a duplicate last answer when opening
@@ -717,48 +647,6 @@ It lives outside `ui/`, so the app never embeds it.
 - Found on that PC: the GeForce MX350 sometimes refuses its load (NVML error 999) while its
   temperature and memory are readable; the card then shows the temperature and says the load is
   not reported.
-- Redesign on 2026-10-01: the tour in French and English, light and dark, at 1280 × 800 and 860 ×
-  640, plus a follow-up question, the sources of two answers and reopening from the history; no
-  JavaScript errors. Not yet checked in the release Windows app.
-- Rail, Live PC view and selection on 2026-10-05, with the mock: the tour in French, light and
-  dark; Explain on memory through the preview to an answer; Explain on a history event; and a
-  check that in anonymized sharing the question for an application carries neither its name nor
-  a PID (in complete sharing: the name, never a PID). No JavaScript errors.
-- Web search on 2026-10-05, with the mock: the tour in French and English, light and dark, plus
-  checks of the switch (no key, local mode, a mode change keeping the consent), saving and removing
-  a key (only the last four characters shown), a turn without consent (no lookup), a source without
-  a date, reopening a conversation (recorded steps with the query) and *Open in browser* on the saved
-  turn. No JavaScript errors. Not yet checked in the release Windows app or with a real Tavily key.
-- Action bar on 2026-10-05, with the mock: the tour in French and English, light and dark, plus
-  checks at 1280 × 800 and 860 × 640 of the bar under a card, an application, a process chosen in
-  the inspector, an event, a recording and scan results (first page, a page from *Show more*, an
-  expired source read again); alignment to the right edge and opening above near the bottom; one
-  bar at a time; `E`, `Enter`, the arrow keys and Escape (focus back on the item, kept across the
-  periodic refreshes); the disabled state without a reference. No JavaScript errors. Not yet
-  checked in the release Windows app.
-- Battery in Live PC on 2026-10-06, with the mock: the tour in French and English, light and dark,
-  plus checks of every battery switch (two numbered cards, the consent dialog naming every battery
-  shown, relative units, the plugged-in readings with *Not reported* values, a battery that cannot
-  be read, none on a desktop), a held read showing its age without raising the pill, the drive
-  suggestion kept beside a critical battery, `E` and Escape on the card, focus kept across the
-  refreshes, and no horizontal scroll at 1280 × 800 and 860 × 640. No JavaScript errors. Then in
-  the release Windows app on a laptop (6 %, charging on AC): the card after the GPU card, the
-  action bar, the inspector with the driver's unreported power and cycle count shown as *Not
-  reported*, and an Explain preview holding the 17 displayed battery metrics under one opaque
-  reference, with no device path, tag or battery name. Natively too: a 30 s recording with the
-  Live view open kept 28 battery points out of 30 ticks, with no gap over 2.5 s. Not checked
-  natively: a discharging battery and the read's exact duration.
-- Turn reattach on 2026-10-06, in the release Windows app: a paid driver question reloaded 20 s in
-  was shown again as running, then answered (31 s, web query with NVIDIA's public 581.83, five
-  nvidia.com sources, no repair), and `current_turn` was empty afterwards. With the mock:
-  `?turn=orphan` (Stop ends it) and `?conversation=empty`, French and English, no JavaScript
-  errors.
-- Review corrections on 2026-10-10, with the mock: 52 browser assertions cover serialized sharing
-  choices, keyboard focus, duplicate sends, draft recovery, reuse of the exact reviewed preview,
-  the connection-test result after saving, delayed model menus, failed-turn disclosures, empty
-  step lists and spaced citations after English and French abbreviations. Rendered checks in
-  French and English at 1280 × 800 (light) and 860 × 640 (dark) found no horizontal overflow or
-  JavaScript errors. A Rust regression checks that changing file-name sharing revokes a preview.
 - The rebuilt release Windows app passed nine checks on 2026-10-10 through its actual Tauri
   bridge: current embedded JavaScript, real measurements, complete/anonymized previews, memory
   selection, serialized privacy settings, two local turns and history after a reload. The isolated
@@ -793,39 +681,6 @@ It lives outside `ui/`, so the app never embeds it.
   with zero conversations or provider requests. Its app process and debug port were closed.
 - Not validated: screen readers, high-contrast mode, other GPUs and screen scalings, very large
   scans in the window, installer and updates.
-- Storage results first on 2026-10-26 (#67), with the mock: the scanned folder's totals and its
-  largest folders and files now come right after the drop zone, beside an inspector of the
-  selected item (sizes, shares, dates, location, Explorer, Explain and Investigate), and the two
-  administrator cards follow under their own heading. 11 Node checks cover `storage-item.js`
-  (shares, coverage, facts and notes); the tour in English and French, light and dark, adds the
-  folder and file inspectors, the summary in the panel, the inspector under the row at 860 px
-  and the administrator section (steps 22 to 26), with no page errors.
-- Readable program names on 2026-10-26 (#70): Live PC, its inspector, answers, findings, sources
-  and action reviews name a process as Task Manager does (*Google Chrome* for `chrome.exe`), the
-  executable name as tooltip and the PID only in the inspector or when two cited processes would
-  read the same. 74 telemetry tests (version-resource parsing on synthetic blocks, caches, the own
-  process) and 68 app tests (labels, one-pass replacement, drafts named like the answer, the
-  selection source unchanged); the tour in English, light and dark, against the mock's readable
-  names, with no page errors.
-- Escalation made visible on 2026-10-26 (#69), with the mock (`?routing=escalated`): the step when
-  Ultra takes the question over, the header *Nemotron 3 Super → Nemotron 3 Ultra* with the total of
-  both models (or a lower bound), the lasting note under the answer with the reason, and one line
-  per model in Sources › Requests and cost; the CLI prints the same breakdown. 11 Node checks on
-  `usage.js`, 73 app tests and the CLI's routed-turn tests; the tour in English, light and dark
-  (steps 16a and 16b), with no page errors.
-- Capability registry on 2026-10-26 (phase 1), with the mock (`?pc=desktop`, `?ntfs=none`,
-  `?helper=missing`): `app_info.capabilities` drives the Storage view (helper note instead of the
-  administrator cards, battery check disabled without a battery, quick drive analysis only with a
-  fixed NTFS drive) and the deeper-checks card of the chat; 224 agent tests cover the per-turn
-  toolbox, the variants and the system prompt; the tour in English, light and dark, with no page
-  errors.
-- French interface completed on 2026-10-26 (#65): the core's sentences reach the window as closed
-  phrase keys with typed values (`Phrase`, `ui/js/phrases.js`: findings, next steps, limitations,
-  Sources facts, local answer, GPU slowdowns, elevated coverage, unnamed processes) and every
-  failed command carries a closed code the page translates (`src/failure.rs`, `ui/js/failure.js`),
-  the English detail kept as a tooltip. 88 app tests and 46 Node checks (every code and phrase in
-  both languages); the tour in French, light and dark, with no page errors.
-
 ## Known gaps
 
 Finding texts come from the core in English,

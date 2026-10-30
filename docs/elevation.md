@@ -37,7 +37,7 @@ re-exported from `pcagent_inspect::elevation`; the C4 projection and coverage no
   anything. The same card is offered from Chat, Live PC, Storage and onboarding.
 - **Not validated natively:** a real UAC prompt from a standard account with another
   administrator's credentials, timings, cancellation paths, the Nebius round trip and EN/FR
-  screenshots. Synthetic and mock tests cover the protocol, slot and interface.
+  screenshots. Isolated tests cover the protocol, slot and interface.
 
 The sections below describe the single-task foundation the batch is built on; where they
 mention protocol version 1, two tasks or a missing frontend, the summary above takes precedence.

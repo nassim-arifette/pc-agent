@@ -117,12 +117,7 @@ node --experimental-default-type=module --test apps/gui/dev/voice.test.mjs
 Run the complete local gate and standard-user procedure in [validation.md](validation.md), not
 just these focused tests. Synthetic tests cover resampling, silence, RMS, utterance boundaries,
 digest verification, cancellation, operation exclusion, stale events, draft preservation,
-review-before-send and mock model lifecycle.
-
-The design mock generates **synthetic text**, never reads a browser microphone and never
-downloads a model. Switches: `voiceModel=missing`; `voice=no_device`, `permission_denied`,
-`device_unavailable`, or `engine_unavailable`. Language/engine settings affect its session.
-This mock cannot prove native capture or recognition quality.
+review-before-send and the model lifecycle in isolated tests.
 
 Native acceptance must use the release GUI under a standard Windows account (medium integrity,
 not elevated), with FR/EN speech, cancellation, microphone disconnection/permission errors,

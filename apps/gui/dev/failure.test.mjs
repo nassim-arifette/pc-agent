@@ -1,5 +1,5 @@
 // Logic tests for failed commands, not a browser test: the shapes api.js accepts, the sentences
-// failure.js shows, and the mock's failures read in French.
+// failure.js shows.
 // node --experimental-default-type=module --test apps/gui/dev/failure.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { en } from "../ui/js/i18n/en.js";
 import { fr } from "../ui/js/i18n/fr.js";
 
-// i18n.js reads the browser language only when asked; the mock reads its URL switches on load.
+// i18n.js reads the browser language only when asked.
 Object.defineProperty(globalThis, "navigator", { value: { language: "fr-FR" }, configurable: true });
 globalThis.document = { documentElement: { lang: "en", dataset: {}, classList: { toggle() {} } } };
 globalThis.window = { location: { search: "" }, setTimeout: (callback) => setTimeout(callback, 0), clearTimeout };
@@ -119,75 +119,4 @@ test("every code and refusal the host declares has a sentence", async () => {
   assert.ok(reasons.includes("restore_unavailable"));
   for (const code of codes) assert.ok(tables.en[`failure.${code}`] && tables.fr[`failure.${code}`], code);
   for (const reason of reasons) assert.ok(tables.fr[`failure.action_refused.${reason}`], reason);
-});
-
-/** A fresh mock with these URL switches, its failures normalized as call() does. */
-async function mock(search) {
-  window.location.search = search;
-  const { createMock } = await import(`./mock.js?failure-${encodeURIComponent(search)}`);
-  const bridge = createMock();
-  return {
-    bridge,
-    invoke: async (command, args) => {
-      try {
-        return await bridge.invoke(command, args);
-      } catch (error) {
-        throw commandError(error);
-      }
-    },
-  };
-}
-
-/** Closed-code French presentation leaves the original error payload unchanged. */
-function assertFrench(error, code, detail) {
-  assert.equal(error.code, code);
-  const sentence = tables.fr[`failure.${code}`];
-  assert.equal(failureText(error), code === "action_refused" ? sentence.replace("{reason}", refusalText(error)) : sentence);
-  assert.notEqual(failureText(error), error.message);
-  assert.equal(failureDetail(error), null);
-  assert.match(error.message, detail);
-}
-
-test("the mock's error switches reject like the host and read in French", async () => {
-  setLanguage("fr");
-  {
-    const { invoke } = await mock("?elevation=fail");
-    const request = await invoke("elevation_prepare", { task: { kind: "system_caches" }, budgetMs: 120000 });
-    await assert.rejects(invoke("elevation_prepare", { task: { kind: "shadow_storage" }, budgetMs: 120000 }), (error) => (assertFrench(error, "helper_busy", /already prepared/), true));
-    await assert.rejects(invoke("elevation_run", { requestId: request.request_id }), (error) => (assertFrench(error, "uac_declined", /UacDeclined/), true));
-    await assert.rejects(invoke("elevation_cancel", { requestId: request.request_id }), (error) => (assertFrench(error, "request_expired", /no longer available/), true));
-  }
-  {
-    const { invoke } = await mock("?scan=denied");
-    await assert.rejects(invoke("start_scan", { path: "C:\\Users\\Alex\\Downloads" }), (error) => (assertFrench(error, "folder_unreadable", /PermissionDenied/), true));
-  }
-  {
-    const { bridge, invoke } = await mock("?scan=fail");
-    const failed = new Promise((resolve) => bridge.listen("scan:failed", resolve));
-    await invoke("start_scan", { path: "C:\\Users\\Alex\\Downloads" });
-    const payload = await failed;
-    assertFrench(commandError({ code: payload.code, message: payload.message }), "scan_failed", /scan worker panicked/);
-  }
-  {
-    const { invoke } = await mock("?preview=expired");
-    const question = "Pourquoi mon PC est-il lent ?";
-    const preview = await invoke("cloud_preview", { question, names: true, conversationId: null });
-    await assert.rejects(invoke("send_message", { conversationId: null, text: question, scopeIds: [], previewId: preview.id }), (error) => (assertFrench(error, "preview_expired", /preview expired/), true));
-  }
-  {
-    const { invoke } = await mock("?action=refuse");
-    const question = "Comment libérer de la place ?";
-    const preview = await invoke("cloud_preview", { question, names: true, conversationId: null });
-    const started = await invoke("send_message", { conversationId: null, text: question, scopeIds: [], previewId: preview.id });
-    const [plan] = await invoke("action_plans", { turnId: started.turn_id });
-    await assert.rejects(invoke("action_run", { turnId: started.turn_id, planId: plan.plan_id }), (error) => (assertFrench(error, "action_refused", /changed/), assert.equal(error.reason, "changed"), true));
-    const [after] = await invoke("action_plans", { turnId: started.turn_id });
-    assert.equal(after.decision, "refused");
-    await assert.rejects(invoke("action_run", { turnId: started.turn_id, planId: plan.plan_id }), (error) => (assert.equal(error.reason, "already_decided"), true));
-  }
-  {
-    const { invoke } = await mock("?history=unavailable&live=fail");
-    await assert.rejects(invoke("metric_history", { metric: "cpu_busy_basis_points", fromUnixMs: 0, toUnixMs: 1 }), (error) => (assertFrench(error, "history_unavailable", /unavailable/), true));
-    await assert.rejects(invoke("dashboard"), (error) => (assertFrench(error, "live_unavailable", /too long/), true));
-  }
 });

@@ -37,11 +37,8 @@ crossed. Contract: `docs/plan.md`, C7. Nothing here calls the model or the netwo
 
 ## Validation
 
-Linux: Rust tests of the store, engine and projections; Node tests of the view, the Live PC
-proposals, the runtime and the mock contracts (`apps/gui/dev/watches-view.test.mjs`,
-`mock.test.mjs`); captures of the view in EN/FR light/dark and of Live PC → Monitor → form →
-rule, and Explain on an alert, with the mock (`?watches=none|paused`, `?notifications=disabled`,
-`?activation=alert`).
+Linux: Rust tests of the store, engine and projections; isolated Node tests of the view,
+the Live PC proposals and the runtime (`apps/gui/dev/watches-view.test.mjs`).
 
 Not validated (Windows, standard account): a real CPU load raising an alert, the toast, its click
 opening Watches, the notification-area behaviour on close, and Explain with Nebius.

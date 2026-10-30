@@ -1,6 +1,7 @@
 // English interface dictionary; core measurement phrases live in phrases.js.
 import { watchesEn } from "./watches.js";
 export const en = {
+  "app.desktopRequired": "Open the PC Agent desktop application to view this PC's measurements.",
   "specialist.title": "Local Nano 4B specialist",
   "specialist.reason.ready": "evidence ready",
   "specialist.reason.ask": "clarification needed",

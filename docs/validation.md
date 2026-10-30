@@ -87,26 +87,16 @@ hosted CI runner. Never skip those tests and never relax the guard to make them 
   `pcagent doctor --json` must exit with code 2, write nothing to stdout and print
   *Start PC Agent from a standard, unelevated session.* on stderr.
 
-## Browser QA with the design mock
+## Native interface QA
 
-The interface can be reviewed without compiling: `apps/gui/dev/mock.js` answers every command
-with synthetic data and never contacts Nebius, Tavily or a website.
+Run the desktop app under a standard account. Check each affected screen in English and
+French, light and dark, at 1280 x 800 and 860 x 640, including keyboard focus, console
+errors and horizontal overflow. Record the actual measurements and any unavailable
+capabilities. Use an unsaved dummy value when checking password-field behavior.
 
-```powershell
-cd apps\gui
-python -m http.server 5173 --bind 127.0.0.1
-# open http://127.0.0.1:5173/ui/index.html; URL switches are listed at the top of dev/mock.js
-```
-
-- `node dev/tour.mjs <folder> [chrome.exe] [en|fr]` drives a headless Chrome over the DevTools
-  protocol and saves screenshots of the main states; `TOUR_BASE` and `TOUR_DEBUG_PORT` point it at
-  another server and debugging port. Node 20 needs `node --experimental-websocket`.
-- For every screen a change touches, check English and French, light and dark, 1280 × 800 and
-  860 × 640, keyboard focus, no JavaScript error in the console and no horizontal overflow.
-- Use dummy keys only. The mock checks rendering and page logic; it proves nothing about the Rust
-  side, the native WebView or a model. Switches and states: [gui.md](gui.md#design-review-without-the-app).
-- The README's screenshots come from this mock, so they show synthetic data; retake them when a
-  view they show changes.
+Opening the HTML in a plain browser must show an instruction to open PC Agent and must
+not start a conversation or display PC measurements. Node regression tests remain
+available for pure presentation logic and isolated IPC test doubles.
 
 ## Native QA of the release app
 
@@ -117,8 +107,8 @@ in both name-sharing modes: no title, URL, profile path or command line may occu
 one browser-manager plan, approve another, visually confirm the destination, and confirm
 the original browser is still running. A delivered Chromium command alone is not visual proof.
 Keep snapshots of the changed Live PC inspector, local-title section, preview and review card;
-run the mock through both languages, both themes and both documented viewports. Record native
-and mock results separately, including any unsupported UI Automation coverage.
+exercise both languages, both themes and both documented viewports in the native app.
+Record any unsupported UI Automation coverage.
 
 - Build the release executables and run them from a standard session, never elevated (starting
   the window as administrator must show the refusal notice: that is a check in itself).

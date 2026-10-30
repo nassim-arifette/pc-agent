@@ -366,9 +366,8 @@ ui/ (HTML, CSS, JavaScript modules, no build step) --invoke--> src/app/ (Tauri c
   and `elevation/` owns the read-only helper cards. Shared shell, state, localization and DOM
   utilities stay at the root. `api.js` is the only bridge to Tauri; `markdown.js`
   renders the model's restricted Markdown as DOM nodes; `dom.js` never uses `innerHTML`.
-- The design mock (`dev/mock.js`) answers every command with synthetic data so the interface can
-  be reviewed in a browser; it lives outside `ui/` and is never embedded. Layout, views and the
-  visual system: [gui.md](gui.md).
+- The interface requires the native Tauri host for commands and measurements. A plain
+  browser shows an instruction to open the desktop application. Layout and views: [gui.md](gui.md).
 
 ## Elevated helper
 
