@@ -2042,6 +2042,16 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 
 ## 8. Suivi
 
+**Release Windows v0.1.2 (30 octobre, preparation terminee) :** version alignee dans les
+manifests Rust, Tauri et le mock ; fmt, 175 tests JavaScript, liaison de 66 modules et build
+release verrouille des quatre executables reussis ; installateur NSIS x64 par utilisateur
+genere via Tauri CLI 2.8.4. La distribution comprend l'archive portable, les executables et
+les empreintes SHA-256, avec verification apres telechargement. Publication demandee par le
+porteur depuis main avec Nox, le specialiste local optionnel et les fonctions fusionnees depuis
+v0.1.1 ; PR de version [#130](https://github.com/nassim-arifette/pc-agent/pull/130), sans fusion
+automatique. La regression generale, CUDA et le cycle complet installation/mise a jour/
+desinstallation restent non valides ; aucune CI GitHub relancee.
+
 **Integration du specialiste local (30 octobre, en cours) :** a la demande du porteur,
 le jury doit pouvoir executer le Nano 4B avec l'adaptateur publie, sans VM Nebius.
 Serveur Python sur loopback uniquement, base et revision epinglees, CPU ou CUDA, comparaison

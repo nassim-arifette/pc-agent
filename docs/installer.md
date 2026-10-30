@@ -33,8 +33,8 @@ which removes this account's daily report task (journaled, refused when elevated
 absent); see `installer/hooks.nsh`. Settings, the history and reports in `%APPDATA%\pcagent` are
 kept, as for any per-user app; delete that folder to remove them.
 
-## Not validated
+## Validation limits
 
-No installer has been built or run yet: the configuration follows Tauri 2's NSIS options, and its
-first build, install, update over an older copy and uninstall (task removed) must be checked on
-Windows.
+The release includes a built NSIS installer. A successful build does not validate installation,
+updating an older copy or uninstalling with a scheduled report task: those end-to-end flows still
+need to be checked on Windows. The portable app's native smoke tests are not installer tests.
