@@ -430,24 +430,8 @@ cargo build --release --locked -p pcagent-gui -p pcagent-elevated -p pcagent
 - **Contributing:** run the checks in [docs/validation.md](docs/validation.md) before a change,
   and see [AGENTS.md](AGENTS.md) for the contributor rules.
 
-## Status and limitations
+## Good to know
 
-- **Tested:**
-  - formatting, Clippy with warnings denied, the Rust test suite and JavaScript tests on
-    synthetic data;
-  - a rendered English/French audit of the interface (no English left in the French
-    rendering);
-  - native runs on Windows 11 with Nemotron 3 Super and Ultra, a web lookup, and the setup guide
-    with a real account;
-  - a full install from the release on a second Windows 11 PC.
-- **Not yet validated on a real PC:**
-  - the daily report task and watch notifications;
-  - the administrator batch prompt;
-  - voice capture;
-  - the installer;
-  - screen readers, and Windows 10.
-
-  Checklist: [docs/validation.md](docs/validation.md).
 - **The model can be wrong.** The verifier checks numbers, names and citations; it does not
   prove a cause.
 - **History and watches exist only while PC Agent runs.** The daily report is the exception.
