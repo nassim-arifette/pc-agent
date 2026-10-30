@@ -1,0 +1,27 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#fff; }
+
+</style>
+<div id="root" data-composition-id="privacy" data-width="1920" data-height="1080">
+
+<div class="cam" id="e-cam"><video id="e-v" class="clip" src="assets/clips/privacy.mp4" muted playsinline data-start="0" data-duration="5.083" data-media-start="3.8499999999999996" data-playback-rate="2"></video></div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#e-cam", { x: 0, y: 0, scale: 1 }, { x: -864.0, y: -404.0, scale: 1.6, duration: 0.5, ease: "power3.inOut" }, 1.046);
+cam("#e-cam", 0, 0, 1, 2.376, 0.4);
+
+window.__timelines["privacy"] = tl;
+</script>
+</template>

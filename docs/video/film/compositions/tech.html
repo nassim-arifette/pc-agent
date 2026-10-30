@@ -1,0 +1,69 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#1f2430; }
+.kick { position:absolute; left:0; right:0; top:84px; text-align:center; font-size:46px; font-weight:700; color:#a9b4cc; opacity:0; }
+.core { position:absolute; left:660px; top:380px; width:600px; height:220px; border-radius:20px; background:#5b74b8; display:flex; flex-direction:column; align-items:center; justify-content:center; opacity:0; }
+.core .m { font-size:58px; font-weight:900; letter-spacing:-.02em; }
+.core .p { font-size:30px; font-weight:700; color:#d6dbe6; margin-top:6px; }
+.guess { position:absolute; left:0; right:0; top:640px; text-align:center; font-size:64px; font-weight:900; opacity:0; }
+.guess s { color:#d98c80; text-decoration-thickness:8px; }
+.guess b { color:#8db87a; }
+.chip { position:absolute; width:236px; height:56px; border-radius:10px; background:#2a3142; border:2px solid #3b4459; font-size:28px; font-weight:700; color:#e3e6ec; display:flex; align-items:center; justify-content:center; opacity:0; }
+.ro { position:absolute; left:0; right:0; top:660px; text-align:center; opacity:0; }
+.ro span { display:inline-block; padding:14px 26px; border-radius:12px; background:#8db87a; color:#16220f; font-size:36px; font-weight:900; }
+.check { position:absolute; left:360px; right:360px; top:330px; height:420px; border-radius:20px; background:#fff; color:#1f2430; padding:50px 60px; opacity:0; }
+.check .q { font-size:30px; font-weight:700; color:#55607f; }
+.check .line { font-size:62px; font-weight:800; margin-top:26px; position:relative; }
+.check .bad { color:#d93025; }
+.check .strike { position:absolute; left:0; top:50%; height:8px; width:100%; background:#d93025; transform-origin:0 50%; transform:scaleX(0); }
+.check .good { color:#2e7a4d; opacity:0; margin-top:16px; }
+.check .stamp { position:absolute; right:50px; top:44px; font-size:30px; font-weight:900; padding:10px 18px; border-radius:10px; opacity:0; }
+.check .s1 { background:#fde8e6; color:#b42318; }
+.check .s2 { background:#e9f3ec; color:#2e7a4d; }
+
+</style>
+<div id="root" data-composition-id="tech" data-width="1920" data-height="1080">
+
+<div class="kick" id="h-kick">Under the hood</div>
+<div class="core" id="h-core"><div class="m">NVIDIA Nemotron</div><div class="p">on Nebius Token Factory</div></div>
+<div class="guess" id="h-guess">It doesn't <s>guess</s>. It <b>measures</b>.</div>
+<div class="chip" id="h-c0" style="left:112px;top:272px">memory</div><div class="chip" id="h-c1" style="left:112px;top:368px">processes</div><div class="chip" id="h-c2" style="left:112px;top:464px">CPU</div><div class="chip" id="h-c3" style="left:112px;top:560px">disk latency</div><div class="chip" id="h-c4" style="left:112px;top:656px">GPU · NVML</div><div class="chip" id="h-c5" style="left:112px;top:752px">battery</div><div class="chip" id="h-c6" style="left:372px;top:272px">storage scan</div><div class="chip" id="h-c7" style="left:372px;top:368px">drivers</div><div class="chip" id="h-c8" style="left:372px;top:464px">updates</div><div class="chip" id="h-c9" style="left:372px;top:560px">startup apps</div><div class="chip" id="h-c10" style="left:372px;top:656px">services</div><div class="chip" id="h-c11" style="left:372px;top:752px">event log</div><div class="chip" id="h-c12" style="left:1312px;top:272px">network</div><div class="chip" id="h-c13" style="left:1312px;top:368px">temperatures</div><div class="chip" id="h-c14" style="left:1312px;top:464px">page faults</div><div class="chip" id="h-c15" style="left:1312px;top:560px">browser tabs</div><div class="chip" id="h-c16" style="left:1312px;top:656px">power plan</div><div class="chip" id="h-c17" style="left:1312px;top:752px">volumes</div><div class="chip" id="h-c18" style="left:1572px;top:272px">history</div><div class="chip" id="h-c19" style="left:1572px;top:368px">recordings</div><div class="chip" id="h-c20" style="left:1572px;top:464px">watches</div><div class="chip" id="h-c21" style="left:1572px;top:560px">file sizes</div><div class="chip" id="h-c22" style="left:1572px;top:656px">app details</div><div class="chip" id="h-c23" style="left:1572px;top:752px">web lookup</div>
+<div class="ro" id="h-ro"><span>🔒 Read-only: look, never touch</span></div>
+<div class="check" id="h-check">
+  <div class="q">Draft answer</div>
+  <div class="line bad" id="h-bad">Chrome holds 3.1 GiB<div class="strike" id="h-strike"></div></div>
+  <div class="line good" id="h-good">Chrome holds 2.31 GiB ✓</div>
+  <div class="stamp s1" id="h-s1">Checker: no measurement says 3.1</div>
+  <div class="stamp s2" id="h-s2">Matches measurement O1</div>
+</div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#h-kick", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 0.05);
+tl.fromTo("#h-core", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.45, ease: "back.out(1.6)" }, 0.758);
+tl.fromTo("#h-guess", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 2.52);
+tl.to("#h-guess", { opacity: 0, duration: 0.15 }, 4.582);
+tl.to("#h-kick", { opacity: 0, duration: 0.15 }, 4.582);
+tl.fromTo(".chip", { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(2)", stagger: 0.045 }, 4.682);
+tl.fromTo("#h-ro", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.3, ease: "expo.out" }, 6.05);
+tl.to(".chip, #h-ro, #h-core, #h-kick", { opacity: 0, filter: "blur(8px)", duration: 0.2 }, 8.549);
+tl.fromTo("#h-check", { opacity: 0, y: 60 }, { opacity: 1, y: 0, duration: 0.4, ease: "expo.out" }, 8.699);
+tl.fromTo("#h-strike", { scaleX: 0 }, { scaleX: 1, duration: 0.25, ease: "power3.out" }, 10.778);
+tl.fromTo("#h-s1", { opacity: 0, scale: 1.4 }, { opacity: 1, scale: 1, duration: 0.18, ease: "power4.out" }, 10.429);
+tl.to("#h-s1", { opacity: 0, duration: 0.12 }, 12.295);
+tl.fromTo("#h-good", { opacity: 0, x: -30 }, { opacity: 1, x: 0, duration: 0.3, ease: "expo.out" }, 12.345);
+tl.fromTo("#h-s2", { opacity: 0, scale: 1.4 }, { opacity: 1, scale: 1, duration: 0.18, ease: "power4.out" }, 12.445);
+
+window.__timelines["tech"] = tl;
+</script>
+</template>

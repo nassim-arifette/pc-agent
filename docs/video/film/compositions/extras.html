@@ -1,0 +1,37 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#1f2430; }
+.row { position:absolute; left:160px; right:160px; top:260px; display:flex; gap:48px; }
+.tile { flex:1; height:520px; border-radius:20px; background:#2a3142; border:2px solid #3b4459; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:30px; opacity:0; text-align:center; padding:0 30px; }
+.tile .t { font-size:46px; font-weight:900; color:#fff; }
+.tile .s { font-size:32px; font-weight:700; color:#b9c0cf; }
+.tile img { width:150px; }
+
+</style>
+<div id="root" data-composition-id="extras" data-width="1920" data-height="1080">
+
+<div class="row">
+  <div class="tile" id="x-1"><svg viewBox="0 0 24 24" width="120" height="120" fill="none" stroke="#e3e6ec" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5a3 3 0 0 1 3 3V12a3 3 0 0 1-6 0V6.5a3 3 0 0 1 3-3z"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v2.5"/></svg><div class="t">Local dictation</div><div class="s">Audio never leaves your PC</div></div>
+  <div class="tile" id="x-2"><svg viewBox="0 0 24 24" width="120" height="120" fill="none" stroke="#e3e6ec" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5h16v15H4z"/><path d="M4 16l5-5 4 4 3-3 4 4"/><path d="M15.5 8h.01"/></svg><div class="t">Screenshots &amp; photos</div><div class="s">Read by Nemotron Super VL</div></div>
+  <div class="tile" id="x-3"><img src="assets/nox/nox-local.svg" alt=""><div class="t">No key? Still works</div><div class="s">Local checks run on your PC</div></div>
+</div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#x-1", { opacity: 0, y: 50 }, { opacity: 1, y: 0, duration: 0.4, ease: "expo.out" }, 0.05);
+tl.fromTo("#x-2", { opacity: 0, y: 50 }, { opacity: 1, y: 0, duration: 0.4, ease: "expo.out" }, 1.699);
+tl.fromTo("#x-3", { opacity: 0, y: 50 }, { opacity: 1, y: 0, duration: 0.4, ease: "expo.out" }, 6.192);
+
+window.__timelines["extras"] = tl;
+</script>
+</template>
