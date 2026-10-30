@@ -20,11 +20,9 @@ export function createDailyReportFixture(params) {
     generated_at_unix_ms: Date.now() - (scheduled ? 3 * 3_600_000 : 0),
     scheduled,
     points_to_review: points,
-    items: points === 0 ? [] : [
-      { classification: "low_available_memory", label: "Low available memory", support: "plausible" },
-      { classification: "high_disk_latency", label: "High disk latency", support: "plausible" },
-    ].slice(0, Math.max(0, points - 1)),
-    alerts_total: points === 0 ? 0 : 1,
+    // Matches the rest of the mock: C: is almost full and one watch alert is open.
+    items: points === 0 ? [] : [{ classification: "high_disk_latency", label: "High disk latency", support: "plausible" }],
+    alerts_total: points >= 2 ? 1 : 0,
     history_status: scheduled ? "stale" : "recent",
     events_last_day: scheduled ? null : 4,
     low_drives: points >= 3 ? ["C:\\"] : [],

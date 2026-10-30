@@ -35,21 +35,38 @@ function eye(cx, cy, kind, look) {
   }
 }
 
-// Wing: a feathered blade hanging from the shoulder, rotated per pose (degrees outward).
-function wing(side, angle) {
-  const shape = `<path d="M74 108 C48 120 42 150 50 176 C58 172 62 166 64 160 C66 168 70 172 76 172 C78 160 80 140 86 124 Z" fill="url(#nw)" stroke="${C.bodyDark}" stroke-width="2.5" stroke-linejoin="round"/>
-    <path d="M58 150 Q62 158 64 160 M66 140 Q70 150 72 156" fill="none" stroke="${C.bodyLight}" stroke-width="2" stroke-linecap="round" opacity="0.7"/>`;
-  const rot = `rotate(${angle} 78 112)`;
-  return side === "L" ? `<g transform="${rot}">${shape}</g>` : `<g transform="translate(240 0) scale(-1 1)"><g transform="${rot}">${shape}</g></g>`;
+// Wing: a rounded feathered blade from the shoulder to a tip point, so a raised wing really
+// touches what it holds. `front` draws it over the body (a wing at the chin, holding a board).
+const SHOULDER = { L: [80, 112], R: [160, 112] };
+const REST = { L: [60, 170], R: [180, 170] };
+function wing(side, tip = REST[side]) {
+  const [sx, sy] = SHOULDER[side];
+  const [tx, ty] = tip;
+  const L = Math.hypot(tx - sx, ty - sy);
+  const deg = (Math.atan2(ty - sy, tx - sx) * 180) / Math.PI;
+  const k = side === "L" ? 1 : -1;
+  const d = `M0 ${-15 * k} C${L * 0.45} ${-21 * k} ${L - 16} ${-14 * k} ${L - 6} ${-9 * k} Q${L + 6} 0 ${L - 6} ${9 * k} C${L - 16} ${13 * k} ${L * 0.45} ${19 * k} 0 ${15 * k} Z`;
+  return `<g transform="translate(${sx} ${sy}) rotate(${deg.toFixed(1)})">
+    <path d="${d}" fill="url(#nw)" stroke="${C.bodyDark}" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M${L - 20} ${-5 * k} q7 4 0 ${9 * k} M${L - 32} ${-7 * k} q7 6 0 ${13 * k}" fill="none" stroke="${C.bodyLight}" stroke-width="2" stroke-linecap="round" opacity="0.75"/>
+  </g>`;
 }
 
-function owl({ eyes = "open", look = [0, 0], wingL = 0, wingR = 0, beak = "closed", blush = false, front = "" } = {}) {
+// The rounded tip of a wing shown in front of the body, like a small hand on the chin or a board.
+function tipFront(x, y, angle = 0) {
+  return `<g transform="translate(${x} ${y}) rotate(${angle})">
+    <path d="M-10 -14 C-2 -18 10 -12 11 -2 C12 8 4 15 -4 13 C-12 11 -15 2 -14 -6 Z" fill="url(#nw)" stroke="${C.bodyDark}" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M-3 -4 q5 3 1 8 M4 -7 q5 4 1 9" fill="none" stroke="${C.bodyLight}" stroke-width="2" stroke-linecap="round" opacity="0.75"/>
+  </g>`;
+}
+
+function owl({ eyes = "open", look = [0, 0], wingL, wingR, frontWings = false, beak = "closed", blush = false, front = "" } = {}) {
   return `
   <ellipse cx="120" cy="198" rx="58" ry="8" fill="${C.shadow}"/>
   <g fill="${C.feet}" stroke="${C.beakDark}" stroke-width="2" stroke-linejoin="round">
     <path d="M96 184 l-9 12 h8 l1 -5 l3 6 h7 l-3 -12 z"/><path d="M144 184 l9 12 h-8 l-1 -5 l-3 6 h-7 l3 -12 z"/>
   </g>
-  ${wing("L", wingL)}${wing("R", wingR)}
+  ${frontWings ? "" : wing("L", wingL) + wing("R", wingR)}
   <path d="M74 54 L82 22 L100 46 Z" fill="${C.bodyDark}"/><path d="M166 54 L158 22 L140 46 Z" fill="${C.bodyDark}"/>
   <path d="M120 40 C168 40 184 80 184 118 C184 162 158 190 120 190 C82 190 56 162 56 118 C56 80 72 40 120 40 Z" fill="url(#nb)" stroke="${C.bodyDark}" stroke-width="3"/>
   <path d="M80 62 Q94 50 112 48" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity="0.25"/>
@@ -69,87 +86,88 @@ function owl({ eyes = "open", look = [0, 0], wingL = 0, wingR = 0, beak = "close
   ${beak === "open"
     ? `<path d="M112 114 L120 110 L128 114 L120 124 Z" fill="${C.beak}" stroke="${C.beakDark}" stroke-width="2" stroke-linejoin="round"/><path d="M114 116 H126" stroke="${C.beakDark}" stroke-width="2"/>`
     : `<path d="M112 113 L120 109 L128 113 L120 126 Z" fill="${C.beak}" stroke="${C.beakDark}" stroke-width="2" stroke-linejoin="round"/>`}
-  ${front}`;
+  ${front}
+  ${frontWings ? wing("L", wingL) + wing("R", wingR) : ""}`;
 }
 
 const POSES = {
   hello: {
     title: "Hello", note: "Welcome and setup guide",
-    svg: () => owl({ eyes: "open", look: [2, 1], wingR: 118, beak: "open", blush: true }) +
-      `<path d="M208 36 q8 -4 10 4 M214 52 q10 0 8 10" fill="none" stroke="${C.bodyLight}" stroke-width="4" stroke-linecap="round"/>`,
+    svg: () => owl({ eyes: "open", look: [2, 1], wingR: [204, 56], beak: "open", blush: true }) +
+      `<path d="M212 30 q8 -4 10 4 M220 46 q10 0 8 10" fill="none" stroke="${C.bodyLight}" stroke-width="4" stroke-linecap="round"/>`,
   },
   investigate: {
     title: "Investigating", note: "Nemotron runs its tools",
-    svg: () => owl({ eyes: "open", look: [5, 2], wingR: 62 }) +
-      `<line x1="196" y1="150" x2="214" y2="174" stroke="${C.line}" stroke-width="8" stroke-linecap="round"/>
-       <circle cx="186" cy="134" r="22" fill="${C.soft}" fill-opacity="0.75" stroke="${C.line}" stroke-width="6"/>
-       <polyline points="172,140 180,130 187,136 198,124" fill="none" stroke="${C.disc}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`,
+    svg: () => owl({ eyes: "open", look: [5, 2], wingR: [204, 156] }) +
+      `<line x1="198" y1="148" x2="216" y2="172" stroke="${C.line}" stroke-width="8" stroke-linecap="round"/>
+       <circle cx="186" cy="132" r="22" fill="${C.soft}" fill-opacity="0.75" stroke="${C.line}" stroke-width="6"/>
+       <polyline points="172,138 180,128 187,134 198,122" fill="none" stroke="${C.disc}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`,
   },
   thinking: {
     title: "Thinking", note: "Nemotron reasoning, answer streaming",
-    svg: () => owl({ eyes: "open", look: [6, -7], wingR: 40 }) +
-      `<circle cx="196" cy="54" r="5" fill="${C.soft}" stroke="${C.bodyLight}" stroke-width="3"/>
-       <circle cx="208" cy="36" r="8" fill="${C.soft}" stroke="${C.bodyLight}" stroke-width="3"/>
-       <rect x="192" y="0" width="46" height="28" rx="14" fill="${C.soft}" stroke="${C.bodyLight}" stroke-width="3"/>
-       <circle cx="205" cy="14" r="3" fill="${C.disc}"/><circle cx="215" cy="14" r="3" fill="${C.disc}"/><circle cx="225" cy="14" r="3" fill="${C.disc}"/>`,
+    svg: () => owl({ eyes: "open", look: [6, -7], wingR: [176, 150], front: tipFront(140, 132, -20) }) +
+      `<circle cx="190" cy="56" r="5" fill="${C.soft}" stroke="${C.bodyLight}" stroke-width="3"/>
+       <circle cx="204" cy="38" r="8" fill="${C.soft}" stroke="${C.bodyLight}" stroke-width="3"/>
+       <rect x="190" y="2" width="46" height="28" rx="14" fill="${C.soft}" stroke="${C.bodyLight}" stroke-width="3"/>
+       <circle cx="203" cy="16" r="3" fill="${C.disc}"/><circle cx="213" cy="16" r="3" fill="${C.disc}"/><circle cx="223" cy="16" r="3" fill="${C.disc}"/>`,
   },
   live: {
     title: "Checking up", note: "Live PC, measured every 5 seconds",
-    svg: () => `<g transform="translate(-18 0)">` + owl({ eyes: "focus", look: [6, 3], wingR: 50 }) + `</g>` +
-      `<rect x="188" y="96" width="46" height="88" rx="7" fill="#2B2F3A" stroke="${C.line}" stroke-width="4"/>
+    svg: () => `<g transform="translate(-18 0)">` + owl({ eyes: "focus", look: [6, 3], wingR: [200, 142] }) + `</g>` +
+      `<path d="M150 98 C166 104 170 124 164 134" fill="none" stroke="${C.line}" stroke-width="4" stroke-linecap="round"/>
+       <circle cx="150" cy="98" r="4" fill="#9AA3B5" stroke="${C.line}" stroke-width="2"/>
+       <rect x="188" y="96" width="46" height="88" rx="7" fill="#2B2F3A" stroke="${C.line}" stroke-width="4"/>
        <rect x="196" y="106" width="30" height="6" rx="3" fill="#4A5060"/><rect x="196" y="118" width="30" height="6" rx="3" fill="#4A5060"/>
        <circle cx="211" cy="166" r="5" fill="${C.trace}"/>
-       <path d="M160 92 C168 74 176 74 180 92" fill="none" stroke="${C.line}" stroke-width="4" stroke-linecap="round"/>
-       <path d="M170 92 V130 Q170 140 184 140" fill="none" stroke="${C.line}" stroke-width="4" stroke-linecap="round"/>
-       <circle cx="188" cy="140" r="7" fill="#C9CED8" stroke="${C.line}" stroke-width="3"/>
+       <path d="M164 134 Q170 142 184 140" fill="none" stroke="${C.line}" stroke-width="4" stroke-linecap="round"/>
+       <circle cx="188" cy="140" r="8" fill="#C9CED8" stroke="${C.line}" stroke-width="3"/>
        <polyline points="196,82 204,82 208,72 214,92 218,82 230,82" fill="none" stroke="${C.good}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>`,
   },
   watch: {
     title: "On night watch", note: "Watches, even with the window hidden",
     svg: () => `<circle cx="34" cy="34" r="16" fill="${C.glow}"/><circle cx="42" cy="28" r="14" fill="#fff"/>` +
-      owl({ eyes: "wide", look: [-3, 0], wingR: 70 }) +
-      `<circle cx="198" cy="150" r="26" fill="url(#ng)"/>
-       <path d="M190 128 h16 M198 122 v6" stroke="${C.line}" stroke-width="4" stroke-linecap="round"/>
-       <rect x="186" y="132" width="24" height="30" rx="6" fill="${C.glow}" fill-opacity="0.85" stroke="${C.line}" stroke-width="4"/>
-       <path d="M198 140 q-5 7 0 12 q5 -5 0 -12" fill="${C.warn}"/>`,
+      owl({ eyes: "wide", look: [-3, 0], wingR: [196, 120] }) +
+      `<circle cx="198" cy="150" r="28" fill="url(#ng)"/>
+       <path d="M198 118 v12" stroke="${C.line}" stroke-width="4" stroke-linecap="round"/>
+       <path d="M190 132 h16" stroke="${C.line}" stroke-width="5" stroke-linecap="round"/>
+       <rect x="186" y="134" width="24" height="30" rx="6" fill="${C.glow}" fill-opacity="0.85" stroke="${C.line}" stroke-width="4"/>
+       <path d="M198 142 q-5 7 0 12 q5 -5 0 -12" fill="${C.warn}"/>`,
   },
   report: {
     title: "Daily report", note: "Runs even with the app closed",
-    svg: () => owl({ eyes: "happy", wingL: 38, wingR: 38, blush: true,
+    svg: () => owl({ eyes: "happy", wingL: [66, 160], wingR: [174, 160], blush: true,
       front: `<rect x="82" y="128" width="76" height="62" rx="8" fill="${C.paper}" stroke="${C.line}" stroke-width="4"/>
         <rect x="106" y="122" width="28" height="11" rx="4" fill="${C.bodyDark}"/>
-        <path d="M92 146 l5 5 l9 -10" fill="none" stroke="${C.good}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="112" y1="147" x2="148" y2="147" stroke="${C.soft}" stroke-width="5" stroke-linecap="round"/>
-        <path d="M92 164 l5 5 l9 -10" fill="none" stroke="${C.good}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="112" y1="165" x2="142" y2="165" stroke="${C.soft}" stroke-width="5" stroke-linecap="round"/>
-        <circle cx="98" cy="180" r="4" fill="${C.warn}"/><line x1="112" y1="180" x2="136" y2="180" stroke="${C.soft}" stroke-width="5" stroke-linecap="round"/>` }),
+        <path d="M94 146 l5 5 l9 -10" fill="none" stroke="${C.good}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="114" y1="147" x2="146" y2="147" stroke="${C.soft}" stroke-width="5" stroke-linecap="round"/>
+        <path d="M94 164 l5 5 l9 -10" fill="none" stroke="${C.good}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="114" y1="165" x2="140" y2="165" stroke="${C.soft}" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="100" cy="180" r="4" fill="${C.warn}"/><line x1="114" y1="180" x2="134" y2="180" stroke="${C.soft}" stroke-width="5" stroke-linecap="round"/>` + tipFront(80, 170, 30) + tipFront(160, 170, 150) }),
   },
   verified: {
     title: "Verified", note: "Every cited figure is checked",
-    svg: () => owl({ eyes: "happy", wingR: 104, beak: "open", blush: true }) +
-      `<circle cx="206" cy="42" r="22" fill="${C.good}" stroke="${C.line}" stroke-width="4"/>
-       <path d="M196 42 l7 7 l13 -15" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`,
+    svg: () => owl({ eyes: "happy", wingR: [198, 70], beak: "open", blush: true }) +
+      `<circle cx="206" cy="48" r="22" fill="${C.good}" stroke="${C.line}" stroke-width="4"/>
+       <path d="M196 48 l7 7 l13 -15" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`,
   },
   privacy: {
     title: "Privacy", note: "You choose what leaves the PC",
-    svg: () => owl({ eyes: "focus", look: [0, 2], wingR: 58 }) +
+    svg: () => owl({ eyes: "focus", look: [0, 2], wingR: [176, 146] }) +
       `<path d="M196 108 l30 11 v24 q0 26 -30 38 q-30 -12 -30 -38 v-24 z" fill="${C.disc}" stroke="${C.line}" stroke-width="4" stroke-linejoin="round"/>
        <rect x="185" y="136" width="22" height="17" rx="3" fill="#fff"/>
        <path d="M189 136 v-6 q0 -8 7 -8 q7 0 7 8 v6" fill="none" stroke="#fff" stroke-width="3.5"/>`,
   },
   cleanup: {
     title: "Approved cleanup", note: "Actions run after your click",
-    svg: () => owl({ eyes: "happy", wingL: 8, wingR: 46 }) +
+    svg: () => owl({ eyes: "happy", wingR: [190, 142] }) +
       `<path d="M186 146 h40 l-5 46 h-30 z" fill="${C.soft}" stroke="${C.line}" stroke-width="4" stroke-linejoin="round"/>
        <rect x="182" y="138" width="48" height="9" rx="4" fill="${C.bodyDark}" stroke="${C.line}" stroke-width="3"/>
-       <path d="M200 162 l6 -6 l6 6 M206 156 v14 M197 178 q9 8 18 0" fill="none" stroke="${C.good}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-       <path d="M24 128 l8 -8 M14 140 h10 M26 150 l8 6" stroke="${C.trace}" stroke-width="4" stroke-linecap="round"/>`,
+       <path d="M200 162 l6 -6 l6 6 M206 156 v14 M197 178 q9 8 18 0" fill="none" stroke="${C.good}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>`,
   },
   local: {
     title: "Local mode", note: "No AI, nothing leaves the PC",
-    svg: () => owl({ eyes: "closed", wingL: -4, wingR: -4 }) +
-      `<path d="M150 40 q14 6 28 0 q-6 14 -20 18" fill="${C.bodyDark}" opacity="0.0"/>
-       <text x="176" y="50" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="800" fill="${C.bodyLight}">z</text>
+    svg: () => owl({ eyes: "closed", wingL: [66, 166], wingR: [174, 166] }) +
+      `<text x="176" y="50" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="800" fill="${C.bodyLight}">z</text>
        <text x="194" y="30" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="800" fill="${C.bodyLight}">Z</text>`,
   },
 };

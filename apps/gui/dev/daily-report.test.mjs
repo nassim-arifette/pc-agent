@@ -104,7 +104,8 @@ test("home shows the answer first and only drafts a question; nothing is sent", 
   await flush();
   assert.equal(card.el.hidden, false);
   assert.match(card.el.textContent, /3 point\(s\) to review/);
-  assert.match(card.el.textContent, /Low available memory/);
+  assert.match(card.el.textContent, /High disk latency/);
+  assert.match(card.el.textContent, /C: almost full/);
   assert.match(card.el.textContent, /1 watch alert\(s\)/);
   byText(card.el, "Ask PC Agent about it").listeners.click();
   assert.match(drafted, /daily report found points/);

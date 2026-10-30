@@ -8,9 +8,13 @@
   <g fill="#F5A524" stroke="#C47F0A" stroke-width="2" stroke-linejoin="round">
     <path d="M96 184 l-9 12 h8 l1 -5 l3 6 h7 l-3 -12 z"/><path d="M144 184 l9 12 h-8 l-1 -5 l-3 6 h-7 l3 -12 z"/>
   </g>
-  <g transform="rotate(38 78 112)"><path d="M74 108 C48 120 42 150 50 176 C58 172 62 166 64 160 C66 168 70 172 76 172 C78 160 80 140 86 124 Z" fill="url(#nw)" stroke="#1A2366" stroke-width="2.5" stroke-linejoin="round"/>
-    <path d="M58 150 Q62 158 64 160 M66 140 Q70 150 72 156" fill="none" stroke="#3A4BB8" stroke-width="2" stroke-linecap="round" opacity="0.7"/></g><g transform="translate(240 0) scale(-1 1)"><g transform="rotate(38 78 112)"><path d="M74 108 C48 120 42 150 50 176 C58 172 62 166 64 160 C66 168 70 172 76 172 C78 160 80 140 86 124 Z" fill="url(#nw)" stroke="#1A2366" stroke-width="2.5" stroke-linejoin="round"/>
-    <path d="M58 150 Q62 158 64 160 M66 140 Q70 150 72 156" fill="none" stroke="#3A4BB8" stroke-width="2" stroke-linecap="round" opacity="0.7"/></g></g>
+  <g transform="translate(80 112) rotate(106.3)">
+    <path d="M0 -15 C22.5 -21 34 -14 44 -9 Q56 0 44 9 C34 13 22.5 19 0 15 Z" fill="url(#nw)" stroke="#1A2366" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M30 -5 q7 4 0 9 M18 -7 q7 6 0 13" fill="none" stroke="#3A4BB8" stroke-width="2" stroke-linecap="round" opacity="0.75"/>
+  </g><g transform="translate(160 112) rotate(73.7)">
+    <path d="M0 15 C22.5 21 34 14 44 9 Q56 0 44 -9 C34 -13 22.5 -19 0 -15 Z" fill="url(#nw)" stroke="#1A2366" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M30 5 q7 4 0 -9 M18 7 q7 6 0 -13" fill="none" stroke="#3A4BB8" stroke-width="2" stroke-linecap="round" opacity="0.75"/>
+  </g>
   <path d="M74 54 L82 22 L100 46 Z" fill="#1A2366"/><path d="M166 54 L158 22 L140 46 Z" fill="#1A2366"/>
   <path d="M120 40 C168 40 184 80 184 118 C184 162 158 190 120 190 C82 190 56 162 56 118 C56 80 72 40 120 40 Z" fill="url(#nb)" stroke="#1A2366" stroke-width="3"/>
   <path d="M80 62 Q94 50 112 48" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity="0.25"/>
@@ -27,8 +31,15 @@
   <path d="M112 113 L120 109 L128 113 L120 126 Z" fill="#F5A524" stroke="#C47F0A" stroke-width="2" stroke-linejoin="round"/>
   <rect x="82" y="128" width="76" height="62" rx="8" fill="#FFFFFF" stroke="#1B1B1A" stroke-width="4"/>
         <rect x="106" y="122" width="28" height="11" rx="4" fill="#1A2366"/>
-        <path d="M92 146 l5 5 l9 -10" fill="none" stroke="#2E9E5B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="112" y1="147" x2="148" y2="147" stroke="#E7ECFF" stroke-width="5" stroke-linecap="round"/>
-        <path d="M92 164 l5 5 l9 -10" fill="none" stroke="#2E9E5B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="112" y1="165" x2="142" y2="165" stroke="#E7ECFF" stroke-width="5" stroke-linecap="round"/>
-        <circle cx="98" cy="180" r="4" fill="#F59F00"/><line x1="112" y1="180" x2="136" y2="180" stroke="#E7ECFF" stroke-width="5" stroke-linecap="round"/></svg>
+        <path d="M94 146 l5 5 l9 -10" fill="none" stroke="#2E9E5B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="114" y1="147" x2="146" y2="147" stroke="#E7ECFF" stroke-width="5" stroke-linecap="round"/>
+        <path d="M94 164 l5 5 l9 -10" fill="none" stroke="#2E9E5B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="114" y1="165" x2="140" y2="165" stroke="#E7ECFF" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="100" cy="180" r="4" fill="#F59F00"/><line x1="114" y1="180" x2="134" y2="180" stroke="#E7ECFF" stroke-width="5" stroke-linecap="round"/><g transform="translate(80 170) rotate(30)">
+    <path d="M-10 -14 C-2 -18 10 -12 11 -2 C12 8 4 15 -4 13 C-12 11 -15 2 -14 -6 Z" fill="url(#nw)" stroke="#1A2366" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M-3 -4 q5 3 1 8 M4 -7 q5 4 1 9" fill="none" stroke="#3A4BB8" stroke-width="2" stroke-linecap="round" opacity="0.75"/>
+  </g><g transform="translate(160 170) rotate(150)">
+    <path d="M-10 -14 C-2 -18 10 -12 11 -2 C12 8 4 15 -4 13 C-12 11 -15 2 -14 -6 Z" fill="url(#nw)" stroke="#1A2366" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M-3 -4 q5 3 1 8 M4 -7 q5 4 1 9" fill="none" stroke="#3A4BB8" stroke-width="2" stroke-linecap="round" opacity="0.75"/>
+  </g>
+  </svg>
