@@ -1,0 +1,42 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#f2f3f5; color:#1f2430; }
+#k-nox { position:absolute; left:810px; top:120px; width:300px; }
+.name { position:absolute; left:0; right:0; top:410px; text-align:center; font-size:120px; font-weight:900; letter-spacing:-.045em; }
+.lines { position:absolute; left:0; right:0; top:580px; display:flex; justify-content:center; gap:34px; font-size:64px; font-weight:900; }
+.lines span { opacity:0; }
+.lines .g { color:#2e7a4d; }
+.foot { position:absolute; left:0; right:0; top:800px; text-align:center; font-size:34px; font-weight:700; color:#5b74b8; opacity:0; }
+.foot2 { position:absolute; left:0; right:0; top:860px; text-align:center; font-size:30px; font-weight:700; color:#55607f; opacity:0; }
+
+</style>
+<div id="root" data-composition-id="endcard" data-width="1920" data-height="1080">
+
+<img id="k-nox" src="assets/nox/nox-verified.svg" alt="">
+<div class="name" id="k-name">PC Agent</div>
+<div class="lines"><span id="k-l1">No boost buttons.</span><span id="k-l2">No bullshit.</span><span id="k-l3" class="g">Just proof.</span></div>
+<div class="foot" id="k-f1">github.com/nassim-arifette/pc-agent</div>
+<div class="foot2" id="k-f2">Built with NVIDIA Nemotron · Nebius Token Factory · Nebius AI Cloud · Tavily</div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#k-nox", { opacity: 0, scale: 0.5, y: 60 }, { opacity: 1, scale: 1, y: 0, duration: 0.5, ease: "back.out(1.7)" }, 0);
+tl.fromTo("#k-name", { opacity: 0, filter: "blur(10px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2 }, 0.1);
+tl.fromTo("#k-l1", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.14 }, 1.13);
+tl.fromTo("#k-l2", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.14 }, 2.117);
+tl.fromTo("#k-l3", { opacity: 0, scale: 1.3 }, { opacity: 1, scale: 1, duration: 0.2, ease: "power4.out" }, 2.999);
+tl.fromTo("#k-f1, #k-f2", { opacity: 0 }, { opacity: 1, duration: 0.3, stagger: 0.12 }, 3.504);
+
+window.__timelines["endcard"] = tl;
+</script>
+</template>

@@ -1,0 +1,48 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#1f2430; }
+.half { position:absolute; top:0; height:1080px; width:960px; overflow:hidden; }
+#j-l { left:0; background:radial-gradient(circle at 50% 40%, #a5503f 0%, #7a3329 60%, #3e1d19 100%); }
+#j-r { left:960px; background:#fff; }
+#j-l .num { position:absolute; left:0; right:0; top:330px; text-align:center; font-size:200px; font-weight:900; }
+#j-l .lbl { position:absolute; left:0; right:0; top:560px; text-align:center; font-size:56px; font-weight:900; color:#e3c47a; }
+.cap { position:absolute; left:0; right:0; bottom:150px; text-align:center; font-size:46px; font-weight:800; }
+#j-r img { position:absolute; left:-470px; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+#j-r .cap { color:#1f2430; background:rgba(255,255,255,.92); padding:14px 0; }
+.stats { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:60px; opacity:0; }
+.stat { background:#fff; color:#1f2430; border-radius:20px; padding:40px 60px; text-align:center; }
+.stat .v { font-size:120px; font-weight:900; letter-spacing:-.03em; }
+.stat .k { font-size:36px; font-weight:700; color:#55607f; }
+.stat.g .v { color:#2e7a4d; }
+
+</style>
+<div id="root" data-composition-id="impact" data-width="1920" data-height="1080">
+
+<div class="half" id="j-l" data-layout-allow-overflow><div class="num">1,248</div><div class="lbl">PROBLEMS FOUND!</div><div class="cap">Scares you</div></div>
+<div class="half" id="j-r" data-layout-allow-overflow><img id="j-img" src="assets/img/chat-sources.png" alt=""><div class="cap">Tells you the truth</div></div>
+<div class="stats" id="j-stats"><div class="stat"><div class="v">~10 s</div><div class="k">per answer</div></div><div class="stat g"><div class="v">$0.0044</div><div class="k">Nemotron 3 Super, per answer</div></div></div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#j-l", { x: -960 }, { x: 0, duration: 0.45, ease: "expo.out" }, 0);
+tl.fromTo("#j-r", { x: 960 }, { x: 0, duration: 0.45, ease: "expo.out" }, 0.08);
+tl.to("#j-l", { filter: "saturate(0.2)", opacity: 0.6, duration: 0.3 }, 2.976);
+tl.to("#j-l", { x: -960, duration: 0.5, ease: "power3.in" }, 4.092);
+tl.to("#j-r", { x: -960, width: 1920, duration: 0.5, ease: "power3.in" }, 4.092);
+tl.to("#j-img", { x: 470, duration: 0.5, ease: "power3.in" }, 4.092);
+tl.fromTo("#j-stats", { opacity: 0, scale: 1.08 }, { opacity: 1, scale: 1, duration: 0.3, ease: "expo.out" }, 5.047);
+tl.fromTo("#j-r", { filter: "blur(0px)", opacity: 1 }, { filter: "blur(14px)", opacity: 0.35, duration: 0.3 }, 5.047);
+
+window.__timelines["impact"] = tl;
+</script>
+</template>

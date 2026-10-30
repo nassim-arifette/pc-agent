@@ -1,0 +1,27 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#fff; }
+
+</style>
+<div id="root" data-composition-id="storage" data-width="1920" data-height="1080">
+
+<div class="cam" id="s-cam"><video id="s-v" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="0" data-duration="5.788" data-media-start="1.85" data-playback-rate="1.572"></video></div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#s-cam", { x: 0, y: 0, scale: 1 }, { x: 0, y: 0, scale: 1, duration: 0.01 }, 0);
+cam("#s-cam", -592.5, -216.0, 1.35, 2.397, 0.55);
+
+window.__timelines["storage"] = tl;
+</script>
+</template>

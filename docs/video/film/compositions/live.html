@@ -1,0 +1,38 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#161615; }
+
+</style>
+<div id="root" data-composition-id="live" data-width="1920" data-height="1080">
+
+<div class="full" id="f-s1">
+  <div class="cam" id="f-cam1"><video id="f-v1" class="clip" src="assets/clips/live.mp4" muted playsinline data-start="0" data-duration="6.185" data-media-start="1.848"></video></div>
+</div>
+<div class="full" id="f-s2">
+  <div class="cam" id="f-cam2"><video id="f-v2" class="clip" src="assets/clips/watches.mp4" muted playsinline data-start="6.185" data-duration="3.207" data-media-start="1.6"></video></div>
+</div>
+<div class="full" id="f-s3">
+  <div class="cam" id="f-cam3"><video id="f-v3" class="clip" src="assets/clips/report.mp4" muted playsinline data-start="9.392" data-duration="11.459" data-media-start="2.0"></video></div>
+</div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#f-cam1", { x: 0, y: 0, scale: 1 }, { x: 0, y: 0, scale: 1, duration: 0.01 }, 0);
+cam("#f-cam1", 0, -69.0, 1.45, 2.502, 0.5);
+cam("#f-cam1", 0, 0, 1, 4.877, 0.45);
+tl.fromTo("#f-cam2", { x: 0, y: 0, scale: 1.12 }, { x: 0, y: -110.0, scale: 1.3, duration: 3.207, ease: "power1.inOut" }, 6.185);
+tl.fromTo("#f-cam3", { x: 0, y: 0, scale: 1 }, { x: -810.0, y: -540.0, scale: 1.5, duration: 0.6, ease: "power3.inOut" }, 9.819);
+
+window.__timelines["live"] = tl;
+</script>
+</template>

@@ -1,0 +1,36 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#fff; }
+.tav { position:absolute; left:80px; top:70px; padding:14px 26px; border-radius:12px; background:#1f2430; color:#fff; font-size:38px; font-weight:800; opacity:0; z-index:5; }
+.tav b { color:#b3a6d6; }
+
+</style>
+<div id="root" data-composition-id="ram" data-width="1920" data-height="1080">
+
+<div class="full" id="r-s1">
+  <div class="cam" id="r-cam1"><video id="r-v1" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="0" data-duration="1.506" data-media-start="1.95" data-playback-rate="6.972"></video></div>
+</div>
+<div class="full" id="r-s2">
+  <div class="cam" id="r-cam2"><video id="r-v2" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="1.506" data-duration="4.01" data-media-start="12.450000000000001"></video></div>
+</div>
+<div class="tav" id="r-tag">Upgrade prices by <b>Tavily</b></div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#r-tag", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 0.1);
+tl.fromTo("#r-cam2", { x: 0, y: 0, scale: 1 }, { x: -672.0, y: -356.0, scale: 1.6, duration: 0.5, ease: "power3.inOut" }, 1.506);
+tl.to("#r-tag", { opacity: 0, duration: 0.15 }, 1.506);
+
+window.__timelines["ram"] = tl;
+</script>
+</template>

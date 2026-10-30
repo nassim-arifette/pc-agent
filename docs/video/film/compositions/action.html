@@ -1,0 +1,29 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#fff; }
+
+</style>
+<div id="root" data-composition-id="action" data-width="1920" data-height="1080">
+
+<div class="cam" id="d-cam"><video id="d-v" class="clip" src="assets/clips/action.mp4" muted playsinline data-start="0" data-duration="15.234" data-media-start="9.492"></video></div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#d-cam", { x: 0, y: 0, scale: 1 }, { x: 0, y: 0, scale: 1, duration: 0.01 }, 0);
+cam("#d-cam", -672.0, -286.2, 1.7, 3.6, 0.55, "power3.inOut");
+cam("#d-cam", -765.0, -420.0, 1.5, 6.998, 0.5);
+cam("#d-cam", 0, 0, 1, 8.608, 0.45);
+
+window.__timelines["action"] = tl;
+</script>
+</template>

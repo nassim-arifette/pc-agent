@@ -1,0 +1,2713 @@
+{
+ "sched": [
+  {
+   "sid": "s01",
+   "start": 0.3,
+   "dur": 3.161
+  },
+  {
+   "sid": "s01b",
+   "start": 3.581,
+   "dur": 6.87
+  },
+  {
+   "sid": "s01c",
+   "start": 10.571,
+   "dur": 1.933
+  },
+  {
+   "sid": "s02",
+   "start": 12.624,
+   "dur": 6.296
+  },
+  {
+   "sid": "s03",
+   "start": 19.04,
+   "dur": 4.206
+  },
+  {
+   "sid": "s03b",
+   "start": 23.365,
+   "dur": 6.113
+  },
+  {
+   "sid": "s03c",
+   "start": 29.598,
+   "dur": 2.273
+  },
+  {
+   "sid": "s04",
+   "start": 32.441,
+   "dur": 1.802
+  },
+  {
+   "sid": "s05",
+   "start": 34.513,
+   "dur": 6.504
+  },
+  {
+   "sid": "s06",
+   "start": 41.138,
+   "dur": 5.016
+  },
+  {
+   "sid": "s07",
+   "start": 46.273,
+   "dur": 5.094
+  },
+  {
+   "sid": "s08",
+   "start": 51.487,
+   "dur": 9.326
+  },
+  {
+   "sid": "s08b",
+   "start": 60.933,
+   "dur": 5.669
+  },
+  {
+   "sid": "s09",
+   "start": 66.721,
+   "dur": 4.963
+  },
+  {
+   "sid": "s10",
+   "start": 71.804,
+   "dur": 13.27
+  },
+  {
+   "sid": "s10b",
+   "start": 85.195,
+   "dur": 7.34
+  },
+  {
+   "sid": "s11",
+   "start": 92.655,
+   "dur": 8.307
+  },
+  {
+   "sid": "s11b",
+   "start": 101.082,
+   "dur": 5.146
+  },
+  {
+   "sid": "s12",
+   "start": 106.598,
+   "dur": 14.472
+  },
+  {
+   "sid": "s12b",
+   "start": 121.19,
+   "dur": 9.639
+  },
+  {
+   "sid": "s13",
+   "start": 130.949,
+   "dur": 14.054
+  },
+  {
+   "sid": "s13b",
+   "start": 145.423,
+   "dur": 9.456
+  },
+  {
+   "sid": "s14",
+   "start": 154.999,
+   "dur": 7.941
+  },
+  {
+   "sid": "s15",
+   "start": 163.411,
+   "dur": 3.84
+  }
+ ],
+ "words": [
+  {
+   "sid": "s01",
+   "text": "Your",
+   "start": 0.3,
+   "end": 0.497
+  },
+  {
+   "sid": "s01",
+   "text": "PC",
+   "start": 0.544,
+   "end": 0.776
+  },
+  {
+   "sid": "s01",
+   "text": "is",
+   "start": 0.892,
+   "end": 0.939
+  },
+  {
+   "sid": "s01",
+   "text": "slow.",
+   "start": 0.997,
+   "end": 1.519
+  },
+  {
+   "sid": "s01",
+   "text": "So",
+   "start": 1.635,
+   "end": 1.751
+  },
+  {
+   "sid": "s01",
+   "text": "you",
+   "start": 1.809,
+   "end": 1.891
+  },
+  {
+   "sid": "s01",
+   "text": "open",
+   "start": 1.949,
+   "end": 2.158
+  },
+  {
+   "sid": "s01",
+   "text": "Task",
+   "start": 2.216,
+   "end": 2.506
+  },
+  {
+   "sid": "s01",
+   "text": "Manager.",
+   "start": 2.564,
+   "end": 3.411
+  },
+  {
+   "sid": "s01b",
+   "text": "A",
+   "start": 3.581,
+   "end": 3.685
+  },
+  {
+   "sid": "s01b",
+   "text": "wall",
+   "start": 3.755,
+   "end": 3.953
+  },
+  {
+   "sid": "s01b",
+   "text": "of",
+   "start": 3.999,
+   "end": 4.045
+  },
+  {
+   "sid": "s01b",
+   "text": "numbers.",
+   "start": 4.115,
+   "end": 4.661
+  },
+  {
+   "sid": "s01b",
+   "text": "Memory:",
+   "start": 5.021,
+   "end": 5.415
+  },
+  {
+   "sid": "s01b",
+   "text": "ninety-two",
+   "start": 5.462,
+   "end": 5.903
+  },
+  {
+   "sid": "s01b",
+   "text": "percent.",
+   "start": 5.973,
+   "end": 6.472
+  },
+  {
+   "sid": "s01b",
+   "text": "Thirty-one",
+   "start": 6.832,
+   "end": 7.319
+  },
+  {
+   "sid": "s01b",
+   "text": "svchost",
+   "start": 7.436,
+   "end": 7.993
+  },
+  {
+   "sid": "s01b",
+   "text": "processes.",
+   "start": 8.051,
+   "end": 8.805
+  },
+  {
+   "sid": "s01b",
+   "text": "It",
+   "start": 9.038,
+   "end": 9.154
+  },
+  {
+   "sid": "s01b",
+   "text": "never",
+   "start": 9.189,
+   "end": 9.363
+  },
+  {
+   "sid": "s01b",
+   "text": "tells",
+   "start": 9.398,
+   "end": 9.572
+  },
+  {
+   "sid": "s01b",
+   "text": "you",
+   "start": 9.607,
+   "end": 9.676
+  },
+  {
+   "sid": "s01b",
+   "text": "why.",
+   "start": 9.723,
+   "end": 10.408
+  },
+  {
+   "sid": "s01c",
+   "text": "So",
+   "start": 10.571,
+   "end": 10.734
+  },
+  {
+   "sid": "s01c",
+   "text": "you",
+   "start": 10.792,
+   "end": 10.861
+  },
+  {
+   "sid": "s01c",
+   "text": "download",
+   "start": 10.919,
+   "end": 11.244
+  },
+  {
+   "sid": "s01c",
+   "text": "a",
+   "start": 11.279,
+   "end": 11.302
+  },
+  {
+   "sid": "s01c",
+   "text": "PC",
+   "start": 11.349,
+   "end": 11.569
+  },
+  {
+   "sid": "s01c",
+   "text": "cleaner.",
+   "start": 11.686,
+   "end": 12.475
+  },
+  {
+   "sid": "s02",
+   "text": "Twelve",
+   "start": 12.624,
+   "end": 13.1
+  },
+  {
+   "sid": "s02",
+   "text": "hundred",
+   "start": 13.146,
+   "end": 13.425
+  },
+  {
+   "sid": "s02",
+   "text": "problems",
+   "start": 13.483,
+   "end": 13.994
+  },
+  {
+   "sid": "s02",
+   "text": "found.",
+   "start": 14.064,
+   "end": 14.528
+  },
+  {
+   "sid": "s02",
+   "text": "Boost",
+   "start": 14.888,
+   "end": 15.19
+  },
+  {
+   "sid": "s02",
+   "text": "your",
+   "start": 15.225,
+   "end": 15.341
+  },
+  {
+   "sid": "s02",
+   "text": "RAM.",
+   "start": 15.387,
+   "end": 15.863
+  },
+  {
+   "sid": "s02",
+   "text": "Your",
+   "start": 16.223,
+   "end": 16.386
+  },
+  {
+   "sid": "s02",
+   "text": "PC",
+   "start": 16.444,
+   "end": 16.722
+  },
+  {
+   "sid": "s02",
+   "text": "is",
+   "start": 16.838,
+   "end": 16.931
+  },
+  {
+   "sid": "s02",
+   "text": "eighty-seven",
+   "start": 17.047,
+   "end": 17.628
+  },
+  {
+   "sid": "s02",
+   "text": "percent",
+   "start": 17.686,
+   "end": 17.999
+  },
+  {
+   "sid": "s02",
+   "text": "slower.",
+   "start": 18.046,
+   "end": 18.893
+  },
+  {
+   "sid": "s03",
+   "text": "What",
+   "start": 19.04,
+   "end": 19.226
+  },
+  {
+   "sid": "s03",
+   "text": "does",
+   "start": 19.249,
+   "end": 19.353
+  },
+  {
+   "sid": "s03",
+   "text": "that",
+   "start": 19.388,
+   "end": 19.493
+  },
+  {
+   "sid": "s03",
+   "text": "even",
+   "start": 19.551,
+   "end": 19.748
+  },
+  {
+   "sid": "s03",
+   "text": "mean?",
+   "start": 19.806,
+   "end": 20.178
+  },
+  {
+   "sid": "s03",
+   "text": "Nothing.",
+   "start": 20.375,
+   "end": 20.805
+  },
+  {
+   "sid": "s03",
+   "text": "Fake",
+   "start": 20.921,
+   "end": 21.199
+  },
+  {
+   "sid": "s03",
+   "text": "numbers.",
+   "start": 21.234,
+   "end": 21.745
+  },
+  {
+   "sid": "s03",
+   "text": "Real",
+   "start": 21.908,
+   "end": 22.14
+  },
+  {
+   "sid": "s03",
+   "text": "subscription.",
+   "start": 22.198,
+   "end": 23.22
+  },
+  {
+   "sid": "s03b",
+   "text": "Ask",
+   "start": 23.365,
+   "end": 23.655
+  },
+  {
+   "sid": "s03b",
+   "text": "a",
+   "start": 23.702,
+   "end": 23.737
+  },
+  {
+   "sid": "s03b",
+   "text": "chatbot?",
+   "start": 23.783,
+   "end": 24.422
+  },
+  {
+   "sid": "s03b",
+   "text": "It",
+   "start": 24.735,
+   "end": 24.863
+  },
+  {
+   "sid": "s03b",
+   "text": "can't",
+   "start": 24.898,
+   "end": 25.118
+  },
+  {
+   "sid": "s03b",
+   "text": "see",
+   "start": 25.153,
+   "end": 25.281
+  },
+  {
+   "sid": "s03b",
+   "text": "your",
+   "start": 25.315,
+   "end": 25.432
+  },
+  {
+   "sid": "s03b",
+   "text": "PC,",
+   "start": 25.478,
+   "end": 25.977
+  },
+  {
+   "sid": "s03b",
+   "text": "so",
+   "start": 26.0,
+   "end": 26.093
+  },
+  {
+   "sid": "s03b",
+   "text": "it",
+   "start": 26.163,
+   "end": 26.221
+  },
+  {
+   "sid": "s03b",
+   "text": "guesses:",
+   "start": 26.267,
+   "end": 26.802
+  },
+  {
+   "sid": "s03b",
+   "text": "restart",
+   "start": 27.069,
+   "end": 27.556
+  },
+  {
+   "sid": "s03b",
+   "text": "it,",
+   "start": 27.603,
+   "end": 27.835
+  },
+  {
+   "sid": "s03b",
+   "text": "buy",
+   "start": 28.148,
+   "end": 28.334
+  },
+  {
+   "sid": "s03b",
+   "text": "more",
+   "start": 28.392,
+   "end": 28.566
+  },
+  {
+   "sid": "s03b",
+   "text": "RAM.",
+   "start": 28.601,
+   "end": 29.449
+  },
+  {
+   "sid": "s03c",
+   "text": "And",
+   "start": 29.598,
+   "end": 29.784
+  },
+  {
+   "sid": "s03c",
+   "text": "you",
+   "start": 29.842,
+   "end": 29.923
+  },
+  {
+   "sid": "s03c",
+   "text": "still",
+   "start": 30.004,
+   "end": 30.26
+  },
+  {
+   "sid": "s03c",
+   "text": "don't",
+   "start": 30.318,
+   "end": 30.515
+  },
+  {
+   "sid": "s03c",
+   "text": "know",
+   "start": 30.55,
+   "end": 30.689
+  },
+  {
+   "sid": "s03c",
+   "text": "what's",
+   "start": 30.736,
+   "end": 30.933
+  },
+  {
+   "sid": "s03c",
+   "text": "wrong.",
+   "start": 30.968,
+   "end": 31.827
+  },
+  {
+   "sid": "s04",
+   "text": "PC",
+   "start": 32.441,
+   "end": 32.801
+  },
+  {
+   "sid": "s04",
+   "text": "Agent",
+   "start": 32.94,
+   "end": 33.219
+  },
+  {
+   "sid": "s04",
+   "text": "does",
+   "start": 33.254,
+   "end": 33.405
+  },
+  {
+   "sid": "s04",
+   "text": "the",
+   "start": 33.428,
+   "end": 33.498
+  },
+  {
+   "sid": "s04",
+   "text": "opposite.",
+   "start": 33.556,
+   "end": 34.206
+  },
+  {
+   "sid": "s05",
+   "text": "Just",
+   "start": 34.513,
+   "end": 34.745
+  },
+  {
+   "sid": "s05",
+   "text": "ask.",
+   "start": 34.803,
+   "end": 35.233
+  },
+  {
+   "sid": "s05",
+   "text": "Nemotron",
+   "start": 35.651,
+   "end": 36.092
+  },
+  {
+   "sid": "s05",
+   "text": "investigates",
+   "start": 36.138,
+   "end": 36.719
+  },
+  {
+   "sid": "s05",
+   "text": "your",
+   "start": 36.754,
+   "end": 36.858
+  },
+  {
+   "sid": "s05",
+   "text": "PC:",
+   "start": 36.916,
+   "end": 37.543
+  },
+  {
+   "sid": "s05",
+   "text": "memory,",
+   "start": 37.903,
+   "end": 38.286
+  },
+  {
+   "sid": "s05",
+   "text": "programs,",
+   "start": 38.321,
+   "end": 38.971
+  },
+  {
+   "sid": "s05",
+   "text": "disk.",
+   "start": 39.064,
+   "end": 39.598
+  },
+  {
+   "sid": "s05",
+   "text": "For",
+   "start": 39.912,
+   "end": 40.086
+  },
+  {
+   "sid": "s05",
+   "text": "real.",
+   "start": 40.167,
+   "end": 40.968
+  },
+  {
+   "sid": "s06",
+   "text": "Memory",
+   "start": 41.138,
+   "end": 41.475
+  },
+  {
+   "sid": "s06",
+   "text": "is",
+   "start": 41.51,
+   "end": 41.579
+  },
+  {
+   "sid": "s06",
+   "text": "full.",
+   "start": 41.649,
+   "end": 42.09
+  },
+  {
+   "sid": "s06",
+   "text": "Chrome",
+   "start": 42.45,
+   "end": 42.752
+  },
+  {
+   "sid": "s06",
+   "text": "holds",
+   "start": 42.787,
+   "end": 43.007
+  },
+  {
+   "sid": "s06",
+   "text": "two",
+   "start": 43.042,
+   "end": 43.181
+  },
+  {
+   "sid": "s06",
+   "text": "point",
+   "start": 43.239,
+   "end": 43.425
+  },
+  {
+   "sid": "s06",
+   "text": "three",
+   "start": 43.46,
+   "end": 43.646
+  },
+  {
+   "sid": "s06",
+   "text": "gigs.",
+   "start": 43.692,
+   "end": 44.168
+  },
+  {
+   "sid": "s06",
+   "text": "A",
+   "start": 44.261,
+   "end": 44.331
+  },
+  {
+   "sid": "s06",
+   "text": "real",
+   "start": 44.412,
+   "end": 44.586
+  },
+  {
+   "sid": "s06",
+   "text": "cause,",
+   "start": 44.644,
+   "end": 44.934
+  },
+  {
+   "sid": "s06",
+   "text": "in",
+   "start": 44.958,
+   "end": 45.027
+  },
+  {
+   "sid": "s06",
+   "text": "plain",
+   "start": 45.074,
+   "end": 45.271
+  },
+  {
+   "sid": "s06",
+   "text": "words.",
+   "start": 45.318,
+   "end": 46.107
+  },
+  {
+   "sid": "s07",
+   "text": "Every",
+   "start": 46.273,
+   "end": 46.528
+  },
+  {
+   "sid": "s07",
+   "text": "number?",
+   "start": 46.586,
+   "end": 46.946
+  },
+  {
+   "sid": "s07",
+   "text": "One",
+   "start": 47.144,
+   "end": 47.341
+  },
+  {
+   "sid": "s07",
+   "text": "click",
+   "start": 47.364,
+   "end": 47.55
+  },
+  {
+   "sid": "s07",
+   "text": "to",
+   "start": 47.597,
+   "end": 47.643
+  },
+  {
+   "sid": "s07",
+   "text": "its",
+   "start": 47.713,
+   "end": 47.806
+  },
+  {
+   "sid": "s07",
+   "text": "source.",
+   "start": 47.84,
+   "end": 48.258
+  },
+  {
+   "sid": "s07",
+   "text": "Checked",
+   "start": 48.676,
+   "end": 48.943
+  },
+  {
+   "sid": "s07",
+   "text": "before",
+   "start": 48.967,
+   "end": 49.187
+  },
+  {
+   "sid": "s07",
+   "text": "you",
+   "start": 49.21,
+   "end": 49.28
+  },
+  {
+   "sid": "s07",
+   "text": "read",
+   "start": 49.35,
+   "end": 49.501
+  },
+  {
+   "sid": "s07",
+   "text": "it.",
+   "start": 49.547,
+   "end": 49.71
+  },
+  {
+   "sid": "s07",
+   "text": "No",
+   "start": 49.977,
+   "end": 50.104
+  },
+  {
+   "sid": "s07",
+   "text": "fake",
+   "start": 50.174,
+   "end": 50.36
+  },
+  {
+   "sid": "s07",
+   "text": "stats.",
+   "start": 50.383,
+   "end": 51.335
+  },
+  {
+   "sid": "s08",
+   "text": "Need",
+   "start": 51.487,
+   "end": 51.731
+  },
+  {
+   "sid": "s08",
+   "text": "to",
+   "start": 51.754,
+   "end": 51.8
+  },
+  {
+   "sid": "s08",
+   "text": "clean",
+   "start": 51.847,
+   "end": 52.044
+  },
+  {
+   "sid": "s08",
+   "text": "up?",
+   "start": 52.102,
+   "end": 52.369
+  },
+  {
+   "sid": "s08",
+   "text": "Not",
+   "start": 53.147,
+   "end": 53.345
+  },
+  {
+   "sid": "s08",
+   "text": "twelve",
+   "start": 53.391,
+   "end": 53.751
+  },
+  {
+   "sid": "s08",
+   "text": "hundred",
+   "start": 53.786,
+   "end": 54.041
+  },
+  {
+   "sid": "s08",
+   "text": "junk",
+   "start": 54.099,
+   "end": 54.343
+  },
+  {
+   "sid": "s08",
+   "text": "items.",
+   "start": 54.424,
+   "end": 54.912
+  },
+  {
+   "sid": "s08",
+   "text": "One",
+   "start": 54.982,
+   "end": 55.202
+  },
+  {
+   "sid": "s08",
+   "text": "exact",
+   "start": 55.237,
+   "end": 55.643
+  },
+  {
+   "sid": "s08",
+   "text": "folder,",
+   "start": 55.713,
+   "end": 56.27
+  },
+  {
+   "sid": "s08",
+   "text": "its",
+   "start": 56.41,
+   "end": 56.584
+  },
+  {
+   "sid": "s08",
+   "text": "real",
+   "start": 56.642,
+   "end": 56.839
+  },
+  {
+   "sid": "s08",
+   "text": "size,",
+   "start": 56.909,
+   "end": 57.304
+  },
+  {
+   "sid": "s08",
+   "text": "how",
+   "start": 57.327,
+   "end": 57.42
+  },
+  {
+   "sid": "s08",
+   "text": "to",
+   "start": 57.455,
+   "end": 57.501
+  },
+  {
+   "sid": "s08",
+   "text": "undo",
+   "start": 57.559,
+   "end": 57.861
+  },
+  {
+   "sid": "s08",
+   "text": "it.",
+   "start": 57.931,
+   "end": 58.128
+  },
+  {
+   "sid": "s08",
+   "text": "And",
+   "start": 58.441,
+   "end": 58.592
+  },
+  {
+   "sid": "s08",
+   "text": "nothing",
+   "start": 58.685,
+   "end": 58.964
+  },
+  {
+   "sid": "s08",
+   "text": "runs",
+   "start": 59.033,
+   "end": 59.254
+  },
+  {
+   "sid": "s08",
+   "text": "until",
+   "start": 59.301,
+   "end": 59.521
+  },
+  {
+   "sid": "s08",
+   "text": "you",
+   "start": 59.568,
+   "end": 59.637
+  },
+  {
+   "sid": "s08",
+   "text": "click.",
+   "start": 59.695,
+   "end": 60.775
+  },
+  {
+   "sid": "s08b",
+   "text": "Disk",
+   "start": 60.933,
+   "end": 61.212
+  },
+  {
+   "sid": "s08b",
+   "text": "full?",
+   "start": 61.258,
+   "end": 61.618
+  },
+  {
+   "sid": "s08b",
+   "text": "See",
+   "start": 62.198,
+   "end": 62.419
+  },
+  {
+   "sid": "s08b",
+   "text": "exactly",
+   "start": 62.477,
+   "end": 63.0
+  },
+  {
+   "sid": "s08b",
+   "text": "what",
+   "start": 63.046,
+   "end": 63.185
+  },
+  {
+   "sid": "s08b",
+   "text": "takes",
+   "start": 63.22,
+   "end": 63.441
+  },
+  {
+   "sid": "s08b",
+   "text": "the",
+   "start": 63.476,
+   "end": 63.545
+  },
+  {
+   "sid": "s08b",
+   "text": "space,",
+   "start": 63.58,
+   "end": 64.114
+  },
+  {
+   "sid": "s08b",
+   "text": "then",
+   "start": 64.474,
+   "end": 64.648
+  },
+  {
+   "sid": "s08b",
+   "text": "ask",
+   "start": 64.706,
+   "end": 64.915
+  },
+  {
+   "sid": "s08b",
+   "text": "what's",
+   "start": 64.973,
+   "end": 65.182
+  },
+  {
+   "sid": "s08b",
+   "text": "safe",
+   "start": 65.229,
+   "end": 65.484
+  },
+  {
+   "sid": "s08b",
+   "text": "to",
+   "start": 65.519,
+   "end": 65.577
+  },
+  {
+   "sid": "s08b",
+   "text": "delete.",
+   "start": 65.635,
+   "end": 66.552
+  },
+  {
+   "sid": "s09",
+   "text": "You",
+   "start": 66.721,
+   "end": 66.895
+  },
+  {
+   "sid": "s09",
+   "text": "see",
+   "start": 66.965,
+   "end": 67.116
+  },
+  {
+   "sid": "s09",
+   "text": "exactly",
+   "start": 67.174,
+   "end": 67.708
+  },
+  {
+   "sid": "s09",
+   "text": "what",
+   "start": 67.743,
+   "end": 67.87
+  },
+  {
+   "sid": "s09",
+   "text": "leaves",
+   "start": 67.917,
+   "end": 68.091
+  },
+  {
+   "sid": "s09",
+   "text": "your",
+   "start": 68.114,
+   "end": 68.207
+  },
+  {
+   "sid": "s09",
+   "text": "PC.",
+   "start": 68.242,
+   "end": 68.73
+  },
+  {
+   "sid": "s09",
+   "text": "No",
+   "start": 68.997,
+   "end": 69.124
+  },
+  {
+   "sid": "s09",
+   "text": "username.",
+   "start": 69.194,
+   "end": 69.682
+  },
+  {
+   "sid": "s09",
+   "text": "No",
+   "start": 69.74,
+   "end": 69.856
+  },
+  {
+   "sid": "s09",
+   "text": "files.",
+   "start": 69.925,
+   "end": 70.401
+  },
+  {
+   "sid": "s09",
+   "text": "Your",
+   "start": 70.634,
+   "end": 70.831
+  },
+  {
+   "sid": "s09",
+   "text": "choice.",
+   "start": 70.901,
+   "end": 71.644
+  },
+  {
+   "sid": "s10",
+   "text": "Live",
+   "start": 71.804,
+   "end": 72.083
+  },
+  {
+   "sid": "s10",
+   "text": "PC",
+   "start": 72.117,
+   "end": 72.396
+  },
+  {
+   "sid": "s10",
+   "text": "shows",
+   "start": 72.628,
+   "end": 72.907
+  },
+  {
+   "sid": "s10",
+   "text": "your",
+   "start": 72.953,
+   "end": 73.069
+  },
+  {
+   "sid": "s10",
+   "text": "machine",
+   "start": 73.116,
+   "end": 73.441
+  },
+  {
+   "sid": "s10",
+   "text": "in",
+   "start": 73.476,
+   "end": 73.522
+  },
+  {
+   "sid": "s10",
+   "text": "real",
+   "start": 73.58,
+   "end": 73.754
+  },
+  {
+   "sid": "s10",
+   "text": "time.",
+   "start": 73.813,
+   "end": 74.196
+  },
+  {
+   "sid": "s10",
+   "text": "Select",
+   "start": 74.556,
+   "end": 74.985
+  },
+  {
+   "sid": "s10",
+   "text": "anything.",
+   "start": 75.032,
+   "end": 75.589
+  },
+  {
+   "sid": "s10",
+   "text": "Explain",
+   "start": 75.902,
+   "end": 76.402
+  },
+  {
+   "sid": "s10",
+   "text": "it,",
+   "start": 76.448,
+   "end": 76.587
+  },
+  {
+   "sid": "s10",
+   "text": "or",
+   "start": 76.634,
+   "end": 76.761
+  },
+  {
+   "sid": "s10",
+   "text": "watch",
+   "start": 76.831,
+   "end": 77.087
+  },
+  {
+   "sid": "s10",
+   "text": "it.",
+   "start": 77.145,
+   "end": 77.377
+  },
+  {
+   "sid": "s10",
+   "text": "PC",
+   "start": 78.039,
+   "end": 78.387
+  },
+  {
+   "sid": "s10",
+   "text": "Agent",
+   "start": 78.584,
+   "end": 78.921
+  },
+  {
+   "sid": "s10",
+   "text": "warns",
+   "start": 78.979,
+   "end": 79.385
+  },
+  {
+   "sid": "s10",
+   "text": "you",
+   "start": 79.443,
+   "end": 79.536
+  },
+  {
+   "sid": "s10",
+   "text": "when",
+   "start": 79.583,
+   "end": 79.722
+  },
+  {
+   "sid": "s10",
+   "text": "something",
+   "start": 79.768,
+   "end": 80.094
+  },
+  {
+   "sid": "s10",
+   "text": "goes",
+   "start": 80.152,
+   "end": 80.372
+  },
+  {
+   "sid": "s10",
+   "text": "wrong,",
+   "start": 80.43,
+   "end": 80.964
+  },
+  {
+   "sid": "s10",
+   "text": "and",
+   "start": 81.196,
+   "end": 81.347
+  },
+  {
+   "sid": "s10",
+   "text": "writes",
+   "start": 81.382,
+   "end": 81.626
+  },
+  {
+   "sid": "s10",
+   "text": "a",
+   "start": 81.672,
+   "end": 81.707
+  },
+  {
+   "sid": "s10",
+   "text": "daily",
+   "start": 81.823,
+   "end": 82.125
+  },
+  {
+   "sid": "s10",
+   "text": "health",
+   "start": 82.183,
+   "end": 82.381
+  },
+  {
+   "sid": "s10",
+   "text": "report,",
+   "start": 82.427,
+   "end": 82.938
+  },
+  {
+   "sid": "s10",
+   "text": "even",
+   "start": 83.101,
+   "end": 83.344
+  },
+  {
+   "sid": "s10",
+   "text": "when",
+   "start": 83.379,
+   "end": 83.518
+  },
+  {
+   "sid": "s10",
+   "text": "the",
+   "start": 83.542,
+   "end": 83.611
+  },
+  {
+   "sid": "s10",
+   "text": "app",
+   "start": 83.658,
+   "end": 83.832
+  },
+  {
+   "sid": "s10",
+   "text": "is",
+   "start": 83.89,
+   "end": 83.96
+  },
+  {
+   "sid": "s10",
+   "text": "closed.",
+   "start": 84.018,
+   "end": 85.039
+  },
+  {
+   "sid": "s10b",
+   "text": "It",
+   "start": 85.195,
+   "end": 85.369
+  },
+  {
+   "sid": "s10b",
+   "text": "keeps",
+   "start": 85.427,
+   "end": 85.683
+  },
+  {
+   "sid": "s10b",
+   "text": "a",
+   "start": 85.729,
+   "end": 85.764
+  },
+  {
+   "sid": "s10b",
+   "text": "local",
+   "start": 85.857,
+   "end": 86.17
+  },
+  {
+   "sid": "s10b",
+   "text": "history,",
+   "start": 86.24,
+   "end": 86.832
+  },
+  {
+   "sid": "s10b",
+   "text": "so",
+   "start": 86.902,
+   "end": 87.053
+  },
+  {
+   "sid": "s10b",
+   "text": "it",
+   "start": 87.122,
+   "end": 87.192
+  },
+  {
+   "sid": "s10b",
+   "text": "sees",
+   "start": 87.25,
+   "end": 87.494
+  },
+  {
+   "sid": "s10b",
+   "text": "what",
+   "start": 87.529,
+   "end": 87.668
+  },
+  {
+   "sid": "s10b",
+   "text": "happened",
+   "start": 87.714,
+   "end": 88.028
+  },
+  {
+   "sid": "s10b",
+   "text": "before",
+   "start": 88.051,
+   "end": 88.272
+  },
+  {
+   "sid": "s10b",
+   "text": "you",
+   "start": 88.295,
+   "end": 88.376
+  },
+  {
+   "sid": "s10b",
+   "text": "asked.",
+   "start": 88.446,
+   "end": 88.887
+  },
+  {
+   "sid": "s10b",
+   "text": "And",
+   "start": 89.2,
+   "end": 89.363
+  },
+  {
+   "sid": "s10b",
+   "text": "every",
+   "start": 89.444,
+   "end": 89.711
+  },
+  {
+   "sid": "s10b",
+   "text": "past",
+   "start": 89.769,
+   "end": 90.048
+  },
+  {
+   "sid": "s10b",
+   "text": "investigation",
+   "start": 90.094,
+   "end": 90.895
+  },
+  {
+   "sid": "s10b",
+   "text": "is",
+   "start": 90.977,
+   "end": 91.093
+  },
+  {
+   "sid": "s10b",
+   "text": "one",
+   "start": 91.174,
+   "end": 91.348
+  },
+  {
+   "sid": "s10b",
+   "text": "search",
+   "start": 91.395,
+   "end": 91.615
+  },
+  {
+   "sid": "s10b",
+   "text": "away.",
+   "start": 91.65,
+   "end": 92.486
+  },
+  {
+   "sid": "s11",
+   "text": "Driver",
+   "start": 92.655,
+   "end": 93.085
+  },
+  {
+   "sid": "s11",
+   "text": "bug?",
+   "start": 93.143,
+   "end": 93.561
+  },
+  {
+   "sid": "s11",
+   "text": "Bad",
+   "start": 93.874,
+   "end": 94.129
+  },
+  {
+   "sid": "s11",
+   "text": "update?",
+   "start": 94.188,
+   "end": 94.768
+  },
+  {
+   "sid": "s11",
+   "text": "Tavily",
+   "start": 95.128,
+   "end": 95.616
+  },
+  {
+   "sid": "s11",
+   "text": "searches",
+   "start": 95.697,
+   "end": 96.045
+  },
+  {
+   "sid": "s11",
+   "text": "the",
+   "start": 96.092,
+   "end": 96.161
+  },
+  {
+   "sid": "s11",
+   "text": "web",
+   "start": 96.219,
+   "end": 96.44
+  },
+  {
+   "sid": "s11",
+   "text": "from",
+   "start": 96.498,
+   "end": 96.626
+  },
+  {
+   "sid": "s11",
+   "text": "what",
+   "start": 96.66,
+   "end": 96.777
+  },
+  {
+   "sid": "s11",
+   "text": "it",
+   "start": 96.811,
+   "end": 96.869
+  },
+  {
+   "sid": "s11",
+   "text": "measured",
+   "start": 96.916,
+   "end": 97.206
+  },
+  {
+   "sid": "s11",
+   "text": "on",
+   "start": 97.241,
+   "end": 97.311
+  },
+  {
+   "sid": "s11",
+   "text": "your",
+   "start": 97.357,
+   "end": 97.473
+  },
+  {
+   "sid": "s11",
+   "text": "PC,",
+   "start": 97.531,
+   "end": 98.181
+  },
+  {
+   "sid": "s11",
+   "text": "and",
+   "start": 98.379,
+   "end": 98.53
+  },
+  {
+   "sid": "s11",
+   "text": "shows",
+   "start": 98.588,
+   "end": 98.832
+  },
+  {
+   "sid": "s11",
+   "text": "you",
+   "start": 98.878,
+   "end": 98.959
+  },
+  {
+   "sid": "s11",
+   "text": "which",
+   "start": 99.04,
+   "end": 99.226
+  },
+  {
+   "sid": "s11",
+   "text": "source",
+   "start": 99.308,
+   "end": 99.691
+  },
+  {
+   "sid": "s11",
+   "text": "says",
+   "start": 99.76,
+   "end": 99.958
+  },
+  {
+   "sid": "s11",
+   "text": "what.",
+   "start": 100.039,
+   "end": 100.921
+  },
+  {
+   "sid": "s11b",
+   "text": "Need",
+   "start": 101.082,
+   "end": 101.314
+  },
+  {
+   "sid": "s11b",
+   "text": "more",
+   "start": 101.361,
+   "end": 101.512
+  },
+  {
+   "sid": "s11b",
+   "text": "RAM?",
+   "start": 101.558,
+   "end": 102.011
+  },
+  {
+   "sid": "s11b",
+   "text": "It",
+   "start": 102.092,
+   "end": 102.208
+  },
+  {
+   "sid": "s11b",
+   "text": "finds",
+   "start": 102.255,
+   "end": 102.487
+  },
+  {
+   "sid": "s11b",
+   "text": "the",
+   "start": 102.51,
+   "end": 102.58
+  },
+  {
+   "sid": "s11b",
+   "text": "exact",
+   "start": 102.638,
+   "end": 103.044
+  },
+  {
+   "sid": "s11b",
+   "text": "module",
+   "start": 103.114,
+   "end": 103.497
+  },
+  {
+   "sid": "s11b",
+   "text": "your",
+   "start": 103.532,
+   "end": 103.659
+  },
+  {
+   "sid": "s11b",
+   "text": "PC",
+   "start": 103.706,
+   "end": 103.938
+  },
+  {
+   "sid": "s11b",
+   "text": "takes,",
+   "start": 104.077,
+   "end": 104.519
+  },
+  {
+   "sid": "s11b",
+   "text": "with",
+   "start": 104.577,
+   "end": 104.751
+  },
+  {
+   "sid": "s11b",
+   "text": "today's",
+   "start": 104.797,
+   "end": 105.111
+  },
+  {
+   "sid": "s11b",
+   "text": "price.",
+   "start": 105.169,
+   "end": 106.19
+  },
+  {
+   "sid": "s12",
+   "text": "Under",
+   "start": 106.598,
+   "end": 106.819
+  },
+  {
+   "sid": "s12",
+   "text": "the",
+   "start": 106.865,
+   "end": 106.935
+  },
+  {
+   "sid": "s12",
+   "text": "hood,",
+   "start": 106.981,
+   "end": 107.26
+  },
+  {
+   "sid": "s12",
+   "text": "Nemotron",
+   "start": 107.306,
+   "end": 107.759
+  },
+  {
+   "sid": "s12",
+   "text": "on",
+   "start": 107.829,
+   "end": 107.875
+  },
+  {
+   "sid": "s12",
+   "text": "Nebius",
+   "start": 107.933,
+   "end": 108.258
+  },
+  {
+   "sid": "s12",
+   "text": "Token",
+   "start": 108.316,
+   "end": 108.572
+  },
+  {
+   "sid": "s12",
+   "text": "Factory",
+   "start": 108.618,
+   "end": 108.943
+  },
+  {
+   "sid": "s12",
+   "text": "doesn't",
+   "start": 108.99,
+   "end": 109.233
+  },
+  {
+   "sid": "s12",
+   "text": "guess.",
+   "start": 109.268,
+   "end": 109.721
+  },
+  {
+   "sid": "s12",
+   "text": "It",
+   "start": 109.953,
+   "end": 110.104
+  },
+  {
+   "sid": "s12",
+   "text": "measures.",
+   "start": 110.185,
+   "end": 110.812
+  },
+  {
+   "sid": "s12",
+   "text": "Two",
+   "start": 111.23,
+   "end": 111.439
+  },
+  {
+   "sid": "s12",
+   "text": "dozen",
+   "start": 111.497,
+   "end": 111.788
+  },
+  {
+   "sid": "s12",
+   "text": "tools",
+   "start": 111.834,
+   "end": 112.136
+  },
+  {
+   "sid": "s12",
+   "text": "to",
+   "start": 112.182,
+   "end": 112.24
+  },
+  {
+   "sid": "s12",
+   "text": "look",
+   "start": 112.298,
+   "end": 112.449
+  },
+  {
+   "sid": "s12",
+   "text": "inside",
+   "start": 112.496,
+   "end": 112.821
+  },
+  {
+   "sid": "s12",
+   "text": "your",
+   "start": 112.844,
+   "end": 112.949
+  },
+  {
+   "sid": "s12",
+   "text": "PC:",
+   "start": 112.995,
+   "end": 113.564
+  },
+  {
+   "sid": "s12",
+   "text": "look,",
+   "start": 113.877,
+   "end": 114.191
+  },
+  {
+   "sid": "s12",
+   "text": "never",
+   "start": 114.249,
+   "end": 114.481
+  },
+  {
+   "sid": "s12",
+   "text": "touch.",
+   "start": 114.539,
+   "end": 115.015
+  },
+  {
+   "sid": "s12",
+   "text": "If",
+   "start": 115.247,
+   "end": 115.375
+  },
+  {
+   "sid": "s12",
+   "text": "it",
+   "start": 115.422,
+   "end": 115.48
+  },
+  {
+   "sid": "s12",
+   "text": "gets",
+   "start": 115.526,
+   "end": 115.712
+  },
+  {
+   "sid": "s12",
+   "text": "a",
+   "start": 115.747,
+   "end": 115.781
+  },
+  {
+   "sid": "s12",
+   "text": "number",
+   "start": 115.863,
+   "end": 116.107
+  },
+  {
+   "sid": "s12",
+   "text": "wrong,",
+   "start": 116.153,
+   "end": 116.617
+  },
+  {
+   "sid": "s12",
+   "text": "our",
+   "start": 116.78,
+   "end": 116.919
+  },
+  {
+   "sid": "s12",
+   "text": "checker",
+   "start": 116.977,
+   "end": 117.268
+  },
+  {
+   "sid": "s12",
+   "text": "catches",
+   "start": 117.326,
+   "end": 117.662
+  },
+  {
+   "sid": "s12",
+   "text": "it,",
+   "start": 117.72,
+   "end": 117.929
+  },
+  {
+   "sid": "s12",
+   "text": "and",
+   "start": 118.126,
+   "end": 118.289
+  },
+  {
+   "sid": "s12",
+   "text": "Nemotron",
+   "start": 118.359,
+   "end": 118.823
+  },
+  {
+   "sid": "s12",
+   "text": "corrects",
+   "start": 118.893,
+   "end": 119.218
+  },
+  {
+   "sid": "s12",
+   "text": "itself",
+   "start": 119.264,
+   "end": 119.566
+  },
+  {
+   "sid": "s12",
+   "text": "before",
+   "start": 119.624,
+   "end": 119.856
+  },
+  {
+   "sid": "s12",
+   "text": "you",
+   "start": 119.891,
+   "end": 119.961
+  },
+  {
+   "sid": "s12",
+   "text": "see",
+   "start": 120.007,
+   "end": 120.135
+  },
+  {
+   "sid": "s12",
+   "text": "anything.",
+   "start": 120.17,
+   "end": 121.04
+  },
+  {
+   "sid": "s12b",
+   "text": "Dictate",
+   "start": 121.19,
+   "end": 121.678
+  },
+  {
+   "sid": "s12b",
+   "text": "your",
+   "start": 121.712,
+   "end": 121.829
+  },
+  {
+   "sid": "s12b",
+   "text": "question",
+   "start": 121.875,
+   "end": 122.235
+  },
+  {
+   "sid": "s12b",
+   "text": "locally.",
+   "start": 122.293,
+   "end": 122.781
+  },
+  {
+   "sid": "s12b",
+   "text": "Attach",
+   "start": 122.839,
+   "end": 123.222
+  },
+  {
+   "sid": "s12b",
+   "text": "a",
+   "start": 123.257,
+   "end": 123.28
+  },
+  {
+   "sid": "s12b",
+   "text": "screenshot",
+   "start": 123.315,
+   "end": 123.895
+  },
+  {
+   "sid": "s12b",
+   "text": "or",
+   "start": 123.942,
+   "end": 124.0
+  },
+  {
+   "sid": "s12b",
+   "text": "a",
+   "start": 124.034,
+   "end": 124.069
+  },
+  {
+   "sid": "s12b",
+   "text": "photo,",
+   "start": 124.104,
+   "end": 124.627
+  },
+  {
+   "sid": "s12b",
+   "text": "and",
+   "start": 124.859,
+   "end": 125.021
+  },
+  {
+   "sid": "s12b",
+   "text": "Nemotron",
+   "start": 125.103,
+   "end": 125.671
+  },
+  {
+   "sid": "s12b",
+   "text": "Super",
+   "start": 125.788,
+   "end": 126.066
+  },
+  {
+   "sid": "s12b",
+   "text": "VL",
+   "start": 126.113,
+   "end": 126.426
+  },
+  {
+   "sid": "s12b",
+   "text": "reads",
+   "start": 126.507,
+   "end": 126.74
+  },
+  {
+   "sid": "s12b",
+   "text": "it.",
+   "start": 126.774,
+   "end": 126.972
+  },
+  {
+   "sid": "s12b",
+   "text": "No",
+   "start": 127.332,
+   "end": 127.471
+  },
+  {
+   "sid": "s12b",
+   "text": "key?",
+   "start": 127.529,
+   "end": 127.889
+  },
+  {
+   "sid": "s12b",
+   "text": "Local",
+   "start": 128.469,
+   "end": 128.783
+  },
+  {
+   "sid": "s12b",
+   "text": "checks",
+   "start": 128.841,
+   "end": 129.166
+  },
+  {
+   "sid": "s12b",
+   "text": "still",
+   "start": 129.329,
+   "end": 129.584
+  },
+  {
+   "sid": "s12b",
+   "text": "run",
+   "start": 129.63,
+   "end": 129.758
+  },
+  {
+   "sid": "s12b",
+   "text": "on",
+   "start": 129.805,
+   "end": 129.863
+  },
+  {
+   "sid": "s12b",
+   "text": "your",
+   "start": 129.897,
+   "end": 129.99
+  },
+  {
+   "sid": "s12b",
+   "text": "PC.",
+   "start": 130.025,
+   "end": 130.803
+  },
+  {
+   "sid": "s13",
+   "text": "And",
+   "start": 130.949,
+   "end": 131.112
+  },
+  {
+   "sid": "s13",
+   "text": "we",
+   "start": 131.17,
+   "end": 131.239
+  },
+  {
+   "sid": "s13",
+   "text": "trained",
+   "start": 131.286,
+   "end": 131.529
+  },
+  {
+   "sid": "s13",
+   "text": "our",
+   "start": 131.553,
+   "end": 131.657
+  },
+  {
+   "sid": "s13",
+   "text": "own",
+   "start": 131.704,
+   "end": 131.82
+  },
+  {
+   "sid": "s13",
+   "text": "model.",
+   "start": 131.866,
+   "end": 132.331
+  },
+  {
+   "sid": "s13",
+   "text": "A",
+   "start": 132.911,
+   "end": 132.992
+  },
+  {
+   "sid": "s13",
+   "text": "small",
+   "start": 133.074,
+   "end": 133.364
+  },
+  {
+   "sid": "s13",
+   "text": "Nemotron,",
+   "start": 133.434,
+   "end": 134.037
+  },
+  {
+   "sid": "s13",
+   "text": "fine-tuned",
+   "start": 134.095,
+   "end": 134.699
+  },
+  {
+   "sid": "s13",
+   "text": "on",
+   "start": 134.745,
+   "end": 134.827
+  },
+  {
+   "sid": "s13",
+   "text": "Nebius",
+   "start": 134.896,
+   "end": 135.314
+  },
+  {
+   "sid": "s13",
+   "text": "AI",
+   "start": 135.384,
+   "end": 135.674
+  },
+  {
+   "sid": "s13",
+   "text": "Cloud",
+   "start": 135.732,
+   "end": 135.999
+  },
+  {
+   "sid": "s13",
+   "text": "for",
+   "start": 136.046,
+   "end": 136.15
+  },
+  {
+   "sid": "s13",
+   "text": "one",
+   "start": 136.22,
+   "end": 136.359
+  },
+  {
+   "sid": "s13",
+   "text": "job:",
+   "start": 136.394,
+   "end": 136.858
+  },
+  {
+   "sid": "s13",
+   "text": "what",
+   "start": 137.439,
+   "end": 137.602
+  },
+  {
+   "sid": "s13",
+   "text": "should",
+   "start": 137.636,
+   "end": 137.81
+  },
+  {
+   "sid": "s13",
+   "text": "we",
+   "start": 137.834,
+   "end": 137.903
+  },
+  {
+   "sid": "s13",
+   "text": "measure",
+   "start": 137.961,
+   "end": 138.24
+  },
+  {
+   "sid": "s13",
+   "text": "next?",
+   "start": 138.275,
+   "end": 138.716
+  },
+  {
+   "sid": "s13",
+   "text": "It",
+   "start": 139.03,
+   "end": 139.157
+  },
+  {
+   "sid": "s13",
+   "text": "runs",
+   "start": 139.215,
+   "end": 139.459
+  },
+  {
+   "sid": "s13",
+   "text": "right",
+   "start": 139.575,
+   "end": 139.819
+  },
+  {
+   "sid": "s13",
+   "text": "in",
+   "start": 139.842,
+   "end": 139.889
+  },
+  {
+   "sid": "s13",
+   "text": "the",
+   "start": 139.924,
+   "end": 139.993
+  },
+  {
+   "sid": "s13",
+   "text": "app,",
+   "start": 140.074,
+   "end": 140.318
+  },
+  {
+   "sid": "s13",
+   "text": "on",
+   "start": 140.341,
+   "end": 140.4
+  },
+  {
+   "sid": "s13",
+   "text": "your",
+   "start": 140.446,
+   "end": 140.55
+  },
+  {
+   "sid": "s13",
+   "text": "PC.",
+   "start": 140.608,
+   "end": 141.189
+  },
+  {
+   "sid": "s13",
+   "text": "It",
+   "start": 141.549,
+   "end": 141.677
+  },
+  {
+   "sid": "s13",
+   "text": "picks",
+   "start": 141.723,
+   "end": 141.955
+  },
+  {
+   "sid": "s13",
+   "text": "the",
+   "start": 142.002,
+   "end": 142.071
+  },
+  {
+   "sid": "s13",
+   "text": "measurements,",
+   "start": 142.129,
+   "end": 142.756
+  },
+  {
+   "sid": "s13",
+   "text": "then",
+   "start": 142.826,
+   "end": 142.988
+  },
+  {
+   "sid": "s13",
+   "text": "hands",
+   "start": 143.07,
+   "end": 143.383
+  },
+  {
+   "sid": "s13",
+   "text": "off",
+   "start": 143.441,
+   "end": 143.604
+  },
+  {
+   "sid": "s13",
+   "text": "to",
+   "start": 143.65,
+   "end": 143.708
+  },
+  {
+   "sid": "s13",
+   "text": "Nemotron.",
+   "start": 143.778,
+   "end": 144.974
+  },
+  {
+   "sid": "s13b",
+   "text": "On",
+   "start": 145.423,
+   "end": 145.644
+  },
+  {
+   "sid": "s13b",
+   "text": "sixty",
+   "start": 145.736,
+   "end": 146.12
+  },
+  {
+   "sid": "s13b",
+   "text": "PC",
+   "start": 146.189,
+   "end": 146.468
+  },
+  {
+   "sid": "s13b",
+   "text": "problems",
+   "start": 146.63,
+   "end": 147.106
+  },
+  {
+   "sid": "s13b",
+   "text": "it",
+   "start": 147.153,
+   "end": 147.223
+  },
+  {
+   "sid": "s13b",
+   "text": "had",
+   "start": 147.281,
+   "end": 147.385
+  },
+  {
+   "sid": "s13b",
+   "text": "never",
+   "start": 147.466,
+   "end": 147.687
+  },
+  {
+   "sid": "s13b",
+   "text": "seen,",
+   "start": 147.745,
+   "end": 148.221
+  },
+  {
+   "sid": "s13b",
+   "text": "the",
+   "start": 148.534,
+   "end": 148.651
+  },
+  {
+   "sid": "s13b",
+   "text": "original",
+   "start": 148.72,
+   "end": 149.127
+  },
+  {
+   "sid": "s13b",
+   "text": "model",
+   "start": 149.185,
+   "end": 149.452
+  },
+  {
+   "sid": "s13b",
+   "text": "got",
+   "start": 149.51,
+   "end": 149.661
+  },
+  {
+   "sid": "s13b",
+   "text": "none",
+   "start": 149.73,
+   "end": 149.893
+  },
+  {
+   "sid": "s13b",
+   "text": "right.",
+   "start": 149.939,
+   "end": 150.334
+  },
+  {
+   "sid": "s13b",
+   "text": "Ours",
+   "start": 150.752,
+   "end": 151.065
+  },
+  {
+   "sid": "s13b",
+   "text": "picked",
+   "start": 151.135,
+   "end": 151.391
+  },
+  {
+   "sid": "s13b",
+   "text": "the",
+   "start": 151.414,
+   "end": 151.483
+  },
+  {
+   "sid": "s13b",
+   "text": "right",
+   "start": 151.6,
+   "end": 151.843
+  },
+  {
+   "sid": "s13b",
+   "text": "next",
+   "start": 151.936,
+   "end": 152.157
+  },
+  {
+   "sid": "s13b",
+   "text": "step",
+   "start": 152.192,
+   "end": 152.505
+  },
+  {
+   "sid": "s13b",
+   "text": "fifty-two",
+   "start": 152.644,
+   "end": 153.132
+  },
+  {
+   "sid": "s13b",
+   "text": "times",
+   "start": 153.202,
+   "end": 153.515
+  },
+  {
+   "sid": "s13b",
+   "text": "out",
+   "start": 153.55,
+   "end": 153.643
+  },
+  {
+   "sid": "s13b",
+   "text": "of",
+   "start": 153.678,
+   "end": 153.724
+  },
+  {
+   "sid": "s13b",
+   "text": "sixty.",
+   "start": 153.771,
+   "end": 154.85
+  },
+  {
+   "sid": "s14",
+   "text": "Millions",
+   "start": 154.999,
+   "end": 155.405
+  },
+  {
+   "sid": "s14",
+   "text": "of",
+   "start": 155.44,
+   "end": 155.498
+  },
+  {
+   "sid": "s14",
+   "text": "people",
+   "start": 155.556,
+   "end": 155.835
+  },
+  {
+   "sid": "s14",
+   "text": "pay",
+   "start": 155.87,
+   "end": 156.021
+  },
+  {
+   "sid": "s14",
+   "text": "for",
+   "start": 156.067,
+   "end": 156.172
+  },
+  {
+   "sid": "s14",
+   "text": "software",
+   "start": 156.23,
+   "end": 156.659
+  },
+  {
+   "sid": "s14",
+   "text": "that",
+   "start": 156.694,
+   "end": 156.822
+  },
+  {
+   "sid": "s14",
+   "text": "scares",
+   "start": 156.88,
+   "end": 157.228
+  },
+  {
+   "sid": "s14",
+   "text": "them.",
+   "start": 157.275,
+   "end": 157.565
+  },
+  {
+   "sid": "s14",
+   "text": "We",
+   "start": 157.925,
+   "end": 158.052
+  },
+  {
+   "sid": "s14",
+   "text": "built",
+   "start": 158.11,
+   "end": 158.308
+  },
+  {
+   "sid": "s14",
+   "text": "the",
+   "start": 158.343,
+   "end": 158.412
+  },
+  {
+   "sid": "s14",
+   "text": "one",
+   "start": 158.482,
+   "end": 158.656
+  },
+  {
+   "sid": "s14",
+   "text": "that",
+   "start": 158.679,
+   "end": 158.795
+  },
+  {
+   "sid": "s14",
+   "text": "tells",
+   "start": 158.83,
+   "end": 159.062
+  },
+  {
+   "sid": "s14",
+   "text": "them",
+   "start": 159.086,
+   "end": 159.202
+  },
+  {
+   "sid": "s14",
+   "text": "the",
+   "start": 159.237,
+   "end": 159.306
+  },
+  {
+   "sid": "s14",
+   "text": "truth.",
+   "start": 159.341,
+   "end": 159.829
+  },
+  {
+   "sid": "s14",
+   "text": "In",
+   "start": 160.096,
+   "end": 160.258
+  },
+  {
+   "sid": "s14",
+   "text": "seconds.",
+   "start": 160.374,
+   "end": 160.99
+  },
+  {
+   "sid": "s14",
+   "text": "For",
+   "start": 161.303,
+   "end": 161.454
+  },
+  {
+   "sid": "s14",
+   "text": "less",
+   "start": 161.512,
+   "end": 161.698
+  },
+  {
+   "sid": "s14",
+   "text": "than",
+   "start": 161.721,
+   "end": 161.849
+  },
+  {
+   "sid": "s14",
+   "text": "a",
+   "start": 161.895,
+   "end": 161.919
+  },
+  {
+   "sid": "s14",
+   "text": "cent.",
+   "start": 162.0,
+   "end": 162.894
+  },
+  {
+   "sid": "s15",
+   "text": "PC",
+   "start": 163.411,
+   "end": 163.771
+  },
+  {
+   "sid": "s15",
+   "text": "Agent.",
+   "start": 163.91,
+   "end": 164.328
+  },
+  {
+   "sid": "s15",
+   "text": "No",
+   "start": 164.491,
+   "end": 164.642
+  },
+  {
+   "sid": "s15",
+   "text": "boost",
+   "start": 164.711,
+   "end": 164.932
+  },
+  {
+   "sid": "s15",
+   "text": "buttons.",
+   "start": 164.967,
+   "end": 165.385
+  },
+  {
+   "sid": "s15",
+   "text": "No",
+   "start": 165.478,
+   "end": 165.605
+  },
+  {
+   "sid": "s15",
+   "text": "bullshit.",
+   "start": 165.675,
+   "end": 166.197
+  },
+  {
+   "sid": "s15",
+   "text": "Just",
+   "start": 166.36,
+   "end": 166.569
+  },
+  {
+   "sid": "s15",
+   "text": "proof.",
+   "start": 166.615,
+   "end": 167.219
+  }
+ ],
+ "total": 169.87
+}

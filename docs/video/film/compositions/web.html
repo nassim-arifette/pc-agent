@@ -1,0 +1,36 @@
+<template>
+<style>
+
+#root { position:absolute; inset:0; overflow:hidden; font-family: Inter, sans-serif; color:#fff; }
+.full { position:absolute; left:0; top:0; width:1920px; height:1080px; }
+.cam { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.cam video, .cam img.shot { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }
+
+
+#root { background:#fff; }
+.tav { position:absolute; left:80px; top:70px; padding:14px 26px; border-radius:12px; background:#1f2430; color:#fff; font-size:38px; font-weight:800; opacity:0; z-index:5; }
+.tav b { color:#b3a6d6; }
+
+</style>
+<div id="root" data-composition-id="web" data-width="1920" data-height="1080">
+
+<div class="full" id="g-s1">
+  <div class="cam" id="g-cam1"><video id="g-v1" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="0" data-duration="2.543" data-media-start="1.75" data-playback-rate="5.427"></video></div>
+</div>
+<div class="full" id="g-s2">
+  <div class="cam" id="g-cam2"><video id="g-v2" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="2.543" data-duration="5.884" data-media-start="15.55"></video></div>
+</div>
+<div class="tav" id="g-tag">Web lookups by <b>Tavily</b></div>
+
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
+
+tl.fromTo("#g-tag", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 2.543);
+tl.fromTo("#g-cam2", { x: 0, y: 0, scale: 1 }, { x: -1344.0, y: -756.0, scale: 1.7, duration: 0.55, ease: "power3.inOut" }, 5.683);
+tl.to("#g-tag", { opacity: 0, duration: 0.15 }, 5.683);
+
+window.__timelines["web"] = tl;
+</script>
+</template>
