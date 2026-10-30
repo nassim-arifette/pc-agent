@@ -41,17 +41,17 @@
   --res-disk: #1f7a6c;
   --res-gpu: #9a6412;
 
-  --shadow-sm: 0 1px 2px rgba(20, 20, 18, 0.05);
-  --shadow-lift: 0 2px 10px rgba(20, 20, 18, 0.06);
+  --shadow-sm: none;
+  --shadow-lift: none;
   /* Floating toolbars, such as the action bar under a selected item. */
-  --shadow-float: 0 6px 20px rgba(20, 20, 18, 0.12);
-  --shadow-dialog: 0 24px 64px rgba(20, 20, 18, 0.18);
+  --shadow-float: 0 4px 12px rgba(20, 20, 18, 0.1);
+  --shadow-dialog: 0 12px 32px rgba(20, 20, 18, 0.16);
 
-  --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 16px;
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
 
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --t-fast: 120ms;
@@ -97,8 +97,8 @@
   --res-disk: #5cc2b0;
   --res-gpu: #e0a85a;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-lift: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --shadow-sm: none;
+  --shadow-lift: none;
   --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.45);
-  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.5);
+  --shadow-dialog: 0 12px 32px rgba(0, 0, 0, 0.5);
 }

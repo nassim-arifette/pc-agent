@@ -186,7 +186,7 @@ export function mount(page) {
     const scanning = state.scan.status === "scanning" || state.scan.status === "starting";
     fill(
       picker,
-      h("span", { class: "metric-icon", style: { width: "46px", height: "46px", "border-radius": "14px" } }, icon("folder")),
+      h("span", { class: "metric-icon" }, icon("folder")),
       h(
         "div",
         { style: { flex: "1", "min-width": "0" } },

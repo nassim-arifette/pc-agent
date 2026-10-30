@@ -281,6 +281,21 @@ pub(super) fn conversations_list(
     }
 }
 
+/// Saved conversations whose title, questions or written answers contain `query`, with an
+/// excerpt; searched on this PC only.
+#[tauri::command]
+pub(super) fn conversations_search(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<pcagent_store::ConversationMatch>, String> {
+    match lock(&state.history).as_ref() {
+        Some(store) => store
+            .search_conversations(&query)
+            .map_err(|e| e.to_string()),
+        None => Ok(Vec::new()),
+    }
+}
+
 #[tauri::command]
 pub(super) fn conversation_get(
     state: State<'_, AppState>,

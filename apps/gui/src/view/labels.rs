@@ -81,8 +81,13 @@ pub(super) fn reference_at(text: &str, at: usize, reference: &str) -> bool {
             .is_none_or(|c| !c.is_alphanumeric())
 }
 /// A phrase as this window shows it: a process reference among its values becomes that process,
-/// named locally like `localize` names it in the English text beside it.
-pub(super) fn local_phrase(phrase: &Phrase, processes: &[ProcessInstance]) -> Phrase {
+/// named like `localize` names it in the text beside it (its readable name, "Google Chrome",
+/// when one is known). Display only: payloads keep executable names or opaque references.
+pub(super) fn local_phrase(
+    phrase: &Phrase,
+    processes: &[ProcessInstance],
+    readable: Readable<'_>,
+) -> Phrase {
     let mut phrase = phrase.clone();
     for value in phrase.values.values_mut() {
         let Quantity::Entity(reference) = value else {
@@ -90,7 +95,7 @@ pub(super) fn local_phrase(phrase: &Phrase, processes: &[ProcessInstance]) -> Ph
         };
         if let Some(p) = processes.iter().find(|p| p.entity_ref == *reference) {
             *value = Quantity::Process {
-                name: read_name(p).map(str::to_owned),
+                name: readable_name(p, readable).or_else(|| read_name(p).map(str::to_owned)),
                 pid: p.pid,
             };
         }
@@ -98,10 +103,18 @@ pub(super) fn local_phrase(phrase: &Phrase, processes: &[ProcessInstance]) -> Ph
     phrase
 }
 /// The phrases of a finding's facts, in their order.
-pub(super) fn fact_phrases(f: &Finding, processes: &[ProcessInstance]) -> Vec<Option<Phrase>> {
+pub(super) fn fact_phrases(
+    f: &Finding,
+    processes: &[ProcessInstance],
+    readable: Readable<'_>,
+) -> Vec<Option<Phrase>> {
     f.facts
         .iter()
-        .map(|fact| fact.phrase.as_ref().map(|p| local_phrase(p, processes)))
+        .map(|fact| {
+            fact.phrase
+                .as_ref()
+                .map(|p| local_phrase(p, processes, readable))
+        })
         .collect()
 }
 
@@ -242,7 +255,7 @@ pub fn finding(f: &Finding, processes: &[ProcessInstance], readable: Readable<'_
         next_step: labels.apply(&f.next_step),
         limitations: labels.all(&f.limitations),
         summary_phrase: pcagent_diagnostics::phrase(&f.summary),
-        fact_phrases: fact_phrases(f, processes),
+        fact_phrases: fact_phrases(f, processes, readable),
         next_step_phrase: pcagent_diagnostics::phrase(&f.next_step),
         limitation_phrases: f
             .limitations
@@ -261,7 +274,7 @@ pub fn finding(f: &Finding, processes: &[ProcessInstance], readable: Readable<'_
             .map(|(index, _)| {
                 f.counter_phrases
                     .get(index)
-                    .map(|p| local_phrase(p, processes))
+                    .map(|p| local_phrase(p, processes, readable))
             })
             .collect(),
         missing_phrases: f

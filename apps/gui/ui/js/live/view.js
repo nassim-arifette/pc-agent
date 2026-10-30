@@ -151,7 +151,7 @@ function topApp(by) {
   const value = (a) => (by === "cpu" ? a.cpu.value : a.working_set.value) ?? -1;
   const top = [...apps].sort((a, b) => value(b) - value(a))[0];
   if (!top || value(top) < 0) return null;
-  return `${applicationName(top)} · ${by === "cpu" ? basisPoints(top.cpu.value) : bytes(top.working_set.value)}`;
+  return `${top.readable_name || applicationName(top)} · ${by === "cpu" ? basisPoints(top.cpu.value) : bytes(top.working_set.value)}`;
 }
 
 function resourceDetails(card) {

@@ -222,7 +222,7 @@ pub(super) fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> A
                         local_block(&o.facts, processes, readable),
                         o.fact_phrases
                             .iter()
-                            .map(|p| p.as_ref().map(|p| local_phrase(p, processes)))
+                            .map(|p| p.as_ref().map(|p| local_phrase(p, processes, readable)))
                             .collect(),
                         false,
                     )
@@ -238,7 +238,7 @@ pub(super) fn answer(r: &Investigation, a: &Answer, readable: Readable<'_>) -> A
                         .chain(f.facts.iter().map(|fact| fact.text.clone()))
                         .collect();
                     let phrases = std::iter::once(pcagent_diagnostics::phrase(&f.summary))
-                        .chain(fact_phrases(f, processes))
+                        .chain(fact_phrases(f, processes, readable))
                         .collect();
                     (
                         f.classification.label().to_owned(),

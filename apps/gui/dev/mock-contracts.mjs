@@ -223,6 +223,10 @@ export async function exerciseMock(bridge, clock, search) {
   if (params.get("preview") === "expired") assert.equal(saved.length, 0);
   else {
     assert.ok(saved.length);
+    const found = await ok("conversations_search", { query: saved[0].title.slice(0, 6) });
+    assert.ok(found.some((match) => match.id === saved[0].id));
+    assert.deepEqual(await ok("conversations_search", { query: "   " }), []);
+    await reject("conversations_search", { query: 3 });
     assert.equal(await ok("conversation_delete", { id: saved[0].id }), true);
   }
   await ok("conversations_clear");

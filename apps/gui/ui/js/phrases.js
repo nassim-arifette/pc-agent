@@ -700,9 +700,11 @@ function entityText(reference) {
   return reference;
 }
 
-/** A process of this PC: its executable name and PID, or the window's own word for no name. */
+/** A process of this PC by the name the window shows ("Google Chrome"), or the window's own word
+ * for a process without a name, which only its PID tells apart (#70: the PID otherwise stays in
+ * the inspector). */
 function processText({ name, pid }) {
-  return name ? `${name} (PID ${pid})` : say("process.unnamedPid", { pid });
+  return name ? name : say("process.unnamedPid", { pid });
 }
 
 /** One typed value (`{unit, value}`) as text in the interface language, or null if unknown. */

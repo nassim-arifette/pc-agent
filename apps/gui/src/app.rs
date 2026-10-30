@@ -162,6 +162,7 @@ pub fn run() {
             elevation_commands::elevation_results,
             elevation_commands::elevation_select,
             history_commands::conversations_list,
+            history_commands::conversations_search,
             history_commands::conversation_get,
             history_commands::conversation_delete,
             history_commands::conversations_clear,

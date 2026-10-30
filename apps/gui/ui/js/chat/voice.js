@@ -2,6 +2,7 @@ import { h } from "../dom.js";
 import { call, on } from "../api.js";
 import { t } from "../i18n.js";
 import { button } from "../ui.js";
+import { icon } from "../icons.js";
 import { navigate } from "../router.js";
 import { createVoiceDraft } from "./voice-draft.js";
 
@@ -15,7 +16,7 @@ export function voiceComposer({ area, changed, grow, unavailable }) {
   const status = h("span", { role: "status", "aria-live": "polite" });
   const transcript = h("p", { class: "voice-transcript" });
   const meter = h("meter", { min: 0, max: 1, value: 0, "aria-label": t("voice.level") });
-  const mic = button(t("voice.start"), { onClick: () => toggle() });
+  const mic = h("button", { type: "button", class: "icon-btn", onclick: () => toggle() });
   mic.setAttribute("aria-keyshortcuts", "Control+Shift+M");
   mic.title = t("voice.shortcut");
   const cancel = button(t("voice.cancel"), { onClick: () => draft.stop(true) });
@@ -34,7 +35,8 @@ export function voiceComposer({ area, changed, grow, unavailable }) {
     .then((unlisten) => { if (disposed) unlisten(); else off = unlisten; });
   const draw = () => {
     const value = draft.state;
-    mic.textContent = t(draft.busy ? "voice.stop" : "voice.start");
+    mic.replaceChildren(icon(draft.busy ? "stop" : "mic"));
+    mic.setAttribute("aria-label", t(draft.busy ? "voice.stop" : "voice.start"));
     mic.setAttribute("aria-pressed", String(draft.busy));
     mic.disabled = unavailable() || value.phase === "starting" || value.phase === "finalizing" || draft.reviewRequired;
     status.textContent = value.error ? voiceError(value.error)
@@ -46,6 +48,8 @@ export function voiceComposer({ area, changed, grow, unavailable }) {
     cancel.hidden = !draft.busy && !draft.reviewRequired;
     reviewed.hidden = !draft.reviewRequired;
     setup.hidden = !value.error;
+    // The privacy note shows once dictation starts, not as a permanent line under the input.
+    el.hidden = value.phase === "idle" && !value.error && !draft.reviewRequired;
   };
   const toggle = async () => {
     if (disposed || unavailable()) return;
