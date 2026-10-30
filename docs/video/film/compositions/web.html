@@ -15,10 +15,10 @@
 <div id="root" data-composition-id="web" data-width="1920" data-height="1080">
 
 <div class="full" id="g-s1">
-  <div class="cam" id="g-cam1"><video id="g-v1" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="0" data-duration="2.543" data-media-start="1.75" data-playback-rate="5.427"></video></div>
+  <div class="cam" id="g-cam1"><video id="g-v1" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="0" data-duration="2.543" data-media-start="3.53" data-playback-rate="4.202"></video></div>
 </div>
 <div class="full" id="g-s2">
-  <div class="cam" id="g-cam2"><video id="g-v2" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="2.543" data-duration="5.884" data-media-start="15.55"></video></div>
+  <div class="cam" id="g-cam2"><video id="g-v2" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="2.543" data-duration="5.884" data-media-start="14.215"></video></div>
 </div>
 <div class="tav" id="g-tag">Web lookups by <b>Tavily</b></div>
 
@@ -27,8 +27,10 @@
 const tl = gsap.timeline({ paused: true });
 const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
 
+tl.fromTo("#g-cam1", { x: -736.5, y: 0, scale: 1.45 }, { x: -736.5, y: 0, scale: 1.45, duration: 0.01 }, 0);
 tl.fromTo("#g-tag", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 2.543);
-tl.fromTo("#g-cam2", { x: 0, y: 0, scale: 1 }, { x: -1344.0, y: -756.0, scale: 1.7, duration: 0.55, ease: "power3.inOut" }, 5.683);
+tl.fromTo("#g-cam2", { x: -382.7, y: -460.5, scale: 1.45 }, { x: -382.7, y: -460.5, scale: 1.45, duration: 0.01 }, 2.543);
+cam("#g-cam2", -1152.0, -648.0, 1.6, 5.683, 0.55, "power3.inOut");
 tl.to("#g-tag", { opacity: 0, duration: 0.15 }, 5.683);
 
 window.__timelines["web"] = tl;

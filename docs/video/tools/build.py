@@ -3,7 +3,11 @@ D = json.load(open('timing.json'))
 S = {s['sid']: s for s in D['sched']}
 W = D['words']
 TOTAL = D['total']
-OFF = 0.55  # recording starts ~0.55 s before the capture script's clock
+OFF = 0.0  # hi-res screencast clips start exactly at the capture clock
+_MARKS = {}
+def M(name, key):
+    if name not in _MARKS: _MARKS[name] = json.load(open(f'hires/{name}.marks.json'))
+    return _MARKS[name][key]
 def st(sid): return S[sid]['start']
 def en(sid): return S[sid]['start'] + S[sid]['dur']
 def word(sid, text, n=0):
@@ -66,9 +70,9 @@ hosts.append(scene('hook', a0, a1 - a0, """
 .tm .tr { display:grid; grid-template-columns:1fr 200px 260px; padding:12px 30px; font-size:30px; color:#d6dbe6; border-top:1px solid #3b4152; }
 .tm .tr.sv span:first-child { color:#fff; }
 .why { position:absolute; left:0; right:0; top:420px; text-align:center; font-size:110px; font-weight:900; color:#fff; opacity:0; text-shadow:0 6px 30px rgba(0,0,0,.6); }
-.dl { position:absolute; left:50%; bottom:200px; width:760px; margin-left:-380px; background:#2f333e; border:1px solid #444a58; border-radius:12px; padding:22px 28px; font-size:30px; opacity:0; }
+.dl { position:absolute; left:50%; top:400px; width:1100px; margin-left:-550px; background:#2f333e; border:1px solid #444a58; border-radius:14px; padding:40px 48px; font-size:42px; opacity:0; }
 .dl b { color:#d9b56a; }
-.dl .track { margin-top:16px; height:12px; background:#444a58; border-radius:6px; overflow:hidden; }
+.dl .track { margin-top:26px; height:20px; background:#444a58; border-radius:6px; overflow:hidden; }
 .dl .fill { width:100%; height:100%; background:#d9b56a; transform-origin:0 50%; transform:scaleX(0); }
 .cleaner { position:absolute; inset:0; background:radial-gradient(circle at 50% 40%, #a5503f 0%, #7a3329 55%, #3e1d19 100%); opacity:0; }
 .brand { position:absolute; top:70px; left:0; right:0; text-align:center; font-size:40px; font-weight:900; letter-spacing:.06em; color:#e3c47a; }
@@ -81,12 +85,14 @@ hosts.append(scene('hook', a0, a1 - a0, """
 .stamp { position:absolute; font-size:120px; font-weight:900; color:#fff; border:12px solid #fff; padding:6px 34px; border-radius:16px; opacity:0; letter-spacing:.02em; }
 .price { position:absolute; right:150px; top:120px; background:#e3c47a; color:#3e1d19; font-weight:900; font-size:66px; padding:20px 36px; border-radius:14px; opacity:0; }
 .price small { display:block; font-size:30px; }
-.bot { position:absolute; inset:0; background:#e9ebef; opacity:0; }
-.bot .win { position:absolute; left:460px; top:120px; width:1000px; height:740px; background:#fff; border-radius:14px; border:1px solid #d5d9e0; }
-.bot .u { position:absolute; right:40px; top:60px; background:#e3e6ec; color:#1f2430; font-size:36px; padding:18px 28px; border-radius:16px; }
-.bot .a { position:absolute; left:40px; top:190px; right:120px; color:#1f2430; font-size:40px; line-height:1.4; }
-.bot .a span { opacity:0; }
-.bot .tag { position:absolute; left:0; right:0; top:700px; text-align:center; font-size:48px; font-weight:800; color:#7a3329; opacity:0; }
+.term { position:absolute; inset:0; background:#16181f; opacity:0; }
+.term .win { position:absolute; left:210px; top:60px; width:1500px; height:750px; background:#0f1115; border:1px solid #3b4152; border-radius:14px; overflow:hidden; }
+.term .bar { height:56px; background:#22252e; display:flex; align-items:center; justify-content:space-between; padding:0 26px; font-size:28px; font-weight:700; color:#c9ced8; }
+.term .clock { font-family:'JetBrains Mono', monospace; color:#e3c47a; font-size:30px; }
+.term pre { margin:0; padding:22px 30px; font-family:'JetBrains Mono', monospace; font-size:24px; line-height:1.45; color:#c9ced8; white-space:pre; }
+.term .cmd { color:#8db87a; }
+.term .ln { opacity:0; }
+.term .tag { position:absolute; left:0; right:0; top:832px; text-align:center; font-size:46px; font-weight:800; color:#e3c47a; opacity:0; }
 .lost { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:84px; font-weight:900; opacity:0; background:#22252e; }
 .lost span { color:#9aa3b5; }
 .black { position:absolute; inset:0; background:#000; opacity:0; }
@@ -108,12 +114,11 @@ hosts.append(scene('hook', a0, a1 - a0, """
   <div class="stamp" id="h-st3" style="left:520px;top:770px;font-size:90px" data-layout-allow-overlap>MEANS NOTHING</div>
   <div class="price" id="h-price" data-layout-allow-overlap>PRO VERSION<br>$29.99<small>per year, auto-renew</small></div>
 </div>
-<div class="bot" id="h-bot" data-layout-allow-overlap><div class="win">
-  <div class="u">Why is my PC slow?</div>
-  <div class="a" id="h-ans"><span>Try</span> <span>restarting</span> <span>your</span> <span>PC,</span> <span>closing</span> <span>background</span> <span>apps,</span> <span>or</span> <span>buying</span> <span>more</span> <span>RAM.</span></div>
-  </div>
-  <div class="tag" id="h-bottag">It never looked at your PC.</div>
-  <div class="stamp" id="h-st4" style="left:560px;top:440px;color:#7a3329;border-color:#7a3329" data-layout-allow-overlap>JUST GUESSING</div>
+<div class="term" id="h-term" data-layout-allow-overlap><div class="win">
+  <div class="bar"><span>Terminal: AI agent session</span><span class="clock" id="h-clock">00:00</span></div>
+  <pre><span class="ln cmd" id="h-l0">PS C:\\> Get-Process | Sort-Object WS -Descending | Select-Object -First 15</span>\n<span class="ln" id="h-l1">Handles  NPM(K)    PM(K)     WS(K)   CPU(s)     Id ProcessName</span>\n<span class="ln" id="h-l2">-------  ------    -----     -----   ------     -- -----------</span>\n<span class="ln" id="h-l3">   2214     118   612448    498212   312.45   4000 chrome</span>\n<span class="ln" id="h-l4">   1876      96   402112    352104   201.13   4412 chrome</span>\n<span class="ln" id="h-l5">    988      61   210980    190240    88.02   5120 svchost</span>\n<span class="ln cmd" id="h-l6">PS C:\\> Get-Counter '\\Memory\\Available MBytes' -SampleInterval 2 -MaxSamples 5</span>\n<span class="ln" id="h-l7">Timestamp                 CounterSamples</span>\n<span class="ln" id="h-l8">30/10/2026 15:42:01       \\\\pc\\memory\\available mbytes :  1577</span>\n<span class="ln cmd" id="h-l9">PS C:\\> Get-ChildItem C:\\ -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum</span>\n<span class="ln" id="h-l10">  running...</span>\n</pre></div>
+  <div class="tag" id="h-termtag">No tools built for the job.</div>
+  <div class="stamp" id="h-st4" style="left:500px;top:420px;color:#e3c47a;border-color:#e3c47a" data-layout-allow-overlap>SLOW. UNCHECKED.</div>
 </div>
 <div class="lost" id="h-lost" data-layout-allow-overlap data-layout-allow-occlusion><div>…and you still don't know <span>what's wrong.</span></div></div>
 <div class="black" id="h-black"></div>
@@ -139,10 +144,16 @@ tl.fromTo("#h-slower", {{ opacity: 0, y: 30 }}, {{ opacity: 1, y: 0, duration: 0
 tl.to("#h-gauge, #h-boost, #h-slower", {{ filter: "saturate(0.3) blur(2px)", opacity: 0.55, duration: 0.3 }}, {L(word('s03','What'))});
 [1,2,3].forEach((k, i) => tl.fromTo(`#h-st${{k}}`, {{ opacity: 0, scale: 2.2, rotation: [-8,6,-4][i] }}, {{ opacity: 1, scale: 1, rotation: [-8,6,-4][i], duration: 0.14, ease: "power4.in" }}, {L(word('s03','Nothing'))} + i * 0.18));
 tl.fromTo("#h-price", {{ opacity: 0, scale: 1.8, rotation: 6 }}, {{ opacity: 1, scale: 1, rotation: 6, duration: 0.18, ease: "power4.in" }}, {L(word('s03','Real'))});
-tl.fromTo("#h-bot", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, {L(st('s03b')-0.05)});
-tl.fromTo("#h-ans span", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.05, stagger: 0.09 }}, {L(word('s03b','chatbot'))});
-tl.fromTo("#h-bottag", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, {L(word('s03b',"can't"))});
-tl.fromTo("#h-st4", {{ opacity: 0, scale: 2.2, rotation: -6 }}, {{ opacity: 1, scale: 1, rotation: -6, duration: 0.14, ease: "power4.in" }}, {L(word('s03b','guesses'))});
+tl.set("#h-cleaner", {{ opacity: 0 }}, {L(st('s03b')-0.06)});
+tl.fromTo("#h-term", {{ opacity: 0, scale: 1.04 }}, {{ opacity: 1, scale: 1, duration: 0.14, ease: "power4.out" }}, {L(st('s03b')-0.05)});
+const lt = [{L(st('s03b')+0.35)}, {L(word('s03b','commands')-0.1)}, {L(word('s03b','commands')-0.05)}, {L(word('s03b','commands')+0.1)}, {L(word('s03b','commands')+0.2)}, {L(word('s03b','commands')+0.3)},
+            {L(word('s03b','improvises'))}, {L(word('s03b','improvises')+0.5)}, {L(word('s03b','improvises')+0.6)}, {L(word('s03b','waits'))}, {L(word('s03b','raw'))}];
+lt.forEach((at, k) => tl.fromTo(`#h-l${{k}}`, {{ opacity: 0 }}, {{ opacity: 1, duration: 0.05 }}, at));
+const clk = {{ v: 0 }};
+tl.fromTo(clk, {{ v: 8 }}, {{ v: 227, duration: {round(en('s03b')-st('s03b'),3)}, ease: "power1.in", onUpdate: () => {{ const s = Math.round(clk.v); document.getElementById("h-clock").textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }} }}, {L(st('s03b'))});
+tl.fromTo("#h-termtag", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, {L(word('s03b','tools'))});
+tl.fromTo("#h-st4", {{ opacity: 0, scale: 2.2, rotation: -6 }}, {{ opacity: 1, scale: 1, rotation: -6, duration: 0.14, ease: "power4.in" }}, {L(word('s03b','nothing'))});
+tl.set("#h-term", {{ opacity: 0 }}, {L(st('s03c')-0.06)});
 tl.fromTo("#h-lost", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2, ease: "power2.out" }}, {L(st('s03c')-0.05)});
 tl.fromTo("#h-black", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.15 }}, {L(en('s03c')+0.05)});
 """))
@@ -172,108 +183,144 @@ c0 = st('s05') - 0.05; c1 = st('s08') - 0.05
 L = lambda t: round(t - c0, 3)
 seg1_end = st('s06') - 0.03
 seg2_end = st('s07') - 0.03
-r1 = 2.0
-m1 = 1.0 + OFF
-x0, y0 = cam_xy(960, 470, 1.35)
-x1, y1 = cam_xy(880, 465, 2.0)
-x2, y2 = cam_xy(1660, 150, 1.9)
-m3 = 16.0 + OFF
+m1 = M('chat', 'home') - 0.2
+r1 = round((M('chat', 'answer') + 0.3 - m1) / (seg1_end - c0), 3)
+m3 = M('chat', 'cite') - (word('s07', 'click') - seg2_end)
+xs0, ys0 = cam_xy(1180, 470, 1.35)
+xs1, ys1 = cam_xy(1170, 330, 1.5)
+xc, yc = cam_xy(1182, 430, 1.8)
+xc2, yc2 = cam_xy(1182, 450, 1.5)
+xq, yq = cam_xy(1080, 330, 1.45)
+xb, yb = cam_xy(1660, 150, 1.7)
+CHAT_SEND = c0 + (M('chat', 'sent') - m1) / r1
 hosts.append(scene('ask', c0, c1 - c0, """
 #root { background:#fff; }
 .tag { position:absolute; left:80px; top:70px; padding:14px 26px; border-radius:12px; background:#1f2430; color:#fff; font-size:38px; font-weight:800; opacity:0; z-index:5; }
 .tag b { color:#8db87a; }
 """, f"""
 <div class="full" id="c-s1">
-  <div class="cam" id="c-cam1"><video id="c-v1" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="0" data-duration="{round(seg1_end-c0,3)}" data-media-start="{m1}" data-playback-rate="{r1}"></video></div>
+  <div class="cam" id="c-cam1"><video id="c-v1" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="0" data-duration="{round(seg1_end-c0,3)}" data-media-start="{round(m1,3)}" data-playback-rate="{r1}"></video></div>
 </div>
 <div class="full clip" id="c-s2" data-start="{L(seg1_end)}" data-duration="{round(seg2_end-seg1_end,3)}">
   <div class="cam" id="c-cam2"><img class="shot" src="assets/img/chat-answer.png" alt=""></div>
 </div>
 <div class="full" id="c-s3">
-  <div class="cam" id="c-cam3"><video id="c-v3" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="{L(seg2_end)}" data-duration="{round(c1-seg2_end,3)}" data-media-start="{m3}" data-playback-rate="0.65"></video></div>
+  <div class="cam" id="c-cam3"><video id="c-v3" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="{L(seg2_end)}" data-duration="{round(c1-seg2_end,3)}" data-media-start="{round(m3,3)}"></video></div>
 </div>
 <div class="tag" id="c-tag1">Nemotron <b>investigates</b> your PC</div>
 <div class="tag" id="c-tag2">Every number → <b>its source</b></div>
 """, f"""
-tl.fromTo("#c-cam1", {{ x: {x0}, y: {y0}, scale: 1.35 }}, {{ x: {x0}, y: {y0}, scale: 1.35, duration: 0.01 }}, 0);
-cam("#c-cam1", 0, 0, 1, {L(word('s05','Nemotron')-0.2)}, 0.7);
+tl.fromTo("#c-cam1", {{ x: {xs0}, y: {ys0}, scale: 1.35 }}, {{ x: {xs0}, y: {ys0}, scale: 1.35, duration: 0.01 }}, 0);
+cam("#c-cam1", {xs1}, {ys1}, 1.5, {L(CHAT_SEND+0.25)}, 0.6);
 tl.fromTo("#c-tag1", {{ opacity: 0, filter: "blur(8px)" }}, {{ opacity: 1, filter: "blur(0px)", duration: 0.18 }}, {L(word('s05','investigates'))});
 tl.to("#c-tag1", {{ opacity: 0, duration: 0.15 }}, {L(seg1_end-0.2)});
-tl.fromTo("#c-cam2", {{ x: 0, y: 0, scale: 1.0 }}, {{ x: {x1}, y: {y1}, scale: 2.0, duration: 0.55, ease: "power3.inOut" }}, {L(word('s06','Chrome')-0.35)});
-cam("#c-cam2", {cam_xy(900, 440, 1.45)[0]}, {cam_xy(900, 440, 1.45)[1]}, 1.45, {L(word('s06','real'))}, 0.6);
-tl.fromTo("#c-cam3", {{ x: 0, y: 0, scale: 1.0 }}, {{ x: 0, y: 0, scale: 1.0, duration: 0.01 }}, 0);
-cam("#c-cam3", {x2}, {y2}, 1.9, {L(word('s07','Checked')-0.3)}, 0.55, "power3.inOut");
+tl.fromTo("#c-cam2", {{ x: 0, y: 0, scale: 1.0 }}, {{ x: {xc}, y: {yc}, scale: 1.8, duration: 0.55, ease: "power3.inOut" }}, {L(word('s06','Chrome')-0.35)});
+cam("#c-cam2", {xc2}, {yc2}, 1.5, {L(word('s06','real'))}, 0.6);
+tl.fromTo("#c-cam3", {{ x: {xq}, y: {yq}, scale: 1.45 }}, {{ x: {xq}, y: {yq}, scale: 1.45, duration: 0.01 }}, {L(seg2_end)});
+cam("#c-cam3", {xb}, {yb}, 1.7, {L(word('s07','Checked')-0.3)}, 0.55, "power3.inOut");
 tl.fromTo("#c-tag2", {{ opacity: 0, filter: "blur(8px)" }}, {{ opacity: 1, filter: "blur(0px)", duration: 0.18 }}, {L(word('s07','Every'))});
 tl.to("#c-tag2", {{ opacity: 0, duration: 0.15 }}, {L(word('s07','Checked')-0.3)});
 """))
 
 # ---------- D. Action you approve ----------
-d0 = st('s08') - 0.05; d1 = st('s09') - 0.05
+d0 = st('s08') - 0.05; d1 = st('s08b') - 0.05
 L = lambda t: round(t - d0, 3)
-md = 17.2 + OFF - (word('s08', 'click') - d0)
-xd, yd = cam_xy(960, 486, 1.7)
-xr, yr = cam_xy(1150, 640, 1.5)
+T_REVIEW = word('s08', 'items'); T_RUN = word('s08', 'click')
+dr = round((M('action', 'run') - M('action', 'review')) / (T_RUN - T_REVIEW), 3)
+md = M('action', 'review') - (T_REVIEW - d0) * dr
+xa, ya = cam_xy(1180, 560, 1.35)
+xd, yd = cam_xy(960, 520, 1.6)
+xu, yu = cam_xy(960, 570, 1.6)
+xr, yr = cam_xy(1150, 650, 1.5)
 hosts.append(scene('action', d0, d1 - d0, """
 #root { background:#fff; }
 """, f"""
-<div class="cam" id="d-cam"><video id="d-v" class="clip" src="assets/clips/action.mp4" muted playsinline data-start="0" data-duration="{round(d1-d0,3)}" data-media-start="{round(md,3)}"></video></div>
+<div class="cam" id="d-cam"><video id="d-v" class="clip" src="assets/clips/action.mp4" muted playsinline data-start="0" data-duration="{round(d1-d0,3)}" data-media-start="{round(md,3)}" data-playback-rate="{dr}"></video></div>
 """, f"""
-tl.fromTo("#d-cam", {{ x: 0, y: 0, scale: 1 }}, {{ x: 0, y: 0, scale: 1, duration: 0.01 }}, 0);
-cam("#d-cam", {xd}, {yd}, 1.7, {L(word('s08','exact')-0.2)}, 0.55, "power3.inOut");
-cam("#d-cam", {xr}, {yr}, 1.5, {L(word('s08','nothing')-0.25)}, 0.5);
-cam("#d-cam", 0, 0, 1, {L(word('s08','click')+0.35)}, 0.45);
+tl.fromTo("#d-cam", {{ x: {xa}, y: {ya}, scale: 1.35 }}, {{ x: {xa}, y: {ya}, scale: 1.35, duration: 0.01 }}, 0);
+cam("#d-cam", {xd}, {yd}, 1.6, {L(T_REVIEW+0.15)}, 0.5, "power3.inOut");
+cam("#d-cam", {xu}, {yu}, 1.6, {L(word('s08','how')-0.2)}, 0.4);
+cam("#d-cam", {xr}, {yr}, 1.5, {L(word('s08','nothing')-0.3)}, 0.5);
+cam("#d-cam", {xa}, {ya}, 1.35, {L(T_RUN+0.35)}, 0.45);
 """))
 
 # ---------- D2. Storage scan ----------
 s0 = st('s08b') - 0.05; s1 = st('s09') - 0.05
 L = lambda t: round(t - s0, 3)
-srate = round((10.4 - 1.3) / (s1 - s0), 3)
-xs, ys = cam_xy(1150, 560, 1.35)
+T_SEL = word('s08b', 'See')
+ms1 = M('storage', 'scan') - 0.15
+sr1 = round((M('storage', 'select') - 0.25 - ms1) / (T_SEL - 0.25 - s0), 3)
+xs1_, ys1_ = cam_xy(960, 440, 1.2)
+xt, yt = cam_xy(600, 420, 1.35)
+xi, yi = cam_xy(1030, 560, 1.15)
 hosts.append(scene('storage', s0, s1 - s0, """
 #root { background:#fff; }
 """, f"""
-<div class="cam" id="s-cam"><video id="s-v" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="0" data-duration="{round(s1-s0,3)}" data-media-start="{1.3+OFF}" data-playback-rate="{srate}"></video></div>
+<div class="full" id="s-s1">
+  <div class="cam" id="s-cam1"><video id="s-v1" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="0" data-duration="{L(T_SEL-0.25)}" data-media-start="{round(ms1,3)}" data-playback-rate="{sr1}"></video></div>
+</div>
+<div class="full" id="s-s2">
+  <div class="cam" id="s-cam2"><video id="s-v2" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="{L(T_SEL-0.25)}" data-duration="{round(s1-(T_SEL-0.25),3)}" data-media-start="{round(M('storage','select')-0.25,3)}"></video></div>
+</div>
 """, f"""
-tl.fromTo("#s-cam", {{ x: 0, y: 0, scale: 1 }}, {{ x: 0, y: 0, scale: 1, duration: 0.01 }}, 0);
-cam("#s-cam", {xs}, {ys}, 1.35, {L(word('s08b','space')-0.3)}, 0.55);
+tl.fromTo("#s-cam1", {{ x: 0, y: 0, scale: 1 }}, {{ x: {xs1_}, y: {ys1_}, scale: 1.2, duration: 0.5, ease: "power2.inOut" }}, 0.05);
+tl.fromTo("#s-cam2", {{ x: {xt}, y: {yt}, scale: 1.35 }}, {{ x: {xt}, y: {yt}, scale: 1.35, duration: 0.01 }}, {L(T_SEL-0.25)});
+cam("#s-cam2", {xi}, {yi}, 1.15, {L(word('s08b','then')-0.2)}, 0.55);
 """))
 
 # ---------- E. Privacy ----------
 e0 = st('s09') - 0.05; e1 = st('s10') - 0.05
 L = lambda t: round(t - e0, 3)
-xe, ye = cam_xy(1140, 590, 1.6)
+# The dialog is on screen from 3.47 s to 6.87 s of the clip; the names chip is clicked at its mark.
+PV_OPEN, PV_SHUT = 3.33, 6.83
+ECUT = word('s09', 'files') + 0.5           # hold the dialog through "No files."
+er = round((PV_SHUT - PV_OPEN) / (ECUT - e0), 3)
+T_NAMES = word('s09', 'Your', 1) + 0.1
+me2 = M('privacy', 'names') - (T_NAMES - ECUT)
+xe, ye = cam_xy(961, 560, 1.45)
+xn, yn = cam_xy(1100, 560, 1.75)
+xc, yc = cam_xy(1000, 620, 1.7)
 hosts.append(scene('privacy', e0, e1 - e0, """
 #root { background:#fff; }
 """, f"""
-<div class="cam" id="e-cam"><video id="e-v" class="clip" src="assets/clips/privacy.mp4" muted playsinline data-start="0" data-duration="{round(e1-e0,3)}" data-media-start="{3.3+OFF}" data-playback-rate="2"></video></div>
+<div class="full" id="e-s1">
+  <div class="cam" id="e-cam1"><video id="e-v1" class="clip" src="assets/clips/privacy.mp4" muted playsinline data-start="0" data-duration="{L(ECUT)}" data-media-start="{PV_OPEN}" data-playback-rate="{er}"></video></div>
+</div>
+<div class="full" id="e-s2">
+  <div class="cam" id="e-cam2"><video id="e-v2" class="clip" src="assets/clips/privacy.mp4" muted playsinline data-start="{L(ECUT)}" data-duration="{round(e1-ECUT,3)}" data-media-start="{round(me2,3)}"></video></div>
+</div>
 """, f"""
-tl.fromTo("#e-cam", {{ x: 0, y: 0, scale: 1 }}, {{ x: {xe}, y: {ye}, scale: 1.6, duration: 0.5, ease: "power3.inOut" }}, {L(word('s09','leaves')-0.2)});
-cam("#e-cam", 0, 0, 1, {L(word('s09','No',0)+0.05)}, 0.4);
+tl.fromTo("#e-cam1", {{ x: 0, y: 0, scale: 1 }}, {{ x: {xe}, y: {ye}, scale: 1.45, duration: 0.45, ease: "power3.inOut" }}, 0.05);
+cam("#e-cam1", {xn}, {yn}, 1.75, {L(word('s09','No',0)-0.15)}, 0.5);
+tl.fromTo("#e-cam2", {{ x: {xc}, y: {yc}, scale: 1.7 }}, {{ x: {xc}, y: {yc}, scale: 1.7, duration: 0.01 }}, {L(ECUT)});
 """))
 
 # ---------- F. Live PC, watches, daily report ----------
-f0 = st('s10') - 0.05; f1 = st('s11') - 0.05
+f0 = st('s10') - 0.05; f1 = st('s10b') - 0.05
 L = lambda t: round(t - f0, 3)
 fa = word('s10', 'PC', 1) - 0.1   # "PC Agent warns"
 fb = word('s10', 'and', 0) - 0.05
-mlive = 4.10 + OFF - (word('s10', 'Select') - f0)
-xm, ym = cam_xy(420, 420, 1.45)
+T_SELECT = word('s10', 'Select'); T_WATCH = word('s10', 'watch') + 0.1
+lr = round((M('live', 'monitor') - M('live', 'select')) / (T_WATCH - T_SELECT), 3)
+mlive = M('live', 'select') - (T_SELECT - f0) * lr
+xm, ym = cam_xy(620, 400, 1.45)
+xf, yf = cam_xy(965, 597, 1.6)
 hosts.append(scene('live', f0, f1 - f0, """
 #root { background:#161615; }
 """, f"""
 <div class="full" id="f-s1">
-  <div class="cam" id="f-cam1"><video id="f-v1" class="clip" src="assets/clips/live.mp4" muted playsinline data-start="0" data-duration="{L(fa)}" data-media-start="{round(mlive,3)}"></video></div>
+  <div class="cam" id="f-cam1"><video id="f-v1" class="clip" src="assets/clips/live.mp4" muted playsinline data-start="0" data-duration="{L(fa)}" data-media-start="{round(max(0.05, mlive),3)}" data-playback-rate="{lr}"></video></div>
 </div>
 <div class="full" id="f-s2">
-  <div class="cam" id="f-cam2"><video id="f-v2" class="clip" src="assets/clips/watches.mp4" muted playsinline data-start="{L(fa)}" data-duration="{round(fb-fa,3)}" data-media-start="1.6"></video></div>
+  <div class="cam" id="f-cam2"><video id="f-v2" class="clip" src="assets/clips/watches.mp4" muted playsinline data-start="{L(fa)}" data-duration="{round(fb-fa,3)}" data-media-start="{round(M('watches','top')-0.4,3)}"></video></div>
 </div>
 <div class="full" id="f-s3">
-  <div class="cam" id="f-cam3"><video id="f-v3" class="clip" src="assets/clips/report.mp4" muted playsinline data-start="{L(fb)}" data-duration="{round(f1-fb,3)}" data-media-start="2.0"></video></div>
+  <div class="cam" id="f-cam3"><video id="f-v3" class="clip" src="assets/clips/report.mp4" muted playsinline data-start="{L(fb)}" data-duration="{round(f1-fb,3)}" data-media-start="{round(M('report','report')-0.6,3)}"></video></div>
 </div>
 """, f"""
-tl.fromTo("#f-cam1", {{ x: 0, y: 0, scale: 1 }}, {{ x: 0, y: 0, scale: 1, duration: 0.01 }}, 0);
-cam("#f-cam1", {xm}, {ym}, 1.45, {L(word('s10','Select')-0.3)}, 0.5);
-cam("#f-cam1", 0, 0, 1, {L(word('s10','watch')-0.2)}, 0.45);
+tl.fromTo("#f-cam1", {{ x: {cam_xy(900,480,1.3)[0]}, y: {cam_xy(900,480,1.3)[1]}, scale: 1.3 }}, {{ x: {cam_xy(900,480,1.3)[0]}, y: {cam_xy(900,480,1.3)[1]}, scale: 1.3, duration: 0.01 }}, 0);
+cam("#f-cam1", {xm}, {ym}, 1.45, {L(T_SELECT-0.35)}, 0.5);
+cam("#f-cam1", {xf}, {yf}, 1.6, {L(T_WATCH+0.15)}, 0.5);
 tl.fromTo("#f-cam2", {{ x: 0, y: 0, scale: 1.12 }}, {{ x: {cam_xy(700,500,1.3)[0]}, y: {cam_xy(700,500,1.3)[1]}, scale: 1.3, duration: {round(fb-fa,3)}, ease: "power1.inOut" }}, {L(fa)});
 tl.fromTo("#f-cam3", {{ x: 0, y: 0, scale: 1 }}, {{ x: {cam_xy(1180,760,1.5)[0]}, y: {cam_xy(1180,760,1.5)[1]}, scale: 1.5, duration: 0.6, ease: "power3.inOut" }}, {L(word('s10','daily')-0.25)});
 """))
@@ -282,41 +329,48 @@ tl.fromTo("#f-cam3", {{ x: 0, y: 0, scale: 1 }}, {{ x: {cam_xy(1180,760,1.5)[0]}
 y0 = st('s10b') - 0.05; y1 = st('s11') - 0.05
 L = lambda t: round(t - y0, 3)
 ys_ = word('s10b', 'And') - 0.1
+mh = M('history', 'charts') - 0.4
+hr = round((M('history', 'end') - mh) / (ys_ - y0), 3)
 hosts.append(scene('history', y0, y1 - y0, """
 #root { background:#161615; }
 """, f"""
 <div class="full" id="y-s1">
-  <div class="cam" id="y-cam1"><video id="y-v1" class="clip" src="assets/clips/history.mp4" muted playsinline data-start="0" data-duration="{L(ys_)}" data-media-start="{1.2+OFF}" data-playback-rate="{round(3.6/(ys_-y0),3)}"></video></div>
+  <div class="cam" id="y-cam1"><video id="y-v1" class="clip" src="assets/clips/history.mp4" muted playsinline data-start="0" data-duration="{L(ys_)}" data-media-start="{round(mh,3)}" data-playback-rate="{hr}"></video></div>
 </div>
 <div class="full" id="y-s2">
-  <div class="cam" id="y-cam2"><video id="y-v2" class="clip" src="assets/clips/search.mp4" muted playsinline data-start="{L(ys_)}" data-duration="{round(y1-ys_,3)}" data-media-start="{20.6+OFF}"></video></div>
+  <div class="cam" id="y-cam2"><video id="y-v2" class="clip" src="assets/clips/search.mp4" muted playsinline data-start="{L(ys_)}" data-duration="{round(y1-ys_,3)}" data-media-start="{round(M('search','typed')-0.35,3)}"></video></div>
 </div>
 """, f"""
-tl.fromTo("#y-cam1", {{ x: 0, y: 0, scale: 1 }}, {{ x: {cam_xy(1100,520,1.3)[0]}, y: {cam_xy(1100,520,1.3)[1]}, scale: 1.3, duration: {L(ys_)}, ease: "power1.inOut" }}, 0);
-tl.fromTo("#y-cam2", {{ x: 0, y: 0, scale: 1 }}, {{ x: {cam_xy(280,300,1.8)[0]}, y: {cam_xy(280,300,1.8)[1]}, scale: 1.8, duration: 0.5, ease: "power3.inOut" }}, {L(ys_+0.4)});
+tl.fromTo("#y-cam1", {{ x: 0, y: 0, scale: 1.1 }}, {{ x: {cam_xy(1100,520,1.3)[0]}, y: {cam_xy(1100,520,1.3)[1]}, scale: 1.3, duration: {L(ys_)}, ease: "power1.inOut" }}, 0);
+tl.fromTo("#y-cam2", {{ x: {cam_xy(300,320,1.6)[0]}, y: {cam_xy(300,320,1.6)[1]}, scale: 1.6 }}, {{ x: {cam_xy(300,320,1.6)[0]}, y: {cam_xy(300,320,1.6)[1]}, scale: 1.6, duration: 0.01 }}, {L(ys_)});
 """))
 
 # ---------- G. Web lookups with Tavily ----------
 g0 = st('s11') - 0.05; g1 = st('s11b') - 0.05
 L = lambda t: round(t - g0, 3)
 gs = word('s11', 'Tavily') + 0.02
-rate1 = round((15.0 - 1.2) / (gs - g0), 3)
-xw, yw = cam_xy(1660, 830, 1.7)
+mw1 = M('web', 'sent') - 0.2
+rate1 = round((M('web', 'answer') + 0.1 - mw1) / (gs - g0), 3)
+xw, yw = cam_xy(1660, 830, 1.6)
+xp, yp = cam_xy(926, 690, 1.45)
+xst, yst = cam_xy(1170, 360, 1.45)
 hosts.append(scene('web', g0, g1 - g0, """
 #root { background:#fff; }
 .tav { position:absolute; left:80px; top:70px; padding:14px 26px; border-radius:12px; background:#1f2430; color:#fff; font-size:38px; font-weight:800; opacity:0; z-index:5; }
 .tav b { color:#b3a6d6; }
 """, f"""
 <div class="full" id="g-s1">
-  <div class="cam" id="g-cam1"><video id="g-v1" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="0" data-duration="{L(gs)}" data-media-start="{1.2+OFF}" data-playback-rate="{rate1}"></video></div>
+  <div class="cam" id="g-cam1"><video id="g-v1" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="0" data-duration="{L(gs)}" data-media-start="{round(mw1,3)}" data-playback-rate="{rate1}"></video></div>
 </div>
 <div class="full" id="g-s2">
-  <div class="cam" id="g-cam2"><video id="g-v2" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="{L(gs)}" data-duration="{round(g1-gs,3)}" data-media-start="{15.0+OFF}"></video></div>
+  <div class="cam" id="g-cam2"><video id="g-v2" class="clip" src="assets/clips/web.mp4" muted playsinline data-start="{L(gs)}" data-duration="{round(g1-gs,3)}" data-media-start="{round(M('web','answer')+0.1,3)}"></video></div>
 </div>
 <div class="tav" id="g-tag">Web lookups by <b>Tavily</b></div>
 """, f"""
+tl.fromTo("#g-cam1", {{ x: {xst}, y: {yst}, scale: 1.45 }}, {{ x: {xst}, y: {yst}, scale: 1.45, duration: 0.01 }}, 0);
 tl.fromTo("#g-tag", {{ opacity: 0, filter: "blur(8px)" }}, {{ opacity: 1, filter: "blur(0px)", duration: 0.18 }}, {L(gs)});
-tl.fromTo("#g-cam2", {{ x: 0, y: 0, scale: 1 }}, {{ x: {xw}, y: {yw}, scale: 1.7, duration: 0.55, ease: "power3.inOut" }}, {L(word('s11','shows')-0.3)});
+tl.fromTo("#g-cam2", {{ x: {xp}, y: {yp}, scale: 1.45 }}, {{ x: {xp}, y: {yp}, scale: 1.45, duration: 0.01 }}, {L(gs)});
+cam("#g-cam2", {xw}, {yw}, 1.6, {L(word('s11','shows')-0.3)}, 0.55, "power3.inOut");
 tl.to("#g-tag", {{ opacity: 0, duration: 0.15 }}, {L(word('s11','shows')-0.3)});
 """))
 
@@ -324,21 +378,27 @@ tl.to("#g-tag", {{ opacity: 0, duration: 0.15 }}, {L(word('s11','shows')-0.3)});
 r0 = st('s11b') - 0.05; r1 = st('s12') - 0.05
 L = lambda t: round(t - r0, 3)
 rs = word('s11b', 'exact') - 0.1
+mr1 = M('ram', 'sent') - 0.2
+rr1 = round((M('ram', 'answer') + 0.1 - mr1) / (rs - r0), 3)
+xra, yra = cam_xy(1182, 430, 1.45)
+xrw, yrw = cam_xy(1188, 600, 1.33)
 hosts.append(scene('ram', r0, r1 - r0, """
 #root { background:#fff; }
 .tav { position:absolute; left:80px; top:70px; padding:14px 26px; border-radius:12px; background:#1f2430; color:#fff; font-size:38px; font-weight:800; opacity:0; z-index:5; }
 .tav b { color:#b3a6d6; }
 """, f"""
 <div class="full" id="r-s1">
-  <div class="cam" id="r-cam1"><video id="r-v1" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="0" data-duration="{L(rs)}" data-media-start="{1.4+OFF}" data-playback-rate="{round((11.9-1.4)/(rs-r0),3)}"></video></div>
+  <div class="cam" id="r-cam1"><video id="r-v1" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="0" data-duration="{L(rs)}" data-media-start="{round(mr1,3)}" data-playback-rate="{rr1}"></video></div>
 </div>
 <div class="full" id="r-s2">
-  <div class="cam" id="r-cam2"><video id="r-v2" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="{L(rs)}" data-duration="{round(r1-rs,3)}" data-media-start="{11.9+OFF}"></video></div>
+  <div class="cam" id="r-cam2"><video id="r-v2" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="{L(rs)}" data-duration="{round(r1-rs,3)}" data-media-start="{round(M('ram','answer')+0.1,3)}"></video></div>
 </div>
 <div class="tav" id="r-tag">Upgrade prices by <b>Tavily</b></div>
 """, f"""
+tl.fromTo("#r-cam1", {{ x: {cam_xy(1170,360,1.45)[0]}, y: {cam_xy(1170,360,1.45)[1]}, scale: 1.45 }}, {{ x: {cam_xy(1170,360,1.45)[0]}, y: {cam_xy(1170,360,1.45)[1]}, scale: 1.45, duration: 0.01 }}, 0);
 tl.fromTo("#r-tag", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.15 }}, 0.1);
-tl.fromTo("#r-cam2", {{ x: 0, y: 0, scale: 1 }}, {{ x: {cam_xy(1020,560,1.6)[0]}, y: {cam_xy(1020,560,1.6)[1]}, scale: 1.6, duration: 0.5, ease: "power3.inOut" }}, {L(rs)});
+tl.fromTo("#r-cam2", {{ x: {xra}, y: {yra}, scale: 1.45 }}, {{ x: {xra}, y: {yra}, scale: 1.45, duration: 0.01 }}, {L(rs)});
+cam("#r-cam2", {xrw}, {yrw}, 1.33, {L(word('s11b','with')-0.3)}, 0.55, "power3.inOut");
 tl.to("#r-tag", {{ opacity: 0, duration: 0.15 }}, {L(rs)});
 """))
 
@@ -454,7 +514,7 @@ hosts.append(scene('trained', i0, i1 - i0, """
 .side .lbl { font-size:40px; font-weight:800; margin-bottom:22px; display:flex; justify-content:space-between; align-items:baseline; }
 .side .cnt { font-size:96px; font-weight:900; }
 .gridbox { position:relative; width:580px; height:348px; }
-.cell { position:absolute; width:48px; height:48px; border-radius:8px; background:#2a3142; border:2px solid #3b4459; }
+.cell { position:absolute; width:48px; height:48px; border-radius:8px; background:#343c52; border:2px solid #5d6884; }
 .cell.on { }
 #i-left { left:220px; } #i-right { left:1060px; }
 #i-left .cnt { color:#d98c80; } #i-right .cnt { color:#8db87a; }
@@ -468,8 +528,8 @@ hosts.append(scene('trained', i0, i1 - i0, """
   <div class="row"><span>QLoRA</span><span>NVIDIA L40S GPU</span><span>Nebius AI Cloud</span></div></div>
 <div class="q" id="i-q">What should we <b>measure next</b>?</div>
 <div class="full" id="i-app" style="opacity:0">
-  <div class="cam" id="i-cam1"><video id="i-v1" class="clip" src="assets/clips/spec.mp4" muted playsinline data-start="{L(it)}" data-duration="{round(im-it,3)}" data-media-start="{1.7+OFF}"></video></div>
-  <div class="cam" id="i-cam2"><video id="i-v2" class="clip" src="assets/clips/spec.mp4" muted playsinline data-start="{L(im)}" data-duration="{round(ie-im,3)}" data-media-start="{9.4+OFF}" data-playback-rate="{round((14.6-9.4)/(ie-im),3)}"></video></div>
+  <div class="cam" id="i-cam1"><video id="i-v1" class="clip" src="assets/clips/spec.mp4" muted playsinline data-start="{L(it)}" data-duration="{round(im-it,3)}" data-media-start="{round(M('spec','card')-0.2,3)}"></video></div>
+  <div class="cam" id="i-cam2"><video id="i-v2" class="clip" src="assets/clips/spec.mp4" muted playsinline data-start="{L(im)}" data-duration="{round(ie-im,3)}" data-media-start="{round(M('spec','sent')+0.3,3)}" data-playback-rate="{round((M('spec','answer')-M('spec','sent')-0.3)/(ie-im),3)}"></video></div>
   <div class="spt" id="i-spt">Our model, <b>running in the app</b></div>
 </div>
 <div class="exam" id="i-exam">
@@ -487,8 +547,8 @@ tl.fromTo("#i-q", {{ opacity: 0, scale: 0.92 }}, {{ opacity: 1, scale: 1, durati
 tl.to("#i-q", {{ opacity: 0, filter: "blur(8px)", duration: 0.2 }}, {L(it-0.15)});
 tl.fromTo("#i-app", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, {L(it)});
 tl.fromTo("#i-cam1", {{ x: 0, y: 0, scale: 1 }}, {{ x: {cam_xy(830,840,1.45)[0]}, y: {cam_xy(830,840,1.45)[1]}, scale: 1.45, duration: 0.5, ease: "power3.inOut" }}, {L(it)});
-tl.fromTo("#i-cam2", {{ x: {cam_xy(960,470,1.3)[0]}, y: {cam_xy(960,470,1.3)[1]}, scale: 1.3 }}, {{ x: {cam_xy(960,470,1.3)[0]}, y: {cam_xy(960,470,1.3)[1]}, scale: 1.3, duration: 0.01 }}, {L(im)});
-tl.to("#i-app", {{ opacity: 0, duration: 0.2 }}, {L(ie)});
+tl.fromTo("#i-cam2", {{ x: {cam_xy(1182,400,1.6)[0]}, y: {cam_xy(1182,400,1.6)[1]}, scale: 1.6 }}, {{ x: {cam_xy(1182,400,1.6)[0]}, y: {cam_xy(1182,400,1.6)[1]}, scale: 1.6, duration: 0.01 }}, {L(im)});
+tl.to("#i-app", {{ opacity: 0, duration: 0.12 }}, {L(ie-0.14)});
 tl.fromTo("#i-exam", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, {L(word('s13b','On'))});
 tl.fromTo("#i-exam .cell", {{ opacity: 0, scale: 0.3 }}, {{ opacity: 1, scale: 1, duration: 0.2, ease: "back.out(2)", stagger: 0.012 }}, {L(word('s13b','sixty'))});
 tl.to("#i-left .cell", {{ borderColor: "#d98c80", duration: 0.3 }}, {L(word('s13b','none'))});
@@ -513,7 +573,7 @@ hosts.append(scene('impact', j0, j1 - j0, """
 #j-l .num { position:absolute; left:0; right:0; top:330px; text-align:center; font-size:200px; font-weight:900; }
 #j-l .lbl { position:absolute; left:0; right:0; top:560px; text-align:center; font-size:56px; font-weight:900; color:#e3c47a; }
 .cap { position:absolute; left:0; right:0; bottom:150px; text-align:center; font-size:46px; font-weight:800; }
-#j-r img { position:absolute; left:-470px; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+#j-r img { position:absolute; left:-560px; top:-120px; width:2304px; height:1296px; transform-origin:0 0; }
 #j-r .cap { color:#1f2430; background:rgba(255,255,255,.92); padding:14px 0; }
 .stats { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:60px; opacity:0; }
 .stat { background:#fff; color:#1f2430; border-radius:20px; padding:40px 60px; text-align:center; }
@@ -565,13 +625,24 @@ tl.fromTo("#k-f1, #k-f2", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.3, stagge
 # ---------- Captions ----------
 groups = []; cur = []
 SKIP = {'s02', 's15'}
+def cap(w): return w[:1].isupper() or w[:1].isdigit()
 for w in W:
     if w['sid'] in SKIP: continue
-    if cur and (w['sid'] != cur[-1]['sid'] or len(cur) >= 4 or w['start'] - cur[-1]['end'] > 0.15):
-        groups.append(cur); cur = []
+    if cur:
+        name_run = cap(cur[-1]['text']) and cap(w['text']) and cur[-1]['text'][-1] not in '.?!,:'
+        if w['sid'] != cur[-1]['sid'] or w['start'] - cur[-1]['end'] > 0.35 or (len(cur) >= 5 and not name_run) or len(cur) >= 7:
+            groups.append(cur); cur = []
     cur.append(w)
-    if w['text'][-1] in '.?!,:': groups.append(cur); cur = []
+    if w['text'][-1] in '.?!,:' and len(cur) >= 2:
+        groups.append(cur); cur = []
 if cur: groups.append(cur)
+merged = []
+for g in groups:
+    if merged and len(g) == 1 and g[0]['sid'] == merged[-1][-1]['sid'] and len(merged[-1]) <= 5 and g[0]['start'] - merged[-1][-1]['end'] < 0.35:
+        merged[-1] = merged[-1] + g
+    else:
+        merged.append(g)
+groups = merged
 cap_html = []; cap_js = []
 for gi, g in enumerate(groups):
     s0 = g[0]['start'] - 0.05
@@ -608,11 +679,11 @@ music_start = st('s04') - 0.05
 audio.append(f'<audio id="music" class="clip" src="assets/sfx/music.mp3" data-start="{round(music_start,3)}" data-duration="{round(min(TOTAL-music_start,134.9),3)}" data-volume="0.16" data-fade-in="0.2" data-fade-out="2.5" data-track-index="4"></audio>')
 sfx = [('click', word('s01', 'Task') - 0.1, 0.4), ('alarm', st('s02') - 0.02, 0.2),
        ('stamp', word('s03', 'Nothing') + 0.13, 0.8), ('stamp', word('s03', 'Nothing') + 0.31, 0.7), ('stamp', word('s03', 'Nothing') + 0.49, 0.8), ('stamp', word('s03', 'Real') + 0.17, 0.6),
-       ('stamp', word('s03b', 'guesses') + 0.13, 0.6),
-       ('whoosh', st('s04') - 0.1, 0.45), ('click', st('s05') - 0.05 + (4.57 + OFF - (1.0 + OFF)) / 2.0, 0.5), ('whoosh', st('s06') - 0.15, 0.3),
-       ('click', word('s07', 'click'), 0.5), ('ding', word('s07', 'Checked'), 0.3), ('whoosh', st('s08') - 0.15, 0.3), ('click', word('s08', 'click'), 0.5),
-       ('whoosh', st('s08b') - 0.15, 0.3), ('whoosh', st('s09') - 0.15, 0.25), ('click', word('s09', 'No', 0), 0.45), ('whoosh', st('s10') - 0.15, 0.3),
-       ('click', word('s10', 'Select'), 0.45), ('click', word('s10', 'watch') + 0.2, 0.45), ('whoosh', st('s10b') - 0.15, 0.3),
+       ('stamp', word('s03b', 'nothing') + 0.13, 0.6),
+       ('whoosh', st('s04') - 0.1, 0.45), ('click', CHAT_SEND, 0.5), ('whoosh', st('s06') - 0.15, 0.3),
+       ('click', word('s07', 'click'), 0.5), ('ding', word('s07', 'Checked'), 0.3), ('whoosh', st('s08') - 0.15, 0.3), ('click', T_REVIEW, 0.5), ('click', T_RUN, 0.5),
+       ('whoosh', st('s08b') - 0.15, 0.3), ('click', T_SEL, 0.45), ('whoosh', st('s09') - 0.15, 0.25), ('click', T_NAMES, 0.45), ('whoosh', st('s10') - 0.15, 0.3),
+       ('click', T_SELECT, 0.45), ('click', T_WATCH, 0.45), ('whoosh', st('s10b') - 0.15, 0.3),
        ('whoosh', st('s11') - 0.15, 0.25), ('whoosh', st('s11b') - 0.15, 0.25), ('whoosh', st('s12') - 0.15, 0.35), ('buzz', word('s12', 'catches'), 0.4), ('ding', word('s12', 'corrects') + 0.1, 0.3),
        ('whoosh', st('s12b') - 0.15, 0.3), ('whoosh', st('s13') - 0.15, 0.3), ('tick', word('s13b', 'Ours'), 0.25), ('ding', word('s13b', 'fifty-two') + 0.5, 0.35),
        ('whoosh', st('s14') - 0.1, 0.35)]

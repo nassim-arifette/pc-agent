@@ -15,13 +15,13 @@
 <div id="root" data-composition-id="ask" data-width="1920" data-height="1080">
 
 <div class="full" id="c-s1">
-  <div class="cam" id="c-cam1"><video id="c-v1" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="0" data-duration="6.645" data-media-start="1.55" data-playback-rate="2.0"></video></div>
+  <div class="cam" id="c-cam1"><video id="c-v1" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="0" data-duration="6.644" data-media-start="0.607" data-playback-rate="2.134"></video></div>
 </div>
-<div class="full clip" id="c-s2" data-start="6.645" data-duration="5.135">
+<div class="full clip" id="c-s2" data-start="6.644" data-duration="6.808">
   <div class="cam" id="c-cam2"><img class="shot" src="assets/img/chat-answer.png" alt=""></div>
 </div>
 <div class="full" id="c-s3">
-  <div class="cam" id="c-cam3"><video id="c-v3" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="11.78" data-duration="5.194" data-media-start="16.55" data-playback-rate="0.65"></video></div>
+  <div class="cam" id="c-cam3"><video id="c-v3" class="clip" src="assets/clips/chat.mp4" muted playsinline data-start="13.452" data-duration="5.194" data-media-start="16.655"></video></div>
 </div>
 <div class="tag" id="c-tag1">Nemotron <b>investigates</b> your PC</div>
 <div class="tag" id="c-tag2">Every number → <b>its source</b></div>
@@ -31,16 +31,16 @@
 const tl = gsap.timeline({ paused: true });
 const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
 
-tl.fromTo("#c-cam1", { x: -336.0, y: -94.5, scale: 1.35 }, { x: -336.0, y: -94.5, scale: 1.35, duration: 0.01 }, 0);
-cam("#c-cam1", 0, 0, 1, 0.988, 0.7);
+tl.fromTo("#c-cam1", { x: -633.0, y: -94.5, scale: 1.35 }, { x: -633.0, y: -94.5, scale: 1.35, duration: 0.01 }, 0);
+cam("#c-cam1", -795.0, 0, 1.5, 1.651, 0.6);
 tl.fromTo("#c-tag1", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 1.675);
-tl.to("#c-tag1", { opacity: 0, duration: 0.15 }, 6.445);
-tl.fromTo("#c-cam2", { x: 0, y: 0, scale: 1.0 }, { x: -800.0, y: -390.0, scale: 2.0, duration: 0.55, ease: "power3.inOut" }, 7.637);
-cam("#c-cam2", -345.0, -98.0, 1.45, 9.949, 0.6);
-tl.fromTo("#c-cam3", { x: 0, y: 0, scale: 1.0 }, { x: 0, y: 0, scale: 1.0, duration: 0.01 }, 0);
-cam("#c-cam3", -1728.0, 0, 1.9, 13.913, 0.55, "power3.inOut");
-tl.fromTo("#c-tag2", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 11.81);
-tl.to("#c-tag2", { opacity: 0, duration: 0.15 }, 13.913);
+tl.to("#c-tag1", { opacity: 0, duration: 0.15 }, 6.444);
+tl.fromTo("#c-cam2", { x: 0, y: 0, scale: 1.0 }, { x: -1167.6, y: -234.0, scale: 1.8, duration: 0.55, ease: "power3.inOut" }, 7.578);
+cam("#c-cam2", -813.0, -135.0, 1.5, 11.341, 0.6);
+tl.fromTo("#c-cam3", { x: -606.0, y: 0, scale: 1.45 }, { x: -606.0, y: 0, scale: 1.45, duration: 0.01 }, 13.452);
+cam("#c-cam3", -1344.0, 0, 1.7, 15.585, 0.55, "power3.inOut");
+tl.fromTo("#c-tag2", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.18 }, 13.482);
+tl.to("#c-tag2", { opacity: 0, duration: 0.15 }, 15.585);
 
 window.__timelines["ask"] = tl;
 </script>
