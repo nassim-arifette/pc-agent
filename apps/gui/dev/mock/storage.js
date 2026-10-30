@@ -74,7 +74,8 @@ export function createStorageFixture({ params, emit, publishSource, invalidateSt
       scanned_at_unix_ms: Date.now(),
       scanned: { logical_bytes: 212 * GiB, allocated_bytes: 208 * GiB, allocation_unknown_files: 1, files: entries },
       scanned_text: "208.00 GiB",
-      volume: { root: "C:\\", fixed: true, total_bytes: 476 * GiB, free_bytes: 61 * GiB, total_text: "476.00 GiB", free_text: "61.00 GiB", filesystem: "NTFS" },
+      // The same C: as Live PC's mock (255 GiB, almost full unless ?disk=ok).
+      volume: { root: "C:\\", fixed: true, total_bytes: 255 * GiB, free_bytes: (params.get("disk") === "ok" ? 61 : 0.3) * GiB, total_text: "255.00 GiB", free_text: params.get("disk") === "ok" ? "61.00 GiB" : "307.2 MiB", filesystem: "NTFS" },
       coverage: { files: entries, dirs: Math.round(entries / 9), denied_dirs: 3, denied_files: 0, reparse_skipped: 12, placeholders: 41, placeholder_logical_bytes: 3 * GiB, other_volume_skipped: 0, special_skipped: 0, vanished: 0, changed_during_scan: 5, errors: scanCancel ? 0 : 2, hard_link_aliases: 0, allocation_unknown_files: 1, truncated: null, cancelled: scanCancel },
       denied: [`${root}\\Private`],
       dirs: publishPage(scopeId, page("dirs", root, 0), (scanFinishedAt = Date.now())),
@@ -151,7 +152,7 @@ export function createStorageFixture({ params, emit, publishSource, invalidateSt
           allocation_unknown_files_count: item.allocated_bytes == null ? 1 : 0 });
         const shown = publishPage(scopeId, { kind: item.kind, items: [item], total: 1, next_offset: null }, scanFinishedAt);
         return { item, selection_source_id: shown.selection_source_id, parent_ref: item.parent_ref,
-          parent_alias: "dir-parent", rank_scope: "siblings_of_parent", volume_total_bytes: 476 * GiB,
+          parent_alias: "dir-parent", rank_scope: "siblings_of_parent", volume_total_bytes: 255 * GiB,
           item_facts: { scanned_at_unix_ms: scanFinishedAt, untouched_before_unix_ms: scanFinishedAt - 182 * 86400000,
             files_count: count, untouched: measured(Math.floor(count / 2), count > 1 ? 0.45 : 0), undated_files_count: item.kind === "dirs" ? Math.min(2, count) : 0,
             largest_file: item.kind === "files" ? { ...item, alias: "file-largest" }

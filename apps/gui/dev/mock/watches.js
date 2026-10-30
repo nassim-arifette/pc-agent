@@ -11,6 +11,8 @@ const target = (rule) => `${rule.kind}:${rule.root ?? rule.resource ?? rule.nvml
 export function createWatchFixture(params, publishSource) {
   const now = () => Date.now();
   const none = params.get("watches") === "none";
+  // The same C: as Live PC's mock, so screenshots agree (0.3 GiB free unless ?disk=ok).
+  const cFree = (params.get("disk") === "ok" ? 61 : 0.3) * GiB;
   const paused = params.get("watches") === "paused";
   const notifications = params.get("notifications") === "disabled" ? "disabled" : "enabled";
   let sequence = 0;
@@ -31,7 +33,7 @@ export function createWatchFixture(params, publishSource) {
     lower_bound: false, notification: "sent", seen: true, ...extra,
   });
   let alerts = none ? [] : [
-    alert("watch-alert-mock-1", rules[1], 2 * 3_600_000, null, 8.4 * GiB, "bytes", { seen: false }),
+    alert("watch-alert-mock-1", rules[1], 2 * 3_600_000, null, cFree, "bytes", { seen: false }),
     alert("watch-alert-mock-2", rules[0], 26 * 3_600_000, 25.9 * 3_600_000, 9730, "basis_points"),
     alert("watch-alert-mock-3", rules[0], 50 * 3_600_000, 49.95 * 3_600_000, 9410, "basis_points", { notification: "rule_cooldown" }),
     alert("watch-alert-mock-4", rules[0], 4 * 86_400_000, null, 9120, "basis_points", { ended_at_unix_ms: now() - 4 * 86_400_000 + 600_000, close_reason: "interrupted" }),
@@ -49,7 +51,7 @@ export function createWatchFixture(params, publishSource) {
   const live = () => rules.map((watch) => {
     const open = alerts.find((a) => a.watch_id === watch.id && a.ended_at_unix_ms == null);
     const phase = !watch.enabled ? "disabled" : paused ? "paused" : open ? "alert" : "normal";
-    const reading = watch.rule.kind === "volume_free_below" ? observation("volume_free_bytes", 8.4 * GiB, "bytes", now() - 40_000)
+    const reading = watch.rule.kind === "volume_free_below" ? observation("volume_free_bytes", cFree, "bytes", now() - 40_000)
       : watch.rule.kind === "resource_above" ? observation("cpu_busy_basis_points", 2310, "basis_points", now() - 5_000) : null;
     return { watch, phase, reason: null, observation: watch.enabled ? reading : null, lower_bound: false, alert_id: open?.id ?? null };
   });

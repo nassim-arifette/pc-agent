@@ -1,215 +1,198 @@
-# PC Agent
+<p align="center"><img src="docs/brand/nox/nox-hello.svg" width="190" alt="Nox, PC Agent's detective owl, waving"></p>
 
-**Ask why your Windows PC is slow, full or misbehaving, and get an answer you can check.**
+<h1 align="center">PC Agent</h1>
 
-PC Agent is a desktop app for Windows 10 and 11 (x64). An NVIDIA Nemotron model, called through
-Nebius Token Factory, investigates your PC with about two dozen read-only tools, then writes the
-answer. Every figure in the final answer is checked against the measurement it cites, and anything
-the model suggests changing runs only after you click.
+<p align="center"><b>Ask why your Windows PC is slow, full or misbehaving, and get an answer you can check.</b></p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D4" alt="Windows 10 and 11, x64">
+  <img src="https://img.shields.io/badge/NVIDIA-Nemotron%203-76B900" alt="NVIDIA Nemotron 3">
+  <img src="https://img.shields.io/badge/Nebius-Token%20Factory-052B3A" alt="Nebius Token Factory">
+  <img src="https://img.shields.io/badge/web%20lookups-Tavily-6E56CF" alt="Tavily web lookups">
+</p>
+
+PC Agent is a desktop app for Windows. You describe what you notice ("my PC is slow when I open
+Chrome", "what can I delete on C:?"). An **NVIDIA Nemotron** model, served by **Nebius Token
+Factory**, then investigates your machine with about two dozen read-only tools and writes the
+answer. Every figure in that answer is checked against the measurement it cites. Anything it
+suggests changing runs only after you click.
 
 ![A verified answer about a slow PC, with the measurement it cites open in the Sources panel](docs/images/chat-answer-sources.png)
 
-*All screenshots show the interface running on the design mock's synthetic data, not a real PC.*
+<sub>Screenshots show the interface on the design mock's synthetic data, not a real PC.</sub>
 
-This repository is a hackathon submission: an unsigned Windows build (the release has no installer;
-a per-user one can be built from source, untested), under
-the MIT license. Bring your own Nebius API key, or use the local mode without AI. Jump to
-[Install](#install), [For judges](#for-judges),
-[How Nemotron is used](#how-nemotron-and-nebius-token-factory-are-used), [Privacy](#privacy) or
-[Validation status](#validation-status).
+> **Nebius × NVIDIA Global AI Hackathon, *Best Apps and Agents* track.**
+> [Quick start](#quick-start) · [For judges](#for-judges) ·
+> [Nemotron on Token Factory](#how-pc-agent-uses-nvidia-nemotron-on-nebius-token-factory) ·
+> [Tavily](#how-pc-agent-uses-tavily) · [Privacy](#privacy-and-safety) ·
+> [Feedback](#feedback-on-token-factory-and-nemotron)
 
-## Why PC Agent
+## The problem
 
-Task Manager shows numbers without explaining them; a chatbot explains without measuring. PC Agent
-puts a capable model in front of real measurements, and keeps it honest:
+Task Manager shows numbers without explaining them. A chatbot explains without measuring, and
+happily invents a cause. Most people end up with a "PC cleaner" that deletes things at random,
+or a forum thread that may not apply to their machine.
 
-- **The LLM is the analyst.** Nemotron chooses which tools to run, tests its hypotheses, writes
-  the answer in the language of your question and handles follow-up questions. Local rules only
-  give it hints.
-- **The value is in the tools.** Closed-schema tools read memory, processor, disks, graphics cards
-  (with NVIDIA's NVML), programs grouped by application, services, startup programs, event logs,
-  drivers, Windows Update, batteries, the local history and storage. Each one says what it could
-  not read; a missing value is unknown, never zero.
-- **Read-only by default.** No tool changes anything. The model can only *propose* an action; it
-  runs after your click, and its target is checked again just before.
-- **Privacy by visible choice.** Toggles under the question box show what leaves, *See what
-  leaves* shows the exact first message before it is sent, and some things never leave at all.
-- **No administrator by default.** The app and the model never run elevated. The few readings
-  that need administrator rights run in a separate helper, one fixed task at a time, after your
-  click and Windows' own prompt; the helper has no network client and no model.
-- **Every cited figure is checked.** Each number in an answer must match the measurement it
-  cites. What still does not match after the model's corrections is marked as unverified: the
-  verifier flags, it never rewrites the answer.
+PC Agent pairs a capable reasoning model with real measurements of *your* PC and keeps it
+honest:
 
-## What it does
+- **The model is the analyst.** Nemotron decides what to measure, tests its hypotheses, writes
+  the answer in your language and handles follow-up questions.
+- **The tools are the value.** They read memory, processor, disks, NVIDIA GPUs (NVML), programs
+  grouped by application, services, startup programs, event logs, drivers, Windows Update,
+  batteries, local history and storage. Each tool says what it could not read; a missing value
+  is *unknown*, never zero.
+- **Every cited figure is verified.** A number in the answer must match the measurement it cites,
+  or the model is asked to fix it. Whatever still does not match is marked as unverified.
+- **Read-only by default.** The model can only *propose* an action. It runs after your click,
+  and its target is checked again just before.
+- **Privacy you can see.** Toggles under the question box decide what leaves the PC, and
+  *See what leaves* shows the exact message before it is sent.
 
-- **Local French/English voice dictation.** Dictate with a microphone and an offline Whisper
-  model, then review/edit the text before sending. Audio is neither saved nor uploaded.
-  Engine, language, microphone and model controls are in Settings; see [voice dictation](docs/voice.md).
+## What you can do
 
-### A conversation with cited, verified answers
+### Ask in plain language, get cited answers
 
-The interface is in English or French; the model answers in the language of your question. While
-it works you see each real step (measuring, listing processes, reading the history…) with its
-duration and a Stop button. The answer appears as a draft while Nemotron writes it, then the
-checked answer replaces it. Numbered citations open the measurement they cite in the *Sources*
-panel. Each answer shows which model wrote it, how long it took, what it cost and whether every
-figure was checked, then suggests follow-up questions. Conversations are kept on this PC for 90
-days.
+Type or dictate a question in English or French. You see each real step (measuring, listing
+processes, reading the history…) with its duration and a Stop button. The answer streams in as a
+draft while Nemotron writes it, then the verified version replaces it. Numbered citations open
+the exact measurement in the *Sources* panel. Each answer shows the model that wrote it, how long
+it took, what it cost and whether every figure was checked, then suggests follow-up questions.
+Conversations stay on this PC for 90 days.
+
+You can also attach a screenshot of an error message (PNG or JPEG). The question then goes to
+Nemotron's vision model, after an exact preview of the prepared image.
 
 ### Live PC: Explain and Investigate
 
-Memory, processor, each drive, each graphics card and each battery appear as cards refreshed every
-5 seconds, above the programs grouped by application (the WebView2 processes an app starts count
-toward that app). Select any item: its details fill the inspector and an action bar appears
-under it. *Summarize these measurements* (Explain) answers from the figures already measured,
-without collecting anything new; *Find the cause* (Investigate) opens a conversation in which the
-model can run its tools. History events, recordings and storage results offer the same two
-actions.
+Memory, processor, each drive, each graphics card and each battery refresh every 5 seconds, above
+the programs grouped by application. Select anything and an action bar appears under it:
+- ***Summarize these measurements*** (Explain) answers from the figures already shown, without
+  collecting anything new;
+- ***Find the cause*** (Investigate) opens a conversation in which the model can run its tools;
+- ***Monitor*** creates a watch for that item.
 
 ![Live PC in the dark theme: memory selected, with its action bar and inspector](docs/images/live-pc-inspector.png)
 
 ### History and recording
 
-While PC Agent runs, it measures the system and its busiest programs every 5 seconds and keeps 7
-days on this PC, so "why was it slow around 2 pm?" can be answered from data. The History view
-charts processor, memory, disk activity and graphics card over the last hour, 24 hours or 7 days;
-periods without measurements stay visible gaps. Anomalies (processor peak, saturated memory, busy
-or slow disk) are listed with their peak and duration; processor and memory events also name the
-program measured at the peak, which is not presented as the proven cause. *Record a problem*
-measures every second for 30, 60 or 120 seconds while you reproduce it. *Start with Windows*, off
-by default, keeps the history going from the notification area.
+While PC Agent runs, it keeps 7 days of measurements on this PC, so *"why was it slow around
+2 pm?"* can be answered from data. Charts cover the last hour, 24 hours or 7 days. Periods
+without measurements stay visible as gaps. Detected anomalies (processor peak, saturated memory,
+busy or slow disk) name the program measured at the peak, without claiming it is the proven
+cause. *Record a problem* measures every second while you reproduce it.
 
 ![History over 24 hours in the dark theme, with a gap and a detected memory event](docs/images/history.png)
 
-### Storage
+### Watches: be told when something goes wrong
 
-Scan a folder (Downloads, Desktop, Documents, TEMP, your profile, the system drive or any folder
-you pick) to see its largest folders and files. The scan reads names, sizes and dates only,
-follows no links and deletes nothing. Select a result to summarize it or find the cause, or ask
-the AI to find space to free in that folder.
+Set a threshold on the processor, memory, disk activity, free space on a drive, an NVIDIA GPU's
+temperature or one program's memory or CPU. PC Agent then:
+- checks it every few seconds while it runs, in its window or its notification-area icon;
+- shows a Windows notification when the threshold is crossed;
+- lists each alert with its measured extreme value and an *Explain* button;
+- offers a local weekly summary on request.
 
-Optional administrator readings run in the separate `pcagent-elevated` helper, as one batch:
-you review the checks it will run and can untick any, click *Allow and start*, then accept a single
-Windows consent prompt (another administrator may enter their credentials):
+Nothing is sent anywhere unless you click *Explain*.
 
-- **Quick drive analysis** reads the file table (MFT) of a fixed NTFS drive to list its largest
-  folders and files: names and sizes, never contents.
-- **Deeper checks**: the size of Windows caches (`Windows.old`, downloaded updates, Delivery
-  Optimization), the space restore points and shadow copies use, disk health counters
-  (temperature, wear, hours powered on, errors), and Windows' own estimates of battery use by app.
+![The Watches view: rules with their live state, alerts of the last 7 days and the weekly summary](docs/images/watches.png)
 
-When an answer lacked the reading of a deeper check, the model can propose the checks it needs
-as a card under its answer; you review, untick and approve them yourself, and the model can never
-start one. Results are kept on this PC for 24 hours from their measurement and can be selected as
-evidence in the same conversation.
+### Daily report, even when the app is closed
+
+Turn on the daily report in Settings. Windows then runs a short local check every day at the
+time you choose, even if PC Agent is closed: one measurement, the local rules, the last
+24 hours of history and alerts, and free space on your drives. The result is a dated report on
+this PC, and a notification only when something needs a look. The home page shows the latest
+report, answer first, with *Ask PC Agent about it*.
+
+Details: the task runs under your account with the lowest privileges, has a 5-minute limit and
+uses no AI and no network.
+
+![The home page with the composer, suggested questions and the latest daily report](docs/images/home-daily-report.png)
+
+### Storage, and deeper checks when you allow them
+
+Scan Downloads, Desktop, your profile, the system drive or any folder. Browse the result as a
+map, a tree or a list. The scan reads names, sizes and dates only and deletes nothing. Ask the
+AI to find space to free in that folder.
+
+Some readings need administrator rights: a fast MFT analysis of a whole NTFS drive, Windows
+caches, restore points, disk health and battery use by app. You review the batch of checks and
+untick any you don't want. One Windows consent prompt then covers them all, and they run in a
+separate helper that has no network access and no AI. The model can propose these checks, but
+only you can start them.
 
 ![A folder scan's largest folders, with the first one selected and its action bar](docs/images/storage-scan.png)
 
 ### Actions you approve
 
-The model can propose to show a file in Explorer, open a Windows Settings page (Storage Sense,
-Startup apps, Windows Update, optional updates, Power and sleep…), ask a program to close
-normally, send files found by a scan to the Recycle Bin, move TEMP files older than seven days or
-NVIDIA and Direct3D shader cache files to the Recycle Bin, or stop one of your startup programs
-from starting with Windows. Each proposal is a card under the answer saying what it would do and
-how to undo it. *Review and confirm* lists every exact target; *Run now* checks each target
-again, runs it, and shows the free space or system measurements before and after. A startup
-program turned off this way can be restored. In the app, removed files always go to the Recycle
-Bin, where they keep taking space until you empty it; nothing runs without your click.
+The model can propose to:
+- show a file in Explorer or open a Windows Settings page;
+- ask a program to close normally;
+- move scan results, old TEMP files or shader caches to the Recycle Bin;
+- stop a startup program from starting with Windows.
+
+Each proposal says what it would do and how to undo it. *Run now* checks every target again,
+runs it, and shows the free space or measurements before and after.
 
 ![Reviewing a proposed action before it runs: the exact target, how to undo it, and Run now](docs/images/chat-action-review.png)
 
-### Optional web lookups
+### Also
 
-With a [Tavily](https://tavily.com) key and the *Web* toggle on, the model can check four things
-no measurement can give: a driver maker's notes for an installed driver, a known issue behind a
-Windows update number or stop code, the price of a compatible memory module in your country, and
-your PC model's specification sheet. The model never writes the query: PC Agent composes it from
-measured references and shows it under the step. Web sources are cited `[W1]`, `[W2]`, are never
-treated as measurements of your PC, and their prices and version numbers are checked against the
-page excerpt.
+- **Local voice dictation**, in English and French, with an offline Whisper model. You review
+  the text before sending it; audio is never saved or uploaded.
+- **Interface in English or French**, light or dark theme, and Windows high-contrast mode.
+- **A command line** (`pcagent.exe`) with the same core: see [Command line](#command-line).
 
-### Command line
+## Quick start
 
-`pcagent.exe` runs the same core in a terminal: see [Command line](#command-line).
+1. **Download** `pcagent-gui.exe` and `pcagent-elevated.exe` from the
+   [latest GitHub release](https://github.com/nassim-arifette/pc-agent/releases/latest) and keep
+   them in the same folder. Each release lists its commit and SHA-256 checksums. `pcagent.exe` is
+   the optional command line.
 
-## Install
+   > **Release vs. `main`.** Release `v0.1.1` (27 October) predates several features shown
+   > here: Watches, the daily report, the single-prompt administrator batch, the Storage map and
+   > tree, voice dictation and browser details. Until a newer release is published, these need a
+   > [build from source](#build-from-source).
+2. **Allow the unsigned app.** The executables are not code-signed, so SmartScreen shows *Windows
+   protected your PC*: click **More info**, then **Run anyway**.
+3. **Start `pcagent-gui.exe` normally.** PC Agent refuses to run as administrator.
+4. **Follow the setup guide:**
+   1. open Nebius Token Factory to create an API key;
+   2. paste the key (it is stored on this PC and never shown again);
+   3. click **Load account models** and pick **Nemotron 3 Super** (recommended);
+   4. click **Test connection**.
 
-1. Download `pcagent-gui.exe` and `pcagent-elevated.exe` from the
-   [GitHub release](https://github.com/nassim-arifette/pc-agent/releases/latest) (current version:
-   `v0.1.1`; each release names the commit it was built from and lists SHA-256 checksums), and
-   keep them in the same folder: the app only launches the helper that sits next to it. `pcagent.exe` is
-   the optional command line and `pcagent-eval.exe` the evaluation tool
-   ([docs/eval.md](docs/eval.md)). The release has no installer; a per-user installer can be built
-   from source ([docs/installer.md](docs/installer.md)) but has not been tested yet.
-2. The executables are not code-signed, so on first launch Microsoft Defender SmartScreen shows
-   *Windows protected your PC*: click **More info**, then **Run anyway**. You can instead open
-   each file's Properties and tick **Unblock** before the first launch. For the same reason,
-   Windows' consent prompt names an unknown publisher when the helper starts. On a Windows 11 PC
-   where Smart App Control is on, Windows may block unsigned apps without offering *Run anyway*;
-   that case has not been tested yet.
-3. Start `pcagent-gui.exe` normally. PC Agent refuses to run with *Run as administrator* and says
-   so.
+   These steps read only your account's catalog: nothing about your PC is sent.
 
-**Requirements.** Windows 10 or 11, x64, with the Microsoft Edge WebView2 Runtime (included in
-Windows 11; on Windows 10, install Microsoft's Evergreen WebView2 Runtime if the window does not
-open). Temperature, memory, clock and slowdown details of a graphics card need an NVIDIA GPU and
-its driver; other graphics cards report their load only.
+No key? **Continue locally without AI**: measurements, history, storage, watches, the daily report
+and the local rules all keep working, and nothing leaves the PC.
 
-**First launch.** A setup guide walks you through:
+**Requirements:** Windows 10 or 11 x64 with the Microsoft Edge WebView2 Runtime (built into
+Windows 11). GPU temperature, memory and slowdown details need an NVIDIA GPU and driver.
 
-1. **Open Nebius Token Factory**, which opens `https://tokenfactory.nebius.com/` in your browser,
-   to sign in or create an account and an API key;
-2. pasting the key into a masked field; it is saved on this PC and never shown again, apart from
-   its last four characters;
-3. **Load account models**, which lists the Nemotron models your account offers; Nemotron 3 Super
-   is the recommended choice;
-4. **Test connection**, which confirms that the model is in your account's catalog and, when the
-   catalog publishes them, shows its prices per million tokens. These two buttons read the
-   account catalog only: no question, measurement or file is sent.
+## For judges
 
-**Continue locally without AI** skips the key: measurements, history, storage and the local rules
-keep working, and nothing is sent anywhere. Settings reopens the guide at any time.
+Bring your own Nebius key: answers are billed to that account, and each one shows its cost. You
+can also try everything except the written answers in local mode. A five-minute path:
 
-**Measured idle footprint (27 October, v0.1.1).** On a Windows Server 2022 VM with 8 logical
-processors and 32 GiB RAM, the window and its six WebView2 descendants averaged 316 MiB of
-summed working sets with the window open, then 204 MiB hidden; private bytes averaged
-131–132 MiB. Average CPU use was 0.05% and 0.02% of the VM respectively. Each phase lasted
-about three minutes under a standard account, on a fresh profile with no cloud request or
-scan. After about 6 minutes 34 seconds of collection, SQLite plus its WAL and shared-memory
-files occupied 3.28 MiB (80 samples). These are short idle measurements, not peak usage or a
-daily disk-growth forecast; summed working sets can count shared pages more than once.
-See the [measurement protocol and limitations](docs/footprint.md).
+1. **Ask** *"Why is my PC slow?"*, watch the steps, then click a citation in the answer.
+2. **Privacy:** switch *Names* off and open *See what leaves* (eye icon) before sending.
+3. **Live PC:** select Memory, then *Summarize these measurements*, then *Monitor* to create a
+   watch.
+4. **Storage:** scan Downloads, select the largest folder, and ask what you can clean up.
+5. **Actions:** open *Review and confirm* on a proposal to see the exact target and how to undo
+   it.
+6. **Settings:** turn on the daily report, then *Write a report now*.
+7. **Web lookups (optional):** save a Tavily key, keep *Web* on, and ask about a driver or a
+   Windows update.
 
-### For judges
+## How PC Agent uses NVIDIA Nemotron on Nebius Token Factory
 
-Use your own Nebius key (AI answers are billed to its account, and each answer shows its cost) or
-the local mode. Things to try:
-
-- ask one of the suggested questions and click a citation;
-- switch *Names* off and open *See what leaves* (the eye icon) before sending;
-- in Live PC, select Memory and choose *Summarize these measurements*;
-- scan Downloads in Storage and select its largest folder;
-- ask what you can clean up, then open *Review and confirm* on a proposal.
-
-### Where your data lives
-
-Everything stays in your Windows profile:
-
-| Location | Content |
-| --- | --- |
-| `%APPDATA%\pcagent\.env` | Nebius key and model, reasoning setting, optional Tavily key |
-| `%APPDATA%\pcagent\privacy.json`, `model-routing.json` | sharing and model choices |
-| `%APPDATA%\pcagent\pcagent.sqlite` | conversations (90 days) and measurement history (7 days) |
-| `%LOCALAPPDATA%\pcagent\journal` | journal of the actions you ran |
-| `%LOCALAPPDATA%\dev.pcagent.desktop` | the window's own WebView data (display preferences) |
-| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `PcAgent` | only while *Start with Windows* is on |
-
-To uninstall, turn off *Start with Windows* (History view or Settings), quit PC Agent from its
-notification-area icon, delete the executables, then these folders.
-
-## How Nemotron and Nebius Token Factory are used
+Nemotron is the brain of the product, not a summary layer on top of rules. Every AI answer is a
+multi-step tool-calling investigation running on Token Factory.
 
 ```mermaid
 flowchart LR
@@ -223,206 +206,221 @@ flowchart LR
     A -->|your click| X["Actions broker:<br/>recheck, run, before/after"]
 ```
 
-- **A tool-calling loop.** PC Agent calls Token Factory's OpenAI-compatible chat completions API
-  at `https://api.tokenfactory.nebius.com/v1` with the definitions of its tools and
-  `tool_choice: "required"`, so Nemotron acts through tools at every step. It receives a first
-  measurement and the local rules' hints, then calls the tools it chooses, several at once if it
-  wants. PC Agent validates every call against its closed schema, runs it on the PC and returns
-  the result with short citation references (`O1`, `F1`).
-- **`submit_answer`.** Nemotron ends a turn by calling `submit_answer` with its answer in
-  restricted Markdown, its confidence, a category, the actions it proposes and up to three
-  follow-up questions. The verifier checks every citation, number and program name; problems go
-  back to the model for at most three corrections, during which the request may name
-  `submit_answer` as the only tool.
-- **Streaming.** Requests stream, so the app shows the answer as Nemotron writes it, marked as a
-  draft, before the checked version replaces it.
-- **Reasoning.** Nemotron's thinking is on by default (*Full reasoning*); the question box also
-  offers *Light* and *Off*, the latter experimental. Sampling follows NVIDIA's recommended settings
-  for Nemotron 3.
-- **Budgets.** Per question: at most 10 model requests, 20 tool calls and 600 seconds, and per
-  request at most 300 seconds and 8,192 output tokens, reasoning included. At a limit, the app
-  asks whether to continue and shows the cost so far, up to three times.
-- **Cost per answer.** Measured tokens multiplied by the prices your account's catalog publishes
-  (`/v1/models?verbose=true`), shown under every answer. Without a published price, the app shows
-  the token usage only; when a request did not report its usage, the cost is shown as a lower
-  bound. It never invents a price. Tavily credits are not included.
-- **Super and Ultra.** The model picker next to the send button offers Nemotron 3 Super
-  (recommended), Nemotron 3 Ultra (more thorough, slower and pricier), Nemotron 3 Nano (cheaper,
-  slower) and Nemotron 3.5 Lightning (not recommended); the model must be in your account's
-  catalog. The engine can hand a question over from Super to Ultra once, but that automatic mode
-  stays off until a reviewed evaluation calibrates it.
-- **NVIDIA only.** A model ID must start with `nvidia/`, name Nemotron and appear in your
-  account's catalog, which must not list it without tool support. There is no fallback to another
-  model or provider. HTTPS is required and redirects are refused.
+- **Tool-calling agent loop.** PC Agent calls Token Factory's OpenAI-compatible chat completions
+  API (`https://api.tokenfactory.nebius.com/v1`) with closed-schema tool definitions and
+  `tool_choice: "required"`. Nemotron acts through tools at every step, often several in
+  parallel. Each call is validated against its schema, run on the PC, and returned with short
+  citation references (`O1`, `F1`).
+- **Structured final answer.** Nemotron ends a turn with `submit_answer`, which holds:
+  - the answer in restricted Markdown;
+  - its confidence and a category;
+  - the actions it proposes;
+  - up to three follow-up questions.
+
+  The verifier checks every citation, number and program name. Problems go back to the model
+  for at most three repairs, and repair requests may force `submit_answer` as the only tool.
+- **The right Nemotron for the job.** This follows the track's own advice: Super or Nano for
+  everyday calls, Ultra when serious reasoning is needed.
+
+  | Model | Use in PC Agent |
+  | --- | --- |
+  | **Nemotron 3 Super** | default: fast, capable tool use at a low price |
+  | **Nemotron 3 Ultra** | deeper investigations; the engine can hand a hard question from Super to Ultra once |
+  | **Nemotron 3 Nano** | cheapest option; slower in our tests |
+  | **Nemotron 3.5 Super VL** | questions with an attached screenshot |
+
+  The picker lists only the models your account's catalog offers. The automatic Super → Ultra
+  hand-over stays off until a reviewed evaluation calibrates it.
+- **Streaming and reasoning.** Answers stream while Nemotron writes them. Its thinking is on by
+  default (*Full reasoning*), with *Light* and *Off* in the composer. Sampling follows NVIDIA's
+  recommended settings for Nemotron 3.
+- **Real cost, from the catalog.** Measured tokens are multiplied by the prices your account
+  publishes (`/v1/models?verbose=true`) and shown under every answer. Without a published price,
+  only token usage is shown; a missing usage report makes the cost a lower bound. The app never
+  invents a price.
+- **Budgets.** Per question: at most 10 model requests, 20 tool calls and 600 s. Per request:
+  300 s and 8,192 output tokens. At a limit, the app asks whether to continue and shows the cost
+  so far.
+- **NVIDIA models only.** A model ID must start with `nvidia/`, name Nemotron and be in your
+  catalog with tool support. There is no silent fallback to another model or provider.
+
+**Where Token Factory sped up our work**
+- **One key, every Nemotron.** A single key and an OpenAI-compatible endpoint gave us Nano,
+  Super, Ultra and the vision model, so changing models is a one-line choice in the app.
+- **The verbose catalog** gives prices, context sizes and capabilities. It drives the model
+  picker, the per-answer cost and the "no tools, no listing" rule, with nothing hard-coded.
+- **Streaming with tool calls** let us show live progress and close the stream as soon as a
+  complete answer arrives.
+- **Replayable runs.** The evaluation harness (`pcagent-eval`) records real tool outputs and
+  replays them against Super and Ultra, so model comparisons cost model tokens only.
+
+Other Nebius services: none (no AI Cloud, Serverless Endpoints or Jobs). The tools must read the
+user's own PC, so the app runs on the desktop and calls Token Factory directly.
 
 Implementation details: [architecture](docs/architecture.md#the-agent-loop),
-[answer verification](docs/answer-verification.md).
+[answer verification](docs/answer-verification.md), [evaluation harness](docs/eval.md).
 
-## Privacy
+## How PC Agent uses Tavily
 
-What leaves the PC follows contract C5 of [the plan](docs/plan.md) (in French). You choose the
-mode in Settings; the *Names* toggle under the question box switches between the first two.
+Some answers need facts that no measurement of your PC can give. With a [Tavily](https://tavily.com)
+key and the *Web* toggle on, the model gets four typed web lookups:
+
+| Lookup | Example |
+| --- | --- |
+| Driver release notes | the maker's notes for the exact driver version installed |
+| Known issues | a Windows update number or stop code seen in the event log |
+| Memory prices | a compatible module for your PC, in your country |
+| PC specifications | your exact PC model's specification sheet |
+
+What makes the integration trustworthy:
+- **The model never writes the query.** PC Agent builds it from measured references (driver
+  provider and version, update number, memory type and size, PC maker and model) and shows it
+  under the step. Your question and the model's text are never sent to Tavily.
+- **Web sources are not measurements.** They are cited separately (`[W1]`, `[W2]`). Prices and
+  version numbers in the answer are checked against the page excerpt.
+- **Bounded and cached.** A turn makes at most 3 searches. Results are cached on the PC: 24 h for
+  prices and driver notes, 7 days for known issues and specifications. A cache hit says so and
+  uses no credit.
+- **Cost is reported honestly.** Known Tavily credits, cache hits and lookups with unknown usage
+  are counted separately; an unknown usage is never shown as free.
+
+Details: [web lookups](docs/web-search.md).
+
+## Privacy and safety
+
+You choose what Nemotron receives, in Settings or with the *Names* toggle under the question box:
 
 | Mode | Sent to Nebius for a question |
 | --- | --- |
-| **Complete** (default) | the question; a first measurement and those the model asks for; program, service and application names; and, when a scanned folder is attached with *File names* on, the names and folder-relative paths of a fixed list of its largest items |
-| **Anonymized** | the question and the measurements, with opaque references (`proc-1a2b3c4d`, `file-3`) instead of names |
+| **Complete** (default) | the question, measurements, and program, service and application names; with a folder attached and *File names* on, a fixed list of its largest items |
+| **Anonymized** | the question and measurements, with opaque references (`proc-1a2b3c4d`) instead of names |
 | **Local** | nothing: answers come from the local rules |
 
-**Never sent, in any mode:** your user name, your profile path, command lines, file contents, keys
-and secrets, process IDs, and identifiers of the machine (computer name, serial numbers).
+**Never sent, in any mode:** your user name, your profile path, command lines, file contents,
+keys and secrets, process IDs, and machine identifiers.
 
-- **The exact message.** *See what leaves* shows the first message of the next question exactly as
-  it will be sent; after the turn, its steps keep *Message sent to Nebius* for the session. The
-  results of the tools the model then calls follow the same choices. Before sending, the question
-  itself is filtered for your user, profile and machine names and for recognizable secrets, but
-  no filter can recognize every secret: do not type one.
-- **Tavily** is a separate recipient, used only with its own key and the *Web* toggle (on by
-  default once a key is saved, never in local mode). A query holds only measured references:
-  the driver's provider, device and version, an update number or stop code, the memory type and
-  size, the PC maker and model, and your Windows region's country for prices. Never your
-  question or text written by the model.
-- **Microsoft.** The driver tool reads Windows Update's local cache; only if the model asks for an
-  online check does Windows Update contact Microsoft, as Windows itself does.
-- **Your browser** opens Nebius Token Factory from the setup guide, and a web source when you
-  click *Open in browser*.
-- **Keys** are written by the app to `%APPDATA%\pcagent\.env`, a plain-text file protected by your
-  Windows profile's permissions (no Windows Credential Manager yet). They never reach the
-  window's page, the logs, the previews or the model. A `.env` file in the current folder is
-  never read.
-- PC Agent sends no analytics or telemetry to its developers. What Nebius and Tavily receive is
-  subject to their own terms; this is data minimization, not anonymity.
+- **See what leaves** shows the exact first message before sending. The question itself is
+  filtered for your user, profile and machine names and for recognizable secrets.
+- **No administrator by default.** The window and the model never run elevated. The
+  administrator helper runs only the closed checks you approved, has no network and no model,
+  and needs Windows' own consent prompt.
+- **Your data stays local:** keys in `%APPDATA%\pcagent\.env`, conversations (90 days),
+  history (7 days), watches and reports in `%APPDATA%\pcagent`, and the journal of the actions
+  you ran in `%LOCALAPPDATA%\pcagent`.
+- PC Agent sends no analytics to its developers. What Nebius and Tavily receive is subject to
+  their own terms: this is data minimization, not anonymity.
+
+## Feedback on Token Factory and Nemotron
+
+What we learned building a real agent on Token Factory:
+- **What worked well:**
+  - Nemotron 3 Super is a reliable tool caller: it runs several tools in parallel, follows
+    closed schemas, and answers in the language of the question once the system prompt says so
+    explicitly.
+  - The OpenAI-compatible API and the verbose catalog meant no special SDK and no hard-coded
+    prices.
+- **Stream tail.** After a complete tool call, Nemotron sometimes kept generating (tags, then a
+  second copy of the answer) for one to three minutes, up to the output limit. We now close the
+  stream at the first complete `submit_answer`. The token count, which only arrives at the end
+  of the stream, is then lost, so the cost becomes a lower bound.
+  - **Suggestion:** report usage earlier, or let a client stop generation explicitly.
+- **Latency is dominated by repairs**, not by the first answer. In 8 real questions (median
+  94 s), each repair request cost about 40–50 s. Telling the model precisely how to cite in the
+  system prompt removed most repairs.
+- **Answering too early.** Declaring `submit_answer` only after a first inspection stopped
+  Nemotron from answering without measuring, which had cost 31–49 s per question.
+- **Catalog gaps.** Capabilities and prices are not always published for every model. A
+  documented per-model flag for tool support and vision would make model pickers simpler.
 
 ## Command line
 
-Run `pcagent.exe` from a terminal in its folder (`.\pcagent.exe doctor` in PowerShell), or put
-that folder on your `PATH`:
+`pcagent.exe` runs the same core in a terminal:
 
 ```powershell
-pcagent doctor                                      # offline checks of this PC and the setup
-pcagent snapshot                                    # memory, processor, disks, GPUs, top processes
-pcagent processes --sort-by cpu --limit 10
+pcagent doctor                                        # offline checks of this PC and the setup
+pcagent snapshot                                      # memory, processor, disks, GPUs, top processes
 pcagent storage "$env:USERPROFILE\Downloads" --limit 10
-pcagent diagnose "Why is my PC slow?"               # local rules only; nothing is sent
-pcagent diagnose "Why is my PC slow?" --preview-cloud   # print the exact first message; send nothing
+pcagent diagnose "Why is my PC slow?"                 # local rules only; nothing is sent
+pcagent diagnose "Why is my PC slow?" --preview-cloud # print the exact first message; send nothing
 pcagent diagnose "Why is my PC slow?" --allow-cloud --verbose
-pcagent diagnose "What can I clean up?" --allow-cloud --scan-root "$env:USERPROFILE\Downloads" --propose-actions
-pcagent chat --allow-cloud                          # several questions in one session
-pcagent models --allow-cloud                        # Nemotron models your key can use
+pcagent chat --allow-cloud                            # several questions in one session
+pcagent models --allow-cloud                          # Nemotron models your key can use
+pcagent report                                        # write today's local report
+pcagent --language fr doctor                          # French output
 ```
 
-- `--anonymize` sends opaque references instead of program names; `--json` prints machine-readable
-  output.
-- A proposed action is shown with its real target and runs only if you type `yes` in an
-  interactive terminal, never with `--json`.
-- Exit codes: `0` the command completed, `2` invalid input or configuration (including an elevated
-  session), `3` an interrupted or failed investigation, a failed action or an unavailable
-  collection. A completed diagnosis is not a claim that the PC is healthy.
+- Nothing is sent without `--allow-cloud`.
+- The key and model come from `NEBIUS_API_KEY` and `NEBIUS_MODEL_ID`, otherwise from the file the
+  desktop app writes ([.env.example](.env.example)).
+- A proposed action runs only if you type `yes` in an interactive terminal.
 
-`pcagent --help` lists every command, including history, recordings and the administrator checks.
-
-### Opt-in cloud investigation
-
-Nothing is sent without `--allow-cloud`; `doctor --check-cloud` and `models --allow-cloud` read
-only the model catalog. The key and model come from the environment variables `NEBIUS_API_KEY`
-and `NEBIUS_MODEL_ID`, otherwise from `%APPDATA%\pcagent\.env`, the file the desktop app writes
-([.env.example](.env.example) lists every setting). Without the app, you can set them for one
-terminal session and keep the key out of the command history:
-
-```powershell
-$secret = Read-Host "Nebius API key" -AsSecureString
-$env:NEBIUS_API_KEY = [System.Net.NetworkCredential]::new("", $secret).Password
-$env:NEBIUS_MODEL_ID = "nvidia/nemotron-3-super-120b-a12b"   # an ID listed by: pcagent models --allow-cloud
-pcagent doctor --check-cloud
-pcagent diagnose "Why is my PC slow?" --allow-cloud --verbose
-Remove-Item Env:NEBIUS_API_KEY
-```
+`pcagent --help` lists every command.
 
 ## Build from source
 
-On Windows 10 or 11 x64, with [rustup](https://rustup.rs), the Visual Studio Build Tools with the
-*Desktop development with C++* workload, and WebView2. The repository pins Rust 1.90.0 and commits
-`Cargo.lock`; rustup installs the pinned toolchain on first use.
+On Windows 10 or 11 x64, install [rustup](https://rustup.rs), the Visual Studio Build Tools
+(*Desktop development with C++*) and WebView2. The repository pins Rust 1.90.0 and commits
+`Cargo.lock`.
 
 ```powershell
 cargo build --release --locked -p pcagent-gui -p pcagent-elevated -p pcagent
 .\target\release\pcagent-gui.exe
 ```
 
-The first build compiles Tauri and needs about 3 GB for `target\`. The interface is plain HTML, CSS
-and JavaScript modules embedded in the executable, with no Node toolchain. It can also be reviewed
-in a browser against synthetic data, without building anything ([desktop app notes](docs/gui.md)).
-The workspace is also meant to compile on Linux for its portable tests, with the Windows collectors
-reporting *unsupported*; the app itself runs only on Windows.
+- **Interface:** plain HTML, CSS and JavaScript modules embedded in the executable, with no Node
+  build. It can be reviewed in a browser against synthetic data ([desktop app notes](docs/gui.md)).
+- **Installer:** a per-user installer can be built as described in
+  [docs/installer.md](docs/installer.md); it has not been tested yet.
+- **Linux:** the workspace also compiles on Linux for its tests, but the app runs only on Windows.
+- **Contributing:** run the checks in [docs/validation.md](docs/validation.md) before a change,
+  and see [AGENTS.md](AGENTS.md) for the contributor rules.
 
-Checks to run before a change: [validation](docs/validation.md). Rules for contributors and
-agents: [AGENTS.md](AGENTS.md).
+## Status and limitations
 
-## Validation status
+- **Tested:**
+  - formatting, Clippy with warnings denied, the Rust test suite and JavaScript tests on
+    synthetic data;
+  - a rendered English/French audit of the interface (no English left in the French
+    rendering);
+  - native runs on Windows 11 with Nemotron 3 Super and Ultra, a web lookup, and the setup guide
+    with a real account;
+  - a full install from the release on a second Windows 11 PC.
+- **Not yet validated on a real PC:**
+  - the daily report task and watch notifications;
+  - the administrator batch prompt;
+  - voice capture;
+  - the installer;
+  - screen readers, and Windows 10.
 
-As of 26 October 2026:
-
-- **Automated.** Formatting, Clippy with warnings denied, the Rust test suite (synthetic data and
-  scripted model replies, run under a standard Windows account so the anti-elevation guard is
-  exercised) and the release build pass before each merge into `main`. Interface changes are also
-  checked with JavaScript logic tests and scripted browser checks in English and French, light and
-  dark, at two window sizes. All of this runs locally: the GitHub Actions workflow that ran the
-  Rust checks on Windows and Ubuntu has been disabled since 10 October, and the last Linux test run
-  recorded in these docs dates from 4 October.
-- **Native checks on Windows 11**, by the developers: the release app through its real bridge
-  (measurements, conversations, sharing previews, Explain and Investigate, history), live
-  investigations with Nemotron 3 Super and Ultra, a web lookup answered from NVIDIA's site, and
-  the first-launch guide with a real account catalog and connection test.
-- **Second PC:** the project owner installed `v0.1.0` from the GitHub release on a second
-  Windows 11 PC and ran the full path (key entry, measurements, investigation).
-- **Not yet:** an evaluation
-  campaign against Claude and ChatGPT on the same situations (the harness exists, scored results
-  do not); Windows 10; an acceptance run of the administrator helper's consent prompts; the
-  accuracy of the quick drive analysis against a controlled volume.
-
-<!-- TODO(eval): evaluation results (scenarios, scores of Nemotron against Claude and ChatGPT, cost and duration per answer), dated, once the campaign is scored (docs/eval.md). -->
-
-Details and the second-PC checklist: [docs/validation.md](docs/validation.md).
-
-## Limitations
-
-- **Windows only**, x64. Windows 10 is announced but not yet tested.
-- **AI answers need your own Nebius key**, billed to its account. The local mode gives the local
-  rules' findings, not a written analysis.
-- **The model can be wrong.** The verifier checks numbers, names and citations against the
-  measurements; it does not prove a cause, and a correlation is not a diagnosis.
-- **History exists only while PC Agent runs**, unless *Start with Windows* is on.
-- **Coverage.** Disk latency and activity are measured for all disks together, and disk events
-  are not attributed to a program. Without an NVIDIA GPU, graphics cards report their load only.
-  Every unreadable source is reported as such.
-- **Administrator checks** run as one reviewed batch under a single Windows consent prompt; the
-  results are kept for 24 hours and can be cited in the same conversation. The real prompt,
-  including approval with another administrator's credentials, is not yet validated on a real
-  PC. The quick drive analysis lists the largest folders and files it could attribute; its
-  accuracy is not yet validated on a controlled volume. The performance trace is not available.
-- **Watches** (resource, drive, NVIDIA GPU or program thresholds) are checked only while PC Agent
-  runs, in its window or its notification-area icon; Windows notifications, their clicks and the
-  daily scheduled report have passed tests on synthetic data but are not yet validated on a real
-  PC.
-- **Interface:** some texts produced by the core, such as findings and coverage notes, stay in
-  English in the French interface; screen readers and high-contrast mode are not validated.
-- **Distribution:** a per-user installer can be built ([docs/installer.md](docs/installer.md)) but
-  has not been tested yet; no automatic update, no code signing; the keys file is plain text
+  Checklist: [docs/validation.md](docs/validation.md).
+- **The model can be wrong.** The verifier checks numbers, names and citations; it does not
+  prove a cause.
+- **History and watches exist only while PC Agent runs.** The daily report is the exception.
+- **Windows only**, x64. AI answers need your own Nebius key.
+- **Distribution:** no code signing and no automatic update. The keys file is plain text
   protected by your Windows profile.
+
+## Meet Nox
+
+Nox is PC Agent's detective owl. Owls investigate, see what others miss and keep watch at night,
+like the watches and the daily report. Her eyes are NVIDIA green and her chest holds a chip. She
+has one pose per feature ([the set](docs/brand/nox/README.md)).
+
+![Nox in ten poses: hello, investigating, thinking, checking up, on night watch, daily report, verified, privacy, approved cleanup and local mode](docs/brand/nox/nox-poses.png)
 
 ## Documentation
 
-- [Architecture and safety](docs/architecture.md): crates, trust boundaries, the agent loop, tools,
-  the helper and the actions broker.
-- [Validation](docs/validation.md): checks, the standard-user test procedure, the second-PC
-  checklist and what is not validated.
-- [Desktop app](docs/gui.md), [Explain and Investigate](docs/selection.md),
-  [answer verification](docs/answer-verification.md), [web lookups](docs/web-search.md),
-  [actions](docs/actions.md), [administrator helper](docs/elevation.md),
-  [MFT analysis](docs/mft.md), [history storage](docs/history-performance.md),
-  [evaluation harness](docs/eval.md).
-- [The plan](docs/plan.md), in French: vision, contracts C1 to C7 and the work plan until the
-  submission.
+- [Architecture and safety](docs/architecture.md): crates, trust boundaries, the agent loop,
+  tools, the helper and the actions broker.
+- **Features:**
+  - [Explain and Investigate](docs/selection.md), [answer verification](docs/answer-verification.md),
+    [web lookups](docs/web-search.md), [actions](docs/actions.md);
+  - [watches](docs/watches.md), [daily report](docs/daily-report.md),
+    [administrator helper](docs/elevation.md), [voice](docs/voice.md);
+  - [history storage](docs/history-performance.md), [accessibility](docs/accessibility.md).
+- [Desktop app](docs/gui.md), [validation](docs/validation.md), [evaluation](docs/eval.md),
+  [installer](docs/installer.md).
+- [The plan](docs/plan.md), in French: vision, contracts and work plan.
 
 ## License
 
