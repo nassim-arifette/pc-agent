@@ -7,6 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D4" alt="Windows 10 and 11, x64">
+  <img src="https://img.shields.io/badge/soon-macOS%20%7C%20Linux-lightgrey" alt="Soon: macOS and Linux">
   <img src="https://img.shields.io/badge/NVIDIA-Nemotron%203-76B900" alt="NVIDIA Nemotron 3">
   <img src="https://img.shields.io/badge/Nebius-Token%20Factory-052B3A" alt="Nebius Token Factory">
   <img src="https://img.shields.io/badge/web%20lookups-Tavily-6E56CF" alt="Tavily web lookups">
@@ -435,7 +436,8 @@ cargo build --release --locked -p pcagent-gui -p pcagent-elevated -p pcagent
 - **The model can be wrong.** The verifier checks numbers, names and citations; it does not
   prove a cause.
 - **History and watches exist only while PC Agent runs.** The daily report is the exception.
-- **Windows only**, x64. AI answers need your own Nebius key.
+- **Windows only for now**, x64. **Soon: macOS and Linux** (the core already builds and passes its
+  tests on Linux). AI answers need your own Nebius key.
 - **Distribution:** no code signing and no automatic update. The keys file is plain text
   protected by your Windows profile.
 
