@@ -70,6 +70,13 @@ let unmount = null;
 let mountedRoute = null;
 let sidebarOpen = !narrow.matches;
 let filter = "";
+/** Content search results for `filter`: null until the host answered for the current query. */
+let searchResults = null;
+let searchToken = 0;
+let searchTimer = 0;
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 440;
+const SIDEBAR_DEFAULT = 256;
 /** What the sidebar slot holds: "chat" (the conversation list) or "view" (the current view's bar). */
 let slot = "chat";
 /** The mounted view's bar: { label, render, host, off }, or null when it declared none. */
@@ -114,8 +121,44 @@ function groups(items) {
   return buckets.filter((b) => b.items.length);
 }
 
+/** `text` with each case-insensitive occurrence of `needle` wrapped in <mark>, as text nodes. */
+function highlighted(text, needle) {
+  if (!needle) return text;
+  const parts = [];
+  const lower = text.toLowerCase();
+  let from = 0;
+  for (let at = lower.indexOf(needle); at >= 0; at = lower.indexOf(needle, from)) {
+    if (at > from) parts.push(text.slice(from, at));
+    parts.push(h("mark", null, text.slice(at, at + needle.length)));
+    from = at + needle.length;
+  }
+  if (from < text.length) parts.push(text.slice(from));
+  return parts;
+}
+
+/** Searches titles, questions and answers on the host, after a short pause in typing. */
+function runSearch() {
+  window.clearTimeout(searchTimer);
+  const query = filter.trim();
+  const token = ++searchToken;
+  searchResults = null;
+  if (!query) return;
+  searchTimer = window.setTimeout(async () => {
+    try {
+      const found = await call("conversations_search", { query });
+      if (token !== searchToken) return;
+      searchResults = found;
+    } catch {
+      if (token !== searchToken) return;
+      searchResults = null;
+    }
+    if (historyHost) fill(historyHost, historyView());
+  }, 180);
+}
+
 function historyView() {
   const needle = filter.trim().toLowerCase();
+  if (needle && searchResults) return searchView(needle);
   const items = (state.conversations || []).filter((c) => !needle || c.title.toLowerCase().includes(needle));
   if (!items.length) return h("p", { class: "history-empty" }, t(needle ? "sidebar.noMatch" : "history.empty"));
   return groups(items).map((group) =>
@@ -147,6 +190,79 @@ function historyView() {
       ),
     ),
   );
+}
+
+/** Search results: each conversation with the excerpt where the words were found. */
+function searchView(needle) {
+  if (!searchResults.length) return h("p", { class: "history-empty" }, t("sidebar.noMatch"));
+  return h(
+    "div",
+    { class: "history-group" },
+    h("div", { class: "history-label" }, t("sidebar.results", { count: searchResults.length })),
+    searchResults.map((c) =>
+      h(
+        "button",
+        {
+          type: "button",
+          class: "history-item history-hit",
+          "aria-current": state.conversation?.id === c.id && currentRoute() === "chat" ? "true" : null,
+          onclick: async () => {
+            if (await openConversation(c.id)) navigate("chat");
+            if (narrow.matches) setSidebar(false);
+          },
+        },
+        h("span", { class: "history-hit-title" }, highlighted(c.title, needle)),
+        c.snippet ? h("span", { class: "history-hit-snippet" }, highlighted(c.snippet, needle)) : null,
+      ),
+    ),
+  );
+}
+
+/** The drag handle on the sidebar's edge: pointer, arrow keys, Home to reset; remembered. */
+function sidebarResizer() {
+  const current = () => getPrefs().sidebarWidth || SIDEBAR_DEFAULT;
+  const handle = h("div", {
+    class: "sidebar-resizer",
+    role: "separator",
+    tabindex: "0",
+    "aria-orientation": "vertical",
+    "aria-label": t("sidebar.resize"),
+    "aria-valuemin": String(SIDEBAR_MIN),
+    "aria-valuemax": String(SIDEBAR_MAX),
+    "aria-valuenow": String(current()),
+    title: t("sidebar.resize"),
+  });
+  const set = (width, save) => {
+    const next = Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
+    document.documentElement.style.setProperty("--sidebar-width", `${next}px`);
+    handle.setAttribute("aria-valuenow", String(next));
+    if (save) setPref("sidebarWidth", next);
+  };
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const left = sidebarHost.getBoundingClientRect().left;
+    handle.setPointerCapture?.(event.pointerId);
+    app.classList.add("resizing");
+    const move = (e) => set(e.clientX - left, false);
+    const up = (e) => {
+      set(e.clientX - left, true);
+      app.classList.remove("resizing");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("dblclick", () => set(SIDEBAR_DEFAULT, true));
+  handle.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === "ArrowLeft") set(current() - step, true);
+    else if (event.key === "ArrowRight") set(current() + step, true);
+    else if (event.key === "Home") set(SIDEBAR_DEFAULT, true);
+    else return;
+    event.preventDefault();
+  });
+  return handle;
 }
 
 function modelStatus() {
@@ -187,6 +303,7 @@ function renderSidebar() {
     value: filter,
     oninput: (e) => {
       filter = e.target.value;
+      runSearch();
       fill(historyHost, historyView());
     },
   });
@@ -223,6 +340,7 @@ function renderSidebar() {
       historyHost,
       footHost,
     ),
+    sidebarResizer(),
   );
   fill(historyHost, historyView());
   renderFoot();

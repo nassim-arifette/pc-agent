@@ -567,7 +567,7 @@ a {
   gap: 8px;
   padding: 0 12px;
   border: 1px solid var(--stroke);
-  border-radius: 999px;
+  border-radius: var(--radius-xs);
   background: var(--surface);
   color: var(--text-2);
   font-size: 13px;
@@ -782,7 +782,7 @@ a {
 .user-bubble {
   max-width: 78%;
   padding: 8px 16px;
-  border-radius: 18px 18px 6px 18px;
+  border-radius: var(--radius) var(--radius) var(--radius-xs) var(--radius);
   background: var(--bubble);
   font-size: 15px;
   line-height: 24px;
@@ -1017,7 +1017,7 @@ a {
   font-family: var(--mono);
   font-size: 13px;
   padding: 1px 5px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: var(--raised);
   border: 1px solid var(--stroke);
 }
@@ -1070,7 +1070,7 @@ a {
   gap: 8px;
   padding: 0 14px;
   border: 1px solid var(--stroke);
-  border-radius: 999px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-2);
   font-size: 13px;
@@ -1374,7 +1374,7 @@ a {
   gap: 5px;
   padding: 0 10px;
   border: 1px solid var(--stroke);
-  border-radius: 999px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-3);
   font-size: 12.5px;
@@ -1424,7 +1424,7 @@ a {
   gap: 6px;
   padding: 0 10px;
   border: 1px solid var(--stroke);
-  border-radius: 999px;
+  border-radius: var(--radius-xs);
   background: var(--raised);
   color: var(--text-2);
   font-size: 12.5px;
@@ -1445,7 +1445,7 @@ a {
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: 99px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--on-accent);
 }
@@ -1478,7 +1478,7 @@ a {
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
 }
 .tabs-pill button {
@@ -1488,7 +1488,7 @@ a {
   gap: 6px;
   padding: 0 12px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-2);
   font-size: 13px;
@@ -1503,7 +1503,7 @@ a {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 99px;
+  border-radius: var(--radius-xs);
   background: var(--hover);
   color: var(--text-2);
   font-size: 11.5px;
@@ -2063,19 +2063,15 @@ a {
 .form-result {
   margin-top: 8px;
 }
+/* A bare glyph beside a heading: no tinted tile, so the title carries the card. */
 .metric-icon {
-  width: 32px;
-  height: 32px;
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
-  background: var(--raised);
-  color: var(--text-2);
+  color: var(--text-3);
 }
 .metric-icon.warn {
-  background: var(--warn-soft);
   color: var(--warn);
 }
 
@@ -2148,7 +2144,7 @@ a {
   gap: 5px;
   height: 24px;
   padding: 0 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-xs);
   background: var(--raised);
   border: 1px solid var(--stroke);
   color: var(--text-2);
@@ -2252,7 +2248,7 @@ a {
   display: inline-flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
 }
 .segmented button {
@@ -2263,7 +2259,7 @@ a {
   gap: 6px;
   padding: 0 12px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-2);
   font-size: 13px;
@@ -3422,14 +3418,14 @@ details.more > div {
   display: inline-flex;
   gap: 2px;
   padding: 2px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
 }
 .mini-tabs button {
   height: 24px;
   padding: 0 8px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-2);
   font-size: 12px;
@@ -3500,7 +3496,7 @@ details.more > div {
 }
 .tag {
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-xs);
   background: var(--surface);
   border: 1px solid var(--stroke);
   font-size: 12px;
@@ -3967,7 +3963,7 @@ details.more > div {
   gap: 2px;
   padding: 4px;
   border: 1px solid var(--stroke);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow-float);
   white-space: nowrap;
@@ -3999,6 +3995,13 @@ details.more > div {
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  max-width: 100%;
+}
+/* In a narrow card a long label is cut short instead of spilling past the bar. */
+.actbar-btn > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .actbar-btn .icon {
   width: 15px;
@@ -4099,9 +4102,6 @@ details.more > div {
   gap: 14px;
 }
 .quick-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
   flex: none;
 }
 .quick-text {
@@ -4174,9 +4174,6 @@ details.more > div {
   gap: 14px;
 }
 .admin-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
   flex: none;
 }
 .admin-text {
@@ -4386,9 +4383,6 @@ details.more > div {
   gap: 12px;
 }
 .report-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
   flex: none;
 }
 .report-summary {
@@ -4532,30 +4526,28 @@ details.more > div {
 .watch-alert-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   margin: 0 0 8px;
   padding: 0;
   list-style: none;
 }
+/* Rows separated by rules, like the rule list above: no box inside the card. */
 .watch-alert {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-sm);
+  padding: 12px 0;
+  border-top: 1px solid var(--stroke);
 }
 .watch-alert.unseen {
-  border-color: var(--warn);
+  box-shadow: inset 2px 0 0 var(--warn);
+  padding-left: 12px;
 }
 .watch-alert-icon {
   display: grid;
   place-items: center;
   flex: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: var(--surface-2, var(--surface));
+  width: 20px;
+  color: var(--text-3);
 }
 .watch-alert.unseen .watch-alert-icon {
   color: var(--warn);
@@ -4592,4 +4584,75 @@ details.more > div {
 }
 .watch-form p {
   margin: 0;
+}
+
+/* ---------- Conversation list: resize handle and content search ---------- */
+.sidebar {
+  position: relative;
+}
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  background: transparent;
+  transition: background var(--t-fast) var(--ease);
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+.resizing .sidebar-resizer::after {
+  width: 2px;
+  background: var(--accent-line);
+}
+.sidebar-resizer:focus-visible {
+  outline: none;
+}
+.resizing,
+.resizing * {
+  cursor: col-resize;
+  user-select: none;
+}
+.resizing .sidebar {
+  transition: none;
+}
+.history-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  height: auto;
+  padding: 6px 10px;
+  white-space: normal;
+}
+.history-hit-title {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-hit-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.history-hit mark {
+  border-radius: 2px;
+  background: var(--accent-soft);
+  color: inherit;
+  font-weight: 600;
 }

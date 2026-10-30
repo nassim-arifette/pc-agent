@@ -136,6 +136,31 @@ export function createConversationFixture({ params, emit, provider, proposePlans
           .slice()
           .sort((a, b) => b.updated_at_unix_ms - a.updated_at_unix_ms)
           .map(({ turns, ...c }) => ({ ...c, turn_count: turns.length, last_turn_status: turns.length && turns[turns.length - 1].report?.error ? "failed" : "completed" })),
+      // The same matching as Store::search_conversations: title, questions and written answers.
+      conversations_search: async ({ query }) => {
+        if (typeof query !== "string") fail("unknown", "query must be a string");
+        const needle = query.trim().toLowerCase();
+        if (!needle || needle.length > 200) return [];
+        const excerpt = (text) => {
+          const flat = text.replace(/\s+/g, " ").replace(/[*#`]/g, "");
+          const at = flat.toLowerCase().indexOf(needle);
+          if (at < 0) return null;
+          const start = Math.max(0, at - 30);
+          const end = Math.min(flat.length, start + 90);
+          return `${start > 0 ? "…" : ""}${flat.slice(start, end).trim()}${end < flat.length ? "…" : ""}`;
+        };
+        return conversations
+          .slice()
+          .sort((a, b) => b.updated_at_unix_ms - a.updated_at_unix_ms)
+          .map(({ turns, ...c }) => {
+            const texts = [...turns.map((t) => t.question), ...turns.map((t) => t.report?.answer?.text ?? "")];
+            const hit = texts.find((text) => text.toLowerCase().includes(needle));
+            if (!hit && !c.title.toLowerCase().includes(needle)) return null;
+            return { ...c, turn_count: turns.length, last_turn_status: "completed", snippet: hit ? excerpt(hit) : null };
+          })
+          .filter(Boolean)
+          .slice(0, 50);
+      },
       conversation_get: async ({ id }) => {
         const c = conversations.find((x) => x.id === id);
         return c ? { ...c, turn_count: c.turns.length, turns: c.turns.slice() } : null;

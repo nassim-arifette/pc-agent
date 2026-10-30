@@ -48,6 +48,8 @@ export function applyPrefs() {
   const reduce = prefs.motion === "off" || (prefs.motion === "system" && motionQuery.matches);
   root.classList.toggle("reduce-motion", reduce);
   root.classList.toggle("force-motion", prefs.motion === "on");
+  const width = Number(prefs.sidebarWidth);
+  if (Number.isFinite(width) && width >= 200 && width <= 440) root.style.setProperty("--sidebar-width", `${Math.round(width)}px`);
   setLanguage(prefs.language);
 }
 
