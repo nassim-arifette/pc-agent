@@ -1,52 +1,52 @@
-"""Draws the PC Agent icon (Iris's face on a violet tile) at every size Tauri needs.
+"""Draws the PC Agent icon (Nox's head, as in ui/js/brand.js) at every size Tauri needs.
 
 Run from this folder with Pillow installed: `python generate.py`. Each size is drawn at 4x and
-downscaled, so small icons stay smooth. The shapes follow the mascot in ui/js/mascot.js.
+downscaled, so small icons stay smooth. Coordinates use the 24-unit grid of the in-app mark.
 """
 from PIL import Image, ImageDraw
 
 SCALE = 4
+ACCENT_TOP, ACCENT_BOTTOM = (76, 108, 232), (47, 73, 181)
 
 
-def lerp(a, b, t):
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+def quad(p0, p1, p2, n=24):
+    return [((1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0],
+             (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1])
+            for t in (i / n for i in range(1, n + 1))]
+
+
+# The same outline as HEAD in brand.js: ear tufts, a soft brow and a rounded chin.
+HEAD = ([(3, 6.5), (6.5, 2.5), (9.5, 5.2)] + quad((9.5, 5.2), (12, 4.4), (14.5, 5.2))
+        + [(17.5, 2.5), (21, 6.5), (21, 16)] + quad((21, 16), (21, 22), (12, 22))
+        + quad((12, 22), (3, 22), (3, 16)))
 
 
 def draw(size):
     s = size * SCALE
-    u = s / 1024  # design units: a 1024 x 1024 tile
+    u = s / 24
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    pts = [(x * u, y * u) for x, y in HEAD]
 
-    # Tile: vertical violet gradient, rounded like a Windows 11 app icon.
-    tile = Image.new("RGBA", (s, s))
-    top, bottom = (132, 118, 255), (86, 70, 222)
+    # Head: a vertical accent gradient clipped to the outline.
+    fill = Image.new("RGBA", (s, s))
+    g = ImageDraw.Draw(fill)
     for y in range(s):
-        ImageDraw.Draw(tile).line([(0, y), (s, y)], fill=lerp(top, bottom, y / s) + (255,))
+        t = y / s
+        g.line([(0, y), (s, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(ACCENT_TOP, ACCENT_BOTTOM)) + (255,))
     mask = Image.new("L", (s, s), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, s - 1, s - 1], radius=224 * u, fill=255)
-    img.paste(tile, (0, 0), mask)
+    ImageDraw.Draw(mask).polygon(pts, fill=255)
+    img.paste(fill, (0, 0), mask)
 
     d = ImageDraw.Draw(img)
 
-    def box(x0, y0, x1, y1):
-        return [x0 * u, y0 * u, x1 * u, y1 * u]
+    def circle(cx, cy, r, colour):
+        d.ellipse([(cx - r) * u, (cy - r) * u, (cx + r) * u, (cy + r) * u], fill=colour)
 
-    # Antenna and its warm tip.
-    d.line(box(512, 318, 512, 206), fill=(255, 255, 255, 255), width=round(30 * u))
-    d.ellipse(box(462, 140, 562, 240), fill=(255, 138, 101, 255))
-    # Side bolts.
-    d.rounded_rectangle(box(160, 470, 222, 650), radius=31 * u, fill=(214, 208, 255, 255))
-    d.rounded_rectangle(box(802, 470, 864, 650), radius=31 * u, fill=(214, 208, 255, 255))
-    # Head shell.
-    d.rounded_rectangle(box(196, 300, 828, 820), radius=240 * u, fill=(250, 249, 255, 255))
-    # Visor.
-    d.rounded_rectangle(box(282, 400, 742, 700), radius=150 * u, fill=(30, 26, 77, 255))
-    # Eyes.
-    d.rounded_rectangle(box(388, 474, 468, 616), radius=40 * u, fill=(124, 243, 230, 255))
-    d.rounded_rectangle(box(556, 474, 636, 616), radius=40 * u, fill=(124, 243, 230, 255))
-    # Smile under the visor.
-    d.arc(box(452, 690, 572, 780), start=20, end=160, fill=(86, 70, 222, 255), width=round(22 * u))
-
+    for cx in (8.1, 15.9):
+        circle(cx, 11.6, 3.7, (255, 255, 255, 255))
+        circle(cx + 0.4, 11.9, 2.0, (118, 185, 0, 255))
+        circle(cx + 0.5, 12.0, 0.95, (20, 24, 46, 255))
+    d.polygon([(10.9 * u, 15.2 * u), (13.1 * u, 15.2 * u), (12 * u, 17.4 * u)], fill=(245, 165, 36, 255))
     return img.resize((size, size), Image.LANCZOS)
 
 
