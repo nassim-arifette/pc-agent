@@ -8,6 +8,7 @@ import { rememberSelection, selectionForTurn, selectionForConversation, forgetSe
 import { startModelId } from "./chat/models.js";
 import { recordedSwitch } from "./chat/usage.js";
 import { IMAGE_MODEL_ID } from "./chat/image-draft.js";
+import { markSpecialistRequest } from "./chat/specialist.js";
 
 const listeners = new Set();
 
@@ -716,6 +717,7 @@ export function wireEvents() {
   on("specialist:step", ({ turn_id: turnId, event }) => {
     const inv = current(turnId);
     if (!inv || !event) return;
+    markSpecialistRequest(inv.steps, event);
     const pending = [...inv.steps].reverse().find((s) => s.type === "specialist" && s.state === "running");
     if (pending) pending.state = "done";
     if (event.kind === "started") {

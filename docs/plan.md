@@ -2053,6 +2053,13 @@ un contexte trop grand passent explicitement a l'analyste existant. Aucun diagno
 specialiste n'est presente comme une preuve. L'analyste final reste sur Nebius avec les
 choix de partage C5 existants ; le mode local sans cloud ne doit jamais appeler Nebius.
 Les contrats de reponse, de partage et d'outils existants ne changent pas.
+Validation Windows generale en cours (30 octobre) : parcours natif sous compte standard,
+specialiste CPU reel puis analyste Nebius ; attribution des etapes locales corrigee apres
+le premier essai. La reponse de cet essai garde deux passages non verifies : aucune
+validation complete du diagnostic ni des fonctions encore non parcourues n'est revendiquee.
+Nox (30 octobre) : integration simple demandee par le porteur sur l'accueil et les conversations,
+avec les poses existantes embarquees en local. Aucun changement du modele ou des garanties de
+verification. A sa demande, controles essentiels et smoke test seulement ; campagne generale incomplete.
 
 
 **Expérience Nano 4B (30 octobre, terminée) :** banc Python indépendant dans

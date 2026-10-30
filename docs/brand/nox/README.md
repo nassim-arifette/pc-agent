@@ -24,5 +24,7 @@ submission page.
 | `nox-thumbnail.png` | 1024 × 1024 cover (submission thumbnail, video) |
 
 All poses come from one generator, so they share the same proportions:
-`node docs/brand/nox/generate.mjs`. The app itself keeps its calm two-eyed mark; Nox is for
-presenting the project.
+`node docs/brand/nox/generate.mjs`. The app keeps its calm two-eyed window mark and also uses
+Nox on the welcome screen and conversation headers: hello, investigating, thinking and local.
+These four SVGs are bundled locally in `apps/gui/ui/assets/nox`; keep them in sync after
+regenerating the brand set. Nox is decorative, never a replacement for verification or model labels.
