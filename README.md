@@ -148,15 +148,15 @@ runs it, and shows the free space or measurements before and after.
 
 ## Quick start
 
-1. **Download** the Windows x64 installer from the
-   [latest GitHub release](https://github.com/nassim-arifette/pc-agent/releases/latest), or extract
-   the portable ZIP and keep its executables together. `pcagent.exe` is the optional command line.
-   Each release lists its source commit and SHA-256 checksums.
+1. **Download** [PC Agent v0.1.2](https://github.com/nassim-arifette/pc-agent/releases/tag/v0.1.2)
+   (Windows 10/11 x64):
+   - the installer `pcagent-v0.1.2-windows-x64-setup.exe` (per user, no admin rights), or
+   - the portable `pcagent-v0.1.2-windows-x64.zip`: extract the whole archive and keep the
+     executables together.
 
-   > **Release v0.1.2** includes Nox, the optional local Nano 4B specialist, Watches, the daily
-   > report, the single-prompt administrator batch, Storage map and tree, voice dictation and
-   > browser details. The local specialist needs a separate Python environment and model download;
-   > see the [local setup guide](experiments/diagnostic-specialist/LOCAL.md).
+   The release lists its commit and SHA-256 checksums. It includes every feature shown here; the
+   local Nano 4B specialist is optional and needs the separate
+   [setup](experiments/diagnostic-specialist/LOCAL.md).
 2. **Allow the unsigned app.** The executables are not code-signed, so SmartScreen shows *Windows
    protected your PC*: click **More info**, then **Run anyway**.
 3. **Start `pcagent-gui.exe` normally.** PC Agent refuses to run as administrator.
