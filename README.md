@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/brand/mascot/iris-hello.svg" width="180" alt="Iris, PC Agent's mascot, waving"></p>
+<p align="center"><img src="docs/brand/nox/nox-hello.svg" width="190" alt="Nox, PC Agent's detective owl, waving"></p>
 
 <h1 align="center">PC Agent</h1>
 
@@ -400,12 +400,13 @@ cargo build --release --locked -p pcagent-gui -p pcagent-elevated -p pcagent
 - **Distribution:** no code signing and no automatic update. The keys file is plain text
   protected by your Windows profile.
 
-## Meet Iris
+## Meet Nox
 
-Iris is PC Agent's mascot: the app's two-eyed mark with a body, and an antenna that glows NVIDIA
-green. She has one pose per feature ([the set](docs/brand/mascot/README.md)).
+Nox is PC Agent's detective owl. Owls investigate, see what others miss and keep watch at night,
+like the watches and the daily report. Her eyes are NVIDIA green and her chest holds a chip. She
+has one pose per feature ([the set](docs/brand/nox/README.md)).
 
-![Iris in ten poses: hello, investigating, thinking, measuring live, on watch, daily report, verified, privacy, approved cleanup and local mode](docs/brand/mascot/iris-poses.png)
+![Nox in ten poses: hello, investigating, thinking, checking up, on night watch, daily report, verified, privacy, approved cleanup and local mode](docs/brand/nox/nox-poses.png)
 
 ## Documentation
 
