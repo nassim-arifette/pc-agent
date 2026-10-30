@@ -1,26 +1,98 @@
 [
- ["s01","Your PC is slow. So you open Task Manager."],
- ["s01b","A wall of numbers. Memory: ninety-two percent. Thirty-one svchost processes. It never tells you why."],
- ["s01c","So you download a PC cleaner."],
- ["s02","Twelve hundred problems found. Boost your RAM. Your PC is eighty-seven percent slower."],
- ["s03","What does that even mean? Nothing. Fake numbers. Real subscription."],
- ["s03b","Ask a chatbot? It can't see your PC, so it guesses: restart it, buy more RAM."],
- ["s03c","And you still don't know what's wrong."],
- ["s04","PC Agent does the opposite."],
- ["s05","Just ask. Nemotron investigates your PC: memory, programs, disk. For real."],
- ["s06","Memory is full. Chrome holds two point three gigs. A real cause, in plain words."],
- ["s07","Every number? One click to its source. Checked before you read it. No fake stats."],
- ["s08","Need to clean up? Not twelve hundred junk items. One exact folder, its real size, how to undo it. And nothing runs until you click."],
- ["s08b","Disk full? See exactly what takes the space, then ask what's safe to delete."],
- ["s09","You see exactly what leaves your PC. No username. No files. Your choice."],
- ["s10","Live PC shows your machine in real time. Select anything. Explain it, or watch it. PC Agent warns you when something goes wrong, and writes a daily health report, even when the app is closed."],
- ["s10b","It keeps a local history, so it sees what happened before you asked. And every past investigation is one search away."],
- ["s11","Driver bug? Bad update? Tavily searches the web from what it measured on your PC, and shows you which source says what."],
- ["s11b","Need more RAM? It finds the exact module your PC takes, with today's price."],
- ["s12","Under the hood, Nemotron on Nebius Token Factory doesn't guess. It measures. Two dozen tools to look inside your PC: look, never touch. If it gets a number wrong, our checker catches it, and Nemotron corrects itself before you see anything."],
- ["s12b","Dictate your question locally. Attach a screenshot or a photo, and Nemotron Super VL reads it. No key? Local checks still run on your PC."],
- ["s13","And we trained our own model. A small Nemotron, fine-tuned on Nebius AI Cloud for one job: what should we measure next? It runs right in the app, on your PC. It picks the measurements, then hands off to Nemotron."],
- ["s13b","On sixty PC problems it had never seen, the original model got none right. Ours picked the right next step fifty-two times out of sixty."],
- ["s14","Millions of people pay for software that scares them. We built the one that tells them the truth. In seconds. For less than a cent."],
- ["s15","PC Agent. No boost buttons. No bullshit. Just proof."]
+ [
+  "s01",
+  "Your PC is slow. So you open Task Manager."
+ ],
+ [
+  "s01b",
+  "A wall of numbers. Memory: ninety-two percent. Thirty-one svchost processes. It never tells you why."
+ ],
+ [
+  "s01c",
+  "So you download a PC cleaner."
+ ],
+ [
+  "s02",
+  "Twelve hundred problems found. Boost your RAM. Your PC is eighty-seven percent slower."
+ ],
+ [
+  "s03",
+  "What does that even mean? Nothing. Fake numbers. Real subscription."
+ ],
+ [
+  "s03b",
+  "Ask an AI agent? It can run commands, but it has no tools built for this. It improvises, waits on raw output, and nothing checks its numbers."
+ ],
+ [
+  "s03c",
+  "And you still don't know what's wrong."
+ ],
+ [
+  "s04",
+  "PC Agent does the opposite."
+ ],
+ [
+  "s05",
+  "Just ask. Nemotron investigates your PC: memory, programs, disk. For real."
+ ],
+ [
+  "s06",
+  "Memory is full, and Chrome alone holds two point three one gibibytes. A real cause, in plain words."
+ ],
+ [
+  "s07",
+  "Every number? One click to its source. Checked before you read it. No fake stats."
+ ],
+ [
+  "s08",
+  "Need to clean up? Not twelve hundred junk items. One exact folder, its real size, how to undo it. And nothing runs until you click."
+ ],
+ [
+  "s08b",
+  "Disk full? See exactly what takes the space, then ask what's safe to delete."
+ ],
+ [
+  "s09",
+  "You see exactly what leaves your PC. No username. No files. Your choice."
+ ],
+ [
+  "s10",
+  "Live PC shows your machine in real time. Select anything. Explain it, or watch it. PC Agent warns you when something goes wrong, and writes a daily health report, even when the app is closed."
+ ],
+ [
+  "s10b",
+  "It keeps a local history, so it sees what happened before you asked. And every past investigation is one search away."
+ ],
+ [
+  "s11",
+  "Driver bug? Bad update? Tavily searches the web from what it measured on your PC, and shows you which source says what."
+ ],
+ [
+  "s11b",
+  "When the measurements say you need more RAM, it finds the exact module your PC takes, with today's price."
+ ],
+ [
+  "s12",
+  "Under the hood, Nemotron on Nebius Token Factory doesn't guess. It measures. Two dozen tools to look inside your PC: look, never touch. If it gets a number wrong, our checker catches it, and Nemotron corrects itself before you see anything."
+ ],
+ [
+  "s12b",
+  "Dictate your question locally. Attach a screenshot or a photo, and Nemotron Super VL reads it. No key? Local checks still run on your PC."
+ ],
+ [
+  "s13",
+  "And we trained our own model. A small Nemotron, fine-tuned on Nebius AI Cloud for one job: what should we measure next? It runs right in the app, on your PC. It picks the measurements, then hands off to Nemotron."
+ ],
+ [
+  "s13b",
+  "On sixty PC problems it had never seen, the original model got none right. Ours picked the right next step fifty-two times out of sixty."
+ ],
+ [
+  "s14",
+  "Millions of people pay for software that scares them. We built the one that tells them the truth. In seconds. For less than a cent."
+ ],
+ [
+  "s15",
+  "PC Agent. No boost buttons. No bullshit. Just proof."
+ ]
 ]

@@ -15,10 +15,10 @@
 <div id="root" data-composition-id="ram" data-width="1920" data-height="1080">
 
 <div class="full" id="r-s1">
-  <div class="cam" id="r-cam1"><video id="r-v1" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="0" data-duration="1.506" data-media-start="1.95" data-playback-rate="6.972"></video></div>
+  <div class="cam" id="r-cam1"><video id="r-v1" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="0" data-duration="2.678" data-media-start="3.134" data-playback-rate="3.232"></video></div>
 </div>
 <div class="full" id="r-s2">
-  <div class="cam" id="r-cam2"><video id="r-v2" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="1.506" data-duration="4.01" data-media-start="12.450000000000001"></video></div>
+  <div class="cam" id="r-cam2"><video id="r-v2" class="clip" src="assets/clips/ram.mp4" muted playsinline data-start="2.678" data-duration="3.909" data-media-start="11.788"></video></div>
 </div>
 <div class="tav" id="r-tag">Upgrade prices by <b>Tavily</b></div>
 
@@ -27,9 +27,11 @@
 const tl = gsap.timeline({ paused: true });
 const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
 
+tl.fromTo("#r-cam1", { x: -736.5, y: 0, scale: 1.45 }, { x: -736.5, y: 0, scale: 1.45, duration: 0.01 }, 0);
 tl.fromTo("#r-tag", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 0.1);
-tl.fromTo("#r-cam2", { x: 0, y: 0, scale: 1 }, { x: -672.0, y: -356.0, scale: 1.6, duration: 0.5, ease: "power3.inOut" }, 1.506);
-tl.to("#r-tag", { opacity: 0, duration: 0.15 }, 1.506);
+tl.fromTo("#r-cam2", { x: -753.9, y: -83.5, scale: 1.45 }, { x: -753.9, y: -83.5, scale: 1.45, duration: 0.01 }, 2.678);
+cam("#r-cam2", -620.0, -258.0, 1.33, 4.336, 0.55, "power3.inOut");
+tl.to("#r-tag", { opacity: 0, duration: 0.15 }, 2.678);
 
 window.__timelines["ram"] = tl;
 </script>

@@ -12,15 +12,21 @@
 </style>
 <div id="root" data-composition-id="storage" data-width="1920" data-height="1080">
 
-<div class="cam" id="s-cam"><video id="s-v" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="0" data-duration="5.788" data-media-start="1.85" data-playback-rate="1.572"></video></div>
+<div class="full" id="s-s1">
+  <div class="cam" id="s-cam1"><video id="s-v1" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="0" data-duration="1.065" data-media-start="1.652" data-playback-rate="5.347"></video></div>
+</div>
+<div class="full" id="s-s2">
+  <div class="cam" id="s-cam2"><video id="s-v2" class="clip" src="assets/clips/storage.mp4" muted playsinline data-start="1.065" data-duration="4.724" data-media-start="7.347"></video></div>
+</div>
 
 </div>
 <script>
 const tl = gsap.timeline({ paused: true });
 const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
 
-tl.fromTo("#s-cam", { x: 0, y: 0, scale: 1 }, { x: 0, y: 0, scale: 1, duration: 0.01 }, 0);
-cam("#s-cam", -592.5, -216.0, 1.35, 2.397, 0.55);
+tl.fromTo("#s-cam1", { x: 0, y: 0, scale: 1 }, { x: -192.0, y: 0, scale: 1.2, duration: 0.5, ease: "power2.inOut" }, 0.05);
+tl.fromTo("#s-cam2", { x: 0, y: -27.0, scale: 1.35 }, { x: 0, y: -27.0, scale: 1.35, duration: 0.01 }, 1.065);
+cam("#s-cam2", -224.5, -104.0, 1.15, 3.391, 0.55);
 
 window.__timelines["storage"] = tl;
 </script>

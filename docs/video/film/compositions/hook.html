@@ -21,9 +21,9 @@
 .tm .tr { display:grid; grid-template-columns:1fr 200px 260px; padding:12px 30px; font-size:30px; color:#d6dbe6; border-top:1px solid #3b4152; }
 .tm .tr.sv span:first-child { color:#fff; }
 .why { position:absolute; left:0; right:0; top:420px; text-align:center; font-size:110px; font-weight:900; color:#fff; opacity:0; text-shadow:0 6px 30px rgba(0,0,0,.6); }
-.dl { position:absolute; left:50%; bottom:200px; width:760px; margin-left:-380px; background:#2f333e; border:1px solid #444a58; border-radius:12px; padding:22px 28px; font-size:30px; opacity:0; }
+.dl { position:absolute; left:50%; top:400px; width:1100px; margin-left:-550px; background:#2f333e; border:1px solid #444a58; border-radius:14px; padding:40px 48px; font-size:42px; opacity:0; }
 .dl b { color:#d9b56a; }
-.dl .track { margin-top:16px; height:12px; background:#444a58; border-radius:6px; overflow:hidden; }
+.dl .track { margin-top:26px; height:20px; background:#444a58; border-radius:6px; overflow:hidden; }
 .dl .fill { width:100%; height:100%; background:#d9b56a; transform-origin:0 50%; transform:scaleX(0); }
 .cleaner { position:absolute; inset:0; background:radial-gradient(circle at 50% 40%, #a5503f 0%, #7a3329 55%, #3e1d19 100%); opacity:0; }
 .brand { position:absolute; top:70px; left:0; right:0; text-align:center; font-size:40px; font-weight:900; letter-spacing:.06em; color:#e3c47a; }
@@ -36,12 +36,14 @@
 .stamp { position:absolute; font-size:120px; font-weight:900; color:#fff; border:12px solid #fff; padding:6px 34px; border-radius:16px; opacity:0; letter-spacing:.02em; }
 .price { position:absolute; right:150px; top:120px; background:#e3c47a; color:#3e1d19; font-weight:900; font-size:66px; padding:20px 36px; border-radius:14px; opacity:0; }
 .price small { display:block; font-size:30px; }
-.bot { position:absolute; inset:0; background:#e9ebef; opacity:0; }
-.bot .win { position:absolute; left:460px; top:120px; width:1000px; height:740px; background:#fff; border-radius:14px; border:1px solid #d5d9e0; }
-.bot .u { position:absolute; right:40px; top:60px; background:#e3e6ec; color:#1f2430; font-size:36px; padding:18px 28px; border-radius:16px; }
-.bot .a { position:absolute; left:40px; top:190px; right:120px; color:#1f2430; font-size:40px; line-height:1.4; }
-.bot .a span { opacity:0; }
-.bot .tag { position:absolute; left:0; right:0; top:700px; text-align:center; font-size:48px; font-weight:800; color:#7a3329; opacity:0; }
+.term { position:absolute; inset:0; background:#16181f; opacity:0; }
+.term .win { position:absolute; left:210px; top:60px; width:1500px; height:750px; background:#0f1115; border:1px solid #3b4152; border-radius:14px; overflow:hidden; }
+.term .bar { height:56px; background:#22252e; display:flex; align-items:center; justify-content:space-between; padding:0 26px; font-size:28px; font-weight:700; color:#c9ced8; }
+.term .clock { font-family:'JetBrains Mono', monospace; color:#e3c47a; font-size:30px; }
+.term pre { margin:0; padding:22px 30px; font-family:'JetBrains Mono', monospace; font-size:24px; line-height:1.45; color:#c9ced8; white-space:pre; }
+.term .cmd { color:#8db87a; }
+.term .ln { opacity:0; }
+.term .tag { position:absolute; left:0; right:0; top:832px; text-align:center; font-size:46px; font-weight:800; color:#e3c47a; opacity:0; }
 .lost { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:84px; font-weight:900; opacity:0; background:#22252e; }
 .lost span { color:#9aa3b5; }
 .black { position:absolute; inset:0; background:#000; opacity:0; }
@@ -66,12 +68,22 @@
   <div class="stamp" id="h-st3" style="left:520px;top:770px;font-size:90px" data-layout-allow-overlap>MEANS NOTHING</div>
   <div class="price" id="h-price" data-layout-allow-overlap>PRO VERSION<br>$29.99<small>per year, auto-renew</small></div>
 </div>
-<div class="bot" id="h-bot" data-layout-allow-overlap><div class="win">
-  <div class="u">Why is my PC slow?</div>
-  <div class="a" id="h-ans"><span>Try</span> <span>restarting</span> <span>your</span> <span>PC,</span> <span>closing</span> <span>background</span> <span>apps,</span> <span>or</span> <span>buying</span> <span>more</span> <span>RAM.</span></div>
-  </div>
-  <div class="tag" id="h-bottag">It never looked at your PC.</div>
-  <div class="stamp" id="h-st4" style="left:560px;top:440px;color:#7a3329;border-color:#7a3329" data-layout-allow-overlap>JUST GUESSING</div>
+<div class="term" id="h-term" data-layout-allow-overlap><div class="win">
+  <div class="bar"><span>Terminal: AI agent session</span><span class="clock" id="h-clock">00:00</span></div>
+  <pre><span class="ln cmd" id="h-l0">PS C:\> Get-Process | Sort-Object WS -Descending | Select-Object -First 15</span>
+<span class="ln" id="h-l1">Handles  NPM(K)    PM(K)     WS(K)   CPU(s)     Id ProcessName</span>
+<span class="ln" id="h-l2">-------  ------    -----     -----   ------     -- -----------</span>
+<span class="ln" id="h-l3">   2214     118   612448    498212   312.45   4000 chrome</span>
+<span class="ln" id="h-l4">   1876      96   402112    352104   201.13   4412 chrome</span>
+<span class="ln" id="h-l5">    988      61   210980    190240    88.02   5120 svchost</span>
+<span class="ln cmd" id="h-l6">PS C:\> Get-Counter '\Memory\Available MBytes' -SampleInterval 2 -MaxSamples 5</span>
+<span class="ln" id="h-l7">Timestamp                 CounterSamples</span>
+<span class="ln" id="h-l8">30/10/2026 15:42:01       \\pc\memory\available mbytes :  1577</span>
+<span class="ln cmd" id="h-l9">PS C:\> Get-ChildItem C:\ -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum</span>
+<span class="ln" id="h-l10">  running...</span>
+</pre></div>
+  <div class="tag" id="h-termtag">No tools built for the job.</div>
+  <div class="stamp" id="h-st4" style="left:500px;top:420px;color:#e3c47a;border-color:#e3c47a" data-layout-allow-overlap>SLOW. UNCHECKED.</div>
 </div>
 <div class="lost" id="h-lost" data-layout-allow-overlap data-layout-allow-occlusion><div>…and you still don't know <span>what's wrong.</span></div></div>
 <div class="black" id="h-black"></div>
@@ -102,12 +114,18 @@ tl.fromTo("#h-slower", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.2,
 tl.to("#h-gauge, #h-boost, #h-slower", { filter: "saturate(0.3) blur(2px)", opacity: 0.55, duration: 0.3 }, 19.04);
 [1,2,3].forEach((k, i) => tl.fromTo(`#h-st${k}`, { opacity: 0, scale: 2.2, rotation: [-8,6,-4][i] }, { opacity: 1, scale: 1, rotation: [-8,6,-4][i], duration: 0.14, ease: "power4.in" }, 20.375 + i * 0.18));
 tl.fromTo("#h-price", { opacity: 0, scale: 1.8, rotation: 6 }, { opacity: 1, scale: 1, rotation: 6, duration: 0.18, ease: "power4.in" }, 21.908);
-tl.fromTo("#h-bot", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 23.315);
-tl.fromTo("#h-ans span", { opacity: 0 }, { opacity: 1, duration: 0.05, stagger: 0.09 }, 23.783);
-tl.fromTo("#h-bottag", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 24.898);
-tl.fromTo("#h-st4", { opacity: 0, scale: 2.2, rotation: -6 }, { opacity: 1, scale: 1, rotation: -6, duration: 0.14, ease: "power4.in" }, 26.267);
-tl.fromTo("#h-lost", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 29.548);
-tl.fromTo("#h-black", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 31.921);
+tl.set("#h-cleaner", { opacity: 0 }, 23.305);
+tl.fromTo("#h-term", { opacity: 0, scale: 1.04 }, { opacity: 1, scale: 1, duration: 0.14, ease: "power4.out" }, 23.315);
+const lt = [23.715, 25.297, 25.347, 25.497, 25.597, 25.697,
+            28.172, 28.672, 28.772, 29.089, 29.53];
+lt.forEach((at, k) => tl.fromTo(`#h-l${k}`, { opacity: 0 }, { opacity: 1, duration: 0.05 }, at));
+const clk = { v: 0 };
+tl.fromTo(clk, { v: 8 }, { v: 227, duration: 8.856, ease: "power1.in", onUpdate: () => { const s = Math.round(clk.v); document.getElementById("h-clock").textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); } }, 23.365);
+tl.fromTo("#h-termtag", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 26.662);
+tl.fromTo("#h-st4", { opacity: 0, scale: 2.2, rotation: -6 }, { opacity: 1, scale: 1, rotation: -6, duration: 0.14, ease: "power4.in" }, 30.586);
+tl.set("#h-term", { opacity: 0 }, 32.281);
+tl.fromTo("#h-lost", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 32.291);
+tl.fromTo("#h-black", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 34.664);
 
 window.__timelines["hook"] = tl;
 </script>

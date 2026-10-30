@@ -12,17 +12,18 @@
 </style>
 <div id="root" data-composition-id="action" data-width="1920" data-height="1080">
 
-<div class="cam" id="d-cam"><video id="d-v" class="clip" src="assets/clips/action.mp4" muted playsinline data-start="0" data-duration="15.234" data-media-start="9.492"></video></div>
+<div class="cam" id="d-cam"><video id="d-v" class="clip" src="assets/clips/action.mp4" muted playsinline data-start="0" data-duration="9.445" data-media-start="11.591" data-playback-rate="1.159"></video></div>
 
 </div>
 <script>
 const tl = gsap.timeline({ paused: true });
 const cam = (sel, x, y, s, at, d = 0.5, ease = "power2.inOut") => tl.to(sel, { x, y, scale: s, duration: d, ease }, at);
 
-tl.fromTo("#d-cam", { x: 0, y: 0, scale: 1 }, { x: 0, y: 0, scale: 1, duration: 0.01 }, 0);
-cam("#d-cam", -672.0, -286.2, 1.7, 3.6, 0.55, "power3.inOut");
-cam("#d-cam", -765.0, -420.0, 1.5, 6.998, 0.5);
-cam("#d-cam", 0, 0, 1, 8.608, 0.45);
+tl.fromTo("#d-cam", { x: -633.0, y: -216.0, scale: 1.35 }, { x: -633.0, y: -216.0, scale: 1.35, duration: 0.01 }, 0);
+cam("#d-cam", -576.0, -292.0, 1.6, 3.137, 0.5, "power3.inOut");
+cam("#d-cam", -576.0, -372.0, 1.6, 5.69, 0.4);
+cam("#d-cam", -765.0, -435.0, 1.5, 6.948, 0.5);
+cam("#d-cam", -633.0, -216.0, 1.35, 8.608, 0.45);
 
 window.__timelines["action"] = tl;
 </script>
