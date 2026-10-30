@@ -44,7 +44,7 @@ import { costText } from "./chat/usage.js";
 import { modelName } from "./chat/models.js";
 import { namesShared } from "./chat/composer.js";
 import { currentRoute, navigate, ROUTES } from "./router.js";
-import { mark } from "./brand.js";
+import { mark, nox } from "./brand.js";
 import { refreshRouting } from "./chat/picker.js";
 import { watchCapabilities } from "./capabilities.js";
 import { keepFocus } from "./actionbar.js";
@@ -160,7 +160,7 @@ function historyView() {
   const needle = filter.trim().toLowerCase();
   if (needle && searchResults) return searchView(needle);
   const items = (state.conversations || []).filter((c) => !needle || c.title.toLowerCase().includes(needle));
-  if (!items.length) return h("p", { class: "history-empty" }, t(needle ? "sidebar.noMatch" : "history.empty"));
+  if (!items.length) return needle ? h("p", { class: "history-empty" }, t("sidebar.noMatch")) : h("div", { class: "history-empty" }, nox("thinking", 72), h("p", null, t("history.empty")));
   return groups(items).map((group) =>
     h(
       "div",

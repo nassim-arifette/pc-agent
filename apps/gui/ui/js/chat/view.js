@@ -7,7 +7,7 @@ import { icon } from "../icons.js";
 import { t, classificationLabel } from "../i18n.js";
 import { citationFacts, findingFacts, findingNextStep, findingSummary, targetText, volumeComparison } from "../phrases.js";
 import { markdown, labelCitations } from "../markdown.js";
-import { mark } from "../brand.js";
+import { mark, nox } from "../brand.js";
 import { composer, ask, askLocally, askWithAi, cloudReady, effectiveMode } from "./composer.js";
 import { state, subscribe, notify, openPanel, runPlan, declinePlan } from "../store.js";
 import { savedImage } from "./images.js";
@@ -651,7 +651,7 @@ export function mount(page) {
     suggestionsDrive = undefined;
     fill(
       column,
-      h("div", { class: "welcome" }, mark(36), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
+      h("div", { class: "welcome" }, nox("hello", 132), h("h1", { class: "welcome-title" }, t("chat.title")), h("p", { class: "welcome-sub" }, t("chat.sub")), box.el, suggestionsHost, homeStatusHost),
       reportCard.el,
       adminCard.el,
     );

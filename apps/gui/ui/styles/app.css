@@ -4656,3 +4656,23 @@ details.more > div {
   color: inherit;
   font-weight: 600;
 }
+
+/* Nox, the detective owl: only on welcome and empty states, never on data. */
+.nox {
+  display: block;
+  flex: none;
+  user-select: none;
+}
+.welcome .nox {
+  margin-bottom: -8px;
+}
+div.history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.watch-empty .nox {
+  margin: 0 auto 8px;
+}

@@ -1,6 +1,7 @@
 // Surveillances (C7): the local rules with their live state, the alerts of the last seven days
 // and a local weekly summary. Everything here stays on this PC; only "Explain" on an alert goes
 // through the frozen selection and its exact preview, after the person's click.
+import { nox } from "../brand.js";
 import { h, fill } from "../dom.js";
 import { icon } from "../icons.js";
 import { t } from "../i18n.js";
@@ -174,7 +175,7 @@ export function mount(page) {
       rulesHost,
       rules.length
         ? h("div", { class: "card-rows" }, rules.map(ruleRow))
-        : h("div", { class: "watch-empty" }, h("p", null, t("watches.empty")), h("p", { class: "hint" }, t("watches.empty.hint"))),
+        : h("div", { class: "watch-empty" }, nox("watch", 96), h("p", null, t("watches.empty")), h("p", { class: "hint" }, t("watches.empty.hint"))),
     );
   }
 

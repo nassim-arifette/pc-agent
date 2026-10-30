@@ -1,6 +1,6 @@
 // Iris reduced to a mark: an accent tile with two eyes. It signs the assistant's answers and the
 // window; it never animates on its own.
-import { s } from "./dom.js";
+import { h, s } from "./dom.js";
 
 export function mark(size = 20, label) {
   const eyeWidth = size * 0.15;
@@ -22,4 +22,9 @@ export function mark(size = 20, label) {
     eye(size * 0.28),
     eye(size * 0.57),
   );
+}
+
+/** Nox, the detective owl, in one of her poses. Decorative: the text next to her carries meaning. */
+export function nox(pose, size = 96) {
+  return h("img", { class: "nox", src: `assets/nox/nox-${pose}.svg`, width: size, height: Math.round((size * 210) / 240), alt: "", "aria-hidden": "true", draggable: "false" });
 }
