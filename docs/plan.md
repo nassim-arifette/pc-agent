@@ -2042,6 +2042,20 @@ fusionnée dans `main` une fois validée et sans déstabiliser la build soumise 
 
 ## 8. Suivi
 
+**Expérience Nano 4B (30 octobre, terminée) :** banc Python indépendant dans
+`experiments/diagnostic-specialist`, sans modification de l'analyste Tauri. Adaptation QLoRA
+de `nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1`, sous-catalogue en lecture seule, corpus synthétique
+séparé par scénarios parents et épisodes. Cible de dépense de 20 $ sur AI Cloud ; publication
+de l'adaptateur rechargeable et des résultats avant/après, même sans gain. Les vérifications
+automatiques du corpus ne constituent pas une validation humaine ni une preuve sur de vrais PC.
+Les nouveaux tests gelés donnent 52/60 décisions strictes pour l'adaptateur contre 0/60 sans,
+8/15 épisodes teacher-forced et 6/15 replays séquentiels stricts, contre zéro pour la base.
+La latence médiane est supérieure (3,45 s contre 2,50 s). Sept replays s'arrêtent sur un appel
+non disponible et deux sont non scorés : aucune observation ni clarification n'est fabriquée.
+La VM a été arrêtée puis supprimée ; inventaires du projet : zéro instance, disque ou allocation.
+Scripts et notices : [PR #122](https://github.com/nassim-arifette/pc-agent/pull/122), non fusionnée ;
+adaptateur et résultats : [release expérimentale](https://github.com/nassim-arifette/pc-agent/releases/tag/nano4b-specialist-v0.1.0).
+
 **Coordination de revue du 27 octobre :** les plans fusionnés définissent le travail, pas sa
 réalisation ni sa validation native. Les PR de code conservent leurs preuves par plateforme
 à la révision finale intégrée ; la CI reste suspendue. Un conflit documentaire purement
@@ -2073,6 +2087,7 @@ réels avant adoption ; le choix nommé ne constitue pas une garantie de latence
 
 | Chantier | Piste | État | PR |
 | --- | --- | --- | --- |
+| Nano 4B — spécialiste synthétique (30 octobre) | A, expérimental | terminé : QLoRA/rechargement/évaluation/replay, 7 tests CPU, Ruff et Mypy ; 52/60 décisions strictes et 6/15 replays contre zéro pour la base, latence supérieure ; uniquement synthétique, aucune validation experte ou intégration Tauri ; Compute arrêté puis supprimé, inventaires projet vides ; adaptateur/résultats en release expérimentale | [#122](https://github.com/nassim-arifette/pc-agent/pull/122), non fusionnée |
 | Textes français, accessibilité et finitions #71 | C | contrat approuvé par le porteur ; implémentation et preuves Windows standard, Narrateur/NVDA, axe et parcours FR/EN clair/sombre/contraste élevé en cours ; aucune validation non exécutée n'est considérée acquise | PR plan puis PR code séparées |
 | Intégration des branches feature (29 octobre) | toutes | une branche d'intégration fusionne eval-stream-drain, cache-auto-escalation, browser-process-details, storage-map, local-voice, french-accessibility, deep-checks, etw-e06, wp6-watches et l'interface de history-complete (backend history-complete non repris : déjà couvert par wp6-watches) ; schéma store v9 ; fmt/Clippy/tests Rust et JavaScript verts sous Linux ; **non validé** : Windows natif, ETW (acceptation LaunchFailed(5) sur etw-e06), UAC, Nebius réel, captures | [#116](https://github.com/nassim-arifette/pc-agent/pull/116) fusionné (29 oct., `b7f1107`) |
 | 17 — Rapport quotidien planifié (29 octobre) | B, A, C | implémenté dans [#118](https://github.com/nassim-arifette/pc-agent/pull/118) : rapport local (mesure, règles, historique 24 h, alertes, espace des disques), rapport d’échec daté, tâche par compte à la racine (privilèges minimaux, 5 min, rattrapage), journal des actions, commande relue et réparable, notification désactivable, retrait sans fenêtre pour un futur installateur ; carte des Réglages et de l’accueil ; tests Linux et compilation Windows ; **non validé** sous Windows natif avec un compte standard | [#117](https://github.com/nassim-arifette/pc-agent/pull/117), [#118](https://github.com/nassim-arifette/pc-agent/pull/118) |
